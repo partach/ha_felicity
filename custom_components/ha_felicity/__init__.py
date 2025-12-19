@@ -1,4 +1,4 @@
-"""The SDM630 integration."""
+"""The Felicity integration."""
 
 import logging
 
@@ -28,7 +28,7 @@ from .const import (
     REGISTER_SETS,
     REGISTER_SET_BASIC,
 )
-from .coordinator import HA_SDM630Coordinator
+from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ PLATFORMS = [Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up SDM630 from a config entry."""
+    """Set up Felicity from a config entry."""
     config = entry.data
     connection_type = config.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_SERIAL)
     
@@ -56,19 +56,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hub_key = f"serial_{port}_{baudrate}_{parity}_{stopbits}_{bytesize}"
         
         if hub_key not in hubs:
-            hubs[hub_key] = SDM630SerialHub(hass, port, baudrate, parity, stopbits, bytesize)
+            hubs[hub_key] = FelicitySerialHub(hass, port, baudrate, parity, stopbits, bytesize)
     else:  # TCP
         host = config[CONF_HOST]
         port = config[CONF_PORT]
         hub_key = f"tcp_{host}_{port}"
         
         if hub_key not in hubs:
-            hubs[hub_key] = SDM630TcpHub(hass, host, port)
+            hubs[hub_key] = FelicityTcpHub(hass, host, port)
 
     hub = hubs[hub_key]
 
     # Create coordinator with shared client and selected registers
-    coordinator = HA_SDM630Coordinator(
+    coordinator = HA_FelicityCoordinator(
         hass,
         hub.client,
         config[CONF_SLAVE_ID],
@@ -127,7 +127,7 @@ async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-class SDM630SerialHub:
+class FelicitySerialHub:
     """Manages a single serial connection shared across meters."""
 
     def __init__(
@@ -161,10 +161,10 @@ class SDM630SerialHub:
                 try:
                     await self.client.close()
                 except Exception as err:
-                    _LOGGER.exception("Unexpected error closing SDM630 connection for serial: %s", err)
+                    _LOGGER.exception("Unexpected error closing Felicity connection for serial: %s", err)
 
 
-class SDM630TcpHub:
+class FelicityTcpHub:
     """Manages a single TCP connection shared across meters."""
 
     def __init__(self, hass: HomeAssistant, host: str, port: int):
@@ -184,4 +184,4 @@ class SDM630TcpHub:
                 try:
                     await self.client.close()
                 except Exception as err:
-                    _LOGGER.exception("Unexpected error closing SDM630 connection for tcp: %s", err)
+                    _LOGGER.exception("Unexpected error closing Felicity connection for tcp: %s", err)
