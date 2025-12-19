@@ -37,6 +37,9 @@ from .const import (
     REGISTER_SET_BASIC,
     REGISTER_SET_BASIC_PLUS,
     REGISTER_SET_FULL,
+    DEFAULT_INVERTER_MODEL,
+    INVERTER_MODEL_IVGM,
+    CONF_INVERTER_MODEL,
     DOMAIN,
 )
 
@@ -78,6 +81,16 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
+                vol.Optional(CONF_INVERTER_MODEL, default=DEFAULT_INVERTER_MODEL): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=INVERTER_MODEL_IVGM, label="IVGM Series (default)"),
+                            # Future models go here
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional("update_interval", default=10): vol.All(vol.Coerce(int), vol.Range(min=5, max=300)),
             }
         )
 
@@ -145,6 +158,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_PARITY: user_input[CONF_PARITY],
                         CONF_STOPBITS: user_input[CONF_STOPBITS],
                         CONF_BYTESIZE: user_input[CONF_BYTESIZE],
+                        "update_interval": user_input.get("update_interval", 10),
+                        CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
                     },
                 )
 
