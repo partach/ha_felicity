@@ -10,8 +10,14 @@ CONNECTION_TYPE_TCP = "tcp"
 
 # Common settings
 CONF_SLAVE_ID = "slave_id"
+
 CONF_NAME = "name"
 CONF_REGISTER_SET = "register_set"
+CONF_INVERTER_MODEL = "inverter_model"
+
+#supported inverter models
+INVERTER_MODEL_IVGM = "ivgm"  # our current one
+
 
 # Serial settings
 CONF_SERIAL_PORT = "serial_port"
@@ -32,6 +38,7 @@ DEFAULT_REGISTER_SET = "basic"
 DEFAULT_STOPBITS = 1
 DEFAULT_BYTESIZE = 8
 DEFAULT_PARITY = "N"
+DEFAULT_INVERTER_MODEL = INVERTER_MODEL_IVGM
 
 _REGISTERS = {
     "setting_data_sn": {"address": 4352, "name": "Setting Data Sn", "precision": 0, "index": 0},
