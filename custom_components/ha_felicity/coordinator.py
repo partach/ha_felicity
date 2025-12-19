@@ -1,4 +1,4 @@
-"""Data update coordinator for SDM630 with proper async handling."""
+"""Data update coordinator for Felicity with proper async handling."""
 
 import logging
 import struct
@@ -12,12 +12,12 @@ from pymodbus.exceptions import ModbusException, ConnectionException
 _LOGGER = logging.getLogger(__name__)
 
 
-class HA_SDM630Coordinator(DataUpdateCoordinator):
+class HA_FelicityCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, client: AsyncModbusSerialClient, slave_id: int, register_map: dict):
         super().__init__(
             hass,
             _LOGGER,
-            name="SDM630",
+            name="Felicity",
             update_interval=timedelta(seconds=10),
         )
         self.client = client  # ← Shared client
@@ -57,13 +57,13 @@ class HA_SDM630Coordinator(DataUpdateCoordinator):
                 await self.client.connect()
             return self.client.connected
         except Exception as err:
-            _LOGGER.debug("Failed to connect to SDM630: %s", err)
+            _LOGGER.debug("Failed to connect to Felicity: %s", err)
             return False
 
     async def _async_update_data(self) -> dict:
         """Fetch all data in batched async reads."""
         if not await self._async_connect():
-            raise UpdateFailed("Failed to connect to SDM630")
+            raise UpdateFailed("Failed to connect to Felicity")
 
         new_data = {}
 
@@ -107,7 +107,7 @@ class HA_SDM630Coordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Modbus error: {err}")
 
         except Exception as err:
-            _LOGGER.error("Unexpected error during SDM630 update: %s", err)
+            _LOGGER.error("Unexpected error during Felicity update: %s", err)
             raise UpdateFailed(f"Update failed: {err}")
 
         finally:
