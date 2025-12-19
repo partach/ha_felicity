@@ -3,24 +3,24 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
-from .coordinator import HA_SDM630Coordinator
+from .coordinator import HA_FelicityCoordinator
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
-    coordinator: HA_SDM630Coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: HA_FelicityCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     # The coordinator already knows which registers to create
     entities = [
-        HA_SDM630Sensor(coordinator, entry, key, info)
+        HA_FelicitySensor(coordinator, entry, key, info)
         for key, info in coordinator.register_map.items()
     ]
 
     async_add_entities(entities)
 
 
-class HA_SDM630Sensor(CoordinatorEntity, SensorEntity):  # ← Inherit from CoordinatorEntity
-    """Representation of an SDM630 sensor."""
+class HA_FelicitySensor(CoordinatorEntity, SensorEntity):  # ← Inherit from CoordinatorEntity
+    """Representation of an Felicity sensor."""
 
-    def __init__(self, coordinator: HA_SDM630Coordinator, entry: ConfigEntry, key: str, info: dict):
+    def __init__(self, coordinator: HA_FelicityCoordinator, entry: ConfigEntry, key: str, info: dict):
         """Initialize the sensor."""
         super().__init__(coordinator)  # This handles update listening
         self._key = key
