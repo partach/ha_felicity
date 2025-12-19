@@ -24,7 +24,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.slave_id = slave_id
         self.register_map = register_map
         self._address_groups = self._group_addresses(register_map)  # Use passed map
-
+        
+    @staticmethod
+    def _apply_scaling(value: int, index: int) -> int | float:
+        """Apply scaling based on index from register dict."""
+        if index == 1:  # /10
+            return value / 10.0
+        if index == 2:  # /100
+            return value / 100.0
+        if index == 3:  # signed 16-bit
+            if value >= 0x8000:
+                return value - 0x10000
+            return value
+        # Add more if needed later (e.g. index 4 for high/low – but that's combined)
+        return value  # default: raw
+        
     def _group_addresses(self, reg_map: dict) -> Dict[int, list]:
         """Group consecutive register addresses to minimize requests."""
         addresses = sorted([(info["address"], key) for key, info in reg_map.items()])
@@ -78,22 +92,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 registers = result.registers
 
                 for i, key in enumerate(keys):
-                    
                     reg_offset = i * 2
-                    reg1 = registers[reg_offset]
-                    reg2 = registers[reg_offset + 1]
-
-                    # Convert to big-endian float
-                    raw = struct.pack(">HH", reg1, reg2)
-                    value = struct.unpack(">f", raw)[0]
-
-                    # Handle NaN/invalid values
-                    if value is None or (value != value):  # NaN check
-                        value = None
+                    if reg_offset + 1 < len(registers):
+                        # Existing float path (your current code)
+                        reg1 = registers[reg_offset]
+                        reg2 = registers[reg_offset + 1]
+                        raw = struct.pack(">HH", reg1, reg2)
+                        value = struct.unpack(">f", raw)[0]
+                        if value != value:  # NaN
+                            value = None
+                        else:
+                            precision = self.register_map[key].get("precision", 2)
+                            value = round(value, precision)
                     else:
-                        precision = self.register_map[key].get("precision", 2)
-                        value = round(value, precision)
-
+                        # New: single register fallback (uint16 raw)
+                        value = registers[reg_offset]
+                        index = self.register_map[key].get("index", 0)
+                        value = self._apply_scaling(value, index)
+                        precision = self.register_map[key].get("precision", 0)
+                        if isinstance(value, float):
+                            value = round(value, precision)
                     new_data[key] = value
 
             return new_data
