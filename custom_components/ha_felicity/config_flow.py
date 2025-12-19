@@ -1,4 +1,4 @@
-"""Config flow for SDM630 integration."""
+"""Config flow for Felicity integration."""
 
 import logging
 from typing import Any
@@ -43,8 +43,8 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for SDM630."""
+class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Felicity."""
 
     VERSION = 1
 
@@ -56,7 +56,7 @@ class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry):
         """Get the options flow for this handler."""
-        return SDM630OptionsFlowHandler(config_entry)
+        return FelicityOptionsFlowHandler(config_entry)
         
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle connection type selection."""
@@ -105,7 +105,7 @@ class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default="SDM630"): str,
+                vol.Required(CONF_NAME, default="Felicity"): str,
                 vol.Required(CONF_SERIAL_PORT): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=port_options,
@@ -156,7 +156,7 @@ class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "read_error"
             except Exception as err:
                 errors["base"] = "unknown"
-                _LOGGER.exception("Unexpected error during SDM630 serial setup: %s", err)
+                _LOGGER.exception("Unexpected error during Felicity serial setup: %s", err)
 
         return self.async_show_form(step_id="serial",data_schema=data_schema,errors=errors)
 
@@ -166,7 +166,7 @@ class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default="SDM630"): str,
+                vol.Required(CONF_NAME, default="Felicity"): str,
                 vol.Required(CONF_HOST): str,
                 vol.Required(CONF_PORT, default=DEFAULT_TCP_PORT): vol.All(
                     vol.Coerce(int), vol.Range(min=1, max=65535)
@@ -200,12 +200,12 @@ class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "read_error"
             except Exception as err:
                 errors["base"] = "unknown"
-                _LOGGER.exception("Unexpected error during SDM630 TCP setup: %s", err)
+                _LOGGER.exception("Unexpected error during Felicity TCP setup: %s", err)
 
         return self.async_show_form(step_id="tcp", data_schema=data_schema, errors=errors)
 
     async def _async_test_serial_connection(self, data: dict[str, Any]) -> None:
-        """Test serial connection to the SDM630 meter."""
+        """Test serial connection to the Felicity meter."""
         client = None
         try:
             client = AsyncModbusSerialClient(
@@ -239,7 +239,7 @@ class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     _LOGGER.debug("Error closing Modbus Serial client: %s", err)
 
     async def _async_test_tcp_connection(self, data: dict[str, Any]) -> None:
-        """Test TCP connection to the SDM630 meter."""
+        """Test TCP connection to the Felicity meter."""
         client = None
         try:
             client = AsyncModbusTcpClient(
@@ -269,7 +269,7 @@ class HA_SDM630ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except Exception as err:
                     _LOGGER.debug("Error closing Modbus TCP client: %s", err)
                     
-class SDM630OptionsFlowHandler(config_entries.OptionsFlow):
+class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
     def __init__(self, config_entry: ConfigEntry):
         """Initialize options flow."""
     #    self.config_entry = config_entry # this is wrong!
