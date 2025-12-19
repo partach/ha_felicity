@@ -1,5 +1,5 @@
 {
-  "name": "HA-SDM630",
+  "name": "ha_felicity",
   "render_readme": true,
   "zip_release": false,
   "homeassistant": "2025.1.0",
