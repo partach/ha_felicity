@@ -305,6 +305,80 @@ _REGISTERS = {
     "charging_pile_fault_soure": {"address": 4896, "name": "Chargingpilefaultsoure", "precision": 0, "index": 5},
     "charging_pile_fault_sn": {"address": 4897, "name": "Chargingpilefaultsn", "precision": 0, "index": 0},
     "charging_pile_fault_level": {"address": 4899, "name": "Chargingpilefaultlevel", "precision": 0, "index": 5},
+    # Extra configurable registers (starting at 8555)
+    "lcd_backlight_function": {"address": 8555, "name": "LCD Backlight Function", "precision": 0, "index": 5},  # 0: disable, 1: enable
+    "buzzer_beeping_function": {"address": 8556, "name": "Buzzer Beeping Function", "precision": 0, "index": 5},  # 0: disable, 1: enable
+    "overload_protection_reset": {"address": 8557, "name": "Overload Protection Reset", "precision": 0, "index": 5},  # 0: disable, 1: enable
+    "remote_off": {"address": 8558, "name": "Remote Off", "precision": 0, "index": 5},  # 0: disable, 1: enable
+    "remote_ac_output_control": {"address": 8559, "name": "Remote Turn On/Off AC Output", "precision": 0, "index": 5},  # 0: off, 1: on
+    
+    # Time setting (writeable)
+    "time_set_year_month": {"address": 8560, "name": "Time Setting Year-Month", "precision": 0, "index": 6},
+    "time_set_day_hour": {"address": 8561, "name": "Time Setting Day-Hour", "precision": 0, "index": 6},
+    "time_set_minute_second": {"address": 8562, "name": "Time Setting Minute-Second", "precision": 0, "index": 6},
+    "time_set_week": {"address": 8563, "name": "Time Setting Week", "precision": 0, "index": 6},
+    
+    # Generated energy inquiry period
+    "energy_inquiry_year_month": {"address": 8564, "name": "Generated Energy Inquiry Year-Month", "precision": 0, "index": 6},
+    "energy_inquiry_day": {"address": 8565, "name": "Generated Energy Inquiry Day", "precision": 0, "index": 0},
+    
+    # Zero export / anti-reflux
+    "zero_export_mode": {"address": 8566, "name": "Zero Export Mode", "precision": 0, "index": 5},  # 1: To load, 2: To CT
+    "zero_export_power_adjust": {"address": 8567, "name": "Zero Export Power Adjust", "unit": "W", "device_class": "power", "precision": 0, "index": 3},  # signed, -500~500
+    
+    # Economic Mode Rules (4 rules, each 9 registers)
+    "econ_rule_1_enable": {"address": 8568, "name": "Economic Mode Rule 1 Enable", "precision": 0, "index": 5},  # 0:disable, 1:charge, 2:discharge
+    "econ_rule_1_start_time": {"address": 8569, "name": "Rule 1 Start Time", "precision": 0, "index": 6},
+    "econ_rule_1_stop_time": {"address": 8570, "name": "Rule 1 Stop Time", "precision": 0, "index": 6},
+    "econ_rule_1_start_day": {"address": 8571, "name": "Rule 1 Start Day", "precision": 0, "index": 6},
+    "econ_rule_1_stop_day": {"address": 8572, "name": "Rule 1 Stop Day", "precision": 0, "index": 6},
+    "econ_rule_1_effective_week": {"address": 8573, "name": "Rule 1 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_1_voltage": {"address": 8574, "name": "Rule 1 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "econ_rule_1_soc": {"address": 8575, "name": "Rule 1 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "econ_rule_1_power": {"address": 8576, "name": "Rule 1 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
+    
+    "econ_rule_2_enable": {"address": 8577, "name": "Economic Mode Rule 2 Enable", "precision": 0, "index": 5},
+    "econ_rule_2_start_time": {"address": 8578, "name": "Rule 2 Start Time", "precision": 0, "index": 6},
+    "econ_rule_2_stop_time": {"address": 8579, "name": "Rule 2 Stop Time", "precision": 0, "index": 6},
+    "econ_rule_2_start_day": {"address": 8580, "name": "Rule 2 Start Day", "precision": 0, "index": 6},
+    "econ_rule_2_stop_day": {"address": 8581, "name": "Rule 2 Stop Day", "precision": 0, "index": 6},
+    "econ_rule_2_effective_week": {"address": 8582, "name": "Rule 2 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_2_voltage": {"address": 8583, "name": "Rule 2 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "econ_rule_2_soc": {"address": 8584, "name": "Rule 2 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "econ_rule_2_power": {"address": 8585, "name": "Rule 2 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
+    
+    "econ_rule_3_enable": {"address": 8586, "name": "Economic Mode Rule 3 Enable", "precision": 0, "index": 5},
+    "econ_rule_3_start_time": {"address": 8587, "name": "Rule 3 Start Time", "precision": 0, "index": 6},
+    "econ_rule_3_stop_time": {"address": 8588, "name": "Rule 3 Stop Time", "precision": 0, "index": 6},
+    "econ_rule_3_start_day": {"address": 8589, "name": "Rule 3 Start Day", "precision": 0, "index": 6},
+    "econ_rule_3_stop_day": {"address": 8590, "name": "Rule 3 Stop Day", "precision": 0, "index": 6},
+    "econ_rule_3_effective_week": {"address": 8591, "name": "Rule 3 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_3_voltage": {"address": 8592, "name": "Rule 3 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "econ_rule_3_soc": {"address": 8593, "name": "Rule 3 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "econ_rule_3_power": {"address": 8594, "name": "Rule 3 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
+    
+    "econ_rule_4_enable": {"address": 8595, "name": "Economic Mode Rule 4 Enable", "precision": 0, "index": 5},
+    "econ_rule_4_start_time": {"address": 8596, "name": "Rule 4 Start Time", "precision": 0, "index": 6},
+    "econ_rule_4_stop_time": {"address": 8597, "name": "Rule 4 Stop Time", "precision": 0, "index": 6},
+    "econ_rule_4_start_day": {"address": 8598, "name": "Rule 4 Start Day", "precision": 0, "index": 6},
+    "econ_rule_4_stop_day": {"address": 8599, "name": "Rule 4 Stop Day", "precision": 0, "index": 6},
+    "econ_rule_4_effective_week": {"address": 8600, "name": "Rule 4 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_4_voltage": {"address": 8601, "name": "Rule 4 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "econ_rule_4_soc": {"address": 8602, "name": "Rule 4 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "econ_rule_4_power": {"address": 8603, "name": "Rule 4 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
+    # Battery configuration registers (8483–8494)
+    "battery_type": {"address": 8483, "name": "Battery Type", "precision": 0, "index": 5},  # 0: User, 1: Lithium (default), 2: LPBF, 3: LPBA, 4: No battery
+    "battery_pack_series_count": {"address": 8484, "name": "Battery Pack Number in Series", "precision": 0, "index": 0},  # 1~10
+    "battery_charged_voltage": {"address": 8485, "name": "Battery Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_floating_charged_voltage": {"address": 8486, "name": "Battery Floating Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_cutoff_voltage_ongrid_no_bms": {"address": 8487, "name": "Battery Cut-off Voltage (On-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_cutoff_voltage_offgrid_no_bms": {"address": 8488, "name": "Battery Cut-off Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_restart_voltage_offgrid_no_bms": {"address": 8489, "name": "Battery Restart Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_discharge_depth_ongrid_bms": {"address": 8490, "name": "Battery Discharge Depth (On-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "battery_discharge_depth_offgrid_bms": {"address": 8491, "name": "Battery Discharge Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "battery_restart_depth_offgrid_bms": {"address": 8492, "name": "Battery Restart Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "battery_max_charge_current": {"address": 8493, "name": "Battery Max Charged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
+    "battery_max_discharge_current": {"address": 8494, "name": "Battery Max Discharged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
 }
 
 
@@ -347,6 +421,44 @@ _REGISTER_GROUPS = [
     {"start": 4520, "count": 3, "keys": ["log_time_year_month", "log_time_day_hour", "log_time_minute_second"]},
     {"start": 4567, "count": 3, "keys": ["log_time_year_month", "log_time_day_hour", "log_time_minute_second"]},
     {"start": 4890, "count": 3, "keys": ["charging_pile_fault_date_year_mon", "charging_pile_fault_date_day_hour", "charging_pile_fault_date_min_sec"]},
+    # LCD/Buzzer/Remote controls
+    {"start": 8555, "count": 5, "keys": ["lcd_backlight_function", "buzzer_beeping_function", "overload_protection_reset", "remote_off", "remote_ac_output_control"]},
+
+    # Time setting (writeable version of time)
+    {"start": 8560, "count": 4, "keys": ["time_set_year_month", "time_set_day_hour", "time_set_minute_second", "time_set_week"]},
+
+    # Energy inquiry period
+    {"start": 8564, "count": 2, "keys": ["energy_inquiry_year_month", "energy_inquiry_day"]},
+
+    # Zero export
+    {"start": 8566, "count": 2, "keys": ["zero_export_mode", "zero_export_power_adjust"]},
+
+    # Full Economic Mode Rules block (4 rules × 9 registers = 36 consecutive!)
+    {"start": 8568, "count": 36, "keys": [
+        "econ_rule_1_enable", "econ_rule_1_start_time", "econ_rule_1_stop_time", "econ_rule_1_start_day", "econ_rule_1_stop_day",
+        "econ_rule_1_effective_week", "econ_rule_1_voltage", "econ_rule_1_soc", "econ_rule_1_power",
+        "econ_rule_2_enable", "econ_rule_2_start_time", "econ_rule_2_stop_time", "econ_rule_2_start_day", "econ_rule_2_stop_day",
+        "econ_rule_2_effective_week", "econ_rule_2_voltage", "econ_rule_2_soc", "econ_rule_2_power",
+        "econ_rule_3_enable", "econ_rule_3_start_time", "econ_rule_3_stop_time", "econ_rule_3_start_day", "econ_rule_3_stop_day",
+        "econ_rule_3_effective_week", "econ_rule_3_voltage", "econ_rule_3_soc", "econ_rule_3_power",
+        "econ_rule_4_enable", "econ_rule_4_start_time", "econ_rule_4_stop_time", "econ_rule_4_start_day", "econ_rule_4_stop_day",
+        "econ_rule_4_effective_week", "econ_rule_4_voltage", "econ_rule_4_soc", "econ_rule_4_power",
+    ]},
+    # Battery configuration block (12 consecutive registers)
+    {"start": 8483, "count": 12, "keys": [
+        "battery_type",
+        "battery_pack_series_count",
+        "battery_charged_voltage",
+        "battery_floating_charged_voltage",
+        "battery_cutoff_voltage_ongrid_no_bms",
+        "battery_cutoff_voltage_offgrid_no_bms",
+        "battery_restart_voltage_offgrid_no_bms",
+        "battery_discharge_depth_ongrid_bms",
+        "battery_discharge_depth_offgrid_bms",
+        "battery_restart_depth_offgrid_bms",
+        "battery_max_charge_current",
+        "battery_max_discharge_current",
+    ]},
 ]
 
 # 2. Combined entities (post-process after reading)
