@@ -10,7 +10,7 @@ from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 
 _LOGGER = logging.getLogger(__name__)
-
+from .const import _REGISTER_GROUPS
 
 class HA_FelicityCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, client: AsyncModbusSerialClient, slave_id: int, register_map: dict):
@@ -23,7 +23,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.client = client  # ← Shared client
         self.slave_id = slave_id
         self.register_map = register_map
-        self._address_groups = self._group_addresses(register_map)  # Use passed map
+        self._address_groups = _REGISTER_GROUPS  # NEW: Use our predefined groups (instead of _group_addresses)
         
     @staticmethod
     def _apply_scaling(value: int, index: int) -> int | float:
@@ -74,27 +74,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Failed to connect to Felicity: %s", err)
             return False
 
-    async def _async_update_data(self) -> dict:
-        """Fetch all data in batched async reads."""
+async def _async_update_data(self) -> dict:
         if not await self._async_connect():
             raise UpdateFailed("Failed to connect to Felicity")
 
         new_data = {}
-
         try:
-            for start_addr, keys in self._address_groups.items():
-                count = len(keys) * 2  # 2 registers per float
-                result = await self.client.read_input_registers(address=start_addr,count=count,device_id=self.slave_id)
-
+            for group in self._address_groups:  # NEW: Loop over predefined groups
+                start_addr = group["start"]
+                count = group["count"]
+                result = await self.client.read_input_registers(address=start_addr, count=count, device_id=self.slave_id)
                 if result.isError():
                     raise ModbusException(f"Read error at {start_addr}: {result}")
 
                 registers = result.registers
-
+                keys = group["keys"]
                 for i, key in enumerate(keys):
-                    reg_offset = i * 2
-                    if reg_offset + 1 < len(registers):
-                        # Existing float path (your current code)
+                    info = self.register_map[key]
+                    index = info.get("index", 0)
+                    precision = info.get("precision", 0)
+                    # Assume most are floats (your original logic) – fallback for raw/single
+                    if index in [1, 2, 3] and len(registers) >= (i * 2 + 2):  # Float path
+                        reg_offset = i * 2
                         reg1 = registers[reg_offset]
                         reg2 = registers[reg_offset + 1]
                         raw = struct.pack(">HH", reg1, reg2)
@@ -102,14 +103,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         if value != value:  # NaN
                             value = None
                         else:
-                            precision = self.register_map[key].get("precision", 2)
                             value = round(value, precision)
                     else:
-                        # New: single register fallback (uint16 raw)
+                        # Raw/single-word (faults, modes, etc.)
+                        reg_offset = i
                         value = registers[reg_offset]
-                        index = self.register_map[key].get("index", 0)
                         value = self._apply_scaling(value, index)
-                        precision = self.register_map[key].get("precision", 0)
                         if isinstance(value, float):
                             value = round(value, precision)
                     new_data[key] = value
@@ -117,13 +116,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return new_data
 
         except ConnectionException as err:
-            # Force reconnect next time
             await self.client.close()
             raise UpdateFailed(f"Connection lost: {err}")
-
         except ModbusException as err:
             raise UpdateFailed(f"Modbus error: {err}")
-
         except Exception as err:
             _LOGGER.error("Unexpected error during Felicity update: %s", err)
             raise UpdateFailed(f"Update failed: {err}")
