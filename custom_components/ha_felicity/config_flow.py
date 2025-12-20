@@ -66,6 +66,11 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle connection type selection."""
         if user_input is not None:
             self._connection_type = user_input[CONF_CONNECTION_TYPE]
+            self._common_options = {
+                "update_interval": user_input.get("update_interval", 10),
+                CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
+                CONF_REGISTER_SET: user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+            }
             if self._connection_type == CONNECTION_TYPE_SERIAL:
                 return await self.async_step_serial()
             else:
@@ -112,8 +117,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     + (f" ({port.manufacturer})" if port.manufacturer else "")
                 ),
             )
-            for port in ports
-            if port.device
+            for port in ports if port.device
         ]
         port_options.sort(key=lambda x: x["value"])
 
@@ -161,7 +165,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_BYTESIZE: user_input[CONF_BYTESIZE],
                         "update_interval": user_input.get("update_interval", 10),
                         CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
-                        "register_set": user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+                        CONF_REGISTER_SET: user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
                     },
                 )
 
@@ -206,6 +210,9 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_HOST: user_input[CONF_HOST],
                         CONF_PORT: user_input[CONF_PORT],
                         CONF_SLAVE_ID: user_input[CONF_SLAVE_ID],
+                        "update_interval": user_input.get("update_interval", 10),
+                        CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
+                        CONF_REGISTER_SET: user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
                     },
                 )
 
@@ -245,8 +252,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if result.isError():
                 raise ModbusException(f"Modbus read error: {result}")
                 
-            if len(result.registers) != 2:
-                raise ValueError("Invalid response: expected 2 registers")
+            if len(result.registers) != 1:
+                raise ValueError("Invalid response: expected 1 register")
     
         finally:
             if client is not None:
@@ -297,12 +304,8 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         # Get current values from options (with defaults)
-        current_register_set = self.config_entry.options.get(
-            CONF_REGISTER_SET, DEFAULT_REGISTER_SET
-        )
-        current_interval = self.config_entry.options.get(
-            "update_interval", 10  # your default value in seconds
-        )
+        current_register_set = self.config_entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+        current_interval = self.config_entry.options.get("update_interval", 10)
 
         data_schema = vol.Schema(
             {
