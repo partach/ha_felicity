@@ -9,7 +9,7 @@ from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME
+from homeassistant.const import CONF_NAME, DEFAULT_FIRST_REG
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 from homeassistant.core import callback
@@ -238,7 +238,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raise ConnectionError("Failed to open serial port")
     
             result = await client.read_holding_registers(
-                address=0, count=2, device_id=data[CONF_SLAVE_ID]
+                address=DEFAULT_FIRST_REG, count=1, device_id=data[CONF_SLAVE_ID]
             )
             
             if result.isError():
@@ -269,7 +269,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raise ConnectionError(f"Failed to connect to {data[CONF_HOST]}:{data[CONF_PORT]}")
     
             result = await client.read_holding_registers(
-                address=0, count=2, device_id=data[CONF_SLAVE_ID]  # ← Use 'device_id' not 'slave'
+                address=DEFAULT_FIRST_REG, count=1, device_id=data[CONF_SLAVE_ID]  # ← Use 'device_id' not 'slave'
             )
     
             if result.isError():
