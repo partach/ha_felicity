@@ -30,6 +30,10 @@ CONF_BYTESIZE = "bytesize"
 CONF_HOST = "host"
 CONF_PORT = "port"
 
+REGISTER_SET_BASIC = "basic"
+REGISTER_SET_BASIC_PLUS = "basic_plus"
+REGISTER_SET_FULL = "full"
+
 # Defaults
 DEFAULT_SLAVE_ID = 1
 DEFAULT_BAUDRATE = 9600
@@ -392,6 +396,7 @@ _REGISTERS = {
 
 # 1. Batch read groups
 _REGISTER_GROUPS = [
+
     # Warning states (6 words for 3 x uint32)
     {"start": 4354, "count": 6, "keys": ["warning_state_1", "warning_state_2", "warning_state_3"]},
     
@@ -477,6 +482,7 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "PV Generated Energy Total",
+        "precision": 0,
     },
     "load_consumption_energy_total": {
         "sources": ["load_consumption_energy_total_high", "load_consumption_energy_total_low"],
@@ -485,6 +491,7 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "Load Consumption Energy Total",
+        "precision": 0,
     },
     "ac_input_energy_total": {
         "sources": ["ac_input_energy_total_high", "ac_input_energy_total_low"],
@@ -493,6 +500,7 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "AC Input Energy Total",
+        "precision": 0,
     },
     "ac_generated_energy_total": {
         "sources": ["ac_generated_energy_total_high", "ac_generated_energy_total_low"],
@@ -501,6 +509,7 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "AC Generated Energy Total",
+        "precision": 0,
     },
     "battery_charged_energy_total": {
         "sources": ["battery_charged_energy_total_high", "battery_charged_energy_total_low"],
@@ -509,6 +518,7 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "Battery Charged Energy Total",
+        "precision": 0,
     },
     "battery_discharged_energy_total": {
         "sources": ["battery_discharged_energy_total_high", "battery_discharged_energy_total_low"],
@@ -517,6 +527,7 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "Battery Discharged Energy Total",
+        "precision": 0,
     },
     "line_load_consumption_energy_total": {
         "sources": ["line_load_consumption_energy_total_high", "line_load_consumption_energy_total_low"],
@@ -525,6 +536,7 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "Line Load Consumption Energy Total",
+        "precision": 0,
     },
     "total_load_consumption_energy_total": {
         "sources": ["total_load_consumption_energy_total_high", "total_load_consumption_energy_total_low"],
@@ -533,26 +545,31 @@ _COMBINED_REGISTERS = {
         "device_class": "energy",
         "state_class": "total_increasing",
         "name": "Total Load Consumption Energy Total",
+        "precision": 0,
     },
     "device_sn": {
         "sources": ["sn"],  # 5 words
         "calc": lambda words: ''.join(f"{w:04d}" for w in words).lstrip('0') or '0',
         "name": "Device Serial Number",
+        "precision": 0,
     },
     "max_cell_voltage_info": {
         "sources": ["maximum_cell_voltage_no", "maximum_cell_voltage"],
         "calc": lambda no, volt: {"cell_no": no, "voltage_mv": volt},
         "name": "Maximum Cell Voltage Info",
+        "precision": 0,
     },
     "min_cell_voltage_info": {
         "sources": ["minimum_cell_voltage_no", "minimum_cell_voltage"],
         "calc": lambda no, volt: {"cell_no": no, "voltage_mv": volt},
         "name": "Minimum Cell Voltage Info",
+        "precision": 0,
     },
     "max_cell_temp_info": {
         "sources": ["maximum_cell_temperature_no", "maximum_cell_temperature"],
         "calc": lambda no, temp: {"cell_no": no, "temp_c": temp},
         "name": "Maximum Cell Temperature Info",
+        "precision": 0,
     },
 }
 
