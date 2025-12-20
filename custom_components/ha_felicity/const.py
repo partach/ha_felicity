@@ -220,42 +220,6 @@ _REGISTERS = {
     "n_dc_dc_current_secondary": {"address": 4557, "name": "N Dc/Dc Current", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 1, "index": 3},
     "max_inner_temperature": {"address": 4558, "name": "Max. Inner Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
     "max_heat_sink_temperature": {"address": 4559, "name": "Max. Heat-Sink Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
-    "log_time_year_month_secondary": {"address": 4567, "name": "Log Time Year-Month", "precision": 0, "index": 6},
-    "log_time_day_hour_secondary": {"address": 4568, "name": "Log Time Day-Hour", "precision": 0, "index": 6},
-    "log_time_minute_second_secondary": {"address": 4569, "name": "Log Time Minute-Second", "precision": 0, "index": 6},
-    "auto_test_result": {"address": 4570, "name": "Autotestresult", "precision": 0, "index": 5},
-    "secondly_grid_over_voltage": {"address": 4571, "name": "Secondly Grid Over Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "secondly_grid_over_voltage_triptime": {"address": 4572, "name": "Secondly Grid Over Voltage Triptime", "unit": "ms", "precision": 0, "index": 0},
-    "secondly_grid_over_adjvoltage": {"address": 4573, "name": "Secondly Grid Over Adjvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "grid_voltage": {"address": 4574, "name": "Gridvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "voltage_high2_loss_time": {"address": 4575, "name": "Voltagehigh2losstime", "unit": "ms", "precision": 1, "index": 0},
-    "voltage_low2_setting": {"address": 4576, "name": "Voltagelow2setting", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "voltage_low2_time_setting": {"address": 4577, "name": "Voltagelow2timesetting", "unit": "ms", "precision": 0, "index": 0},
-    "voltage_low2_adj": {"address": 4578, "name": "Voltagelow2adj", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "grid_voltage2": {"address": 4579, "name": "Gridvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "voltage_low2_loss_time": {"address": 4580, "name": "Voltagelow2losstime", "unit": "ms", "precision": 1, "index": 0},
-    "10minute_voltage_high_loss_setting": {"address": 4581, "name": "10Minute Voltagehighlosssetting", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "10minute_voltage_high_loss_time_set": {"address": 4582, "name": "10Minute Voltagehighlosstimeset", "unit": "s", "precision": 0, "index": 0},
-    "10minute_voltage_high_loss_adj": {"address": 4583, "name": "10Minute Voltagehighlossadj", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "grid_voltage3": {"address": 4584, "name": "Gridvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "10minute_voltage_high_loss_time": {"address": 4585, "name": "10Minute Voltagehighlosstime", "unit": "s", "precision": 1, "index": 0},
-    "voltage_low_setting": {"address": 4586, "name": "Voltagelowsetting", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "voltage_low_loss_time_setting": {"address": 4587, "name": "Voltagelowlosstimesteting", "unit": "ms", "precision": 0, "index": 0},
-    "voltage_low_adj": {"address": 4588, "name": "Voltagelowadj", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "grid_voltage4": {"address": 4589, "name": "Gridvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "voltage_low_loss_time": {"address": 4590, "name": "Voltagelowlosstime", "unit": "ms", "precision": 1, "index": 0},
-    "frequency_high2_setting": {"address": 4591, "name": "Frequencyhigh2setting", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
-    "frequency_high2_time_setting": {"address": 4592, "name": "Frequencyhigh2timesetting", "unit": "ms", "precision": 0, "index": 0},
-    "frequency_high2_adj": {"address": 4593, "name": "Frequencyhigh2adj", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
-    "grid_frequency": {"address": 4594, "name": "Gridfrequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
-    "frequency_high_time": {"address": 4595, "name": "Frequencyhightime", "unit": "ms", "precision": 1, "index": 0},
-    "frequency_low2_setting": {"address": 4596, "name": "Frequencylow2setting", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
-    "frequency_low2_time_setting": {"address": 4597, "name": "Frequencylow2timesetting", "unit": "ms", "precision": 0, "index": 0},
-    "frequency_low2_adj": {"address": 4598, "name": "Frequencylow2adj", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
-    "grid_frequency2": {"address": 4599, "name": "Gridfrequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
-    "frequency_low_time": {"address": 4600, "name": "Frequencylowtime", "unit": "ms", "precision": 1, "index": 0},
-    "curr_bms_addr": {"address": 4606, "name": "Currbmsaddr", "precision": 0, "index": 0},
-    "bms_flg": {"address": 4607, "name": "Bms_Flg", "precision": 0, "index": 5},
     "charge_voltage_limit": {"address": 4608, "name": "Chargevoltagelimit", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "discharge_voltage_limit": {"address": 4609, "name": "Dischargevoltagelimit", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "charge_current_limit": {"address": 4610, "name": "Chargecurrentlimit", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 1, "index": 1},
@@ -276,15 +240,6 @@ _REGISTERS = {
     "total_capacity_low": {"address": 4627, "name": "Totalcapacitylow", "unit": "mAH", "precision": 0, "index": 0},
     "parallel_number": {"address": 4628, "name": "Parallelnumber", "precision": 0, "index": 0},
     "parallel_status": {"address": 4629, "name": "Parallelstatus", "precision": 0, "index": 5},
-    "maximum_cell_voltage_no": {"address": 4632, "name": "Maximumcellvoltageno.", "precision": 0, "index": 0},
-    "maximum_cell_voltage": {"address": 4633, "name": "Maximumcellvoltage", "unit": "mV", "device_class": "voltage", "state_class": "measurement", "precision": 0, "index": 0},
-    "minimum_cell_voltage_no": {"address": 4634, "name": "Minimumcellvoltageno.", "precision": 0, "index": 0},
-    "minimum_cell_voltage": {"address": 4635, "name": "Minimumcellvoltage", "unit": "mV", "device_class": "voltage", "state_class": "measurement", "precision": 0, "index": 0},
-    "maximum_cell_temperature_no": {"address": 4636, "name": "Maximumcelltemperatureno.", "precision": 0, "index": 0},
-    "maximum_cell_temperature": {"address": 4637, "name": "Maximumcelltemperature", "unit": "℃", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
-    "minimum_cell_temperature_no": {"address": 4638, "name": "Minimumcelltemperatureno.", "precision": 0, "index": 0},
-    "minimum_cell_temperature_no2": {"address": 4639, "name": "Minimumcelltemperatureno2.", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
-    "sn": {"address": 4640, "name": "Serial Number Raw", "precision": 0, "index": 0},
     "line_load_consumption_energy_total_high": {"address": 4645, "name": "Lineload Consumption Energy Inquiry Total-High 32 Bit", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
     "line_load_consumption_energy_total_low": {"address": 4647, "name": "Lineload Consumption Energy Inquiry Total-Low 32 Bit", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
     "line_load_consumption_energy_year": {"address": 4649, "name": "Lineload Consumption Energy Inquiry Year", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
@@ -295,61 +250,14 @@ _REGISTERS = {
     "total_load_consumption_energy_year": {"address": 4659, "name": "Totalload Consumption Energy Inquiry Year", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
     "total_load_consumption_energy_month": {"address": 4661, "name": "Totalload Consumption Energy Inquiry Month", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
     "total_load_consumption_energy_day": {"address": 4663, "name": "Totalload Consumption Energy Inquiry Day", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
-    "electricity_meter_power_l1": {"address": 4864, "name": "Electricity Meter Power L1", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3},
-    "electricity_meter_power_l2": {"address": 4866, "name": "Electricity Meter Power L2", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3},
-    "electricity_meter_power_l3": {"address": 4868, "name": "Electricity Meter Power L3", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3},
-    "charging_gun_state": {"address": 4870, "name": "Charginggunstate", "precision": 0, "index": 5},
-    "charging_pile_working_state": {"address": 4871, "name": "Chargingpileworkingstate", "precision": 0, "index": 5},
-    "charging_pile_ac_input_voltage_l1_hi": {"address": 4872, "name": "Chargingpile Ac Input Voltage L1 Hi", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_voltage_l1_lo": {"address": 4873, "name": "Chargingpile Ac Input Voltage L1 Lo", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_voltage_l2_hi": {"address": 4874, "name": "Chargingpile Ac Input Voltage L2 Hi", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_voltage_l2_lo": {"address": 4875, "name": "Chargingpile Ac Input Voltage L2 Lo", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_voltage_l3_hi": {"address": 4876, "name": "Chargingpile Ac Input Voltage L3 Hi", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_voltage_l3_lo": {"address": 4877, "name": "Chargingpile Ac Input Voltage L3 Lo", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_current_l1_hi": {"address": 4878, "name": "Chargingpile Ac Input Current L1 Hi", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_current_l1_lo": {"address": 4879, "name": "Chargingpile Ac Input Current L1 Lo", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_current_l2_hi": {"address": 4880, "name": "Chargingpile Ac Input Current L2 Hi", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_current_l2_lo": {"address": 4881, "name": "Chargingpile Ac Input Current L2 Lo", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_current_l3_hi": {"address": 4882, "name": "Chargingpile Ac Input Current L3 Hi", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_current_l3_lo": {"address": 4883, "name": "Chargingpile Ac Input Current L3 Lo", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_power_hi": {"address": 4884, "name": "Chargingpile Ac Input Powerhi", "unit": "kW", "device_class": "power", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_ac_input_power_lo": {"address": 4885, "name": "Chargingpile Ac Input Powerlo", "unit": "kW", "device_class": "power", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_steering_voltage_hi": {"address": 4886, "name": "Chargingpile Steering Voltagehi", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_steering_voltage_lo": {"address": 4887, "name": "Chargingpile Steering Voltagelo", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 2, "index": 2},
-    "charging_pile_setting_power_hi": {"address": 4888, "name": "Chargingpile Settingpowerhi", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 0},
-    "charging_pile_setting_power_lo": {"address": 4889, "name": "Chargingpile Settingpowerlo", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 0},
-    "charging_pile_fault_date_year_mon": {"address": 4890, "name": "Chargingpilefaultdate_Year_Mon", "precision": 0, "index": 6},
-    "charging_pile_fault_date_day_hour": {"address": 4891, "name": "Chargingpilefaultdate_Day_Hour", "precision": 0, "index": 6},
-    "charging_pile_fault_date_min_sec": {"address": 4892, "name": "Chargingpilefaultdate_Min_Sec", "precision": 0, "index": 6},
-    "charging_pile_fault_code_hi": {"address": 4893, "name": "Chargingpilefaultcodehi", "precision": 0, "index": 5},
-    "charging_pile_fault_code_lo": {"address": 4894, "name": "Chargingpilefaultcodelo", "precision": 0, "index": 5},
-    "charging_pile_fault_state": {"address": 4895, "name": "Chargingpilefaultstate", "precision": 0, "index": 5},
-    "charging_pile_fault_source": {"address": 4896, "name": "Chargingpilefaultsource", "precision": 0, "index": 5},
-    "charging_pile_fault_sn": {"address": 4897, "name": "Chargingpilefaultsn", "precision": 0, "index": 0},
-    "charging_pile_fault_level": {"address": 4899, "name": "Chargingpilefaultlevel", "precision": 0, "index": 5},
 
     "operating_mode": {"address": 8451,"name": "Operating Mode","precision": 0,"index": 0,"type": "select","options": ["General mode (self-use, load priority)","Backup mode (grid-tied, no battery discharge)","Economic mode (scheduled charge-discharge)"]},
 
-    # Extra configurable registers (starting at 8555)
-    "lcd_backlight_function": {"address": 8555, "name": "LCD Backlight Function", "precision": 0, "index": 5},  # 0: disable, 1: enable
-    "buzzer_beeping_function": {"address": 8556, "name": "Buzzer Beeping Function", "precision": 0, "index": 5},  # 0: disable, 1: enable
-    "overload_protection_reset": {"address": 8557, "name": "Overload Protection Reset", "precision": 0, "index": 5},  # 0: disable, 1: enable
-    "remote_off": {"address": 8558, "name": "Remote Off", "precision": 0, "index": 5},  # 0: disable, 1: enable
-    "remote_ac_output_control": {"address": 8559, "name": "Remote Turn On/Off AC Output", "precision": 0, "index": 5},  # 0: off, 1: on
-    
     # Time setting (writeable)
     "time_set_year_month": {"address": 8560, "name": "Time Setting Year-Month", "precision": 0, "index": 6},
     "time_set_day_hour": {"address": 8561, "name": "Time Setting Day-Hour", "precision": 0, "index": 6},
     "time_set_minute_second": {"address": 8562, "name": "Time Setting Minute-Second", "precision": 0, "index": 6},
     "time_set_week": {"address": 8563, "name": "Time Setting Week", "precision": 0, "index": 6},
-    
-    # Generated energy inquiry period
-    "energy_inquiry_year_month": {"address": 8564, "name": "Generated Energy Inquiry Year-Month", "precision": 0, "index": 6},
-    "energy_inquiry_day": {"address": 8565, "name": "Generated Energy Inquiry Day", "precision": 0, "index": 0},
-    
-    # Zero export / anti-reflux
-    "zero_export_mode": {"address": 8566, "name": "Zero Export Mode", "precision": 0, "index": 5},  # 1: To load, 2: To CT
-    "zero_export_power_adjust": {"address": 8567, "name": "Zero Export Power Adjust", "unit": "W", "device_class": "power", "precision": 0, "index": 3},  # signed, -500~500
     
     # Economic Mode Rules (4 rules, each 9 registers)
     "econ_rule_1_enable": {"address": 8568, "name": "Economic Mode Rule 1 Enable", "precision": 0, "index": 0, "type": "select", "options": ["Disabled", "Charge", "Discharge"]},
@@ -411,14 +319,17 @@ _REGISTERS = {
 # if they are in the groups the values must be in at least the basic set else they can't be stored as groups are part of basic.
 _REGISTER_GROUPS = [
     {'start': 4352, 'count': 3, 'keys': ['setting_data_sn', 'working_mode', 'warning_state_1']},
-    {'start': 4360, 'count': 45, 'keys': [
+    {'start': 4360, 'count': 33, 'keys': [
        'fault_code', 'ac_input_voltage', 'ac_input_current', 'ac_input_frequency', 'ac_input_power', 
        'battery_voltage', 'battery_current', 'battery_power', 'battery_capacity', 'ac_output_voltage', 
        'ac_output_current', 'ac_output_frequency', 'ac_output_active_power', 'ac_output_apparent_power', 
        'load_percentage', 'pv_input_voltage', 'pv_input_current', 'pv_input_power', 'pv2_input_voltage', 
        'pv2_input_current', 'pv2_input_power', 'pv3_input_voltage', 'pv3_input_current', 'pv3_input_power', 
        'ac_input_voltage_l2', 'ac_input_current_l2', 'ac_input_frequency_l2', 'ac_input_power_l2', 'ac_input_voltage_l3', 
-       'ac_input_current_l3', 'ac_input_frequency_l3', 'ac_input_power_l3', 'total_ac_input_power', 'ac_output_voltage_l2', 
+       'ac_input_current_l3', 'ac_input_frequency_l3', 'ac_input_power_l3', 'total_ac_input_power'
+    ]},
+    {'start': 4394, 'count': 11, 'keys': [     
+       'ac_output_voltage_l2', 
        'ac_output_current_l2', 'ac_output_frequency_l2', 'ac_output_active_power_l2', 'ac_output_apparent_power_l2', 
        'ac_output_voltage_l3', 'ac_output_current_l3', 'ac_output_frequency_l3', 'ac_output_active_power_l3', 
        'ac_output_apparent_power_l3', 'total_ac_output_active_power'
@@ -448,55 +359,23 @@ _REGISTER_GROUPS = [
        'ac_output_apparent_power_l3_secondary', 'p_bus_voltage', 'n_bus_voltage', 'p_dc_dc_current_secondary', 
        'n_dc_dc_current_secondary', 'max_inner_temperature', 'max_heat_sink_temperature'
     ]},
-    {'start': 4567, 'count': 34, 'keys': [
-       'log_time_year_month_secondary', 'log_time_day_hour_secondary', 'log_time_minute_second_secondary', 
-       'auto_test_result', 'secondly_grid_over_voltage', 'secondly_grid_over_voltage_triptime', 
-       'secondly_grid_over_adjvoltage', 'grid_voltage', 'voltage_high2_loss_time', 'voltage_low2_setting', 
-       'voltage_low2_time_setting', 'voltage_low2_adj', 'grid_voltage2', 'voltage_low2_loss_time', 
-       '10minute_voltage_high_loss_setting', '10minute_voltage_high_loss_time_set', '10minute_voltage_high_loss_adj',
-       'grid_voltage3', '10minute_voltage_high_loss_time', 'voltage_low_setting', 'voltage_low_loss_time_setting', 
-       'voltage_low_adj', 'grid_voltage4', 'voltage_low_loss_time', 'frequency_high2_setting', 'frequency_high2_time_setting', 
-       'frequency_high2_adj', 'grid_frequency', 'frequency_high_time', 'frequency_low2_setting', 'frequency_low2_time_setting', 
-       'frequency_low2_adj', 'grid_frequency2', 'frequency_low_time'
-    ]},
-    {'start': 4606, 'count': 16, 'keys': [
-       'curr_bms_addr', 'bms_flg', 'charge_voltage_limit', 'discharge_voltage_limit', 'charge_current_limit', 
+    {'start': 4608, 'count': 14, 'keys': [
+       'charge_voltage_limit', 'discharge_voltage_limit', 'charge_current_limit', 
        'discharge_current_limit', 'bms_status_lo', 'bms_status_hi', 'fault_flag_lo', 'fault_flag_hi', 
        'alarm_flag_lo', 'alarm_flag_hi', 'notice_flag_low', 'notice_flag_high', 'total_current', 'total_voltage'
     ]},
     {'start': 4624, 'count': 6, 'keys': ['total_soc', 'total_soh', 'total_capacity_high', 'total_capacity_low', 'parallel_number', 'parallel_status']},
-    {'start': 4632, 'count': 8, 'keys': [
-       'maximum_cell_voltage_no', 'maximum_cell_voltage', 'minimum_cell_voltage_no', 'minimum_cell_voltage', 
-       'maximum_cell_temperature_no', 'maximum_cell_temperature', 'minimum_cell_temperature_no', 'minimum_cell_temperature_no2'
-    ]},
-    {"start": 4640, "count": 10, "keys": ["sn"]},
-    {'start': 4645, 'count': 19, 'keys': [
-       'line_load_consumption_energy_total_high', 'line_load_consumption_energy_total_low', 'line_load_consumption_energy_year', 
-       'line_load_consumption_energy_month', 'line_load_consumption_energy_day', 'total_load_consumption_energy_total_high', 
-       'total_load_consumption_energy_total_low', 'total_load_consumption_energy_year', 'total_load_consumption_energy_month', 
-       'total_load_consumption_energy_day', 'electricity_meter_power_l1', 'electricity_meter_power_l2', 
-       'electricity_meter_power_l3', 'charging_gun_state', 'charging_pile_working_state', 'charging_pile_ac_input_voltage_l1_hi', 
-       'charging_pile_ac_input_voltage_l1_lo', 'charging_pile_ac_input_voltage_l2_hi', 'charging_pile_ac_input_voltage_l2_lo'
-    ]},
-    {'start': 4878, 'count': 22, 'keys': [
-       'charging_pile_ac_input_current_l1_hi', 'charging_pile_ac_input_current_l1_lo', 'charging_pile_ac_input_current_l2_hi', 
-       'charging_pile_ac_input_current_l2_lo', 'charging_pile_ac_input_current_l3_hi', 'charging_pile_ac_input_current_l3_lo', 
-       'charging_pile_ac_input_power_hi', 'charging_pile_ac_input_power_lo', 'charging_pile_steering_voltage_hi', 
-       'charging_pile_steering_voltage_lo', 'charging_pile_setting_power_hi', 'charging_pile_setting_power_lo', 
-       'charging_pile_fault_date_year_mon', 'charging_pile_fault_date_day_hour', 'charging_pile_fault_date_min_sec', 
-       'charging_pile_fault_code_hi', 'charging_pile_fault_code_lo', 'charging_pile_fault_state', 'charging_pile_fault_source', 
-       'charging_pile_fault_sn', 'charging_pile_fault_level', 'disp_sw_version_felicity'
-    ]},
     {'start': 8483, 'count': 12, 'keys': [
        'battery_type', 'battery_pack_series_count', 'battery_charged_voltage', 'battery_floating_charged_voltage', 
        'battery_cutoff_voltage_ongrid_no_bms', 'battery_cutoff_voltage_offgrid_no_bms', 'battery_restart_voltage_offgrid_no_bms', 
        'battery_discharge_depth_ongrid_bms', 'battery_discharge_depth_offgrid_bms', 'battery_restart_depth_offgrid_bms', 
        'battery_max_charge_current', 'battery_max_discharge_current'
     ]},
-    {'start': 8555, 'count': 49, 'keys': [
-       'lcd_backlight_function', 'buzzer_beeping_function', 'overload_protection_reset', 'remote_off', 'remote_ac_output_control',
-       'time_set_year_month', 'time_set_day_hour', 'time_set_minute_second', 'time_set_week', 'energy_inquiry_year_month',
-       'energy_inquiry_day', 'zero_export_mode', 'zero_export_power_adjust', 'econ_rule_1_enable', 'econ_rule_1_start_time',
+    {'start': 8560, 'count': 4, 'keys': [
+       'time_set_year_month', 'time_set_day_hour', 'time_set_minute_second', 'time_set_week'
+    ]},
+     {'start': 8568, 'count': 36, 'keys': [
+       'econ_rule_1_enable', 'econ_rule_1_start_time',
        'econ_rule_1_stop_time', 'econ_rule_1_start_day', 'econ_rule_1_stop_day', 'econ_rule_1_effective_week',
        'econ_rule_1_voltage', 'econ_rule_1_soc', 'econ_rule_1_power', 'econ_rule_2_enable', 'econ_rule_2_start_time',
        'econ_rule_2_stop_time', 'econ_rule_2_start_day', 'econ_rule_2_stop_day', 'econ_rule_2_effective_week',
@@ -506,7 +385,6 @@ _REGISTER_GROUPS = [
        'econ_rule_4_stop_time', 'econ_rule_4_start_day', 'econ_rule_4_stop_day', 'econ_rule_4_effective_week',
        'econ_rule_4_voltage', 'econ_rule_4_soc', 'econ_rule_4_power'
     ]},
-    {'start': 63498, 'count': 3, 'keys': ['disp_sw_version_felicity', 'mcu1_sw_version_felicity', 'mcu2_sw_version_felicity']},
 ]
 
 # 2. Combined entities (post-process after reading)
@@ -693,30 +571,6 @@ _COMBINED_REGISTERS = {
         "name": "Total Load Consumption Energy Total",
         "precision": 0,
     },
-    "device_sn": {
-        "sources": ["sn"],  # 5 words
-        "calc": lambda words: ''.join(f"{w:04d}" for w in words).lstrip('0') or '0',
-        "name": "Device Serial Number",
-        "precision": 0,
-    },
-    "max_cell_voltage_info": {
-        "sources": ["maximum_cell_voltage_no", "maximum_cell_voltage"],
-        "calc": lambda no, volt: {"cell_no": no, "voltage_mv": volt},
-        "name": "Maximum Cell Voltage Info",
-        "precision": 0,
-    },
-    "min_cell_voltage_info": {
-        "sources": ["minimum_cell_voltage_no", "minimum_cell_voltage"],
-        "calc": lambda no, volt: {"cell_no": no, "voltage_mv": volt},
-        "name": "Minimum Cell Voltage Info",
-        "precision": 0,
-    },
-    "max_cell_temp_info": {
-        "sources": ["maximum_cell_temperature_no", "maximum_cell_temperature"],
-        "calc": lambda no, temp: {"cell_no": no, "temp_c": temp},
-        "name": "Maximum Cell Temperature Info",
-        "precision": 0,
-    },
     "inverter_time": {
         "sources": [
             "time_year_month",   # 4434
@@ -813,11 +667,7 @@ REGISTER_SETS = {
                "invert_", 
                "total_ac_"
              ))
-             or key in {
-               "load_percentage", 
-               "working_mode", 
-               "fault_code"
-             }
+
            )
         and "_secondary" not in key
         and "_alt" not in key
