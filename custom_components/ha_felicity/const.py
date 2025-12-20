@@ -44,6 +44,16 @@ DEFAULT_BYTESIZE = 8
 DEFAULT_PARITY = "N"
 DEFAULT_INVERTER_MODEL = INVERTER_MODEL_IVGM
 
+ #Precision and index based on the "Rate/Magnification/Scale" column
+ # 0 dont process or packed
+ # 1 = /10 → precision 1, index 1;
+ # 2 = /100 → precision 2, index 2; 
+ # signed = index 3; 
+ # energy high/low = index 4; 
+ # faults/warnings/modes/flags = index 5; 
+ # time = index 6; 
+ # % = index 7
+
 _REGISTERS = {
     "setting_data_sn": {"address": 4352, "name": "Setting Data Sn", "precision": 0, "index": 0},
     "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 5},
@@ -338,42 +348,42 @@ _REGISTERS = {
     "zero_export_power_adjust": {"address": 8567, "name": "Zero Export Power Adjust", "unit": "W", "device_class": "power", "precision": 0, "index": 3},  # signed, -500~500
     
     # Economic Mode Rules (4 rules, each 9 registers)
-    "econ_rule_1_enable": {"address": 8568, "name": "Economic Mode Rule 1 Enable", "precision": 0, "index": 5},  # 0:disable, 1:charge, 2:discharge
-    "econ_rule_1_start_time": {"address": 8569, "name": "Rule 1 Start Time", "precision": 0, "index": 6},
-    "econ_rule_1_stop_time": {"address": 8570, "name": "Rule 1 Stop Time", "precision": 0, "index": 6},
-    "econ_rule_1_start_day": {"address": 8571, "name": "Rule 1 Start Day", "precision": 0, "index": 6},
-    "econ_rule_1_stop_day": {"address": 8572, "name": "Rule 1 Stop Day", "precision": 0, "index": 6},
-    "econ_rule_1_effective_week": {"address": 8573, "name": "Rule 1 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_1_enable": {"address": 8568, "name": "Economic Mode Rule 1 Enable", "precision": 0, "index": 0},  # 0:disable, 1:charge, 2:discharge
+    "econ_rule_1_start_time": {"address": 8569, "name": "Rule 1 Start Time", "precision": 0, "index": 0},
+    "econ_rule_1_stop_time": {"address": 8570, "name": "Rule 1 Stop Time", "precision": 0, "index": 0},
+    "econ_rule_1_start_day": {"address": 8571, "name": "Rule 1 Start Day", "precision": 0, "index": 0},
+    "econ_rule_1_stop_day": {"address": 8572, "name": "Rule 1 Stop Day", "precision": 0, "index": 0},
+    "econ_rule_1_effective_week": {"address": 8573, "name": "Rule 1 Effective Week", "precision": 0, "index": 0},
     "econ_rule_1_voltage": {"address": 8574, "name": "Rule 1 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
     "econ_rule_1_soc": {"address": 8575, "name": "Rule 1 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
     "econ_rule_1_power": {"address": 8576, "name": "Rule 1 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
     
-    "econ_rule_2_enable": {"address": 8577, "name": "Economic Mode Rule 2 Enable", "precision": 0, "index": 5},
-    "econ_rule_2_start_time": {"address": 8578, "name": "Rule 2 Start Time", "precision": 0, "index": 6},
-    "econ_rule_2_stop_time": {"address": 8579, "name": "Rule 2 Stop Time", "precision": 0, "index": 6},
-    "econ_rule_2_start_day": {"address": 8580, "name": "Rule 2 Start Day", "precision": 0, "index": 6},
-    "econ_rule_2_stop_day": {"address": 8581, "name": "Rule 2 Stop Day", "precision": 0, "index": 6},
-    "econ_rule_2_effective_week": {"address": 8582, "name": "Rule 2 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_2_enable": {"address": 8577, "name": "Economic Mode Rule 2 Enable", "precision": 0, "index": 0},
+    "econ_rule_2_start_time": {"address": 8578, "name": "Rule 2 Start Time", "precision": 0, "index": 0},
+    "econ_rule_2_stop_time": {"address": 8579, "name": "Rule 2 Stop Time", "precision": 0, "index": 0},
+    "econ_rule_2_start_day": {"address": 8580, "name": "Rule 2 Start Day", "precision": 0, "index": 0},
+    "econ_rule_2_stop_day": {"address": 8581, "name": "Rule 2 Stop Day", "precision": 0, "index": 0},
+    "econ_rule_2_effective_week": {"address": 8582, "name": "Rule 2 Effective Week", "precision": 0, "index": 0},
     "econ_rule_2_voltage": {"address": 8583, "name": "Rule 2 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
     "econ_rule_2_soc": {"address": 8584, "name": "Rule 2 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
     "econ_rule_2_power": {"address": 8585, "name": "Rule 2 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
     
-    "econ_rule_3_enable": {"address": 8586, "name": "Economic Mode Rule 3 Enable", "precision": 0, "index": 5},
-    "econ_rule_3_start_time": {"address": 8587, "name": "Rule 3 Start Time", "precision": 0, "index": 6},
-    "econ_rule_3_stop_time": {"address": 8588, "name": "Rule 3 Stop Time", "precision": 0, "index": 6},
-    "econ_rule_3_start_day": {"address": 8589, "name": "Rule 3 Start Day", "precision": 0, "index": 6},
-    "econ_rule_3_stop_day": {"address": 8590, "name": "Rule 3 Stop Day", "precision": 0, "index": 6},
-    "econ_rule_3_effective_week": {"address": 8591, "name": "Rule 3 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_3_enable": {"address": 8586, "name": "Economic Mode Rule 3 Enable", "precision": 0, "index": 0},
+    "econ_rule_3_start_time": {"address": 8587, "name": "Rule 3 Start Time", "precision": 0, "index": 0},
+    "econ_rule_3_stop_time": {"address": 8588, "name": "Rule 3 Stop Time", "precision": 0, "index": 0},
+    "econ_rule_3_start_day": {"address": 8589, "name": "Rule 3 Start Day", "precision": 0, "index": 0},
+    "econ_rule_3_stop_day": {"address": 8590, "name": "Rule 3 Stop Day", "precision": 0, "index": 0},
+    "econ_rule_3_effective_week": {"address": 8591, "name": "Rule 3 Effective Week", "precision": 0, "index": 0},
     "econ_rule_3_voltage": {"address": 8592, "name": "Rule 3 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
     "econ_rule_3_soc": {"address": 8593, "name": "Rule 3 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
     "econ_rule_3_power": {"address": 8594, "name": "Rule 3 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
     
-    "econ_rule_4_enable": {"address": 8595, "name": "Economic Mode Rule 4 Enable", "precision": 0, "index": 5},
-    "econ_rule_4_start_time": {"address": 8596, "name": "Rule 4 Start Time", "precision": 0, "index": 6},
-    "econ_rule_4_stop_time": {"address": 8597, "name": "Rule 4 Stop Time", "precision": 0, "index": 6},
-    "econ_rule_4_start_day": {"address": 8598, "name": "Rule 4 Start Day", "precision": 0, "index": 6},
-    "econ_rule_4_stop_day": {"address": 8599, "name": "Rule 4 Stop Day", "precision": 0, "index": 6},
-    "econ_rule_4_effective_week": {"address": 8600, "name": "Rule 4 Effective Week", "precision": 0, "index": 5},
+    "econ_rule_4_enable": {"address": 8595, "name": "Economic Mode Rule 4 Enable", "precision": 0, "index": 0},
+    "econ_rule_4_start_time": {"address": 8596, "name": "Rule 4 Start Time", "precision": 0, "index": 0},
+    "econ_rule_4_stop_time": {"address": 8597, "name": "Rule 4 Stop Time", "precision": 0, "index": 0},
+    "econ_rule_4_start_day": {"address": 8598, "name": "Rule 4 Start Day", "precision": 0, "index": 0},
+    "econ_rule_4_stop_day": {"address": 8599, "name": "Rule 4 Stop Day", "precision": 0, "index": 0},
+    "econ_rule_4_effective_week": {"address": 8600, "name": "Rule 4 Effective Week", "precision": 0, "index": 0},
     "econ_rule_4_voltage": {"address": 8601, "name": "Rule 4 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
     "econ_rule_4_soc": {"address": 8602, "name": "Rule 4 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
     "econ_rule_4_power": {"address": 8603, "name": "Rule 4 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0},
@@ -475,6 +485,107 @@ _REGISTER_GROUPS = [
 
 # 2. Combined entities (post-process after reading)
 _COMBINED_REGISTERS = {
+    "econ_rule_1": {
+        "sources": [
+            "econ_rule_1_enable",
+            "econ_rule_1_start_time",
+            "econ_rule_1_stop_time",
+            "econ_rule_1_start_day",
+            "econ_rule_1_stop_day",
+            "econ_rule_1_effective_week",
+            "econ_rule_1_voltage",
+            "econ_rule_1_soc",
+            "econ_rule_1_power",
+        ],
+        "calc": lambda enable, start_t, stop_t, start_d, stop_d, week, volt, soc, power: {
+            "enabled": ["Disabled", "Charge", "Discharge"][enable] if 0 <= enable <= 2 else f"Unknown({enable})",
+            "start_time": f"{start_t >> 8:02d}:{start_t & 0xFF:02d}",
+            "stop_time": f"{stop_t >> 8:02d}:{stop_t & 0xFF:02d}",
+            "start_date": f"{start_d >> 8:02d}-{start_d & 0xFF:02d}",
+            "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
+            "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
+            "voltage_v": volt / 10.0 if volt else None,
+            "soc_percent": soc,
+            "power_w": power,
+        },
+        "name": "Economic Mode Rule 1",
+    },
+    "econ_rule_2": {
+        "sources": [
+            "econ_rule_2_enable",
+            "econ_rule_2_start_time",
+            "econ_rule_2_stop_time",
+            "econ_rule_2_start_day",
+            "econ_rule_2_stop_day",
+            "econ_rule_2_effective_week",
+            "econ_rule_2_voltage",
+            "econ_rule_2_soc",
+            "econ_rule_2_power",
+        ],
+        "calc": lambda enable, start_t, stop_t, start_d, stop_d, week, volt, soc, power: {
+            "enabled": ["Disabled", "Charge", "Discharge"][enable] if 0 <= enable <= 2 else f"Unknown({enable})",
+            "start_time": f"{start_t >> 8:02d}:{start_t & 0xFF:02d}",
+            "stop_time": f"{stop_t >> 8:02d}:{stop_t & 0xFF:02d}",
+            "start_date": f"{start_d >> 8:02d}-{start_d & 0xFF:02d}",
+            "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
+            "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
+            "voltage_v": volt / 10.0 if volt else None,
+            "soc_percent": soc,
+            "power_w": power,
+        },
+        "name": "Economic Mode Rule 2",
+    },
+    "econ_rule_3": {
+        "sources": [
+            "econ_rule_3_enable",
+            "econ_rule_3_start_time",
+            "econ_rule_3_stop_time",
+            "econ_rule_3_start_day",
+            "econ_rule_3_stop_day",
+            "econ_rule_3_effective_week",
+            "econ_rule_3_voltage",
+            "econ_rule_3_soc",
+            "econ_rule_3_power",
+        ],
+        "calc": lambda enable, start_t, stop_t, start_d, stop_d, week, volt, soc, power: {
+            "enabled": ["Disabled", "Charge", "Discharge"][enable] if 0 <= enable <= 2 else f"Unknown({enable})",
+            "start_time": f"{start_t >> 8:02d}:{start_t & 0xFF:02d}",
+            "stop_time": f"{stop_t >> 8:02d}:{stop_t & 0xFF:02d}",
+            "start_date": f"{start_d >> 8:02d}-{start_d & 0xFF:02d}",
+            "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
+            "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
+            "voltage_v": volt / 10.0 if volt else None,
+            "soc_percent": soc,
+            "power_w": power,
+        },
+        "name": "Economic Mode Rule 3",
+    },
+    "econ_rule_4": {
+        "sources": [
+            "econ_rule_4_enable",
+            "econ_rule_4_start_time",
+            "econ_rule_4_stop_time",
+            "econ_rule_4_start_day",
+            "econ_rule_4_stop_day",
+            "econ_rule_4_effective_week",
+            "econ_rule_4_voltage",
+            "econ_rule_4_soc",
+            "econ_rule_4_power",
+        ],
+        "calc": lambda enable, start_t, stop_t, start_d, stop_d, week, volt, soc, power: {
+            "enabled": ["Disabled", "Charge", "Discharge"][enable] if 0 <= enable <= 2 else f"Unknown({enable})",
+            "start_time": f"{start_t >> 8:02d}:{start_t & 0xFF:02d}",
+            "stop_time": f"{stop_t >> 8:02d}:{stop_t & 0xFF:02d}",
+            "start_date": f"{start_d >> 8:02d}-{start_d & 0xFF:02d}",
+            "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
+            "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
+            "voltage_v": volt / 10.0 if volt else None,
+            "soc_percent": soc,
+            "power_w": power,
+        },
+        "name": "Economic Mode Rule 4",
+    },
+
     "pv_generated_energy_total": {
         "sources": ["pv_generated_energy_total_high", "pv_generated_energy_total_low"],
         "calc": lambda high, low: (high << 32) | low,
