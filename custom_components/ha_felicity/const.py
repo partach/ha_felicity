@@ -445,7 +445,7 @@ _REGISTER_GROUPS = [
        'ac_output_frequency_l2_secondary', 'ac_output_active_power_l2_secondary', 'ac_output_apparent_power_l2_secondary', 
        'ac_output_voltage_l3_secondary', 'ac_output_frequency_l3_secondary', 'ac_output_active_power_l3_secondary', 
        'ac_output_apparent_power_l3_secondary', 'p_bus_voltage', 'n_bus_voltage', 'p_dc_dc_current_secondary', 
-       'n_dc_dc_current_secondary', 'max_inner_temperature', 'max_heatsink_temperature'
+       'n_dc_dc_current_secondary', 'max_inner_temperature', 'max_heat_sink_temperature'
     ]},
     {'start': 4567, 'count': 34, 'keys': [
        'log_time_year_month_secondary', 'log_time_day_hour_secondary', 'log_time_minute_second_secondary', 
