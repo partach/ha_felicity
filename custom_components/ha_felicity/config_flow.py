@@ -160,6 +160,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_BYTESIZE: user_input[CONF_BYTESIZE],
                         "update_interval": user_input.get("update_interval", 10),
                         CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
+                        "register_set": user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
                     },
                 )
 
