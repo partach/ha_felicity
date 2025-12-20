@@ -60,7 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Auto-adding missing group keys: %s", missing)
         for key in missing:
             if key in model_data["registers"]:
-            selected_registers[key] = model_data["registers"][key]
+              selected_registers[key] = model_data["registers"][key]
     # ===========================================================================
     # Get or create shared hub for this connection
     hubs = hass.data.setdefault(DOMAIN, {}).setdefault("hubs", {})
