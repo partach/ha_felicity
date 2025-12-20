@@ -84,7 +84,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_INVERTER_MODEL, default=DEFAULT_INVERTER_MODEL): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            selector.SelectOptionDict(value=INVERTER_MODEL_IVGM, label="IVGM Series (default)"),
+                            selector.SelectOptionDict(value=INVERTER_MODEL_IVGM, label="T-REX-10KLP3G01"),
                             # Future models go here
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
