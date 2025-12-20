@@ -55,18 +55,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # === SAFETY NET: Auto-include missing group keys (prevents update failed) ===
     all_group_keys = {key for group in model_data["groups"] for key in group["keys"]}
-    missing_in_selected = all_group_keys - selected_registers.keys()
-
-    if missing_in_selected:
-        _LOGGER.debug(
-            "Auto-adding %d missing group keys to selected registers to prevent read errors: %s",
-            len(missing_in_selected),
-            sorted(missing_in_selected),
-        )
-        # Add them from the full model registers
-        for key in missing_in_selected:
+    missing = all_group_keys - selected_registers.keys()
+    if missing:
+        _LOGGER.debug("Auto-adding missing group keys: %s", missing)
+        for key in missing:
             if key in model_data["registers"]:
-                selected_registers[key] = model_data["registers"][key]
+            selected_registers[key] = model_data["registers"][key]
     # ===========================================================================
     # Get or create shared hub for this connection
     hubs = hass.data.setdefault(DOMAIN, {}).setdefault("hubs", {})
