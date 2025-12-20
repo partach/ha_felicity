@@ -97,6 +97,16 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
                 vol.Optional("update_interval", default=10): vol.All(vol.Coerce(int), vol.Range(min=5, max=300)),
+                vol.Optional(CONF_REGISTER_SET, default=DEFAULT_REGISTER_SET): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=REGISTER_SET_BASIC, label="Basic"),
+                            selector.SelectOptionDict(value=REGISTER_SET_BASIC_PLUS, label="Basic+"),
+                            selector.SelectOptionDict(value=REGISTER_SET_FULL, label="Full"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
             }
         )
 
