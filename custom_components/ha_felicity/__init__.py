@@ -8,6 +8,9 @@ from homeassistant.core import HomeAssistant
 from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 
 from .const import (
+    CONF_REGISTER_SET,
+    DEFAULT_REGISTER_SET,
+    REGISTER_SETS,
     DOMAIN,
     CONF_BAUDRATE,
     CONF_BYTESIZE,
@@ -18,15 +21,13 @@ from .const import (
     CONF_SERIAL_PORT,
     CONF_SLAVE_ID,
     CONF_STOPBITS,
-    CONF_REGISTER_SET,
     CONNECTION_TYPE_SERIAL,
     DEFAULT_BAUDRATE,
     DEFAULT_BYTESIZE,
     DEFAULT_PARITY,
-    DEFAULT_REGISTER_SET,
     DEFAULT_STOPBITS,
-    REGISTER_SETS,
-    REGISTER_SET_BASIC,
+    CONF_INVERTER_MODEL,
+    _REGISTERS,
 )
 from .coordinator import HA_FelicityCoordinator
 
@@ -40,9 +41,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     config = entry.data
     connection_type = config.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_SERIAL)
     
-    # Use options for the register set so users can change it without reinstalling
+
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-    selected_registers = REGISTER_SETS.get(register_set_key, REGISTER_SETS[REGISTER_SET_BASIC])
+    selected_registers = REGISTER_SETS.get(register_set_key, _REGISTERS)
+
+    # NEW: Future-proof – select map based on model (for now, all use _REGISTERS)
+#    model = entry.data.get(CONF_INVERTER_MODEL)
+#    register_map = _REGISTERS  # Can add if model == "other": _OTHER_REGISTERS    # Use options for the register set so users can change it without reinstalling
 
     # Get or create shared hub for this connection
     hubs = hass.data.setdefault(DOMAIN, {}).setdefault("hubs", {})
