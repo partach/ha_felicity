@@ -26,9 +26,9 @@ from .const import (
     DEFAULT_BYTESIZE,
     DEFAULT_PARITY,
     DEFAULT_STOPBITS,
-#    CONF_INVERTER_MODEL,
-    _REGISTERS,
+ #   CONF_INVERTER_MODEL,
     MODEL_DATA,
+    _REGISTERS,
 )
 from .coordinator import HA_FelicityCoordinator
 
@@ -45,15 +45,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
     
-    # Get the list of keys for the selected set
-    register_keys = _REGISTER_SETS.get(register_set_key, list(_REGISTERS.keys()))
+    # Select model data (fallback to default model)
+    model = entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+    model_data = MODEL_DATA.get(model, MODEL_DATA[DEFAULT_INVERTER_MODEL])
     
-    # Filter _REGISTERS to only include selected keys
-    selected_registers = {key: _REGISTERS[key] for key in register_keys if key in _REGISTERS}
-
-    # NEW: Future-proof – select map based on model (for now, all use _REGISTERS)
-#    model = entry.data.get(CONF_INVERTER_MODEL)
-#    register_map = _REGISTERS  # Can add if model == "other": _OTHER_REGISTERS    # Use options for the register set so users can change it without reinstalling
+    # Select register set from options (filtered on model's registers)
+    register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+    selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
 
     # Get or create shared hub for this connection
     hubs = hass.data.setdefault(DOMAIN, {}).setdefault("hubs", {})
@@ -83,7 +81,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass,
         hub.client,
         config[CONF_SLAVE_ID],
-        selected_registers
+        selected_registers,
+        groups=model_data["groups"]
     )
     # Store config and hub_key for unload cleanup
     coordinator.config = config
