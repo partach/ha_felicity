@@ -10,7 +10,7 @@ from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from .const import (
     CONF_REGISTER_SET,
     DEFAULT_REGISTER_SET,
-    REGISTER_SETS,
+    _REGISTER_SETS,
     DOMAIN,
     CONF_BAUDRATE,
     CONF_BYTESIZE,
@@ -43,7 +43,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
 
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-    selected_registers = REGISTER_SETS.get(register_set_key, _REGISTERS)
+    
+    # Get the list of keys for the selected set
+    register_keys = _REGISTER_SETS.get(register_set_key, list(_REGISTERS.keys()))
+    
+    # Filter _REGISTERS to only include selected keys
+    selected_registers = {key: _REGISTERS[key] for key in register_keys if key in _REGISTERS}
 
     # NEW: Future-proof – select map based on model (for now, all use _REGISTERS)
 #    model = entry.data.get(CONF_INVERTER_MODEL)
