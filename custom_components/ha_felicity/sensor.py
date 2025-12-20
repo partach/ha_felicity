@@ -9,6 +9,7 @@ from homeassistant.components.sensor import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.components.select import SelectEntity
 
 from .const import DOMAIN, _REGISTERS, _REGISTER_GROUPS, _COMBINED_REGISTERS
 from .coordinator import HA_FelicityCoordinator
@@ -17,19 +18,29 @@ from .coordinator import HA_FelicityCoordinator
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     coordinator: HA_FelicityCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # 1. Individual sensors from _REGISTERS
-    individual_entities = [
+    entities = []
+
+    # 1. Regular sensors – from selected registers (model + set filtered)
+    entities.extend([
         HA_FelicitySensor(coordinator, entry, key, info)
-        for key, info in coordinator.model_data["combined"].items()  # Use model's combined
-    ]
+        for key, info in coordinator.register_map.items()  # ← This is correct
+    ])
 
-    # 2. Combined/post-processed sensors
-    combined_entities = [
+    # 2. Select entities – for writable enums
+    entities.extend([
+        HA_FelicitySelect(coordinator, entry, key, info)
+        for key, info in coordinator.register_map.items()
+        if info.get("type") == "select"
+    ])
+
+    # 3. Combined sensors – from model's combined (not filtered – always show)
+    model_combined = getattr(coordinator, "model_combined", _COMBINED_REGISTERS)  # fallback
+    entities.extend([
         HA_FelicityCombinedSensor(coordinator, entry, key, info)
-        for key, info in _COMBINED_REGISTERS.items()
-    ]
+        for key, info in model_combined.items()
+    ])
 
-    async_add_entities(individual_entities + combined_entities)
+    async_add_entities(entities)
 
 
 class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
@@ -129,6 +140,41 @@ class HA_FelicityCombinedSensor(CoordinatorEntity, SensorEntity):
             precision = self._info.get("precision", 0)
             if isinstance(self._attr_native_value, (int, float)):
                 self._attr_native_value = round(self._attr_native_value, precision)
+                
+class HA_FelicitySelect(CoordinatorEntity, SelectEntity):
+    """Representation of a writable select (enum) register."""
+
+    def __init__(self, coordinator: HA_FelicityCoordinator, entry: ConfigEntry, key: str, info: dict):
+        super().__init__(coordinator)
+        self._key = key
+        self._info = info
+
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_name = f"{entry.title} {info['name']}"
+
+        # Get options from const.py
+        self._attr_options = info["options"]  # Required: list of strings
+
+    @property
+    def current_option(self) -> str | None:
+        value = self.coordinator.data.get(self._key)
+        if value is None:
+            return None
+        try:
+            return self._attr_options[value]
+        except IndexError:
+            return None
+
+    async def async_select_option(self, option: str) -> None:
+        value = self._attr_options.index(option)
+        success = await self.coordinator.async_write_register(self._key, value)
+        if success:
+            # Optimistic update
+            self.coordinator.data[self._key] = value
+            self.async_write_ha_state()
+            # Trigger refresh in case other registers changed
+            await self.coordinator.async_request_refresh()
+
 
         self.async_write_ha_state()
 
