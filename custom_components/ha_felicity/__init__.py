@@ -26,8 +26,9 @@ from .const import (
     DEFAULT_BYTESIZE,
     DEFAULT_PARITY,
     DEFAULT_STOPBITS,
-    CONF_INVERTER_MODEL,
+#    CONF_INVERTER_MODEL,
     _REGISTERS,
+    MODEL_DATA,
 )
 from .coordinator import HA_FelicityCoordinator
 
