@@ -490,6 +490,15 @@ _REGISTER_GROUPS = [
 
 # 2. Combined entities (post-process after reading)
 _COMBINED_REGISTERS = {
+    "pv_total_power": {
+        "sources": ["pv_input_power", "pv2_input_power", "pv3_input_power"],
+        "calc": lambda p1, p2, p3: (p1 or 0) + (p2 or 0) + (p3 or 0),
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Total PV Power",
+        "precision": 0,
+    },
     "econ_rule_1": {
         "sources": [
             "econ_rule_1_enable",
@@ -743,9 +752,9 @@ REGISTER_SETS = {
             "ac_output_current",
             "ac_output_frequency",
             "ac_output_active_power",
-            "ac_input_mid_voltage"
-            "ac_input_mid_voltage_l2"
-            "ac_input_mid_voltage_l3"
+            "ac_input_mid_voltage",
+            "ac_input_mid_voltage_l2",
+            "ac_input_mid_voltage_l3",
             "load_percentage",
             "pv_input_voltage",
             "pv_input_current",
@@ -753,6 +762,9 @@ REGISTER_SETS = {
             "pv2_input_voltage",
             "pv2_input_current",
             "pv2_input_power",
+            "pv3_input_voltage",
+            "pv3_input_current",
+            "pv3_input_power",
             "total_ac_output_active_power",
             "total_ac_output_apparent_power",
             # Add combined keys if you want them always visible
@@ -763,6 +775,14 @@ REGISTER_SETS = {
             "battery_discharged_energy_total",
             "inverter_time",
             "econ_rule_1",
+            "econ_rule_2",
+            "econ_rule_3",
+            "econ_rule_4",
+            "pv_generated_energy_day",
+            "pv_generated_energy_month",
+            "pv_generated_energy_year",
+            "battery_charged_energy_day",
+            "battery_discharged_energy_day",
         }
         and "_secondary" not in key  # ← Excludes duplicates!
     },
