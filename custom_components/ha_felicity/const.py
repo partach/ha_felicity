@@ -484,7 +484,7 @@ _REGISTER_GROUPS = [
                                           'rule_3_stoptime_felicity', 'rule_3_startday_felicity', 'rule_3_stopday_felicity', 'rule_3_effectiveweek_felicity', 
                                           'rule_3_voltage_felicity', 'rule_3_soc_felicity', 'rule_3_power_felicity', 'rule_4_enable_felicity', 
                                           'rule_4_starttime_felicity', 'rule_4_stoptime_felicity', 'rule_4_startday_felicity', 'rule_4_stopday_felicity', 
-                                          'rule_4_effectiveweek_felicity', 'rule_4_voltage_felicity', 'rule_4_soc_felicity', 'rule_4_power_felicity']}
+                                          'rule_4_effectiveweek_felicity', 'rule_4_voltage_felicity', 'rule_4_soc_felicity', 'rule_4_power_felicity']},
     {'start': 63498, 'count': 3, 'keys': ['disp_sw_version_felicity', 'mcu1_sw_version_felicity', 'mcu2_sw_version_felicity']},
 ]
 
