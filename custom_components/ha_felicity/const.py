@@ -43,6 +43,7 @@ DEFAULT_STOPBITS = 1
 DEFAULT_BYTESIZE = 8
 DEFAULT_PARITY = "N"
 DEFAULT_INVERTER_MODEL = INVERTER_MODEL_IVGM
+DEFAULT_FIRST_REG = 4353
 
  #Precision and index based on the "Rate/Magnification/Scale" column
  # 0 dont process or packed
