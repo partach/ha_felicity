@@ -326,6 +326,9 @@ _REGISTERS = {
     "charging_pile_fault_soure": {"address": 4896, "name": "Chargingpilefaultsoure", "precision": 0, "index": 5},
     "charging_pile_fault_sn": {"address": 4897, "name": "Chargingpilefaultsn", "precision": 0, "index": 0},
     "charging_pile_fault_level": {"address": 4899, "name": "Chargingpilefaultlevel", "precision": 0, "index": 5},
+
+    "operating_mode": {"address": 8451,"name": "Operated Mode","precision": 0,"index": 0,"type": "select","options": ["General mode (self-use, load priority)","Backup mode (grid-tied, no battery discharge)","Economic mode (scheduled charge-discharge)"]},
+
     # Extra configurable registers (starting at 8555)
     "lcd_backlight_function": {"address": 8555, "name": "LCD Backlight Function", "precision": 0, "index": 5},  # 0: disable, 1: enable
     "buzzer_beeping_function": {"address": 8556, "name": "Buzzer Beeping Function", "precision": 0, "index": 5},  # 0: disable, 1: enable
@@ -402,8 +405,6 @@ _REGISTERS = {
     "battery_max_charge_current": {"address": 8493, "name": "Battery Max Charged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
     "battery_max_discharge_current": {"address": 8494, "name": "Battery Max Discharged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
 }
-
-
 
 # 1. Batch read groups
 _REGISTER_GROUPS = [
@@ -683,33 +684,41 @@ _COMBINED_REGISTERS = {
         "name": "Maximum Cell Temperature Info",
         "precision": 0,
     },
+    "inverter_time": {
+        "sources": [
+            "time_year_month",   # 4434
+            "time_day_hour",     # 4435
+            "time_minute_second",# 4436
+            "time_week"          # 4437
+        ],
+        "calc": lambda year_month, day_hour, min_sec, week: {
+            "year": 2000 + (year_month >> 8),  # Assuming 2000-2099
+            "month": year_month & 0xFF,
+            "day": day_hour >> 8,
+            "hour": day_hour & 0xFF,
+            "minute": min_sec >> 8,
+            "second": min_sec & 0xFF,
+            "weekday": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][week] if 0 <= week <= 6 else f"Unknown({week})",
+            "iso_datetime": f"{2000 + (year_month >> 8):04d}-{year_month & 0xFF:02d}-{day_hour >> 8:02d} "
+                            f"{day_hour & 0xFF:02d}:{min_sec >> 8:02d}:{min_sec & 0xFF:02d}",
+        },
+        "name": "Inverter Time",
+    },
+ 
 }
 
-# 3. Optional: User-selectable sets (for options flow)
-_REGISTER_SETS = {
-    "basic": [
-        "ac_input_voltage", "ac_input_current", "ac_input_frequency", "ac_input_power",
-        "battery_voltage", "battery_capacity", "battery_power",
-        "ac_output_voltage", "ac_output_current", "ac_output_frequency", "ac_output_active_power",
-        "load_percentage", "pv_input_power", "working_mode", "fault_code"
-    ],
-    "pv_detailed": ["pv_input_voltage", "pv_input_current", "pv2_input_voltage", "pv2_input_current", "pv3_input_voltage", "pv3_input_current"],
-    "ac_phases": ["ac_input_voltage_l2", "ac_input_voltage_l3", "ac_output_voltage_l2", "ac_output_voltage_l3"],
-    "energy": ["pv_generated_energy_total", "load_consumption_energy_total", "ac_input_energy_total", "battery_charged_energy_total", "battery_discharged_energy_total"],
-    "bms": ["total_soc", "total_soh", "maximum_cell_voltage", "minimum_cell_voltage", "maximum_cell_temperature"],
-    "temperatures": ["inner_temperature_1", "inner_temperature_2", "heatsink_temperature_1", "max_inner_temperature", "max_heat_sink_temperature"],
-    "faults": ["fault_code", "warning_state_1", "warning_state_2", "warning_state_3"],
-}
-
+# In const.py – at the end
 REGISTER_SETS = {
     "basic": {
         key: info
         for key, info in _REGISTERS.items()
-        if key in [
-            # Core essentials – fast, low overhead
+        if key in {
             "working_mode",
+            "operating_mode",
             "fault_code",
             "ac_input_voltage",
+            "ac_input_voltage_l2",
+            "ac_input_voltage_l3",
             "ac_input_current",
             "ac_input_frequency",
             "ac_input_power",
@@ -717,25 +726,58 @@ REGISTER_SETS = {
             "battery_capacity",
             "battery_power",
             "ac_output_voltage",
+            "ac_output_voltage_l2",
+            "ac_output_voltage_l3",
             "ac_output_current",
             "ac_output_frequency",
             "ac_output_active_power",
+            "ac_input_mid_voltage"
+            "ac_input_mid_voltage_l2"
+            "ac_input_mid_voltage_l3"
             "load_percentage",
+            "pv_input_voltage",
+            "pv_input_current",
             "pv_input_power",
-            "pv_generated_energy_total",  # combined
-            "load_consumption_energy_total",  # combined
-            "battery_charged_energy_total",  # combined
-            "battery_discharged_energy_total",  # combined
-        ]
+            "pv2_input_voltage",
+            "pv2_input_current",
+            "pv2_input_power",
+            "total_ac_output_active_power",
+            "total_ac_output_apparent_power",
+            # Add combined keys if you want them always visible
+            "pv_generated_energy_total",
+            "load_consumption_energy_total",
+            "battery_charged_energy_total",
+            "battery_discharged_energy_total",
+            "inverter_time",
+        }
+        and "_secondary" not in key  # ← Excludes duplicates!
     },
     "basic_plus": {
         key: info
         for key, info in _REGISTERS.items()
-        if key.startswith(("ac_input_", "ac_output_", "pv_input_", "battery_", "invert_", "total_ac_"))
-        or key in ["load_percentage", "working_mode", "fault_code"]
+        if (
+             key.startswith((
+               "ac_input_", 
+               "ac_output_", 
+               "pv_input_", 
+               "battery_", 
+               "invert_", 
+               "total_ac_"
+             ))
+             or key in {
+               "load_percentage", 
+               "working_mode", 
+               "fault_code"
+             }
+           )
+        and "_secondary" not in key
+        and "_alt" not in key
     },
-    "full": _REGISTERS,  # All registers
+    "full": _REGISTERS,  # All – including secondary if any (or filter here too if you want)
 }
+
+# Optional: Strict full without duplicates
+# "full": {k: v for k, v in _REGISTERS.items() if "_secondary" not in k and "_alt" not in k},
 
 # Model-specific data (extend for new models)
 MODEL_DATA = {
