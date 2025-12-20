@@ -38,12 +38,12 @@ Let the install config of the integration guide you as it asks you for the neede
 
 ## Configuration options
 <p align="center">
-  <img src="https://github.com/partach/ha_sdm630/blob/main/HA-SDM630%20config1.png" width="300"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config1.png" width="300"/>
   <br>
   <em>Select Serial or TCP</em>
 </p>
 <p align="center">
-  <img src="https://github.com/partach/ha_sdm630/blob/main/HA-SDM630%20config2.png" width="300"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config2.png" width="300"/>
   <br>
   <em>Serial Example, choose the settings you need</em>
 </p>
