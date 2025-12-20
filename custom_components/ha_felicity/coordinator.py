@@ -73,8 +73,46 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.debug("Failed to connect to Felicity: %s", err)
             return False
+    async def async_write_register(self, key: str, value: int | float) -> bool:
+        """Write a single register (handle packing based on index)."""
+        if key not in self.register_map:
+            raise ValueError(f"Invalid key: {key}")
+    
+        info = self.register_map[key]
+        address = info["address"]
+        index = info.get("index", 0)
+    
+        # Pack value based on index (reverse of scaling)
+        if index == 1:  # /10 → multiply by 10
+            packed = int(value * 10)
+        elif index == 2:  # /100 → multiply by 100
+            packed = int(value * 100)
+        elif index == 3:  # signed 16-bit
+            if value < 0:
+                packed = value + 0x10000
+            else:
+                packed = value
+        else:  # raw or enum
+            packed = int(value)
+    
+        # Write (uint16)
+        try:
+            result = await self.client.write_register(address=address, value=packed, unit=self.slave_id)
+            if result.isError():
+                raise ModbusException(f"Write error: {result}")
+            return True
+        except Exception as err:
+            _LOGGER.error("Write failed for %s: %s", key, err)
+            return False
+    
+    async def async_write_registers(self, writes: dict[str, int | float]) -> bool:
+        """Batch write multiple registers (group consecutive if needed)."""
+        for key, value in writes.items():
+            if not await self.async_write_register(key, value):
+                return False
+        return True
 
-async def _async_update_data(self) -> dict:
+    async def _async_update_data(self) -> dict:
         if not await self._async_connect():
             raise UpdateFailed("Failed to connect to Felicity")
 
@@ -127,3 +165,4 @@ async def _async_update_data(self) -> dict:
         finally:
             # Keep connection open for next poll (async client handles it well)
             pass
+
