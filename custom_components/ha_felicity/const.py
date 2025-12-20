@@ -431,8 +431,8 @@ _REGISTER_GROUPS = [
        'heatsink_temperature_4', 'heatsink_temperature_5', 'heatsink_temperature_6', 'time_year_month', 
        'time_day_hour', 'time_minute_second', 'time_week', 'pv_generated_energy_total_high'
     ]},
-    {'start': 4498, 'count': 4, 'keys': ['status_bit', 'p_bus_voltage_slv', 'n_bus_voltage_slv', 'line_power_convertion']},
-    {'start': 4505, 'count': 5, 'keys': ['bat_power_convertion', 'pv_power_convertion', 'power_flow_msg', 'parallel_system_state', 'load_power_line_side']},
+    {'start': 4498, 'count': 4, 'keys': ['status_bit', 'p_bus_voltage_slv', 'n_bus_voltage_slv', 'line_power_conversion']},
+    {'start': 4505, 'count': 5, 'keys': ['bat_power_conversion', 'pv_power_conversion', 'power_flow_msg', 'parallel_system_state', 'load_power_line_side']},
     {'start': 4516, 'count': 44, 'keys': [
        'log_type', 'log_index', 'log_status', 'log_id', 'log_time_year_month', 'log_time_day_hour', 'log_time_minute_second', 
        'ac_input_voltage_secondary', 'ac_input_frequency_secondary', 'ac_input_power_secondary', 'battery_voltage_secondary', 
