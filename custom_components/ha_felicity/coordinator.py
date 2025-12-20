@@ -121,7 +121,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             for group in self._address_groups:  # NEW: Loop over predefined groups
                 start_addr = group["start"]
                 count = group["count"]
-                result = await self.client.read_input_registers(address=start_addr, count=count, device_id=self.slave_id)
+                result = await self.client.read_holding_registers(address=start_addr, count=count, device_id=self.slave_id)
                 if result.isError():
                     raise ModbusException(f"Read error at {start_addr}: {result}")
 
