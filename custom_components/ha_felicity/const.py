@@ -477,7 +477,7 @@ _REGISTER_GROUPS = [
 _COMBINED_REGISTERS = {
     "pv_generated_energy_total": {
         "sources": ["pv_generated_energy_total_high", "pv_generated_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
@@ -486,7 +486,7 @@ _COMBINED_REGISTERS = {
     },
     "load_consumption_energy_total": {
         "sources": ["load_consumption_energy_total_high", "load_consumption_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
@@ -495,7 +495,7 @@ _COMBINED_REGISTERS = {
     },
     "ac_input_energy_total": {
         "sources": ["ac_input_energy_total_high", "ac_input_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
@@ -504,7 +504,7 @@ _COMBINED_REGISTERS = {
     },
     "ac_generated_energy_total": {
         "sources": ["ac_generated_energy_total_high", "ac_generated_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
@@ -513,7 +513,7 @@ _COMBINED_REGISTERS = {
     },
     "battery_charged_energy_total": {
         "sources": ["battery_charged_energy_total_high", "battery_charged_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
@@ -522,7 +522,7 @@ _COMBINED_REGISTERS = {
     },
     "battery_discharged_energy_total": {
         "sources": ["battery_discharged_energy_total_high", "battery_discharged_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
@@ -531,7 +531,7 @@ _COMBINED_REGISTERS = {
     },
     "line_load_consumption_energy_total": {
         "sources": ["line_load_consumption_energy_total_high", "line_load_consumption_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
@@ -540,7 +540,7 @@ _COMBINED_REGISTERS = {
     },
     "total_load_consumption_energy_total": {
         "sources": ["total_load_consumption_energy_total_high", "total_load_consumption_energy_total_low"],
-        "calc": lambda h, l: (h << 32) | l,
+        "calc": lambda high, low: (high << 32) | low,
         "unit": "Wh",
         "device_class": "energy",
         "state_class": "total_increasing",
