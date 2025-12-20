@@ -107,18 +107,27 @@ class HA_FelicityCombinedSensor(CoordinatorEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         values = [self.coordinator.data.get(src) for src in self._sources]
+
         if any(v is None for v in values):
             self._attr_native_value = None
+            self._attr_extra_state_attributes = {}
         else:
             calc_func = self._info["calc"]
-            if len(values) == 1:
-                self._attr_native_value = calc_func(values[0])
-            else:
-                self._attr_native_value = calc_func(*values)
+            result = calc_func(*values) if len(values) > 1 else calc_func(values[0])
 
-            # Apply precision if defined
+            # Handle dict result (e.g., econ rules)
+            if isinstance(result, dict):
+                # Main state: use "enabled" if present, else fallback
+                self._attr_native_value = result.get("enabled", "Active")
+                self._attr_extra_state_attributes = result
+            else:
+                # Simple value (e.g., total energy)
+                self._attr_native_value = result
+                self._attr_extra_state_attributes = {}
+
+            # Apply precision rounding (only for numbers)
             precision = self._info.get("precision", 0)
-            if isinstance(self._attr_native_value, float):
+            if isinstance(self._attr_native_value, (int, float)):
                 self._attr_native_value = round(self._attr_native_value, precision)
 
         self.async_write_ha_state()
