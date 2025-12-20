@@ -13,7 +13,7 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.components.time import TimeEntity
 from homeassistant.components.date import DateEntity
 from homeassistant.components.number import NumberEntity
-from .const import DOMAIN, _REGISTERS, _REGISTER_GROUPS, _COMBINED_REGISTERS
+from .const import DOMAIN, _COMBINED_REGISTERS
 from .coordinator import HA_FelicityCoordinator
 
 
