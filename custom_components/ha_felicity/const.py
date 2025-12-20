@@ -284,6 +284,7 @@ _REGISTERS = {
     "maximum_cell_temperature": {"address": 4637, "name": "Maximumcelltemperature", "unit": "℃", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
     "minimum_cell_temperature_no": {"address": 4638, "name": "Minimumcelltemperatureno.", "precision": 0, "index": 0},
     "minimum_cell_temperature_no2": {"address": 4639, "name": "Minimumcelltemperatureno2.", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
+    "sn": {"address": 4640, "name": "Serial Number Raw", "precision": 0, "index": 0},
     "line_load_consumption_energy_total_high": {"address": 4645, "name": "Lineload Consumption Energy Inquiry Total-High 32 Bit", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
     "line_load_consumption_energy_total_low": {"address": 4647, "name": "Lineload Consumption Energy Inquiry Total-Low 32 Bit", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
     "line_load_consumption_energy_year": {"address": 4649, "name": "Lineload Consumption Energy Inquiry Year", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4},
