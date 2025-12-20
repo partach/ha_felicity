@@ -13,7 +13,7 @@ _LOGGER = logging.getLogger(__name__)
 from .const import _REGISTER_GROUPS
 
 class HA_FelicityCoordinator(DataUpdateCoordinator):
-    def __init__(self, hass, client: AsyncModbusSerialClient, slave_id: int, register_map: dict):
+    def __init__(self, hass, client: AsyncModbusSerialClient, slave_id: int, register_map: dict, groups):
         super().__init__(
             hass,
             _LOGGER,
