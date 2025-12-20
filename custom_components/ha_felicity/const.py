@@ -746,9 +746,11 @@ REGISTER_SETS = {
             # Add combined keys if you want them always visible
             "pv_generated_energy_total",
             "load_consumption_energy_total",
+            "line_load_consumption_energy_total",
             "battery_charged_energy_total",
             "battery_discharged_energy_total",
             "inverter_time",
+            "econ_rule_1",
         }
         and "_secondary" not in key  # ← Excludes duplicates!
     },
