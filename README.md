@@ -40,7 +40,7 @@ Let the install config of the integration guide you as it asks you for the neede
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config1.png" width="300"/>
   <br>
-  <em>Select Serial or TCP</em>
+  <em>Select Serial or TCP and select model + update refresh interval</em>
 </p>
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config2.png" width="300"/>
