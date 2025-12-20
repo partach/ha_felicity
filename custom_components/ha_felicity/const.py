@@ -16,7 +16,7 @@ CONF_REGISTER_SET = "register_set"
 CONF_INVERTER_MODEL = "inverter_model"
 
 #supported inverter models
-INVERTER_MODEL_IVGM = "ivgm"  # our current one
+INVERTER_MODEL_IVGM = "T-REX-10KLP3G01"  # our current one
 
 
 # Serial settings
