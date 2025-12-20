@@ -1,5 +1,5 @@
 from your_const import _REGISTERS
-
+import json
 # Sort by address
 sorted_regs = sorted((info["address"], key) for key, info in _REGISTERS.items())
 
@@ -24,5 +24,4 @@ if current_start is not None:
     groups.append({"start": current_start, "count": len(current_keys), "keys": current_keys})
 
 # Print
-import json
 print(json.dumps(groups, indent=2))
