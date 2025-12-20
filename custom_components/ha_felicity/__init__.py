@@ -10,7 +10,7 @@ from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from .const import (
     CONF_REGISTER_SET,
     DEFAULT_REGISTER_SET,
-    _REGISTER_SETS,
+#    _REGISTER_SETS,
     DOMAIN,
     CONF_BAUDRATE,
     CONF_BYTESIZE,
@@ -21,14 +21,15 @@ from .const import (
     CONF_SERIAL_PORT,
     CONF_SLAVE_ID,
     CONF_STOPBITS,
+    CONF_INVERTER_MODEL,
     CONNECTION_TYPE_SERIAL,
     DEFAULT_BAUDRATE,
     DEFAULT_BYTESIZE,
     DEFAULT_PARITY,
     DEFAULT_STOPBITS,
- #   CONF_INVERTER_MODEL,
+    DEFAULT_INVERTER_MODEL
     MODEL_DATA,
-    _REGISTERS,
+#    _REGISTERS,
 )
 from .coordinator import HA_FelicityCoordinator
 
