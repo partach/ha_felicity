@@ -23,7 +23,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.client = client  # ← Shared client
         self.slave_id = slave_id
         self.register_map = register_map
-        self._address_groups = _REGISTER_GROUPS  # NEW: Use our predefined groups (instead of _group_addresses)
+        self._address_groups = groups
         
     @staticmethod
     def _apply_scaling(value: int, index: int) -> int | float:
