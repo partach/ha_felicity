@@ -9,7 +9,7 @@ from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME, DEFAULT_FIRST_REG
+from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 from homeassistant.core import callback
@@ -40,6 +40,7 @@ from .const import (
     DEFAULT_INVERTER_MODEL,
     INVERTER_MODEL_IVGM,
     CONF_INVERTER_MODEL,
+    DEFAULT_FIRST_REG,
     DOMAIN,
 )
 
