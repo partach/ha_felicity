@@ -407,6 +407,7 @@ _REGISTERS = {
 }
 
 # 1. Batch read groups
+# if they are in the groups the values must be in at least the basic set else they can't be stored
 _REGISTER_GROUPS = [
 
     # Warning states (6 words for 3 x uint32)
@@ -714,6 +715,9 @@ REGISTER_SETS = {
         for key, info in _REGISTERS.items()
         if key in {
             "working_mode",
+            "warning_state_1",
+            "warning_state_2",
+            "warning_state_3",
             "operating_mode",
             "fault_code",
             "ac_input_voltage",
