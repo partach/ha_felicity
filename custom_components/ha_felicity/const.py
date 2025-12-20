@@ -589,6 +589,41 @@ _REGISTER_SETS = {
     "faults": ["fault_code", "warning_state_1", "warning_state_2", "warning_state_3"],
 }
 
+REGISTER_SETS = {
+    "basic": {
+        key: info
+        for key, info in _REGISTERS.items()
+        if key in [
+            # Core essentials – fast, low overhead
+            "working_mode",
+            "fault_code",
+            "ac_input_voltage",
+            "ac_input_current",
+            "ac_input_frequency",
+            "ac_input_power",
+            "battery_voltage",
+            "battery_capacity",
+            "battery_power",
+            "ac_output_voltage",
+            "ac_output_current",
+            "ac_output_frequency",
+            "ac_output_active_power",
+            "load_percentage",
+            "pv_input_power",
+            "pv_generated_energy_total",  # combined
+            "load_consumption_energy_total",  # combined
+            "battery_charged_energy_total",  # combined
+            "battery_discharged_energy_total",  # combined
+        ]
+    },
+    "basic_plus": {
+        key: info
+        for key, info in _REGISTERS.items()
+        if key.startswith(("ac_input_", "ac_output_", "pv_input_", "battery_", "invert_", "total_ac_"))
+        or key in ["load_percentage", "working_mode", "fault_code"]
+    },
+    "full": _REGISTERS,  # All registers
+}
 
 # this was the original please ignore everything below this line
 OLD_REGISTERS = {
