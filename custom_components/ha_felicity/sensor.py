@@ -20,7 +20,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # 1. Individual sensors from _REGISTERS
     individual_entities = [
         HA_FelicitySensor(coordinator, entry, key, info)
-        for key, info in _REGISTERS.items()
+        for key, info in coordinator.model_data["combined"].items()  # Use model's combined
     ]
 
     # 2. Combined/post-processed sensors
