@@ -237,7 +237,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not client.connected:
                 raise ConnectionError("Failed to open serial port")
     
-            result = await client.read_input_registers(
+            result = await client.read_holding_registers(
                 address=0, count=2, device_id=data[CONF_SLAVE_ID]
             )
             
@@ -268,7 +268,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not client.connected:
                 raise ConnectionError(f"Failed to connect to {data[CONF_HOST]}:{data[CONF_PORT]}")
     
-            result = await client.read_input_registers(
+            result = await client.read_holding_registers(
                 address=0, count=2, device_id=data[CONF_SLAVE_ID]  # ← Use 'device_id' not 'slave'
             )
     
