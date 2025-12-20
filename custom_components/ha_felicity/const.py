@@ -4,13 +4,12 @@ from typing import Dict
 DOMAIN = "ha_felicity"
 
 # Connection types
-CONF_CONNECTION_TYPE = "connection_type"
 CONNECTION_TYPE_SERIAL = "serial"
 CONNECTION_TYPE_TCP = "tcp"
 
 # Common settings
 CONF_SLAVE_ID = "slave_id"
-
+CONF_CONNECTION_TYPE = "connection_type"
 CONF_NAME = "name"
 CONF_REGISTER_SET = "register_set"
 CONF_INVERTER_MODEL = "inverter_model"
