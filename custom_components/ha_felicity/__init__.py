@@ -37,6 +37,13 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR]
 
+async def handle_write_register(call):
+    coordinator = hass.data[DOMAIN][call.data["entity_id"].split(".")[0]]  # or better: store per entry
+    key = call.data["key"]
+    value = call.data["value"]
+    await coordinator.async_write_register(key, value)
+
+hass.services.async_register(DOMAIN, "write_register", handle_write_register)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
