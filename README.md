@@ -7,13 +7,14 @@
 [![HACS validated](https://img.shields.io/badge/HACS-validated-41BDF5?style=flat-square)](https://github.com/hacs/integration)
 
 Felicity inverter home assistant integration for easy setup and use of the device (via Modbus)
+
 Currently supports one type: T-REX-10KLP3G01
 
 
 <p align="center">
-  <img src="https://github.com/partach/ha_sdm630/blob/main/HA-SDM630%20hub.png" width="600"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/T-REX-10KLP3G01.png" width="200"/>
   <br>
-  <em>Integration after installation</em>
+  <em>Inverter that is supported</em>
 </p>
 
 ## Features
