@@ -234,23 +234,23 @@ _REGISTERS = {
     "voltage_low2_adj": {"address": 4578, "name": "Voltagelow2adj", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "grid_voltage2": {"address": 4579, "name": "Gridvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "voltage_low2_loss_time": {"address": 4580, "name": "Voltagelow2losstime", "unit": "ms", "precision": 1, "index": 0},
-    "10minute_voltage_high_loss_seting": {"address": 4581, "name": "10Minute Voltagehighlossseting", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
+    "10minute_voltage_high_loss_setting": {"address": 4581, "name": "10Minute Voltagehighlosssetting", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "10minute_voltage_high_loss_time_set": {"address": 4582, "name": "10Minute Voltagehighlosstimeset", "unit": "s", "precision": 0, "index": 0},
     "10minute_voltage_high_loss_adj": {"address": 4583, "name": "10Minute Voltagehighlossadj", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "grid_voltage3": {"address": 4584, "name": "Gridvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "10minute_voltage_high_loss_time": {"address": 4585, "name": "10Minute Voltagehighlosstime", "unit": "s", "precision": 1, "index": 0},
-    "voltage_low_seting": {"address": 4586, "name": "Voltagelowseting", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "voltage_low_loss_time_seting": {"address": 4587, "name": "Voltagelowlosstimeseting", "unit": "ms", "precision": 0, "index": 0},
+    "voltage_low_setting": {"address": 4586, "name": "Voltagelowsetting", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
+    "voltage_low_loss_time_setting": {"address": 4587, "name": "Voltagelowlosstimesteting", "unit": "ms", "precision": 0, "index": 0},
     "voltage_low_adj": {"address": 4588, "name": "Voltagelowadj", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "grid_voltage4": {"address": 4589, "name": "Gridvoltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "voltage_low_loss_time": {"address": 4590, "name": "Voltagelowlosstime", "unit": "ms", "precision": 1, "index": 0},
-    "frequency_high2_seting": {"address": 4591, "name": "Frequencyhigh2seting", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
-    "frequency_high2_time_seting": {"address": 4592, "name": "Frequencyhigh2timeseting", "unit": "ms", "precision": 0, "index": 0},
+    "frequency_high2_setting": {"address": 4591, "name": "Frequencyhigh2setting", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
+    "frequency_high2_time_setting": {"address": 4592, "name": "Frequencyhigh2timesetting", "unit": "ms", "precision": 0, "index": 0},
     "frequency_high2_adj": {"address": 4593, "name": "Frequencyhigh2adj", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
     "grid_frequency": {"address": 4594, "name": "Gridfrequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
     "frequency_high_time": {"address": 4595, "name": "Frequencyhightime", "unit": "ms", "precision": 1, "index": 0},
-    "frequency_low2_seting": {"address": 4596, "name": "Frequencylow2seting", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
-    "frequency_low2_time_seting": {"address": 4597, "name": "Frequencylow2timeseting", "unit": "ms", "precision": 0, "index": 0},
+    "frequency_low2_setting": {"address": 4596, "name": "Frequencylow2setting", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
+    "frequency_low2_time_setting": {"address": 4597, "name": "Frequencylow2timesetting", "unit": "ms", "precision": 0, "index": 0},
     "frequency_low2_adj": {"address": 4598, "name": "Frequencylow2adj", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
     "grid_frequency2": {"address": 4599, "name": "Gridfrequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 1, "index": 1},
     "frequency_low_time": {"address": 4600, "name": "Frequencylowtime", "unit": "ms", "precision": 1, "index": 0},
@@ -407,83 +407,85 @@ _REGISTERS = {
 }
 
 # 1. Batch read groups
-# if they are in the groups the values must be in at least the basic set else they can't be stored
+# if they are in the groups the values must be in at least the basic set else they can't be stored as groups are part of basic.
 _REGISTER_GROUPS = [
-
-    # Warning states (6 words for 3 x uint32)
-    {"start": 4354, "count": 6, "keys": ["warning_state_1", "warning_state_2", "warning_state_3"]},
-    
-    # 32-bit powers
-    {"start": 4392, "count": 2, "keys": ["total_ac_input_power"]},
-    {"start": 4404, "count": 2, "keys": ["total_ac_output_active_power"]},
-    {"start": 4406, "count": 2, "keys": ["total_ac_output_apparent_power"]},
-    {"start": 4501, "count": 4, "keys": ["line_power_conversion", "load_power_conversion"]},  # 4501 + 4503
-    
-    # Energy high/low pairs (all 32-bit energies)
-    {"start": 4438, "count": 2, "keys": ["pv_generated_energy_total_high", "pv_generated_energy_total_low"]},
-    {"start": 4448, "count": 2, "keys": ["load_consumption_energy_total_high", "load_consumption_energy_total_low"]},
-    {"start": 4458, "count": 2, "keys": ["ac_input_energy_total_high", "ac_input_energy_total_low"]},
-    {"start": 4468, "count": 2, "keys": ["ac_generated_energy_total_high", "ac_generated_energy_total_low"]},
-    {"start": 4478, "count": 2, "keys": ["battery_charged_energy_total_high", "battery_charged_energy_total_low"]},
-    {"start": 4488, "count": 2, "keys": ["battery_discharged_energy_total_high", "battery_discharged_energy_total_low"]},
-    {"start": 4645, "count": 2, "keys": ["line_load_consumption_energy_total_high", "line_load_consumption_energy_total_low"]},
-    {"start": 4655, "count": 2, "keys": ["total_load_consumption_energy_total_high", "total_load_consumption_energy_total_low"]},
-    
-    # SN string (10 words)
+    {'start': 4352, 'count': 3, 'keys': ['setting_data_sn', 'working_mode', 'warning_state_1']},
+    {'start': 4360, 'count': 45, 'keys': ['fault_code', 'ac_input_voltage', 'ac_input_current', 'ac_input_frequency', 'ac_input_power', 
+                                          'battery_voltage', 'battery_current', 'battery_power', 'battery_capacity', 'ac_output_voltage', 
+                                          'ac_output_current', 'ac_output_frequency', 'ac_output_active_power', 'ac_output_apparent_power', 
+                                          'load_percentage', 'pv_input_voltage', 'pv_input_current', 'pv_input_power', 'pv2_input_voltage', 
+                                          'pv2_input_current', 'pv2_input_power', 'pv3_input_voltage', 'pv3_input_current', 'pv3_input_power', 
+                                          'ac_input_voltage_l2', 'ac_input_current_l2', 'ac_input_frequency_l2', 'ac_input_power_l2', 'ac_input_voltage_l3', 
+                                          'ac_input_current_l3', 'ac_input_frequency_l3', 'ac_input_power_l3', 'total_ac_input_power', 'ac_output_voltage_l2', 
+                                          'ac_output_current_l2', 'ac_output_frequency_l2', 'ac_output_active_power_l2', 'ac_output_apparent_power_l2', 
+                                          'ac_output_voltage_l3', 'ac_output_current_l3', 'ac_output_frequency_l3', 'ac_output_active_power_l3', 
+                                          'ac_output_apparent_power_l3', 'total_ac_output_active_power']},
+    {'start': 4408, 'count': 31, 'keys': ['invert_voltage', 'invert_current', 'invert_active_power', 'invert_voltage_l2', 'invert_current_l2', 
+                                          'invert_active_power_l2', 'invert_voltage_l3', 'invert_current_l3', 'invert_active_power_l3', 'ac_input_mid_voltage', 
+                                          'ac_input_mid_voltage_l2', 'ac_input_mid_voltage_l3', 'p_bus_voltage_master', 'n_bus_voltage_master', 
+                                          'p_dc_converter_voltage', 'n_dc_converter_voltage', 'p_dc_dc_current', 'n_dc_dc_current', 'inner_temperature_1', 
+                                          'inner_temperature_2', 'heatsink_temperature_1', 'heatsink_temperature_2', 'heatsink_temperature_3', 
+                                          'heatsink_temperature_4', 'heatsink_temperature_5', 'heatsink_temperature_6', 'time_year_month', 
+                                          'time_day_hour', 'time_minute_second', 'time_week', 'pv_generated_energy_total_high']},
+    {'start': 4498, 'count': 4, 'keys': ['status_bit', 'p_bus_voltage_slv', 'n_bus_voltage_slv', 'line_power_convertion']},
+    {'start': 4505, 'count': 5, 'keys': ['bat_power_convertion', 'pv_power_convertion', 'power_flow_msg', 'parallel_system_state', 'load_power_line_side']},
+    {'start': 4516, 'count': 44, 'keys': ['log_type', 'log_index', 'log_status', 'log_id', 'log_time_year_month', 'log_time_day_hour', 'log_time_minute_second', 
+                                          'ac_input_voltage_secondary', 'ac_input_frequency_secondary', 'ac_input_power_secondary', 'battery_voltage_secondary', 
+                                          'battery_power_secondary', 'battery_capacity_secondary', 'ac_output_voltage_secondary', 'ac_output_frequency_secondary', 
+                                          'ac_output_active_power_secondary', 'ac_output_apparent_power_secondary', 'load_percentage_secondary', 
+                                          'pv_input_voltage_secondary', 'pv_input_power_secondary', 'pv2_input_voltage_secondary', 'pv2_input_power_secondary', 
+                                          'pv3_input_voltage_secondary', 'pv3_input_power_secondary', 'ac_input_voltage_l2_secondary', 
+                                          'ac_input_frequency_l2_secondary', 'ac_input_power_l2_secondary', 'ac_input_voltage_l3_secondary', 
+                                          'ac_input_frequency_l3_secondary', 'ac_input_power_l3_secondary', 'ac_output_voltage_l2_secondary', 
+                                          'ac_output_frequency_l2_secondary', 'ac_output_active_power_l2_secondary', 'ac_output_apparent_power_l2_secondary', 
+                                          'ac_output_voltage_l3_secondary', 'ac_output_frequency_l3_secondary', 'ac_output_active_power_l3_secondary', 
+                                          'ac_output_apparent_power_l3_secondary', 'p_bus_voltage', 'n_bus_voltage', 'p_dc_dc_current_secondary', 
+                                          'n_dc_dc_current_secondary', 'max_inner_temperature', 'max_heatsink_temperature']},
+    {'start': 4567, 'count': 34, 'keys': ['log_time_year_month_secondary', 'log_time_day_hour_secondary', 'log_time_minute_second_secondary', 
+                                          'auto_test_result', 'secondly_grid_over_voltage', 'secondly_grid_over_voltage_triptime', 
+                                          'secondly_grid_over_adjvoltage', 'grid_voltage', 'voltage_high2_loss_time', 'voltage_low2_seting', 
+                                          'voltage_low2_time_seting', 'voltage_low2_adj', 'grid_voltage2', 'voltage_low2_loss_time', 
+                                          '10minute_voltage_high_loss_seting', '10minute_voltage_high_loss_time_set', '10minute_voltage_high_loss_adj',
+                                          'grid_voltage3', '10minute_voltage_high_loss_time', 'voltage_low_seting', 'voltage_low_loss_time_seting', 
+                                          'voltage_low_adj', 'grid_voltage4', 'voltage_low_loss_time', 'frequency_high2_seting', 'frequency_high2_time_seting', 
+                                          'frequency_high2_adj', 'grid_frequency', 'frequency_high_time', 'frequency_low2_seting', 'frequency_low2_time_seting', 
+                                          'frequency_low2_adj', 'grid_frequency2', 'frequency_low_time']},
+    {'start': 4606, 'count': 16, 'keys': ['curr_bms_addr', 'bms_flg', 'charge_voltage_limit', 'discharge_voltage_limit', 'charge_current_limit', 
+                                          'discharge_current_limit', 'bms_status_lo', 'bms_status_hi', 'fault_flag_lo', 'fault_flag_hi', 
+                                          'alarm_flag_lo', 'alarm_flag_hi', 'notice_flag_low', 'notice_flag_high', 'total_current', 'total_voltage']},
+    {'start': 4624, 'count': 6, 'keys': ['total_soc', 'total_soh', 'total_capacity_high', 'total_capacity_low', 'parallel_number', 'parallel_status']},
+    {'start': 4632, 'count': 8, 'keys': ['maximum_cell_voltage_no', 'maximum_cell_voltage', 'minimum_cell_voltage_no', 'minimum_cell_voltage', 
+                                         'maximum_cell_temperature_no', 'maximum_cell_temperature', 'minimum_cell_temperature_no', 'minimum_cell_temperature_no2']},
     {"start": 4640, "count": 10, "keys": ["sn"]},
-    
-    # Charging pile fault SN (4897–4898: 2 words)
-    {"start": 4897, "count": 2, "keys": ["charging_pile_fault_sn"]},
-
-    # charge pile
-    {"start": 4884, "count": 2, "keys": ["charging_pile_ac_input_power_hi", "charging_pile_ac_input_power_lo"]},
-    {"start": 4886, "count": 2, "keys": ["charging_pile_steering_voltage_hi", "charging_pile_steering_voltage_lo"]},
-    {"start": 4888, "count": 2, "keys": ["charging_pile_setting_power_hi", "charging_pile_setting_power_lo"]},
-    {"start": 4897, "count": 2, "keys": ["charging_pile_fault_sn"]},
-    
-    #time and date
-    {"start": 4434, "count": 4, "keys": ["time_year_month", "time_day_hour", "time_minute_second", "time_week"]},
-    {"start": 4520, "count": 3, "keys": ["log_time_year_month", "log_time_day_hour", "log_time_minute_second"]},
-    {"start": 4567, "count": 3, "keys": ["log_time_year_month", "log_time_day_hour", "log_time_minute_second"]},
-    {"start": 4890, "count": 3, "keys": ["charging_pile_fault_date_year_mon", "charging_pile_fault_date_day_hour", "charging_pile_fault_date_min_sec"]},
-    # LCD/Buzzer/Remote controls
-    {"start": 8555, "count": 5, "keys": ["lcd_backlight_function", "buzzer_beeping_function", "overload_protection_reset", "remote_off", "remote_ac_output_control"]},
-
-    # Time setting (writeable version of time)
-    {"start": 8560, "count": 4, "keys": ["time_set_year_month", "time_set_day_hour", "time_set_minute_second", "time_set_week"]},
-
-    # Energy inquiry period
-    {"start": 8564, "count": 2, "keys": ["energy_inquiry_year_month", "energy_inquiry_day"]},
-
-    # Zero export
-    {"start": 8566, "count": 2, "keys": ["zero_export_mode", "zero_export_power_adjust"]},
-
-    # Full Economic Mode Rules block (4 rules × 9 registers = 36 consecutive!)
-    {"start": 8568, "count": 36, "keys": [
-        "econ_rule_1_enable", "econ_rule_1_start_time", "econ_rule_1_stop_time", "econ_rule_1_start_day", "econ_rule_1_stop_day",
-        "econ_rule_1_effective_week", "econ_rule_1_voltage", "econ_rule_1_soc", "econ_rule_1_power",
-        "econ_rule_2_enable", "econ_rule_2_start_time", "econ_rule_2_stop_time", "econ_rule_2_start_day", "econ_rule_2_stop_day",
-        "econ_rule_2_effective_week", "econ_rule_2_voltage", "econ_rule_2_soc", "econ_rule_2_power",
-        "econ_rule_3_enable", "econ_rule_3_start_time", "econ_rule_3_stop_time", "econ_rule_3_start_day", "econ_rule_3_stop_day",
-        "econ_rule_3_effective_week", "econ_rule_3_voltage", "econ_rule_3_soc", "econ_rule_3_power",
-        "econ_rule_4_enable", "econ_rule_4_start_time", "econ_rule_4_stop_time", "econ_rule_4_start_day", "econ_rule_4_stop_day",
-        "econ_rule_4_effective_week", "econ_rule_4_voltage", "econ_rule_4_soc", "econ_rule_4_power",
-    ]},
-    # Battery configuration block (12 consecutive registers)
-    {"start": 8483, "count": 12, "keys": [
-        "battery_type",
-        "battery_pack_series_count",
-        "battery_charged_voltage",
-        "battery_floating_charged_voltage",
-        "battery_cutoff_voltage_ongrid_no_bms",
-        "battery_cutoff_voltage_offgrid_no_bms",
-        "battery_restart_voltage_offgrid_no_bms",
-        "battery_discharge_depth_ongrid_bms",
-        "battery_discharge_depth_offgrid_bms",
-        "battery_restart_depth_offgrid_bms",
-        "battery_max_charge_current",
-        "battery_max_discharge_current",
-    ]},
+    {'start': 4645, 'count': 19, 'keys': ['line_load_consumption_energy_total_high', 'line_load_consumption_energy_total_low', 'line_load_consumption_energy_year', 
+                                          'line_load_consumption_energy_month', 'line_load_consumption_energy_day', 'total_load_consumption_energy_total_high', 
+                                          'total_load_consumption_energy_total_low', 'total_load_consumption_energy_year', 'total_load_consumption_energy_month', 
+                                          'total_load_consumption_energy_day', 'electricity_meter_power_l1', 'electricity_meter_power_l2', 
+                                          'electricity_meter_power_l3', 'charging_gun_state', 'charging_pile_working_state', 'charging_pile_ac_input_voltage_l1_hi', 
+                                          'charging_pile_ac_input_voltage_l1_lo', 'charging_pile_ac_input_voltage_l2_hi', 'charging_pile_ac_input_voltage_l2_lo']},
+    {'start': 4878, 'count': 22, 'keys': ['charging_pile_ac_input_current_l1_hi', 'charging_pile_ac_input_current_l1_lo', 'charging_pile_ac_input_current_l2_hi', 
+                                          'charging_pile_ac_input_current_l2_lo', 'charging_pile_ac_input_current_l3_hi', 'charging_pile_ac_input_current_l3_lo', 
+                                          'charging_pile_ac_input_power_hi', 'charging_pile_ac_input_power_lo', 'charging_pile_steering_voltage_hi', 
+                                          'charging_pile_steering_voltage_lo', 'charging_pile_setting_power_hi', 'charging_pile_setting_power_lo', 
+                                          'charging_pile_fault_date_year_mon', 'charging_pile_fault_date_day_hour', 'charging_pile_fault_date_min_sec', 
+                                          'charging_pile_fault_code_hi', 'charging_pile_fault_code_lo', 'charging_pile_fault_state', 'charging_pile_fault_soure', 
+                                          'charging_pile_fault_sn', 'charging_pile_fault_level', 'disp_sw_version_felicity']},
+    {'start': 8483, 'count': 12, 'keys': ['battery_type', 'battery_pack_series_count', 'battery_charged_voltage', 'battery_floating_charged_voltage', 
+                                          'battery_cutoff_voltage_ongrid_no_bms', 'battery_cutoff_voltage_offgrid_no_bms', 'battery_restart_voltage_offgrid_no_bms', 
+                                          'battery_discharge_depth_ongrid_bms', 'battery_discharge_depth_offgrid_bms', 'battery_restart_depth_offgrid_bms', 
+                                          'battery_max_charge_current', 'battery_max_discharge_current']},
+    {'start': 8555, 'count': 49, 'keys': ['lcd_backlight_function', 'buzzer_beeping_function', 'overload_protection_reset', 'remote_off', 'remote_ac_output_control', 
+                                          'time_set_year_month', 'time_set_day_hour', 'time_set_minute_second', 'time_set_week', 'energy_inquiry_year_month', 
+                                          'energy_inquiry_day', 'zero_export_mode', 'zero_export_power_adjust', 'rule_1_enable_felicity', 'rule_1_starttime_felicity', 
+                                          'rule_1_stoptime_felicity', 'rule_1_startday_felicity', 'rule_1_stopday_felicity', 'rule_1_effectiveweek_felicity', 
+                                          'rule_1_voltage_felicity', 'rule_1_soc_felicity', 'rule_1_power_felicity', 'rule_2_enable_felicity', 'rule_2_starttime_felicity', 
+                                          'rule_2_stoptime_felicity', 'rule_2_startday_felicity', 'rule_2_stopday_felicity', 'rule_2_effectiveweek_felicity', 
+                                          'rule_2_voltage_felicity', 'rule_2_soc_felicity', 'rule_2_power_felicity', 'rule_3_enable_felicity', 'rule_3_starttime_felicity', 
+                                          'rule_3_stoptime_felicity', 'rule_3_startday_felicity', 'rule_3_stopday_felicity', 'rule_3_effectiveweek_felicity', 
+                                          'rule_3_voltage_felicity', 'rule_3_soc_felicity', 'rule_3_power_felicity', 'rule_4_enable_felicity', 
+                                          'rule_4_starttime_felicity', 'rule_4_stoptime_felicity', 'rule_4_startday_felicity', 'rule_4_stopday_felicity', 
+                                          'rule_4_effectiveweek_felicity', 'rule_4_voltage_felicity', 'rule_4_soc_felicity', 'rule_4_power_felicity']}
+    {'start': 63498, 'count': 3, 'keys': ['disp_sw_version_felicity', 'mcu1_sw_version_felicity', 'mcu2_sw_version_felicity']},
 ]
 
 # 2. Combined entities (post-process after reading)
@@ -705,6 +707,11 @@ _COMBINED_REGISTERS = {
         },
         "name": "Inverter Time",
     },
+    "device_sn": {
+       "sources": ["sn"],  # list of 5 uint16
+       "calc": lambda words: ''.join(f"{w:04d}" for w in words).lstrip('0') or '0',
+       "name": "Device Serial Number",
+    },
  
 }
 
@@ -715,6 +722,7 @@ REGISTER_SETS = {
         for key, info in _REGISTERS.items()
         if key in {
             "working_mode",
+            "sn",
             "warning_state_1",
             "warning_state_2",
             "warning_state_3",
