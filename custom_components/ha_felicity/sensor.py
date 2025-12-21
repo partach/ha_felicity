@@ -26,11 +26,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     # Common device_info for all entities from this entry
     device_info = DeviceInfo(
-        "identifiers": {(DOMAIN, entry.entry_id)},
-        "name": entry.title or "Felicity Inverter",
-        "manufacturer": "Felicity Solar",
-        "model": entry.data.get(CONF_INVERTER_MODEL, "T-REX-10KLP3G01"),
-        "configuration_url": f"homeassistant://config/integrations/integration/{entry.entry_id}",
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.title or "Felicity Inverter",
+        manufacturer="Felicity Solar",
+        model=entry.data.get(CONF_INVERTER_MODEL, "T-REX-10KLP3G01"),
+        configuration_url=f"homeassistant://config/integrations/integration/{entry.entry_id}",
     )
     # 1. Select entities for writable enums
     entities.extend([
