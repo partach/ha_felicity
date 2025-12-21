@@ -4,32 +4,30 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 
 from .const import (
-    CONF_REGISTER_SET,
-    DEFAULT_REGISTER_SET,
-#    _REGISTER_SETS,
-    DOMAIN,
     CONF_BAUDRATE,
     CONF_BYTESIZE,
     CONF_CONNECTION_TYPE,
     CONF_HOST,
+    CONF_INVERTER_MODEL,
     CONF_PARITY,
     CONF_PORT,
+    CONF_REGISTER_SET,
     CONF_SERIAL_PORT,
     CONF_SLAVE_ID,
     CONF_STOPBITS,
-    CONF_INVERTER_MODEL,
     CONNECTION_TYPE_SERIAL,
     DEFAULT_BAUDRATE,
     DEFAULT_BYTESIZE,
-    DEFAULT_PARITY,
-    DEFAULT_STOPBITS,
     DEFAULT_INVERTER_MODEL,
+    DEFAULT_PARITY,
+    DEFAULT_REGISTER_SET,
+    DEFAULT_STOPBITS,
+    DOMAIN,
     MODEL_DATA,
-#    _REGISTERS,
 )
 from .coordinator import HA_FelicityCoordinator
 
@@ -41,9 +39,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
     config = entry.data
     connection_type = config.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_SERIAL)
-    
-
-    register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
     
     # Select model data (fallback to default model)
     model = entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
@@ -60,8 +55,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Auto-adding missing group keys: %s", missing)
         for key in missing:
             if key in model_data["registers"]:
-              selected_registers[key] = model_data["registers"][key]
+                selected_registers[key] = model_data["registers"][key]
     # ===========================================================================
+
     # Get or create shared hub for this connection
     hubs = hass.data.setdefault(DOMAIN, {}).setdefault("hubs", {})
     
@@ -106,7 +102,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Forward to sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    async def handle_write_register(call):
+
+    async def handle_write_register(call: ServiceCall):
         """Service to write a register value."""
         # Get the coordinator from the entity_id in the service call
         entity_id = call.data.get("entity_id")
@@ -117,14 +114,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Extract entry_id from entity_id (format: sensor.my_inverter_battery_voltage)
         try:
             domain_part, entry_part = entity_id.split(".", 1)
-            entry_id = entry_part.split("_", 1)[0]  # rough, but works if naming is consistent
+            # Rough, but works if naming is consistent
+            entry_id_candidate = entry_part.split("_", 1)[0]
         except ValueError:
             _LOGGER.error("Invalid entity_id format: %s", entity_id)
             return
     
-        coordinator = hass.data[DOMAIN].get(entry_id)
+        # Check against stored coordinators
+        coordinator = hass.data[DOMAIN].get(entry_id_candidate)
         if not coordinator:
-            _LOGGER.error("No coordinator found for entry %s", entry_id)
+            # Fallback: iterate all coordinators to find one that manages this entity_id (if available)
+            # For now, just log error if simple lookup fails
+            _LOGGER.error("No coordinator found for entry candidate %s", entry_id_candidate)
             return
     
         key = call.data["key"]
@@ -188,6 +189,7 @@ class FelicitySerialHub:
         stopbits: int,
         bytesize: int,
     ):
+        """Initialize the serial hub."""
         self.hass = hass
         self.port = port
         self.baudrate = baudrate
@@ -217,6 +219,7 @@ class FelicityTcpHub:
     """Manages a single TCP connection shared across meters."""
 
     def __init__(self, hass: HomeAssistant, host: str, port: int):
+        """Initialize the TCP hub."""
         self.hass = hass
         self.host = host
         self.port = port
