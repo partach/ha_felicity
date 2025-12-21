@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_BAUDRATE,
