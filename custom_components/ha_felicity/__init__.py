@@ -6,7 +6,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry, entity_registry as er
+
 
 from .const import (
     CONF_BAUDRATE,
@@ -95,8 +96,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.hub_key = hub_key
     
     # Register device – this gives the nice hub view
-    device_registry = dr.async_get(hass)
-    device_registry.async_get_or_create(
+    dev_reg = device_registry.async_get(hass)
+    dev_reg.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, entry.unique_id or hub_key)},
         name=entry.title or "Felicity Inverter",
