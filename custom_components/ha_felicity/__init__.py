@@ -102,44 +102,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Forward to sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await async_setup_services(hass)
 
-    async def handle_write_register(call: ServiceCall):
-        """Service to write a register value."""
-        # Get the coordinator from the entity_id in the service call
-        entity_id = call.data.get("entity_id")
-        if not entity_id:
-            _LOGGER.error("write_register service: entity_id is required")
-            return
-    
-        # Extract entry_id from entity_id (format: sensor.my_inverter_battery_voltage)
-        try:
-            domain_part, entry_part = entity_id.split(".", 1)
-            # Rough, but works if naming is consistent
-            entry_id_candidate = entry_part.split("_", 1)[0]
-        except ValueError:
-            _LOGGER.error("Invalid entity_id format: %s", entity_id)
-            return
-    
-        # Check against stored coordinators
-        coordinator = hass.data[DOMAIN].get(entry_id_candidate)
-        if not coordinator:
-            # Fallback: iterate all coordinators to find one that manages this entity_id (if available)
-            # For now, just log error if simple lookup fails
-            _LOGGER.error("No coordinator found for entry candidate %s", entry_id_candidate)
-            return
-    
-        key = call.data["key"]
-        value = call.data["value"]
-        success = await coordinator.async_write_register(key, value)
-        if success:
-            _LOGGER.info("Successfully wrote %s = %s", key, value)
-        else:
-            _LOGGER.error("Failed to write %s = %s", key, value)
-    
-    # Register the service for this entry
-    hass.services.async_register(DOMAIN, "write_register", handle_write_register)
     return True
 
+async def async_setup_services(hass: HomeAssistant) -> None:
+    async def handle_write_register(call: ServiceCall):
+        entity_id = call.data.get("entity_id")
+        if not entity_id:
+            _LOGGER.error("write_register: entity_id required")
+            return
+
+        # Find coordinator from entity registry
+        entity_registry = er.async_get(hass)
+        entry = entity_registry.async_get(entity_id)
+        if not entry or entry.config_entry_id not in hass.data[DOMAIN]:
+            _LOGGER.error("No Felicity config entry found for entity %s", entity_id)
+            return
+
+        coordinator = hass.data[DOMAIN][entry.config_entry_id]
+        key = call.data["key"]
+        value = call.data["value"]
+
+        success = await coordinator.async_write_register(key, value)
+        if success:
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, "write_register", handle_write_register)
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
