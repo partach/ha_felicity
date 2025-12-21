@@ -307,78 +307,6 @@ _REGISTERS = {
     "battery_max_discharge_current": {"address": 8494, "name": "Battery Max Discharged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
 }
 
-# 1. Batch read groups
-# if they are in the groups the values must be in at least the basic set else they can't be stored as groups are part of basic.
-_REGISTER_GROUPS = [
-    {'start': 4352, 'count': 2, 'keys': ['setting_data_sn', 'working_mode']},
-    {'start': 4360, 'count': 32, 'keys': [
-       'fault_code', 'ac_input_voltage', 'ac_input_current', 'ac_input_frequency', 'ac_input_power', 
-       'battery_voltage', 'battery_current', 'battery_power', 'battery_capacity', 'ac_output_voltage', 
-       'ac_output_current', 'ac_output_frequency', 'ac_output_active_power', 'ac_output_apparent_power', 
-       'load_percentage', 'pv_input_voltage', 'pv_input_current', 'pv_input_power', 'pv2_input_voltage', 
-       'pv2_input_current', 'pv2_input_power', 'pv3_input_voltage', 'pv3_input_current', 'pv3_input_power', 
-       'ac_input_voltage_l2', 'ac_input_current_l2', 'ac_input_frequency_l2', 'ac_input_power_l2', 'ac_input_voltage_l3', 
-       'ac_input_current_l3', 'ac_input_frequency_l3', 'ac_input_power_l3'
-    ]},
-    {'start': 4394, 'count': 11, 'keys': [     
-       'ac_output_voltage_l2', 
-       'ac_output_current_l2', 'ac_output_frequency_l2', 'ac_output_active_power_l2', 'ac_output_apparent_power_l2', 
-       'ac_output_voltage_l3', 'ac_output_current_l3', 'ac_output_frequency_l3', 'ac_output_active_power_l3', 
-       'ac_output_apparent_power_l3', 'total_ac_output_active_power'
-    ]},
-    {'start': 4408, 'count': 30, 'keys': [
-       'invert_voltage', 'invert_current', 'invert_active_power', 'invert_voltage_l2', 'invert_current_l2', 
-       'invert_active_power_l2', 'invert_voltage_l3', 'invert_current_l3', 'invert_active_power_l3', 'ac_input_mid_voltage', 
-       'ac_input_mid_voltage_l2', 'ac_input_mid_voltage_l3', 'p_bus_voltage_master', 'n_bus_voltage_master', 
-       'p_dc_converter_voltage', 'n_dc_converter_voltage', 'p_dc_dc_current', 'n_dc_dc_current', 'inner_temperature_1', 
-       'inner_temperature_2', 'heatsink_temperature_1', 'heatsink_temperature_2', 'heatsink_temperature_3', 
-       'heatsink_temperature_4', 'heatsink_temperature_5', 'heatsink_temperature_6', 'time_year_month', 
-       'time_day_hour', 'time_minute_second', 'time_week'
-    ]},
-    {'start': 4498, 'count': 3, 'keys': ['status_bit', 'p_bus_voltage_slv', 'n_bus_voltage_slv']},
-    {'start': 4505, 'count': 4, 'keys': ['bat_power_conversion', 'pv_power_conversion', 'power_flow_msg', 'parallel_system_state']},
-    {'start': 4516, 'count': 44, 'keys': [
-       'log_type', 'log_index', 'log_status', 'log_id', 'log_time_year_month', 'log_time_day_hour', 'log_time_minute_second', 
-       'ac_input_voltage_secondary', 'ac_input_frequency_secondary', 'ac_input_power_secondary', 'battery_voltage_secondary', 
-       'battery_power_secondary', 'battery_capacity_secondary', 'ac_output_voltage_secondary', 'ac_output_frequency_secondary', 
-       'ac_output_active_power_secondary', 'ac_output_apparent_power_secondary', 'load_percentage_secondary', 
-       'pv_input_voltage_secondary', 'pv_input_power_secondary', 'pv2_input_voltage_secondary', 'pv2_input_power_secondary', 
-       'pv3_input_voltage_secondary', 'pv3_input_power_secondary', 'ac_input_voltage_l2_secondary', 
-       'ac_input_frequency_l2_secondary', 'ac_input_power_l2_secondary', 'ac_input_voltage_l3_secondary', 
-       'ac_input_frequency_l3_secondary', 'ac_input_power_l3_secondary', 'ac_output_voltage_l2_secondary', 
-       'ac_output_frequency_l2_secondary', 'ac_output_active_power_l2_secondary', 'ac_output_apparent_power_l2_secondary', 
-       'ac_output_voltage_l3_secondary', 'ac_output_frequency_l3_secondary', 'ac_output_active_power_l3_secondary', 
-       'ac_output_apparent_power_l3_secondary', 'p_bus_voltage', 'n_bus_voltage', 'p_dc_dc_current_secondary', 
-       'n_dc_dc_current_secondary', 'max_inner_temperature', 'max_heat_sink_temperature'
-    ]},
-    {'start': 4608, 'count': 14, 'keys': [
-       'charge_voltage_limit', 'discharge_voltage_limit', 'charge_current_limit', 
-       'discharge_current_limit', 'bms_status_lo', 'bms_status_hi', 'fault_flag_lo', 'fault_flag_hi', 
-       'alarm_flag_lo', 'alarm_flag_hi', 'notice_flag_low', 'notice_flag_high', 'total_current', 'total_voltage'
-    ]},
-    {'start': 4624, 'count': 6, 'keys': ['total_soc', 'total_soh', 'total_capacity_high', 'total_capacity_low', 'parallel_number', 'parallel_status']},
-    {'start': 8483, 'count': 12, 'keys': [
-       'battery_type', 'battery_pack_series_count', 'battery_charged_voltage', 'battery_floating_charged_voltage', 
-       'battery_cutoff_voltage_ongrid_no_bms', 'battery_cutoff_voltage_offgrid_no_bms', 'battery_restart_voltage_offgrid_no_bms', 
-       'battery_discharge_depth_ongrid_bms', 'battery_discharge_depth_offgrid_bms', 'battery_restart_depth_offgrid_bms', 
-       'battery_max_charge_current', 'battery_max_discharge_current'
-    ]},
-    {'start': 8560, 'count': 4, 'keys': [
-       'time_set_year_month', 'time_set_day_hour', 'time_set_minute_second', 'time_set_week'
-    ]},
-     {'start': 8568, 'count': 36, 'keys': [
-       'econ_rule_1_enable', 'econ_rule_1_start_time',
-       'econ_rule_1_stop_time', 'econ_rule_1_start_day', 'econ_rule_1_stop_day', 'econ_rule_1_effective_week',
-       'econ_rule_1_voltage', 'econ_rule_1_soc', 'econ_rule_1_power', 'econ_rule_2_enable', 'econ_rule_2_start_time',
-       'econ_rule_2_stop_time', 'econ_rule_2_start_day', 'econ_rule_2_stop_day', 'econ_rule_2_effective_week',
-       'econ_rule_2_voltage', 'econ_rule_2_soc', 'econ_rule_2_power', 'econ_rule_3_enable', 'econ_rule_3_start_time',
-       'econ_rule_3_stop_time', 'econ_rule_3_start_day', 'econ_rule_3_stop_day', 'econ_rule_3_effective_week',
-       'econ_rule_3_voltage', 'econ_rule_3_soc', 'econ_rule_3_power', 'econ_rule_4_enable', 'econ_rule_4_start_time',
-       'econ_rule_4_stop_time', 'econ_rule_4_start_day', 'econ_rule_4_stop_day', 'econ_rule_4_effective_week',
-       'econ_rule_4_voltage', 'econ_rule_4_soc', 'econ_rule_4_power'
-    ]},
-]
-
 # 2. Combined entities (post-process after reading)
 _COMBINED_REGISTERS = {
     "pv_total_power": {
@@ -614,4 +542,24 @@ MODEL_DATA = {
     #     "sets": REGISTER_SETS_OTHER,
     # },
 }
+def build_groups(registers):
+    sorted_regs = sorted(registers.items(), key=lambda x: x[1]["address"])
+    groups = []
+    current = None
+    for key, info in sorted_regs:
+        addr = info["address"]
+        size = info.get("size", 1)
+        end_addr = addr + size
+        if current is None:
+            current = {"start": addr, "count": size, "keys": [key]}
+        elif current["start"] + current["count"] == addr:
+            current["count"] += size
+            current["keys"].append(key)
+        else:
+            groups.append(current)
+            current = {"start": addr, "count": size, "keys": [key]}
+    if current:
+        groups.append(current)
+    return groups
 
+_REGISTER_GROUPS = build_groups(_REGISTERS)  # auto-generated
