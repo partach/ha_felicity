@@ -22,7 +22,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     coordinator: HA_FelicityCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities = []
-    
+
+    # Common device_info for all entities from this entry
+    device_info = {
+        "identifiers": {(DOMAIN, entry.entry_id)},
+        "name": entry.title or "Felicity Inverter",
+        "manufacturer": "Felicity Solar",
+        "model": entry.data.get(CONF_INVERTER_MODEL, "T-REX-10KLP3G01"),
+        "configuration_url": f"homeassistant://config/integrations/integration/{entry.entry_id}",
+    }
     # 1. Select entities for writable enums
     entities.extend([
         HA_FelicitySelect(coordinator, entry, key, info)
@@ -75,7 +83,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         HA_FelicityCombinedSensor(coordinator, entry, key, info)
         for key, info in model_combined.items()
     ])
-
+    for entity in entities:
+        entity._attr_device_info = device_info
     async_add_entities(entities)
 
 
