@@ -24,20 +24,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.slave_id = slave_id
         self.register_map = register_map
         self._address_groups = groups
+        self.connected = False
         
-    @staticmethod
-    def _apply_scaling(value: int, index: int) -> int | float:
-        """Apply scaling based on index from register dict."""
-        if index == 1:  # /10
-            return value / 10.0
-        if index == 2:  # /100
-            return value / 100.0
-        if index == 3:  # signed 16-bit
-            if value >= 0x8000:
-                return value - 0x10000
-            return value
-        # Add more if needed later (e.g. index 4 for high/low – but that's combined)
-        return value  # default: raw
+    def _apply_scaling(self, raw: int, index: int) -> int | float:
+        """Apply scaling based on index."""
+        if index == 1:
+            return raw / 10.0
+        elif index == 2:
+            return raw / 100.0
+        elif index == 3:
+            if raw >= 0x8000:
+                raw -= 0x10000
+            return raw
+        elif index == 4:
+            return raw
+        elif index == 5:
+            return raw
+        elif index == 6:
+            return raw
+        elif index == 7:
+            return raw
+        else:
+            return raw
         
     def _group_addresses(self, reg_map: dict) -> Dict[int, list]:
         """Group consecutive register addresses to minimize requests."""
@@ -65,53 +73,57 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         return groups
 
     async def _async_connect(self) -> bool:
-        """Connect to the device."""
-        try:
-            if not self.client.connected:
+        if not self.connected:
+            try:
                 await self.client.connect()
-            return self.client.connected
-        except Exception as err:
-            _LOGGER.debug("Failed to connect to Felicity: %s", err)
-            return False
-    async def async_write_register(self, key: str, value: int | float) -> bool:
-        """Write a single register (handle packing based on index)."""
+                self.connected = self.client.connected
+            except Exception as err:
+                _LOGGER.error("Failed to connect to Felicity: %s", err)
+                return False
+        return self.connected
+            
+    async def async_write_register(self, key: str, value: int) -> bool:
+        """Write to register, handling size."""
         if key not in self.register_map:
-            raise ValueError(f"Invalid key: {key}")
-    
+            _LOGGER.error("Unknown key %s", key)
+            return False
+
         info = self.register_map[key]
         address = info["address"]
-        index = info.get("index", 0)
-    
-        # Pack value based on index (reverse of scaling)
-        if index == 1:  # /10 → multiply by 10
-            packed = int(value * 10)
-        elif index == 2:  # /100 → multiply by 100
-            packed = int(value * 100)
-        elif index == 3:  # signed 16-bit
-            if value < 0:
-                packed = value + 0x10000
-            else:
-                packed = value
-        else:  # raw or enum
-            packed = int(value)
-    
-        # Write (uint16)
+        size = info.get("size", 1)
+        endian = info.get("endian", "big")
+
+        if size == 1:
+            reg_vals = [value]
+        elif size == 2:
+            high = (value >> 16) & 0xFFFF
+            low = value & 0xFFFF
+            reg_vals = [high, low] if endian == "big" else [low, high]
+        elif size == 4:
+            hh = (value >> 48) & 0xFFFF
+            hl = (value >> 32) & 0xFFFF
+            lh = (value >> 16) & 0xFFFF
+            ll = value & 0xFFFF
+            reg_vals = [hh, hl, lh, ll] if endian == "big" else [ll, lh, hl, hh]
+        else:
+            _LOGGER.error("Unsupported size %d for write to %s", size, key)
+            return False
+
+        return await self.async_write_registers(address, reg_vals)
+
+    async def async_write_registers(self, start_address: int, values: list[int]) -> bool:
+        """Write multiple registers."""
         try:
-            result = await self.client.write_register(address=address, value=packed, unit=self.slave_id)
+            result = await self.client.write_registers(address=start_address, values=values, device_id=self.slave_id)
             if result.isError():
-                raise ModbusException(f"Write error: {result}")
+                _LOGGER.error("Write registers error at %s: %s", start_address, result)
+                return False
+            _LOGGER.debug("Successfully wrote registers at %s: %s", start_address, values)
             return True
         except Exception as err:
-            _LOGGER.error("Write failed for %s: %s", key, err)
+            _LOGGER.error("Exception writing registers at %s: %s", start_address, err)
             return False
-    
-    async def async_write_registers(self, writes: dict[str, int | float]) -> bool:
-        """Batch write multiple registers (group consecutive if needed)."""
-        for key, value in writes.items():
-            if not await self.async_write_register(key, value):
-                return False
-        return True
-
+            
     async def _async_update_data(self) -> dict:
         if not await self._async_connect():
             raise UpdateFailed("Failed to connect to Felicity")
@@ -122,13 +134,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 start_addr = group["start"]
                 count = group["count"]
                 result = await self.client.read_holding_registers(
-                    address=start_addr, count=count, slave=self.slave_id
+                    address=start_addr, count=count, device_id=self.slave_id
                 )
                 if result.isError():
                     _LOGGER.warning("Modbus read error at %s (skipping group): %s", start_addr, result)
                     continue  # Skip bad group – don't fail whole update
     
-                registers = result.registers  # list of uint16
+                registers = result.registers
                 pos = 0
                 for key in group["keys"]:
                     info = self.register_map[key]
@@ -173,19 +185,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     
             return new_data
 
+        except ConnectionException as err:
+            self.connected = False
+            await self.client.close()
+            raise UpdateFailed(f"Connection lost: {err}")
+        except ModbusException as err:
+            raise UpdateFailed(f"Modbus error: {err}")
         except Exception as err:
-            raise UpdateFailed(f"Update failed: {err}") from err
+            _LOGGER.error("Unexpected error during Felicity update: %s", err)
+            raise UpdateFailed(f"Update failed: {err}")
     
-            except ConnectionException as err:
-                await self.client.close()
-                raise UpdateFailed(f"Connection lost: {err}")
-            except ModbusException as err:
-                raise UpdateFailed(f"Modbus error: {err}")
-            except Exception as err:
-                _LOGGER.error("Unexpected error during Felicity update: %s", err)
-                raise UpdateFailed(f"Update failed: {err}")
-    
-            finally:
-                # Keep connection open for next poll (async client handles it well)
-                pass
-
