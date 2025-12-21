@@ -529,24 +529,25 @@ REGISTER_SETS = {
 # Model-specific data (extend for new models)
 
 def build_groups(registers):
+"""Auto-build groups from consecutive registers (respecting size and no gaps)."""
     sorted_regs = sorted(registers.items(), key=lambda x: x[1]["address"])
     groups = []
     current = None
     for key, info in sorted_regs:
         addr = info["address"]
         size = info.get("size", 1)
-        end_addr = addr + size
-        if current is None:
+        expected_next = current["start"] + current["count"] if current else None
+        if current is None or addr != expected_next:
+            if current:
+                groups.append(current)
             current = {"start": addr, "count": size, "keys": [key]}
-        elif current["start"] + current["count"] == addr:
+        else:
             current["count"] += size
             current["keys"].append(key)
-        else:
-            groups.append(current)
-            current = {"start": addr, "count": size, "keys": [key]}
     if current:
         groups.append(current)
     return groups
+
 _REGISTER_GROUPS = build_groups(_REGISTERS)  # auto-generated
 
 MODEL_DATA = {
