@@ -525,7 +525,7 @@ REGISTER_SETS = {
 
 # Optional: Strict full without duplicates
 # "full": {k: v for k, v in _REGISTERS.items() if "_secondary" not in k and "_alt" not in k},
-
+_REGISTER_GROUPS = build_groups(_REGISTERS)  # auto-generated
 # Model-specific data (extend for new models)
 MODEL_DATA = {
     INVERTER_MODEL_IVGM: {
@@ -562,4 +562,4 @@ def build_groups(registers):
         groups.append(current)
     return groups
 
-_REGISTER_GROUPS = build_groups(_REGISTERS)  # auto-generated
+
