@@ -1,5 +1,6 @@
 """Constants for the Felicity integration."""
-from typing import Dict
+
+from typing import Dict, Any
 
 DOMAIN = "ha_felicity"
 
@@ -14,9 +15,8 @@ CONF_NAME = "name"
 CONF_REGISTER_SET = "register_set"
 CONF_INVERTER_MODEL = "inverter_model"
 
-#supported inverter models
+# Supported inverter models
 INVERTER_MODEL_IVGM = "T-REX-10KLP3G01"  # our current one
-
 
 # Serial settings
 CONF_SERIAL_PORT = "serial_port"
@@ -44,19 +44,19 @@ DEFAULT_PARITY = "N"
 DEFAULT_INVERTER_MODEL = INVERTER_MODEL_IVGM
 DEFAULT_FIRST_REG = 4353
 
- #Precision and index based on the "Rate/Magnification/Scale" column
- # 0 dont process or packed
- # 1 = /10 → precision 1, index 1;
- # 2 = /100 → precision 2, index 2; 
- # signed = index 3; 
- # energy high/low = index 4; 
- # faults/warnings/modes/flags = index 5; 
- # time = index 6; 
- # % = index 7
+# Precision and index based on the "Rate/Magnification/Scale" column
+# 0 = dont process or packed
+# 1 = /10 → precision 1, index 1;
+# 2 = /100 → precision 2, index 2; 
+# 3 = signed index; 
+# 4 = energy high/low index; 
+# 5 = faults/warnings/modes/flags index; 
+# 6 = time index; 
+# 7 = % index
 
 _REGISTERS = {
     "setting_data_sn": {"address": 4352, "name": "Setting Data Sn", "precision": 0, "index": 0},
-    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 5,"type": "select","options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
+    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 5, "type": "select", "options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
     "warning_state_1": {"address": 4354, "name": "Warning State 1", "precision": 0, "index": 5, "size": 2, "endian": "big"},
     "warning_state_2": {"address": 4356, "name": "Warning State 2", "precision": 0, "index": 5, "size": 2, "endian": "big"},
     "warning_state_3": {"address": 4358, "name": "Warning State 3", "precision": 0, "index": 5, "size": 2, "endian": "big"},
@@ -527,7 +527,6 @@ REGISTER_SETS = {
 # "full": {k: v for k, v in _REGISTERS.items() if "_secondary" not in k and "_alt" not in k},
 
 # Model-specific data (extend for new models)
-
 def build_groups(registers):
     sorted_regs = sorted(registers.items(), key=lambda x: x[1]["address"])
     groups = []
@@ -556,12 +555,4 @@ MODEL_DATA = {
         "combined": _COMBINED_REGISTERS,
         "sets": REGISTER_SETS,
     },
-    # Future model example (add when ready)
-    # "other_model": {
-    #     "registers": _REGISTERS_OTHER,
-    #     "groups": _REGISTER_GROUPS_OTHER,
-    #     "combined": _COMBINED_REGISTERS_OTHER,
-    #     "sets": REGISTER_SETS_OTHER,
-    # },
 }
-
