@@ -65,6 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         HA_FelicitySensor(coordinator, entry, key, info)
         for key, info in coordinator.register_map.items()
         if info.get("type") not in special_types
+        and info.get("index", 0) != 99
     ])
 
     # 7. Combined sensors (Computed values like Total PV Power)
