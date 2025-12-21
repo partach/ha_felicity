@@ -1,29 +1,24 @@
 write_register:
   name: Write Register
-  description: Write a value to a writable register on the Felicity inverter.
+  description: Write a raw value to a specific register on the Felicity inverter.
   target:
     entity:
       integration: ha_felicity
-      domain: [sensor, select, number, time, date]
   fields:
-    entity_id:
-      name: Entity
-      description: An entity from the Felicity integration (used to identify the device).
-      required: true
-      selector:
-        entity:
-          integration: ha_felicity
-          multiple: false
     key:
       name: Register Key
-      description: The internal register key to write (e.g., econ_rule_1_enable).
+      description: Internal register key (e.g., econ_rule_1_enable, battery_charged_voltage).
       required: true
       example: econ_rule_1_enable
       selector:
         text:
     value:
       name: Value
-      description: The value to write. Must match the register type (number, string index, etc.).
+      description: Raw value to write (integer).
       required: true
       selector:
-        text:
+        number:
+          mode: box
+          min: -2147483648
+          max: 2147483647
+          step: 1
