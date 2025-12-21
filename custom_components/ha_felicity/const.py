@@ -1,7 +1,5 @@
 """Constants for the Felicity integration."""
 
-from typing import Dict, Any
-
 DOMAIN = "ha_felicity"
 
 # Connection types
