@@ -35,26 +35,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._address_groups = groups
         self.connected = False
         
-    def _apply_scaling(self, raw: int, index: int) -> int | float:
-        """Apply scaling based on index."""
+    def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
+        """Apply scaling based on index and size."""
         if index == 1:  # /10 – only for size=1
+            if size != 1:
+                _LOGGER.warning("Index 1 (/10) used with size=%d – applying anyway", size)
             return raw / 10.0
         elif index == 2:  # /100 – only for size=1
+            if size != 1:
+                _LOGGER.warning("Index 2 (/100) used with size=%d – applying anyway", size)
             return raw / 100.0
         elif index == 3:  # signed
             if size == 1 and raw >= 0x8000:
-                raw -= 0x10000
+                return raw - 0x10000
             elif size == 2 and raw >= 0x80000000:
-                raw -= 0x100000000
+                return raw - 0x100000000
             elif size == 4 and raw >= 0x8000000000000000:
-                raw -= 0x10000000000000000
-            return raw
-        elif index == 4:  # energy – raw Wh (no scaling)
-            return raw
-        elif index in (5, 6, 7):  # flags, time, % – raw
+                return raw - 0x10000000000000000
             return raw
         else:
-            return raw
+            return raw  # index 0,4,5,6,7 – raw
         
     def _group_addresses(self, reg_map: dict) -> Dict[int, list]:
         """Group consecutive register addresses to minimize requests."""
@@ -204,7 +204,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         continue
     
                     # Apply scaling
-                    value = self._apply_scaling(raw, index)
+                    value = self._apply_scaling(raw, index, size)
     
                     # Round if float
                     if isinstance(value, float):
