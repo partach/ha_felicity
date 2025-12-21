@@ -529,7 +529,6 @@ REGISTER_SETS = {
 # Model-specific data (extend for new models)
 
 def build_groups(registers):
-"""Auto-build groups from consecutive registers (respecting size and no gaps)."""
     sorted_regs = sorted(registers.items(), key=lambda x: x[1]["address"])
     groups = []
     current = None
