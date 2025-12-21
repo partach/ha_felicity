@@ -11,6 +11,7 @@ from homeassistant.components.number import NumberEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity import DeviceInfo
 
 from .const import DOMAIN, _COMBINED_REGISTERS
 from .coordinator import HA_FelicityCoordinator
@@ -24,7 +25,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities = []
 
     # Common device_info for all entities from this entry
-    device_info = {
+    device_info = DeviceInfo{
         "identifiers": {(DOMAIN, entry.entry_id)},
         "name": entry.title or "Felicity Inverter",
         "manufacturer": "Felicity Solar",
