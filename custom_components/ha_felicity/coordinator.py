@@ -37,16 +37,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         
     def _apply_scaling(self, raw: int, index: int) -> int | float:
         """Apply scaling based on index."""
-        if index == 1:
+        if index == 1:  # /10 – only for size=1
             return raw / 10.0
-        elif index == 2:
+        elif index == 2:  # /100 – only for size=1
             return raw / 100.0
-        elif index == 3:
-            # Signed 16-bit integer conversion
-            if raw >= 0x8000:
+        elif index == 3:  # signed
+            if size == 1 and raw >= 0x8000:
                 raw -= 0x10000
+            elif size == 2 and raw >= 0x80000000:
+                raw -= 0x100000000
+            elif size == 4 and raw >= 0x8000000000000000:
+                raw -= 0x10000000000000000
             return raw
-        elif index in [4, 5, 6, 7]:
+        elif index == 4:  # energy – raw Wh (no scaling)
+            return raw
+        elif index in (5, 6, 7):  # flags, time, % – raw
             return raw
         else:
             return raw
