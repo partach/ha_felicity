@@ -37,9 +37,9 @@ from .const import (
     REGISTER_SET_BASIC,
     REGISTER_SET_BASIC_PLUS,
     REGISTER_SET_FULL,
-    DEFAULT_INVERTER_MODEL,
     INVERTER_MODEL_IVGM,
     CONF_INVERTER_MODEL,
+    DEFAULT_INVERTER_MODEL,
     DEFAULT_FIRST_REG,
     DOMAIN,
 )
@@ -66,11 +66,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle connection type selection."""
         if user_input is not None:
             self._connection_type = user_input[CONF_CONNECTION_TYPE]
-            self._common_options = {
-                "update_interval": user_input.get("update_interval", 10),
-                CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
-                CONF_REGISTER_SET: user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-            }
+            # Store initial common options to pass forward if needed, 
+            # though usually we just collect them in the final step.
             if self._connection_type == CONNECTION_TYPE_SERIAL:
                 return await self.async_step_serial()
             else:
@@ -110,15 +107,14 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-        return self.async_show_form(step_id="user",data_schema=data_schema)
+        return self.async_show_form(step_id="user", data_schema=data_schema)
 
     async def async_step_serial(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle serial connection configuration."""
         errors = {}
 
-        # Discover serial ports every time (in case plugged/unplugged)
+        # Discover serial ports
         ports = await self.hass.async_add_executor_job(serial.tools.list_ports.comports)
-
         port_options = [
             selector.SelectOptionDict(
                 value=port.device,
@@ -133,7 +129,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default="Felicity"): str,
+                vol.Required(CONF_NAME, default="Felicity Inverter"): str,
                 vol.Required(CONF_SERIAL_PORT): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=port_options,
@@ -160,23 +156,28 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                await self._async_test_serial_connection(user_input)
+                # Merge data from previous step if we stored it, or just rely on defaults/hidden fields if simpler.
+                # Here we reconstruct the full config.
+                final_data = {
+                    CONF_CONNECTION_TYPE: CONNECTION_TYPE_SERIAL,
+                    CONF_NAME: user_input[CONF_NAME],
+                    CONF_SERIAL_PORT: user_input[CONF_SERIAL_PORT],
+                    CONF_SLAVE_ID: user_input[CONF_SLAVE_ID],
+                    CONF_BAUDRATE: user_input[CONF_BAUDRATE],
+                    CONF_PARITY: user_input[CONF_PARITY],
+                    CONF_STOPBITS: user_input[CONF_STOPBITS],
+                    CONF_BYTESIZE: user_input[CONF_BYTESIZE],
+                    # Defaults for things not asked in this step but required
+                    "update_interval": 10,
+                    CONF_INVERTER_MODEL: DEFAULT_INVERTER_MODEL,
+                    CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
+                }
+                
+                await self._async_test_serial_connection(final_data)
 
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
-                    data={
-                        CONF_CONNECTION_TYPE: CONNECTION_TYPE_SERIAL,
-                        CONF_NAME: user_input[CONF_NAME],
-                        CONF_SERIAL_PORT: user_input[CONF_SERIAL_PORT],
-                        CONF_SLAVE_ID: user_input[CONF_SLAVE_ID],
-                        CONF_BAUDRATE: user_input[CONF_BAUDRATE],
-                        CONF_PARITY: user_input[CONF_PARITY],
-                        CONF_STOPBITS: user_input[CONF_STOPBITS],
-                        CONF_BYTESIZE: user_input[CONF_BYTESIZE],
-                        "update_interval": user_input.get("update_interval", 10),
-                        CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
-                        CONF_REGISTER_SET: user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-                    },
+                    data=final_data,
                 )
 
             except ConnectionError:
@@ -189,7 +190,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
                 _LOGGER.exception("Unexpected error during Felicity serial setup: %s", err)
 
-        return self.async_show_form(step_id="serial",data_schema=data_schema,errors=errors)
+        return self.async_show_form(step_id="serial", data_schema=data_schema, errors=errors)
 
     async def async_step_tcp(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle TCP connection configuration."""
@@ -197,7 +198,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(
             {
-                vol.Required(CONF_NAME, default="Felicity"): str,
+                vol.Required(CONF_NAME, default="Felicity Inverter"): str,
                 vol.Required(CONF_HOST): str,
                 vol.Required(CONF_PORT, default=DEFAULT_TCP_PORT): vol.All(
                     vol.Coerce(int), vol.Range(min=1, max=65535)
@@ -210,20 +211,22 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                await self._async_test_tcp_connection(user_input)
+                final_data = {
+                    CONF_CONNECTION_TYPE: CONNECTION_TYPE_TCP,
+                    CONF_NAME: user_input[CONF_NAME],
+                    CONF_HOST: user_input[CONF_HOST],
+                    CONF_PORT: user_input[CONF_PORT],
+                    CONF_SLAVE_ID: user_input[CONF_SLAVE_ID],
+                    "update_interval": 10,
+                    CONF_INVERTER_MODEL: DEFAULT_INVERTER_MODEL,
+                    CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
+                }
+
+                await self._async_test_tcp_connection(final_data)
 
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
-                    data={
-                        CONF_CONNECTION_TYPE: CONNECTION_TYPE_TCP,
-                        CONF_NAME: user_input[CONF_NAME],
-                        CONF_HOST: user_input[CONF_HOST],
-                        CONF_PORT: user_input[CONF_PORT],
-                        CONF_SLAVE_ID: user_input[CONF_SLAVE_ID],
-                        "update_interval": user_input.get("update_interval", 10),
-                        CONF_INVERTER_MODEL: user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
-                        CONF_REGISTER_SET: user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-                    },
+                    data=final_data,
                 )
 
             except ConnectionError:
@@ -287,14 +290,15 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raise ConnectionError(f"Failed to connect to {data[CONF_HOST]}:{data[CONF_PORT]}")
     
             result = await client.read_holding_registers(
-                address=DEFAULT_FIRST_REG, count=1, device_id=data[CONF_SLAVE_ID]  # ← Use 'device_id' not 'slave'
+                address=DEFAULT_FIRST_REG, count=1, device_id=data[CONF_SLAVE_ID]
             )
     
             if result.isError():
                 raise ModbusException(f"Modbus read error: {result}")
     
-            if len(result.registers) != 2:
-                raise ValueError("Invalid response: expected 2 registers")
+            if len(result.registers) != 1:
+                # Note: Testing 1 register here for consistency with serial test
+                raise ValueError("Invalid response: expected 1 register")
     
         finally:
             if client is not None:
@@ -302,11 +306,14 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     await client.close()
                 except Exception as err:
                     _LOGGER.debug("Error closing Modbus TCP client: %s", err)
-                    
+
+
 class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for the integration."""
+
     def __init__(self, config_entry: ConfigEntry):
         """Initialize options flow."""
-    #    self.config_entry = config_entry # this is wrong!
+     #   self.config_entry = config_entry  # HA config fails if this is not removed!
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
