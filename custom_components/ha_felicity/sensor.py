@@ -3,11 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.sensor import (
-    SensorEntity,
-    SensorDeviceClass,
-    SensorStateClass,
-)
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.components.select import SelectEntity
 from homeassistant.components.time import TimeEntity
 from homeassistant.components.date import DateEntity
