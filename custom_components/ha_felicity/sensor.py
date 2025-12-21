@@ -96,38 +96,23 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        raw_value = self.coordinator.data.get(self._key)
-        if raw_value is None:
+        value = self.coordinator.data.get(self._key)
+
+        if value is None:
             self._attr_native_value = None
         else:
-            # Apply scaling based on index
-            scaled = self._scale_value(raw_value, self._info.get("index", 0))
-            # Apply precision rounding
+            # Value is already scaled in the coordinator
+            # Only apply precision rounding if it's a float
             precision = self._info.get("precision", 0)
-            if isinstance(scaled, float):
-                scaled = round(scaled, precision)
-            self._attr_native_value = scaled
-        self.async_write_ha_state()
+            if isinstance(value, float):
+                value = round(value, precision)
+            self._attr_native_value = value
 
-    @staticmethod
-    def _scale_value(value: int | float, index: int) -> int | float:
-        """Apply scaling based on index."""
-        if index == 1:  # /10
-            return value / 10.0
-        if index == 2:  # /100
-            return value / 100.0
-        if index == 3:  # signed 16-bit
-            if value >= 0x8000:
-                return value - 0x10000
-            return value
-        if index == 4:  # high/low word – handled in combined or separate logic
-            return value
-        if index == 7:  # percentage – raw
-            return value
-        return value  # 0, 5, 6 – raw
+        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
+        """Return True if the entity is available."""
         return (
             self.coordinator.last_update_success
             and self.coordinator.data.get(self._key) is not None
@@ -340,13 +325,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
 
     @property
     def native_value(self):
-        raw = self.coordinator.data.get(self._key)
-        if raw is None:
-            return None
-        index = self._info.get("index", 0)
-        if index == 1:
-            return raw / 10.0
-        return raw
+        return self.coordinator.data.get(self._key)
 
     async def async_set_native_value(self, value: float) -> None:
         index = self._info.get("index", 0)
