@@ -173,19 +173,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     
             return new_data
 
-    except Exception as err:
-        raise UpdateFailed(f"Update failed: {err}") from err
-
-        except ConnectionException as err:
-            await self.client.close()
-            raise UpdateFailed(f"Connection lost: {err}")
-        except ModbusException as err:
-            raise UpdateFailed(f"Modbus error: {err}")
         except Exception as err:
-            _LOGGER.error("Unexpected error during Felicity update: %s", err)
-            raise UpdateFailed(f"Update failed: {err}")
-
-        finally:
-            # Keep connection open for next poll (async client handles it well)
-            pass
+            raise UpdateFailed(f"Update failed: {err}") from err
+    
+            except ConnectionException as err:
+                await self.client.close()
+                raise UpdateFailed(f"Connection lost: {err}")
+            except ModbusException as err:
+                raise UpdateFailed(f"Modbus error: {err}")
+            except Exception as err:
+                _LOGGER.error("Unexpected error during Felicity update: %s", err)
+                raise UpdateFailed(f"Update failed: {err}")
+    
+            finally:
+                # Keep connection open for next poll (async client handles it well)
+                pass
 
