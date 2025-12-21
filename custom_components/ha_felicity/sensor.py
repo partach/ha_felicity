@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo
 
-from .const import DOMAIN, _COMBINED_REGISTERS
+from .const import DOMAIN, _COMBINED_REGISTERS, CONF_INVERTER_MODEL
 from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
