@@ -115,43 +115,66 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         if not await self._async_connect():
             raise UpdateFailed("Failed to connect to Felicity")
-
+    
         new_data = {}
         try:
-            for group in self._address_groups:  # NEW: Loop over predefined groups
+            for group in self._address_groups:
                 start_addr = group["start"]
                 count = group["count"]
-                result = await self.client.read_holding_registers(address=start_addr, count=count, device_id=self.slave_id)
+                result = await self.client.read_holding_registers(
+                    address=start_addr, count=count, slave=self.slave_id
+                )
                 if result.isError():
-                    raise ModbusException(f"Read error at {start_addr}: {result}")
-
-                registers = result.registers
-                keys = group["keys"]
-                for i, key in enumerate(keys):
+                    _LOGGER.warning("Modbus read error at %s (skipping group): %s", start_addr, result)
+                    continue  # Skip bad group – don't fail whole update
+    
+                registers = result.registers  # list of uint16
+                pos = 0
+                for key in group["keys"]:
                     info = self.register_map[key]
+                    size = info.get("size", 1)  # 1, 2, or 4 registers
+                    endian = info.get("endian", "big")  # "big" or "little"
                     index = info.get("index", 0)
                     precision = info.get("precision", 0)
-                    # Assume most are floats (your original logic) – fallback for raw/single
-                    if index in [1, 2, 3] and len(registers) >= (i * 2 + 2):  # Float path
-                        reg_offset = i * 2
-                        reg1 = registers[reg_offset]
-                        reg2 = registers[reg_offset + 1]
-                        raw = struct.pack(">HH", reg1, reg2)
-                        value = struct.unpack(">f", raw)[0]
-                        if value != value:  # NaN
-                            value = None
+    
+                    if pos + size > len(registers):
+                        _LOGGER.warning("Not enough registers for %s (need %d, have %d from pos %d)", key, size, len(registers) - pos, pos)
+                        break
+    
+                    reg_vals = registers[pos:pos + size]
+                    pos += size
+    
+                    # Unpack to raw integer
+                    if size == 1:
+                        raw = reg_vals[0]
+                    elif size == 2:
+                        high, low = reg_vals
+                        if endian == "big":
+                            raw = (high << 16) | low
                         else:
-                            value = round(value, precision)
+                            raw = (low << 16) | high
+                    elif size == 4:
+                        if endian == "big":
+                            raw = (reg_vals[0] << 48) | (reg_vals[1] << 32) | (reg_vals[2] << 16) | reg_vals[3]
+                        else:
+                            raw = (reg_vals[3] << 48) | (reg_vals[2] << 32) | (reg_vals[1] << 16) | reg_vals[0]
                     else:
-                        # Raw/single-word (faults, modes, etc.)
-                        reg_offset = i
-                        value = registers[reg_offset]
-                        value = self._apply_scaling(value, index)
-                        if isinstance(value, float):
-                            value = round(value, precision)
+                        _LOGGER.warning("Unsupported size %d for %s", size, key)
+                        continue
+    
+                    # Apply your scaling (keep your _apply_scaling method)
+                    value = self._apply_scaling(raw, index)
+    
+                    # Round if float
+                    if isinstance(value, float):
+                        value = round(value, precision)
+    
                     new_data[key] = value
-
+    
             return new_data
+
+    except Exception as err:
+        raise UpdateFailed(f"Update failed: {err}") from err
 
         except ConnectionException as err:
             await self.client.close()
