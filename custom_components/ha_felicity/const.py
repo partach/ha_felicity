@@ -527,21 +527,7 @@ REGISTER_SETS = {
 # "full": {k: v for k, v in _REGISTERS.items() if "_secondary" not in k and "_alt" not in k},
 _REGISTER_GROUPS = build_groups(_REGISTERS)  # auto-generated
 # Model-specific data (extend for new models)
-MODEL_DATA = {
-    INVERTER_MODEL_IVGM: {
-        "registers": _REGISTERS,
-        "groups": _REGISTER_GROUPS,
-        "combined": _COMBINED_REGISTERS,
-        "sets": REGISTER_SETS,
-    },
-    # Future model example (add when ready)
-    # "other_model": {
-    #     "registers": _REGISTERS_OTHER,
-    #     "groups": _REGISTER_GROUPS_OTHER,
-    #     "combined": _COMBINED_REGISTERS_OTHER,
-    #     "sets": REGISTER_SETS_OTHER,
-    # },
-}
+
 def build_groups(registers):
     sorted_regs = sorted(registers.items(), key=lambda x: x[1]["address"])
     groups = []
@@ -561,5 +547,20 @@ def build_groups(registers):
     if current:
         groups.append(current)
     return groups
-
+ 
+MODEL_DATA = {
+    INVERTER_MODEL_IVGM: {
+        "registers": _REGISTERS,
+        "groups": _REGISTER_GROUPS,
+        "combined": _COMBINED_REGISTERS,
+        "sets": REGISTER_SETS,
+    },
+    # Future model example (add when ready)
+    # "other_model": {
+    #     "registers": _REGISTERS_OTHER,
+    #     "groups": _REGISTER_GROUPS_OTHER,
+    #     "combined": _COMBINED_REGISTERS_OTHER,
+    #     "sets": REGISTER_SETS_OTHER,
+    # },
+}
 
