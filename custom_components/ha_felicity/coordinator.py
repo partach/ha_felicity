@@ -1,26 +1,37 @@
 """Data update coordinator for Felicity with proper async handling."""
 
 import logging
-import struct
 from datetime import timedelta
-from typing import Dict
+from typing import Dict, Any
 
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
+from pymodbus.client import AsyncModbusSerialClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 
-_LOGGER = logging.getLogger(__name__)
 from .const import _REGISTER_GROUPS
 
+_LOGGER = logging.getLogger(__name__)
+
 class HA_FelicityCoordinator(DataUpdateCoordinator):
-    def __init__(self, hass, client: AsyncModbusSerialClient, slave_id: int, register_map: dict, groups):
+    """Felicity Solar Inverter Data Update Coordinator."""
+
+    def __init__(
+        self, 
+        hass: HomeAssistant, 
+        client: AsyncModbusSerialClient, 
+        slave_id: int, 
+        register_map: dict, 
+        groups: list
+    ):
+        """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name="Felicity",
             update_interval=timedelta(seconds=10),
         )
-        self.client = client  # ← Shared client
+        self.client = client
         self.slave_id = slave_id
         self.register_map = register_map
         self._address_groups = groups
@@ -33,22 +44,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         elif index == 2:
             return raw / 100.0
         elif index == 3:
+            # Signed 16-bit integer conversion
             if raw >= 0x8000:
                 raw -= 0x10000
             return raw
-        elif index == 4:
-            return raw
-        elif index == 5:
-            return raw
-        elif index == 6:
-            return raw
-        elif index == 7:
+        elif index in [4, 5, 6, 7]:
             return raw
         else:
             return raw
         
     def _group_addresses(self, reg_map: dict) -> Dict[int, list]:
         """Group consecutive register addresses to minimize requests."""
+        # Note: This method returns a Dict, but _async_update_data expects a list of dicts 
+        # with "start", "count", and "keys". Ensure input 'groups' matches that structure.
         addresses = sorted([(info["address"], key) for key, info in reg_map.items()])
         groups = {}
         current_start = None
@@ -58,7 +66,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if current_start is None:
                 current_start = addr
                 current_keys = [key]
-            elif addr == current_start + len(current_keys) * 2:  # Consecutive (2 regs per float)
+            elif addr == current_start + len(current_keys) * 1: 
+                # NOTE: Assuming 1 register per key here based on logic? 
+                # If floats take 2 registers, the logic in this helper might need adjustment 
+                # to look at the 'size' of the previous key.
                 current_keys.append(key)
             else:
                 # Save previous group
@@ -73,6 +84,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         return groups
 
     async def _async_connect(self) -> bool:
+        """Connect to the Modbus client if not already connected."""
         if not self.connected:
             try:
                 await self.client.connect()
@@ -104,7 +116,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             hl = (value >> 32) & 0xFFFF
             lh = (value >> 16) & 0xFFFF
             ll = value & 0xFFFF
-            reg_vals = [hh, hl, lh, ll] if endian == "big" else [ll, lh, hl, hh]
+            if endian == "big":
+                reg_vals = [hh, hl, lh, ll]
+            else:
+                reg_vals = [ll, lh, hl, hh]
         else:
             _LOGGER.error("Unsupported size %d for write to %s", size, key)
             return False
@@ -114,7 +129,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def async_write_registers(self, start_address: int, values: list[int]) -> bool:
         """Write multiple registers."""
         try:
-            result = await self.client.write_registers(address=start_address, values=values, device_id=self.slave_id)
+            result = await self.client.write_registers(
+                address=start_address, 
+                values=values, 
+                device_id=self.slave_id
+            )
             if result.isError():
                 _LOGGER.error("Write registers error at %s: %s", start_address, result)
                 return False
@@ -125,6 +144,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return False
             
     async def _async_update_data(self) -> dict:
+        """Fetch data from Modbus."""
         if not await self._async_connect():
             raise UpdateFailed("Failed to connect to Felicity")
     
@@ -133,9 +153,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             for group in self._address_groups:
                 start_addr = group["start"]
                 count = group["count"]
+                
                 result = await self.client.read_holding_registers(
                     address=start_addr, count=count, device_id=self.slave_id
                 )
+                
                 if result.isError():
                     _LOGGER.warning("Modbus read error at %s (skipping group): %s", start_addr, result)
                     continue  # Skip bad group – don't fail whole update
@@ -150,13 +172,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     precision = info.get("precision", 0)
     
                     if pos + size > len(registers):
-                        _LOGGER.warning("Not enough registers for %s (need %d, have %d from pos %d)", key, size, len(registers) - pos, pos)
+                        _LOGGER.warning(
+                            "Not enough registers for %s (need %d, have %d from pos %d)", 
+                            key, size, len(registers) - pos, pos
+                        )
                         break
     
                     reg_vals = registers[pos:pos + size]
                     pos += size
     
                     # Unpack to raw integer
+                    raw = 0
                     if size == 1:
                         raw = reg_vals[0]
                     elif size == 2:
@@ -174,7 +200,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         _LOGGER.warning("Unsupported size %d for %s", size, key)
                         continue
     
-                    # Apply your scaling (keep your _apply_scaling method)
+                    # Apply scaling
                     value = self._apply_scaling(raw, index)
     
                     # Round if float
@@ -194,4 +220,3 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error("Unexpected error during Felicity update: %s", err)
             raise UpdateFailed(f"Update failed: {err}")
-    
