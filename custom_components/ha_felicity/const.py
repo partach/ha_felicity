@@ -532,14 +532,16 @@ def build_groups(registers):
     for key, info in sorted_regs:
         addr = info["address"]
         size = info.get("size", 1)
-        expected_next = current["start"] + current["count"] if current else None
-        if current is None or addr != expected_next:
-            if current:
-                groups.append(current)
+        if current is None:
             current = {"start": addr, "count": size, "keys": [key]}
         else:
-            current["count"] += size
-            current["keys"].append(key)
+            expected_next = current["start"] + current["count"]
+            if addr == expected_next and current["count"] + size <= 120:  # Safe max 120
+                current["count"] += size
+                current["keys"].append(key)
+            else:
+                groups.append(current)
+                current = {"start": addr, "count": size, "keys": [key]}
     if current:
         groups.append(current)
     return groups
