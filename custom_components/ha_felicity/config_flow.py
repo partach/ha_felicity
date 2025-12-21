@@ -6,7 +6,7 @@ from typing import Any
 import serial.tools.list_ports
 import voluptuous as vol
 from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
-from pymodbus.exceptions import ModbusException, ConnectionException
+from pymodbus.exceptions import ModbusException
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
