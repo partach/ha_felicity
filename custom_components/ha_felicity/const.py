@@ -54,11 +54,11 @@ DEFAULT_FIRST_REG = 4353
 
 _REGISTERS = {
     "setting_data_sn": {"address": 4352, "name": "Setting Data Sn", "precision": 0, "index": 0},
-    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 5, "type": "select", "options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
-    "warning_state_1": {"address": 4354, "name": "Warning State 1", "precision": 0, "index": 5, "size": 2, "endian": "big"},
-    "warning_state_2": {"address": 4356, "name": "Warning State 2", "precision": 0, "index": 5, "size": 2, "endian": "big"},
-    "warning_state_3": {"address": 4358, "name": "Warning State 3", "precision": 0, "index": 5, "size": 2, "endian": "big"},
-    "fault_code": {"address": 4360, "name": "Fault Code", "precision": 0, "index": 5},
+    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 0, "type": "select", "options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
+    "warning_state_1": {"address": 4354, "name": "Warning State 1", "precision": 0, "index": 0, "size": 2, "endian": "big"},
+    "warning_state_2": {"address": 4356, "name": "Warning State 2", "precision": 0, "index": 0, "size": 2, "endian": "big"},
+    "warning_state_3": {"address": 4358, "name": "Warning State 3", "precision": 0, "index": 0, "size": 2, "endian": "big"},
+    "fault_code": {"address": 4360, "name": "Fault Code", "precision": 0, "index": 0},
     "ac_input_voltage": {"address": 4361, "name": "Ac Input Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "ac_input_current": {"address": 4362, "name": "Ac Input Current", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 1, "index": 1},
     "ac_input_frequency": {"address": 4363, "name": "Ac Input Frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
@@ -129,10 +129,10 @@ _REGISTERS = {
     "heatsink_temperature_4": {"address": 4431, "name": "Heatsink Temperature 4", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
     "heatsink_temperature_5": {"address": 4432, "name": "Heatsink Temperature 5", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
     "heatsink_temperature_6": {"address": 4433, "name": "Heatsink Temperature 6", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 1},
-    "time_year_month": {"address": 4434, "name": "Time Year-Month", "precision": 0, "index": 6},
-    "time_day_hour": {"address": 4435, "name": "Time Day-Hour", "precision": 0, "index": 6},
-    "time_minute_second": {"address": 4436, "name": "Time Minute-Second", "precision": 0, "index": 6},
-    "time_week": {"address": 4437, "name": "Time Week", "precision": 0, "index": 6},
+    "time_year_month": {"address": 4434, "name": "Time Year-Month", "precision": 0, "index": 99},
+    "time_day_hour": {"address": 4435, "name": "Time Day-Hour", "precision": 0, "index": 99},
+    "time_minute_second": {"address": 4436, "name": "Time Minute-Second", "precision": 0, "index": 99},
+    "time_week": {"address": 4437, "name": "Time Week", "precision": 0, "index": 99},
     "pv_generated_energy_total": {"address": 4438, "name": "Pv Generated Energy Inquiry Total-High 32 Bit", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4, "size": 4, "endian": "big"},
     "pv_generated_energy_year": {"address": 4442, "name": "Pv Generated Energy Inquiry Year", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4, "size": 2, "endian": "big"},
     "pv_generated_energy_month": {"address": 4444, "name": "Pv Generated Energy Inquiry Month", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4, "size": 2, "endian": "big"},
@@ -160,9 +160,9 @@ _REGISTERS = {
     "status_bit": {"address": 4498, "name": "Status Bit", "precision": 0, "index": 5},
     "p_bus_voltage_slv": {"address": 4499, "name": "P Bus Voltage_Slv", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "n_bus_voltage_slv": {"address": 4500, "name": "N Bus Voltage_Slv", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "line_power_conversion": {"address": 4501, "name": "Linepowerconversion", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3, "size": 2, "endian": "big"},
-    "load_power_conversion": {"address": 4503, "name": "Loadpowerconversion", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3, "size": 2, "endian": "big"},
-    "bat_power_conversion": {"address": 4505, "name": "Batpowerconversion", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3},
+    "line_power_conversion": {"address": 4501, "name": "Linepowerconversion", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 0, "size": 2, "endian": "big"},
+    "load_power_conversion": {"address": 4503, "name": "Loadpowerconversion", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 0, "size": 2, "endian": "big"},
+    "bat_power_conversion": {"address": 4505, "name": "Batpowerconversion", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 0},
     "pv_power_conversion": {"address": 4506, "name": "Pvpowerconversion", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 0},
     "power_flow_msg": {"address": 4507, "name": "Powerflowmsg", "precision": 0, "index": 5},
     "parallel_system_state": {"address": 4508, "name": "Parallel system state", "precision": 0, "index": 5},
@@ -172,9 +172,9 @@ _REGISTERS = {
     "log_index": {"address": 4517, "name": "Log Index", "precision": 0, "index": 0},
     "log_status": {"address": 4518, "name": "Log Status", "precision": 0, "index": 5},
     "log_id": {"address": 4519, "name": "Log Id", "precision": 0, "index": 5},
-    "log_time_year_month": {"address": 4520, "name": "Log Time Year-Month", "precision": 0, "index": 6},
-    "log_time_day_hour": {"address": 4521, "name": "Log Time Day-Hour", "precision": 0, "index": 6},
-    "log_time_minute_second": {"address": 4522, "name": "Log Time Minute-Second", "precision": 0, "index": 6},
+    "log_time_year_month": {"address": 4520, "name": "Log Time Year-Month", "precision": 0, "index": 99},
+    "log_time_day_hour": {"address": 4521, "name": "Log Time Day-Hour", "precision": 0, "index": 99},
+    "log_time_minute_second": {"address": 4522, "name": "Log Time Minute-Second", "precision": 0, "index": 99},
     "ac_input_voltage_secondary": {"address": 4523, "name": "Ac Input Voltage secondary", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "ac_input_frequency_secondary": {"address": 4524, "name": "Ac Input Frequency secondary", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
     "ac_input_power_secondary": {"address": 4525, "name": "Ac Input Power secondary", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3},
@@ -257,7 +257,7 @@ _REGISTERS = {
     "econ_rule_1_stop_day": {"address": 8572, "name": "Rule 1 Stop Date", "precision": 0, "index": 0, "type": "date"},
     "econ_rule_1_effective_week": {"address": 8573, "name": "Rule 1 Effective Days", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
     "econ_rule_1_voltage": {"address": 8574, "name": "Rule 1 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
-    "econ_rule_1_soc": {"address": 8575, "name": "Rule 1 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
+    "econ_rule_1_soc": {"address": 8575, "name": "Rule 1 SOC", "unit": "V", "device_class": "voltage", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_1_power": {"address": 8576, "name": "Rule 1 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
     
     "econ_rule_2_enable": {"address": 8577, "name": "Economic Mode Rule 2 Enable", "precision": 0, "index": 0,"type": "select", "options": ["Disabled", "Charge", "Discharge"]},
@@ -267,7 +267,7 @@ _REGISTERS = {
     "econ_rule_2_stop_day": {"address": 8581, "name": "Rule 2 Stop Day", "precision": 0, "index": 0, "type": "date"},
     "econ_rule_2_effective_week": {"address": 8582, "name": "Rule 2 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
     "econ_rule_2_voltage": {"address": 8583, "name": "Rule 2 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
-    "econ_rule_2_soc": {"address": 8584, "name": "Rule 2 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
+    "econ_rule_2_soc": {"address": 8584, "name": "Rule 2 SOC", "unit": "V", "device_class": "voltage", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_2_power": {"address": 8585, "name": "Rule 2 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
     
     "econ_rule_3_enable": {"address": 8586, "name": "Economic Mode Rule 3 Enable", "precision": 0, "index": 0,"type": "select", "options": ["Disabled", "Charge", "Discharge"]},
@@ -277,7 +277,7 @@ _REGISTERS = {
     "econ_rule_3_stop_day": {"address": 8590, "name": "Rule 3 Stop Day", "precision": 0, "index": 0, "type": "date"},
     "econ_rule_3_effective_week": {"address": 8591, "name": "Rule 3 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
     "econ_rule_3_voltage": {"address": 8592, "name": "Rule 3 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
-    "econ_rule_3_soc": {"address": 8593, "name": "Rule 3 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
+    "econ_rule_3_soc": {"address": 8593, "name": "Rule 3 SOC", "unit": "V", "device_class": "voltage", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_3_power": {"address": 8594, "name": "Rule 3 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
     
     "econ_rule_4_enable": {"address": 8595, "name": "Economic Mode Rule 4 Enable", "precision": 0, "index": 0,"type": "select", "options": ["Disabled", "Charge", "Discharge"]},
@@ -287,7 +287,7 @@ _REGISTERS = {
     "econ_rule_4_stop_day": {"address": 8599, "name": "Rule 4 Stop Day", "precision": 0, "index": 0, "type": "date"},
     "econ_rule_4_effective_week": {"address": 8600, "name": "Rule 4 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
     "econ_rule_4_voltage": {"address": 8601, "name": "Rule 4 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
-    "econ_rule_4_soc": {"address": 8602, "name": "Rule 4 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
+    "econ_rule_4_soc": {"address": 8602, "name": "Rule 4 SOC", "unit": "V", "device_class": "voltage", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_4_power": {"address": 8603, "name": "Rule 4 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
  
     # Battery configuration registers (8483–8494)
@@ -336,7 +336,7 @@ _COMBINED_REGISTERS = {
             "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
             "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
             "voltage_v": volt / 10.0 if volt else None,
-            "soc_percent": soc,
+            "soc_value": soc,
             "power_w": power,
         },
         "name": "Economic Mode Rule 1",
@@ -361,7 +361,7 @@ _COMBINED_REGISTERS = {
             "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
             "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
             "voltage_v": volt / 10.0 if volt else None,
-            "soc_percent": soc,
+            "soc_value": soc,
             "power_w": power,
         },
         "name": "Economic Mode Rule 2",
@@ -386,7 +386,7 @@ _COMBINED_REGISTERS = {
             "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
             "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
             "voltage_v": volt / 10.0 if volt else None,
-            "soc_percent": soc,
+            "soc_value": soc,
             "power_w": power,
         },
         "name": "Economic Mode Rule 3",
@@ -411,7 +411,7 @@ _COMBINED_REGISTERS = {
             "stop_date": f"{stop_d >> 8:02d}-{stop_d & 0xFF:02d}",
             "days": [day for i, day in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) if (week & (1 << i))],
             "voltage_v": volt / 10.0 if volt else None,
-            "soc_percent": soc,
+            "soc_value": soc,
             "power_w": power,
         },
         "name": "Economic Mode Rule 4",
@@ -436,6 +436,24 @@ _COMBINED_REGISTERS = {
                             f"{day_hour & 0xFF:02d}:{min_sec >> 8:02d}:{min_sec & 0xFF:02d}",
         },
         "name": "Inverter Time",
+    },
+    "log_time": {
+        "sources": [
+            "log_time_year_month",
+            "log_time_day_hour",
+            "log_time_minute_second",
+        ],
+        "calc": lambda year_month, day_hour, min_sec: {
+            "year": 2000 + (year_month >> 8),
+            "month": year_month & 0xFF,
+            "day": day_hour >> 8,
+            "hour": day_hour & 0xFF,
+            "minute": min_sec >> 8,
+            "second": min_sec & 0xFF,
+            "iso_datetime": f"{2000 + (year_month >> 8):04d}-{year_month & 0xFF:02d}-{day_hour >> 8:02d} "
+                            f"{day_hour & 0xFF:02d}:{min_sec >> 8:02d}:{min_sec & 0xFF:02d}",
+        },
+        "name": "Log Entry Time",
     },
 }
 
@@ -529,19 +547,25 @@ def build_groups(registers):
     sorted_regs = sorted(registers.items(), key=lambda x: x[1]["address"])
     groups = []
     current = None
+    current_size = None
+
     for key, info in sorted_regs:
         addr = info["address"]
         size = info.get("size", 1)
+
         if current is None:
             current = {"start": addr, "count": size, "keys": [key]}
+            current_size = size
         else:
             expected_next = current["start"] + current["count"]
-            if addr == expected_next and current["count"] + size <= 120:  # Safe max 120
+            if addr == expected_next and size == current_size and current["count"] + size <= 120:
                 current["count"] += size
                 current["keys"].append(key)
             else:
                 groups.append(current)
                 current = {"start": addr, "count": size, "keys": [key]}
+                current_size = size
+
     if current:
         groups.append(current)
     return groups
