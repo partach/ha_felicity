@@ -93,6 +93,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Store config and hub_key for unload cleanup
     coordinator.config = config
     coordinator.hub_key = hub_key
+    
+    # Register device – this gives the nice hub view
+    device_registry = dr.async_get(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.unique_id or hub_key)},
+        name=entry.title or "Felicity Inverter",
+        manufacturer="Felicity Solar",
+        model=model,
+    )
+    
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     # First data refresh
