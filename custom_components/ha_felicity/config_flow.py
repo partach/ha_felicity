@@ -104,6 +104,21 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
+                vol.Optional("nordpool_entity", default=current_nordpool): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                        device_class=SensorDeviceClass.MONETARY,  # Nordpool uses monetary class
+                        multiple=False,
+                    )
+                ),
+                vol.Optional("price_threshold_level", default=5): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=10,
+                        step=1,
+                        mode="slider",
+                    )
+                ),
             }
         )
 
