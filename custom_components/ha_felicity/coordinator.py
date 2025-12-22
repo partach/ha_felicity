@@ -39,7 +39,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.connected = False
         self.nordpool_entity = nordpool_entity
         # runtime setting (if used) 
-        self.price_threshold_level = None
         self.current_price = None
         self.max_price = None
         self.min_price = None
@@ -262,13 +261,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             if grid_mode == "from_grid" and self.current_price < self.price_threshold:
                                 # Price low → charge from grid
                                 # await self.async_write_register("your_charge_enable_key", 1)  # e.g., enable charge rule
-                                _LOGGER.info("starting the charge cycle")
+                                _LOGGER.info("starting the charge cycle. lvl: %s max bat: %s, current bat: %s mode: %s",price_threshold_level,battery_charge_max, battery_soc, grid_mode)
                             elif grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc > 80:
                                 # Price high + battery full → discharge to grid
                                 #await self.async_write_register("your_discharge_enable_key", 1)
-                                _LOGGER.info("starting the discharge cycle")
+                                _LOGGER.info("starting the discharge cycle. lvl: %s min bat: %s, current bat: %s, mode: %s",price_threshold_level,battery_discharge_min, battery_soc, grid_mode)
                             else:
-                                _LOGGER.info("stopping the charge/discharge cycle")
+                                _LOGGER.info("stopping the charge/discharge cycle. mode: %s", grid_mode)
                                 # Price not favorable → stop forced charge/discharge
                                 #await self.async_write_register("your_charge_enable_key", 0)
                                 #await self.async_write_register("your_discharge_enable_key", 0)
