@@ -95,13 +95,58 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
         ]    
     entities.extend(nordpool_sensors)
-
-    
+    # Price threshold level slider
+    entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="price_threshold_level",name="Price Threshold Level",min_val=1,max_val=10,step=1,icon="mdi:counter"))
+    # Battery charge max level
+    entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="battery_charge_max_level",name="Battery Charge Max Level",min_val=30,max_val=100,step=1,unit="%",icon="mdi:battery-charging-100",device_class="battery"))
+    # Battery discharge min level
+    entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="battery_discharge_min_level",name="Battery Discharge Min Level",min_val=10,max_val=70,step=1,unit="%",icon="mdi:battery-charging-20",device_class="battery"))
+    # let's make sure we tie all the sensors to the device:
     for entity in entities:
         entity._attr_device_info = device_info
     async_add_entities(entities)
 
+class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
+    """Generic internal number entity for user settings (live sliders)."""
+    def __init__(
+        self,
+        coordinator,
+        entry,
+        option_key: str,
+        name: str,
+        min_val: int,
+        max_val: int,
+        step: int = 1,
+        unit: str = "",
+        icon: str | None = None,
+        device_class: str | None = None,
+    ):
+        super().__init__(coordinator)
+        self._entry = entry
+        self._option_key = option_key
+        self._attr_name = f"{entry.title} {name}"
+        self._attr_unique_id = f"{entry.entry_id}_{option_key}"
+        self._attr_native_min_value = min_val
+        self._attr_native_max_value = max_val
+        self._attr_native_step = step
+        self._attr_native_unit_of_measurement = unit
+        if icon:
+            self._attr_icon = icon
+        if device_class:
+            self._attr_device_class = device_class
 
+    @property
+    def native_value(self):
+        return self._entry.options.get(self._option_key, self._attr_native_max_value)
+
+    async def async_set_native_value(self, value: float) -> None:
+        level = int(value)
+        current_options = dict(self._entry.options)
+        current_options[self._option_key] = level
+        self.hass.config_entries.async_update_entry(self._entry, options=current_options)
+        _LOGGER.info("%s set to %s via slider", self._attr_name, level)
+        await self.coordinator.async_request_refresh()
+        
 class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
     """Representation of a Felicity sensor (raw register)."""
 
