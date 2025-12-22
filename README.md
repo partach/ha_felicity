@@ -19,7 +19,7 @@ Currently supports one type: T-REX-10KLP3G01
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20hub.png" width="600"/>
   <br>
-  <em>Inverter that is supported</em>
+  <em>Home assistant hub view</em>
 </p>
 
 ## Features
