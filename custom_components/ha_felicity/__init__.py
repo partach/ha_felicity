@@ -48,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Select register set from options (filtered on model's registers)
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
     selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
+    price_threshold_level = entry.options.get("price_threshold_level",5)
 
     # === SAFETY NET: Auto-include missing group keys (prevents update failed) ===
     all_group_keys = {key for group in model_data["groups"] for key in group["keys"]}
