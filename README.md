@@ -29,10 +29,11 @@ Currently supports one type: T-REX-10KLP3G01
 - Customizable communication settings
 - Customizable registers (basic, basic plus, full). No need to clutter your entities with unwanted registers
 - Hassle free use of the device
-- Combined registers into meaningfull data
+- Combined registers into meaningfull data (no raw unusable values)
 - Multiple hubs supported, ability to add multiple inverters.
-- configurable refresh speeds
+- configurable refresh speeds for modbus
 - Optimized modbus loading
+- Automations possible, read and write on modbus!
 - Very easy and straight forward!
 
 ## Installation
