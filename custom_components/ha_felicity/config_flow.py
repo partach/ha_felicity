@@ -119,6 +119,12 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode="slider",
                     )
                 ),
+                vol.Optional("grid_mode", default="from_grid"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["from_grid", "to_grid", "off"],
+                        mode="dropdown",
+                    )
+                ),
             }
         )
 
