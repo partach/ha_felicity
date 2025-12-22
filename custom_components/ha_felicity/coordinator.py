@@ -21,6 +21,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         slave_id: int, 
         register_map: dict, 
         groups: list
+        nordpool_entity=None
     ):
         """Initialize the coordinator."""
         super().__init__(
@@ -34,6 +35,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.register_map = register_map
         self._address_groups = groups
         self.connected = False
+        self.nordpool_entity = nordpool_entity  # ← store it
+        self.current_price = None
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
@@ -221,7 +224,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
     
                     new_data[key] = value
-    
+            # Update Nordpool price
+            if self.nordpool_entity:
+                price_state = self.hass.states.get(self.nordpool_entity)
+                if price_state and price_state.state not in ("unavailable", "unknown"):
+                    try:
+                        self.current_price = float(price_state.state)
+                    except ValueError:
+                        self.current_price = None
+                else:
+                    self.current_price = None
+            else:
+                self.current_price = None  
             return new_data
 
         except ConnectionException as err:
