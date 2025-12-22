@@ -95,17 +95,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
         ]    
     entities.extend(nordpool_sensors)
+    # now make sure we have some of our own entities for dynamic energy loading
     # Price threshold level slider
     entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="price_threshold_level",name="Price Threshold Level",min_val=1,max_val=10,step=1,icon="mdi:counter"))
     # Battery charge max level
     entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="battery_charge_max_level",name="Battery Charge Max Level",min_val=30,max_val=100,step=1,unit="%",icon="mdi:battery-charging-100",device_class="battery"))
     # Battery discharge min level
     entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="battery_discharge_min_level",name="Battery Discharge Min Level",min_val=10,max_val=70,step=1,unit="%",icon="mdi:battery-charging-20",device_class="battery"))
+    entities.append(HA_FelicityGridModeSelect(coordinator, entry))
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
         entity._attr_device_info = device_info
     async_add_entities(entities)
 
+class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
+    """Live selector for Grid Mode (from_grid / to_grid / off)."""
+    _attr_icon = "mdi:transmission-tower"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_name = f"{entry.title} Grid Mode"
+        self._attr_unique_id = f"{entry.entry_id}_grid_mode"
+        self._attr_options = ["from_grid", "to_grid", "off"]
+        self._attr_current_option = self._entry.options.get("grid_mode", "off")
+
+    @property
+    def current_option(self):
+        return self._entry.options.get("grid_mode", "off")
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+
+        current_options = dict(self._entry.options)
+        current_options["grid_mode"] = option
+        self.hass.config_entries.async_update_entry(self._entry, options=current_options)
+        _LOGGER.info("Grid mode set to %s via selector", option)
+        await self.coordinator.async_request_refresh()
+        
 class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
     """Generic internal number entity for user settings (live sliders)."""
     def __init__(
