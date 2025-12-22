@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Dict
 
 from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pymodbus.client import AsyncModbusSerialClient
 from pymodbus.exceptions import ModbusException, ConnectionException
@@ -21,8 +22,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         slave_id: int, 
         register_map: dict, 
         groups: list,
+        config_entry=ConfigEntry,
         nordpool_entity: str | None = None,
-        price_threshold_level: int = 5,
     ):
         """Initialize the coordinator."""
         super().__init__(
@@ -37,12 +38,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._address_groups = groups
         self.connected = False
         self.nordpool_entity = nordpool_entity
-        self.price_threshold_level = price_threshold_level
+        # runtime setting (if used) 
+        self.price_threshold_level = None
         self.current_price = None
         self.max_price = None
         self.min_price = None
         self.avg_price = None
         self.price_threshold = None
+        self.config_entry = config_entry
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
@@ -230,6 +233,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
     
                     new_data[key] = value
+
+            # === Load user settings & Nordpool every update ===
+            price_threshold_level = self.config_entry.options.get("price_threshold_level", 5)
+            battery_charge_max = self.config_entry.options.get("battery_charge_max_level", 100)
+            battery_discharge_min = self.config_entry.options.get("battery_discharge_min_level", 20)
+            grid_mode = self.config_entry.options.get("grid_mode", "off")
             # Update Nordpool price
             self.max_price = None
             self.min_price = None
@@ -244,12 +253,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         self.max_price = attrs.get("max")  # Today's max price
                         self.min_price = attrs.get("min")  # Today's min price
                         self.avg_price = attrs.get("average")  # Today's average price
-                        level = self.config_entry.options.get("price_threshold_level", 5)
+                        
                         if self.avg_price is not None:
-                            self.price_threshold = self.avg_price * (level / 5)  # Scale around 5 = avg
+                            self.price_threshold = self.avg_price * (price_threshold_level / 5)  # Scale around 5 = avg
                             # === DYNAMIC PRICE LOGIC ===
-                            grid_mode = self.config_entry.options.get("grid_mode", "off")
-                            battery_soc = new_data.get("battery_capacity")  # or your SOC key
+                            battery_soc = new_data.get("battery_capacity")
                      
                             if grid_mode == "from_grid" and self.current_price < self.price_threshold:
                                 # Price low → charge from grid
