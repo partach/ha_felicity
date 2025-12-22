@@ -277,7 +277,7 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{key}"
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = "monetary"
-        self._attr_state_class = "measurement"
+        self._attr_state_class = None
 
     @property
     def native_value(self):
