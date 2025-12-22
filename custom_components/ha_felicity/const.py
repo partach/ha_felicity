@@ -46,11 +46,12 @@ DEFAULT_FIRST_REG = 4353
 # 0 = dont process or packed
 # 1 = /10 → precision 1, index 1;
 # 2 = /100 → precision 2, index 2; 
-# 3 = signed index; 
-# 4 = energy high/low index; 
-# 5 = faults/warnings/modes/flags index; 
-# 6 = time index; 
-# 7 = % index
+# 3 = signed index;
+# 4 = energy high/low index; (obsolete)
+# 5 = faults/warnings/modes/flags index; (doesnt do anything port procesing)
+# 6 = time index; (obsolete)
+# 7 = % index (doesnt really do anything yet)
+# 3 = signed index and /10; 
 
 _REGISTERS = {
     "setting_data_sn": {"address": 4352, "name": "Setting Data Sn", "precision": 0, "index": 0},
