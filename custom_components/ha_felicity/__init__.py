@@ -110,27 +110,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_setup_services(hass: HomeAssistant) -> None:
     async def handle_write_register(call: ServiceCall):
-        entity_id = call.data.get("entity_id")
-        if not entity_id:
+        entity_ids = call.data.get("entity_id")
+        if not entity_ids:
             _LOGGER.error("write_register: entity_id required")
             return
-
-        # Find coordinator from entity registry
-        entity_registry = er.async_get(hass)
-        entry = entity_registry.async_get(entity_id)
-        if not entry or entry.config_entry_id not in hass.data[DOMAIN]:
-            _LOGGER.error("No Felicity config entry found for entity %s", entity_id)
-            return
-
-        coordinator = hass.data[DOMAIN][entry.config_entry_id]
+    
+        # Handle single string or list
+        if isinstance(entity_ids, str):
+            entity_ids = [entity_ids]
+    
         key = call.data["key"]
         value = call.data["value"]
-
-        success = await coordinator.async_write_register(key, value)
-        if success:
-            await coordinator.async_request_refresh()
-
-    hass.services.async_register(DOMAIN, "write_register", handle_write_register)
+    
+        for entity_id in entity_ids:
+            entity_registry = er.async_get(hass)
+            ent = entity_registry.async_get(entity_id)
+            if not ent or ent.config_entry_id not in hass.data[DOMAIN]:
+                _LOGGER.error("No Felicity config entry for entity %s", entity_id)
+                continue
+    
+            coordinator = hass.data[DOMAIN][ent.config_entry_id]
+            success = await coordinator.async_write_register(key, value)
+            if success:
+                _LOGGER.info("Wrote %s = %s to %s", key, value, entity_id)
+                await coordinator.async_request_refresh()
+            else:
+                _LOGGER.error("Failed to write %s = %s to %s", key, value, entity_id)
+    
+    hass.services.async_register(DOMAIN, "write_register", handle_write_register))
+    
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
