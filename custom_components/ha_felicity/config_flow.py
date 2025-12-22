@@ -323,6 +323,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         # Get current values from options (with defaults)
         current_register_set = self.config_entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
         current_interval = self.config_entry.options.get("update_interval", 10)
+        current_nordpool = self.config_entry.options.get("nordpool_entity")
 
         data_schema = vol.Schema(
             {
@@ -354,6 +355,13 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ): vol.All(
                     vol.Coerce(int),
                     vol.Range(min=5, max=300),  # 5 seconds to 5 minutes
+                ),
+                vol.Optional("nordpool_entity", default=current_nordpool): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                        device_class=SensorDeviceClass.MONETARY,  # Nordpool uses monetary class
+                        multiple=False,
+                    )
                 ),
             }
         )
