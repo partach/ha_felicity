@@ -111,6 +111,20 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         multiple=False,
                     )
                 ),
+                vol.Optional("price_threshold_level", default=5): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=10,
+                        step=1,
+                        mode="slider",
+                    )
+                ),
+                vol.Optional("grid_mode", default="from_grid"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["from_grid", "to_grid", "off"],
+                        mode="dropdown",
+                    )
+                ),
             }
         )
 
@@ -331,7 +345,8 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         current_register_set = self.config_entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
         current_interval = self.config_entry.options.get("update_interval", 10)
         current_nordpool = self.config_entry.options.get("nordpool_entity")
-
+        current_threshold = self.config_entry.options.get("price_threshold_level", 5)
+        current_grid_mode = self.config_entry.options.get("grid_mode", "from_grid")
         data_schema = vol.Schema(
             {
                 vol.Required(
@@ -364,13 +379,6 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Range(min=5, max=300),  # 5 seconds to 5 minutes
                 ),
                 vol.Optional("nordpool_entity", default=current_nordpool): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain="sensor",
-                        device_class=SensorDeviceClass.MONETARY,  # Nordpool uses monetary class
-                        multiple=False,
-                    )
-                ),
-                    vol.Optional("nordpool_entity", default=current_nordpool): selector.EntitySelector(
                     selector.EntitySelectorConfig(
                         domain="sensor",
                         device_class=SensorDeviceClass.MONETARY,  # Nordpool uses monetary class
