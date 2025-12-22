@@ -240,19 +240,30 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if price_state and price_state.state not in ("unavailable", "unknown"):
                     try:
                         self.current_price = float(price_state.state)
-                        attrs = current_price.attributes
+                        attrs = price_state.attributes
                         self.max_price = attrs.get("max")  # Today's max price
                         self.min_price = attrs.get("min")  # Today's min price
                         self.avg_price = attrs.get("average")  # Today's average price
                         level = self.config_entry.options.get("price_threshold_level", 5)
                         if self.avg_price is not None:
                             self.price_threshold = self.avg_price * (level / 5)  # Scale around 5 = avg
-                            # Now we can use self.price_threshold in futher logic
-                            # e.g., mode = self.config_entry.options.get("grid_mode", "from_grid")
-                            # if mode == "from_grid" and current_price < self.price_threshold:
-                            #     # Allow from grid
-                            # elif mode == "to_grid" and current_price > self.price_threshold and battery_soc > 50:
-                            #     # Allow to grid
+                            # === DYNAMIC PRICE LOGIC ===
+                            grid_mode = self.config_entry.options.get("grid_mode", "off")
+                            battery_soc = new_data.get("battery_capacity")  # or your SOC key
+                     
+                            if grid_mode == "from_grid" and self.current_price < self.price_threshold:
+                                # Price low → charge from grid
+                                # await self.async_write_register("your_charge_enable_key", 1)  # e.g., enable charge rule
+                                _LOGGER.info("starting the charge cycle")
+                            elif grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc > 80:
+                                # Price high + battery full → discharge to grid
+                                #await self.async_write_register("your_discharge_enable_key", 1)
+                                _LOGGER.info("starting the discharge cycle")
+                            else:
+                                _LOGGER.info("stopping the charge/discharge cycle")
+                                # Price not favorable → stop forced charge/discharge
+                                #await self.async_write_register("your_charge_enable_key", 0)
+                                #await self.async_write_register("your_discharge_enable_key", 0)
                     except ValueError:
                         self.current_price = None
                         self.price_threshold = None
