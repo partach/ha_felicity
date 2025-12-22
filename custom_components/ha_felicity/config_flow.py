@@ -13,6 +13,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 from homeassistant.core import callback
+from homeassistant.components.sensor import SensorDeviceClass
 
 from .const import (
     CONF_BAUDRATE,
@@ -64,6 +65,9 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle connection type selection."""
+        current_nordpool = None
+        if self.config_entry:
+            current_nordpool = self.config_entry.options.get("nordpool_entity")
         if user_input is not None:
             self._connection_type = user_input[CONF_CONNECTION_TYPE]
             # Store initial common options to pass forward if needed, 
@@ -72,7 +76,6 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return await self.async_step_serial()
             else:
                 return await self.async_step_tcp()
-
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_CONNECTION_TYPE, default=CONNECTION_TYPE_SERIAL): selector.SelectSelector(
@@ -345,7 +348,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         current_register_set = self.config_entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
         current_interval = self.config_entry.options.get("update_interval", 10)
         current_nordpool = self.config_entry.options.get("nordpool_entity")
-        current_threshold = self.config_entry.options.get("price_threshold_level", 5)
+        price_threshold_level = self.config_entry.options.get("price_threshold_level", 5)
         current_grid_mode = self.config_entry.options.get("grid_mode", "from_grid")
         data_schema = vol.Schema(
             {
@@ -385,7 +388,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                         multiple=False,
                     )
                 ),
-                vol.Optional("price_threshold_level", default=5): selector.NumberSelector(
+                vol.Optional("price_threshold_level", default=price_threshold_level): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=1,
                         max=10,
@@ -393,7 +396,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                         mode="slider",
                     )
                 ),
-                vol.Optional("grid_mode", default="from_grid"): selector.SelectSelector(
+                vol.Optional("grid_mode", default=current_grid_mode): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=["from_grid", "to_grid", "off"],
                         mode="dropdown",
