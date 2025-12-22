@@ -44,7 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Select model data (fallback to default model)
     model = entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
     model_data = MODEL_DATA.get(model, MODEL_DATA[DEFAULT_INVERTER_MODEL])
-    
+    nordpool_entity = entry.options.get("nordpool_entity")
     # Select register set from options (filtered on model's registers)
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
     selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
@@ -88,7 +88,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hub.client,
         config[CONF_SLAVE_ID],
         selected_registers,
-        groups=model_data["groups"]
+        groups=model_data["groups"],
+        nordpool_entity=nordpool_entity
     )
     # Store config and hub_key for unload cleanup
     coordinator.config = config
