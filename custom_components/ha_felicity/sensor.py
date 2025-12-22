@@ -84,6 +84,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         HA_FelicityCombinedSensor(coordinator, entry, key, info)
         for key, info in model_combined.items()
     ])
+
+    nordpool_sensors = []
+    if coordinator.nordpool_entity:
+        nordpool_sensors = [
+            HA_FelicityNordpoolSensor(coordinator, "current_price", "Current Price", "€/kWh"),
+            HA_FelicityNordpoolSensor(coordinator, "min_price", "Today Min Price", "€/kWh"),
+            HA_FelicityNordpoolSensor(coordinator, "max_price", "Today Max Price", "€/kWh"),
+            HA_FelicityNordpoolSensor(coordinator, "avg_price", "Today Avg Price", "€/kWh"),
+            HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
+        ]    
+    entities.extend(nordpool_sensors)
+
+    
     for entity in entities:
         entity._attr_device_info = device_info
     async_add_entities(entities)
@@ -182,6 +195,20 @@ class HA_FelicityCombinedSensor(CoordinatorEntity, SensorEntity):
     def available(self) -> bool:
         return all(self.coordinator.data.get(src) is not None for src in self._sources)
 
+class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for Nordpool price data from coordinator."""
+    def __init__(self, coordinator, key, name, unit):
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = f"{coordinator.config_entry.title} {name}"
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{key}"
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = "monetary"
+        self._attr_state_class = "measurement"
+
+    @property
+    def native_value(self):
+        return getattr(self.coordinator, self._key)
 
 class HA_FelicitySelect(CoordinatorEntity, SelectEntity):
     """Representation of a writable select (enum) register."""
