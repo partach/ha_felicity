@@ -44,11 +44,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Select model data (fallback to default model)
     model = entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
     model_data = MODEL_DATA.get(model, MODEL_DATA[DEFAULT_INVERTER_MODEL])
+
+    #add nordpool integration
     nordpool_entity = entry.options.get("nordpool_entity")
+    price_threshold_level = entry.options.get("price_threshold_level", 5)
+    
     # Select register set from options (filtered on model's registers)
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
     selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
-    price_threshold_level = entry.options.get("price_threshold_level",5)
 
     # === SAFETY NET: Auto-include missing group keys (prevents update failed) ===
     all_group_keys = {key for group in model_data["groups"] for key in group["keys"]}
@@ -90,7 +93,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config[CONF_SLAVE_ID],
         selected_registers,
         groups=model_data["groups"],
-        nordpool_entity=nordpool_entity
+        nordpool_entity=nordpool_entity,
+        price_threshold_level=price_threshold_level,
     )
     # Store config and hub_key for unload cleanup
     coordinator.config = config
@@ -106,7 +110,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Forward to sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await async_setup_services(hass)
+    if "services_setup" not in hass.data[DOMAIN]:
+        await async_setup_services(hass)
+        hass.data[DOMAIN]["services_setup"] = True
 
     return True
 
