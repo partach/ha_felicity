@@ -9,5 +9,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/partach/ha_felicity/issues",
   "requirements": ["pymodbus>=3.7.4"],
-  "version": "0.2.3"
+  "version": "0.4.0"
 }
