@@ -93,7 +93,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config[CONF_SLAVE_ID],
         selected_registers,
         groups=model_data["groups"],
-        config_entry=entry
+        config_entry=entry,
         nordpool_entity=nordpool_entity,
     )
     # Store config and hub_key for unload cleanup
