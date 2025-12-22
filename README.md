@@ -16,6 +16,11 @@ Currently supports one type: T-REX-10KLP3G01
   <br>
   <em>Inverter that is supported</em>
 </p>
+<p align="center">
+  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20hub.png" width="600"/>
+  <br>
+  <em>Inverter that is supported</em>
+</p>
 
 ## Features
 - No need for any yaml configuration!
@@ -26,6 +31,8 @@ Currently supports one type: T-REX-10KLP3G01
 - Hassle free use of the device
 - Combined registers into meaningfull data
 - Multiple hubs supported, ability to add multiple inverters.
+- configurable refresh speeds
+- Optimized modbus loading
 - Very easy and straight forward!
 
 ## Installation
@@ -36,6 +43,9 @@ Options:
    * After HA reboot (Needed for new integrations): choose 'add integration' (in devices and services) and choose `ha_felicity` in the list.
      
 Let the install config of the integration guide you as it asks you for the needed data.
+
+## Serial and TCP
+It supports modbus USB dongle and TCP connection
 
 ## Configuration options
 <p align="center">
