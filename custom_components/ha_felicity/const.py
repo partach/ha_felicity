@@ -456,51 +456,6 @@ _COMBINED_REGISTERS = {
         },
         "name": "Log Entry Time",
     },
-    "nordpool_current_price": {
-        "sources": [],  # no sources – calculated in coordinator
-        "calc": lambda: coordinator.current_price if coordinator.current_price is not None else None,
-        "unit": "€/kWh",  # or your currency
-        "device_class": "monetary",
-        "state_class": "measurement",
-        "name": "Current Electricity Price",
-        "precision": 3,
-    },
-    "nordpool_today_min": {
-        "sources": [],
-        "calc": lambda: coordinator.min_price,
-        "unit": "€/kWh",
-        "device_class": "monetary",
-        "state_class": "measurement",
-        "name": "Today Min Price",
-        "precision": 3,
-    },
-    "nordpool_today_max": {
-        "sources": [],
-        "calc": lambda: coordinator.max_price,
-        "unit": "€/kWh",
-        "device_class": "monetary",
-        "state_class": "measurement",
-        "name": "Today Max Price",
-        "precision": 3,
-    },
-    "nordpool_today_avg": {
-        "sources": [],
-        "calc": lambda: coordinator.avg_price,
-        "unit": "€/kWh",
-        "device_class": "monetary",
-        "state_class": "measurement",
-        "name": "Today Average Price",
-        "precision": 3,
-    },
-    "nordpool_price_threshold": {
-        "sources": [],
-        "calc": lambda: coordinator.price_threshold,
-        "unit": "€/kWh",
-        "device_class": "monetary",
-        "state_class": "measurement",
-        "name": "Dynamic Price Threshold",
-        "precision": 3,
-    },
 }
 
 # In const.py – at the end
