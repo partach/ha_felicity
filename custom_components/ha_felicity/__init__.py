@@ -47,7 +47,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     #add nordpool integration
     nordpool_entity = entry.options.get("nordpool_entity")
-    price_threshold_level = entry.options.get("price_threshold_level", 5)
     
     # Select register set from options (filtered on model's registers)
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
