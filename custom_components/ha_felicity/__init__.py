@@ -219,7 +219,7 @@ class FelicitySerialHub:
                     await self.client.close()
                 except Exception as err:
                     _LOGGER.exception("Unexpected error closing Felicity connection for serial: %s", err)
-
+            self.client = None
 
 class FelicityTcpHub:
     """Manages a single TCP connection shared across meters."""
@@ -243,3 +243,4 @@ class FelicityTcpHub:
                     await self.client.close()
                 except Exception as err:
                     _LOGGER.exception("Unexpected error closing Felicity connection for tcp: %s", err)
+            self.client = None
