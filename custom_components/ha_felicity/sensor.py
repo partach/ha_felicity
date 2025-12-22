@@ -208,7 +208,10 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return getattr(self.coordinator, self._key)
+        value = getattr(self.coordinator, self._attr_key)
+        if value is not None:
+            return round(value, 3)  # or 4 – clean decimals
+        return None
 
 class HA_FelicitySelect(CoordinatorEntity, SelectEntity):
     """Representation of a writable select (enum) register."""
