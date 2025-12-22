@@ -37,6 +37,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.connected = False
         self.nordpool_entity = nordpool_entity  # ← store it
         self.current_price = None
+        self.price_threshold_level = 5
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
@@ -225,11 +226,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     
                     new_data[key] = value
             # Update Nordpool price
+            self.max_price = None
+            self.min_price = None
+            self.avg_price = None
+            self.price_threshold = None
             if self.nordpool_entity:
                 price_state = self.hass.states.get(self.nordpool_entity)
                 if price_state and price_state.state not in ("unavailable", "unknown"):
                     try:
                         self.current_price = float(price_state.state)
+                        attrs = state.attributes
+                        self.max_price = attrs.get("max")  # Today's max price
+                        self.min_price = attrs.get("min")  # Today's min price
+                        self.avg_price = attrs.get("average")  # Today's average price
+                        level = self.config_entry.options.get("price_threshold_level", 5)
+                        if self.avg_price is not None:
+                            self.price_threshold = self.avg_price * (level / 5)  # Scale around 5 = avg
+                            # Now we can use self.price_threshold in futher logic
+                            # e.g., mode = self.config_entry.options.get("grid_mode", "from_grid")
+                            # if mode == "from_grid" and current_price < self.price_threshold:
+                            #     # Allow from grid
+                            # elif mode == "to_grid" and current_price > self.price_threshold and battery_soc > 50:
+                            #     # Allow to grid
                     except ValueError:
                         self.current_price = None
                 else:
