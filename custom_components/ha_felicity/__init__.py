@@ -137,7 +137,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             else:
                 _LOGGER.error("Failed to write %s = %s to %s", key, value, entity_id)
     
-    hass.services.async_register(DOMAIN, "write_register", handle_write_register))
+    hass.services.async_register(DOMAIN, "write_register", handle_write_register)
     
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
