@@ -20,8 +20,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         client: AsyncModbusSerialClient, 
         slave_id: int, 
         register_map: dict, 
-        groups: list
-        nordpool_entity=None
+        groups: list,
+        nordpool_entity: str | None = None,
+        price_threshold_level: int = 5,
     ):
         """Initialize the coordinator."""
         super().__init__(
@@ -35,9 +36,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.register_map = register_map
         self._address_groups = groups
         self.connected = False
-        self.nordpool_entity = nordpool_entity  # ← store it
+        self.nordpool_entity = nordpool_entity
+        self.price_threshold_level = price_threshold_level
         self.current_price = None
-        self.price_threshold_level = 5
+        self.max_price = None
+        self.min_price = None
+        self.avg_price = None
+        self.price_threshold = None
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
@@ -235,7 +240,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if price_state and price_state.state not in ("unavailable", "unknown"):
                     try:
                         self.current_price = float(price_state.state)
-                        attrs = state.attributes
+                        attrs = current_price.attributes
                         self.max_price = attrs.get("max")  # Today's max price
                         self.min_price = attrs.get("min")  # Today's min price
                         self.avg_price = attrs.get("average")  # Today's average price
@@ -250,6 +255,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             #     # Allow to grid
                     except ValueError:
                         self.current_price = None
+                        self.price_threshold = None
                 else:
                     self.current_price = None
             else:
