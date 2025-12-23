@@ -117,7 +117,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
             return # we do not know what to write and dont want to kill the device with weird register values
         await self.coordinator.async_write_register(self._key, packed)
         await self.coordinator.async_request_refresh()
-
+        self.async_write_ha_state()
 
 class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
     """Generic internal number entity for user settings (live sliders)."""
@@ -170,8 +170,8 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         current_options = dict(self._entry.options)
         current_options[self._option_key] = value
         
-        # IMPORTANT: await is required here
-        await self.hass.config_entries.async_update_entry(
+        # IMPORTANT: await is not required here (seems to give an error?)
+        self.hass.config_entries.async_update_entry(
             self._entry, 
             options=current_options
         )
