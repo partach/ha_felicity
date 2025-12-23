@@ -176,7 +176,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         threshold: float, 
         battery_soc: float | None,
         battery_discharge_min: float,
-        battery_charge_max: float
+        battery_charge_max: float,
+        power_level: int
     ) -> str:
         """Determine what energy state we should be in."""
         
@@ -203,6 +204,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         battery_discharge_min: float,
         battery_soc: float | None,
         grid_mode: str
+        power_level : int
     ) -> None:
         """Execute state transition with register writes."""
 
@@ -337,6 +339,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.min_price = getattr(self, "min_price", None)
             self.avg_price = getattr(self, "avg_price", None)
             self.price_threshold = getattr(self, "price_threshold", None)
+            self.power_level = getattr(self, "power_level", 5)
             if self.nordpool_entity:
                 price_state = self.hass.states.get(self.nordpool_entity)
                 if price_state and price_state.state not in ("unavailable", "unknown"):
@@ -383,7 +386,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 threshold=self.price_threshold,
                                 battery_soc=battery_soc,
                                 battery_discharge_min=battery_discharge_min,
-                                battery_charge_max=battery_charge_max
+                                battery_charge_max=battery_charge_max,
+                                power_level = self.power_level,
                             )
                             
                             # Only act if state changed
@@ -394,7 +398,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                     battery_charge_max=battery_charge_max,
                                     battery_discharge_min=battery_discharge_min,
                                     battery_soc=battery_soc,
-                                    grid_mode=grid_mode
+                                    grid_mode=grid_mode,
+                                    power_level = self.power_level,
                                 )
                                 self._current_energy_state = desired_state
                                 self._last_state_change = datetime.now()                    
