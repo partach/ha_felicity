@@ -175,7 +175,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         current_price: float, 
         threshold: float, 
         battery_soc: float | None,
-        battery_discharge_min: float
+        battery_discharge_min: float,
         battery_charge_max: float
     ) -> str:
         """Determine what energy state we should be in."""
