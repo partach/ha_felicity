@@ -99,6 +99,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
         self._attr_native_max_value = info.get("max", 100)
         self._attr_native_step = info.get("step", 1)
         self._attr_mode = NumberMode.SLIDER
+        self._attr_entity_category = EntityCategory.CONFIG
 
     @property
     def native_value(self):
