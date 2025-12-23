@@ -215,7 +215,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # rule1_entity = f"number.{self.config_entry.title.lower().replace(' ', '_')}_economic_mode_rule_1_enable"
         # rule1_state = self.hass.states.get(rule1_entity)
         # rule1_enabled = float(rule1_state.state) if rule1_state and rule1_state.state not in ("unavailable", "unknown") else 0
-        now = self._last_state_change
+        now = datetime.now()
         valid_month = now.month
         valid_day = now.day
         date_16bit = (valid_month * 256) + valid_day
