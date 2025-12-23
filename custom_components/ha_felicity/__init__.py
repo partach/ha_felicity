@@ -96,7 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(
             entry,
             options={
-            "price_threshold_level": current_price_level,
+            "price_threshold_level": price_threshold_level,
             "battery_charge_max_level": current_charge_max,
             "battery_discharge_min_level": current_discharge_min,
             "grid_mode": current_grid_mode,
@@ -105,7 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
             "update_interval": entry.data.get("update_interval", 10),
             "nordpool_entity": entry.data.get("nordpool_entity"),
-            "nordpool_override": entry.data.get("nordpool_override"),
+            "nordpool_override": nordpool_override,
             }
         )
     # Create coordinator with shared client and selected registers
