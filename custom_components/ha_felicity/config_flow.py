@@ -355,12 +355,6 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         current_register_set = self.config_entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
         current_interval = self.config_entry.options.get("update_interval", 10)
         current_nordpool = self.config_entry.options.get("nordpool_entity")
-
-        # Advanced settings
-        current_price_level = self.config_entry.options.get("price_threshold_level", 5)
-        current_charge_max = self.config_entry.options.get("battery_charge_max_level", 100)
-        current_discharge_min = self.config_entry.options.get("battery_discharge_min_level", 20)
-        current_grid_mode = self.config_entry.options.get("grid_mode", "off")
         
         data_schema = vol.Schema(
             {
@@ -398,39 +392,6 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                         domain="sensor",
                         device_class=SensorDeviceClass.MONETARY,  # Nordpool uses monetary class
                         multiple=False,
-                    )
-                ),
-                # Advanced settings
-                vol.Optional("price_threshold_level", default=current_price_level): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=1,
-                        max=10,
-                        step=1,
-                        mode="slider",
-                    )
-                ),
-                vol.Optional("battery_charge_max_level", default=current_charge_max): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=30,
-                        max=100,
-                        step=1,
-                        mode="slider",
-                        unit_of_measurement="%",
-                    )
-                ),
-                vol.Optional("battery_discharge_min_level", default=current_discharge_min): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=10,
-                        max=70,
-                        step=1,
-                        mode="slider",
-                        unit_of_measurement="%",
-                    )
-                ),
-                vol.Optional("grid_mode", default=current_grid_mode): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=["from_grid", "to_grid", "off"],
-                        mode="dropdown",
                     )
                 ),
             }
