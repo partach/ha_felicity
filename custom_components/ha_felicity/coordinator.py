@@ -176,6 +176,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         threshold: float, 
         battery_soc: float | None,
         battery_discharge_min: float
+        battery_charge_max: float
     ) -> str:
         """Determine what energy state we should be in."""
         
@@ -184,11 +185,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return "idle"
         
         # Charging logic
-        if grid_mode == "from_grid" and current_price < threshold:
+        if (grid_mode == "from_grid") and (current_price < threshold) and (battery_soc <= battery_charge_max):
             return "charging"
         
         # Discharging logic
-        elif grid_mode == "to_grid" and current_price > threshold and battery_soc > battery_discharge_min:
+        elif (grid_mode == "to_grid") and (current_price > threshold) and (battery_soc >= battery_discharge_min):
             return "discharging"
         
         # Default to idle
@@ -204,36 +205,40 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         grid_mode: str
     ) -> None:
         """Execute state transition with register writes."""
+
+        # Get current operating mode from select entity
+        operating_mode_entity = f"select.{self.config_entry.title.lower().replace(' ', '_')}_operating_mode"
+        operating_mode_state = self.hass.states.get(operating_mode_entity)
+        current_operating_mode = operating_mode_state.state if operating_mode_state else "unknown"
         
+        # Get current econ_rule_1_enable from number entity
+        # rule1_entity = f"number.{self.config_entry.title.lower().replace(' ', '_')}_economic_mode_rule_1_enable"
+        # rule1_state = self.hass.states.get(rule1_entity)
+        # rule1_enabled = float(rule1_state.state) if rule1_state and rule1_state.state not in ("unavailable", "unknown") else 0
+
         if new_state == "charging":
             _LOGGER.info(
                 "🔋 STARTING CHARGE CYCLE | Price threshold level: %s | "
-                "Max battery: %s%% | Current battery: %s%% | Mode: %s",
-                price_threshold_level, battery_charge_max, battery_soc, grid_mode
+                "Max battery: %s%% | Current battery: %s%% | Grid-Mode: %s | Operating-Mode: %s",
+                price_threshold_level, battery_charge_max, battery_soc, grid_mode, current_operating_mode
             )
             # Uncomment when ready:
-            # await self.async_write_register("charge_enable", 1)
-            # await self.async_write_register("charge_target_soc", int(battery_charge_max))
+            await self.async_write_register("econ_rule_1_enable", 1) # 1 is schema to charge
         
         elif new_state == "discharging":
             _LOGGER.info(
                 "⚡ STARTING DISCHARGE CYCLE | Price threshold level: %s | "
-                "Min battery: %s%% | Current battery: %s%% | Mode: %s",
-                price_threshold_level, battery_discharge_min, battery_soc, grid_mode
+                "Min battery: %s%% | Current battery: %s%% |  Grid-Mode: %s | Operating-Mode: %s",
+                price_threshold_level, battery_discharge_min, battery_soc, grid_mode, current_operating_mode
             )
             # Uncomment when ready:
-            # await self.async_write_register("discharge_enable", 1)
-            # await self.async_write_register("discharge_min_soc", int(battery_discharge_min))
+            await self.async_write_register("econ_rule_1_enable", 2) # 1 is schema to charge
         
         elif new_state == "idle":
             _LOGGER.info(
-                "🛑 STOPPING CHARGE/DISCHARGE CYCLE | Mode: %s | "
-                "Previous state: %s",
-                grid_mode, self._current_energy_state
-            )
-            # Uncomment when ready:
-            # await self.async_write_register("charge_enable", 0)
-            # await self.async_write_register("discharge_enable", 0)
+                "🛑 STOPPING CHARGE/DISCHARGE CYCLE | Grid-Mode: %s | Operating-Mode: %s| Previous state: %s",
+                grid_mode, current_operating_mode, self._current_energy_state)
+            await self.async_write_register("econ_rule_1_enable", 0) # 0 is Disable
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
@@ -345,7 +350,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         self.avg_price = get_attr(attrs, avg_names)
                         
                         if self.avg_price is not None: # we need to know the baseline value to determine the logic
-                            self.price_threshold = self.avg_price * (price_threshold_level / 5)  # Scale around 5 = avg
+
+                            if price_threshold_level <= 5:
+                                # Scale between Min (level 1) and Avg (level 5)
+                                # Level 1 -> 0% progress, Level 5 -> 100% progress between Min and Avg
+                                ratio = (price_threshold_level - 1) / 4.0  # (1-1)/4=0, (5-1)/4=1
+                                self.price_threshold = self.min_price + (self.avg_price - self.min_price) * ratio
+                            else:
+                                # Scale between Avg (level 5) and Max (level 10)
+                                # Level 5 -> 0% progress, Level 10 -> 100% progress between Avg and Max
+                                ratio = (price_threshold_level - 5) / 5.0  # (5-5)/5=0, (10-5)/5=1
+                                self.price_threshold = self.avg_price + (self.max_price - self.avg_price) * ratio
+                            
                             setattr(self, "price_threshold", self.price_threshold)
                             # === DYNAMIC PRICE LOGIC ===
                             battery_soc = new_data.get("battery_capacity")
@@ -355,7 +371,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 current_price=self.current_price,
                                 threshold=self.price_threshold,
                                 battery_soc=battery_soc,
-                                battery_discharge_min=battery_discharge_min
+                                battery_discharge_min=battery_discharge_min,
+                                battery_charge_max=battery_charge_max
                             )
                             
                             # Only act if state changed
