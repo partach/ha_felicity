@@ -9,7 +9,7 @@ from homeassistant.components.date import DateEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 
 from .const import DOMAIN, _COMBINED_REGISTERS, CONF_INVERTER_MODEL
 from .coordinator import HA_FelicityCoordinator
