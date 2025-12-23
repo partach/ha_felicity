@@ -54,6 +54,16 @@ async def async_setup_entry(
         HA_FelicityInternalNumber(
             coordinator,
             entry,
+            option_key="power_level",
+            name="Power Level",
+            min_val=1,
+            max_val=10,
+            step=0.5,
+            icon="mdi:counter"
+        ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
             option_key="battery_charge_max_level",
             name="Battery Charge Max Level",
             min_val=30,
