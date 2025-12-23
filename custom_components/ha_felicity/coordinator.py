@@ -37,7 +37,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.register_map = register_map
         self._address_groups = groups
         self.connected = False
-        self.nordpool_entity = nordpool_entity
         # runtime setting (if used) 
         self._current_energy_state = None
         self._last_state_change = None
@@ -47,6 +46,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.avg_price = None
         self.price_threshold = None
         self.config_entry = config_entry
+        override = self.config_entry.options.get("nordpool_override", "") 
+        if  override != "":
+          self.nordpool_entity = override
+        else
+          self.nordpool_entity = nordpool_entity
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
