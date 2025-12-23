@@ -84,7 +84,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hubs[hub_key] = FelicityTcpHub(hass, host, port)
 
     hub = hubs[hub_key]
-
+    # Initialize options if not set (for existing installations)
+    if not entry.options:
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                "price_threshold_level": 5,
+                "battery_charge_max_level": 100,
+                "battery_discharge_min_level": 20,
+                "grid_mode": "off",
+                CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+                "update_interval": entry.data.get("update_interval", 10),
+                "nordpool_entity": None,
+            }
+        )
     # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
         hass,
