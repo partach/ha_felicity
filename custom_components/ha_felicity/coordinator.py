@@ -167,6 +167,81 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Exception writing registers at %s: %s", start_address, err)
             return False
             
+    def _determine_energy_state(
+        self, 
+        grid_mode: str, 
+        current_price: float, 
+        threshold: float, 
+        battery_soc: float | None,
+        battery_discharge_min: float
+    ) -> str:
+        """Determine what energy state we should be in."""
+        
+        # Safety check
+        if battery_soc is None:
+            return "idle"
+        
+        # Charging logic
+        if grid_mode == "from_grid" and current_price < threshold:
+            return "charging"
+        
+        # Discharging logic
+        elif grid_mode == "to_grid" and current_price > threshold and battery_soc > battery_discharge_min:
+            return "discharging"
+        
+        # Default to idle
+        return "idle"
+    
+    async def _transition_to_state(
+        self,
+        new_state: str,
+        price_threshold_level: float,
+        battery_charge_max: float,
+        battery_discharge_min: float,
+        battery_soc: float | None,
+        grid_mode: str
+    ) -> None:
+        """Execute state transition with register writes."""
+        
+        if new_state == "charging":
+            _LOGGER.info(
+                "🔋 STARTING CHARGE CYCLE | Price threshold level: %s | "
+                "Max battery: %s%% | Current battery: %s%% | Mode: %s",
+                price_threshold_level, battery_charge_max, battery_soc, grid_mode
+            )
+            # Uncomment when ready:
+            # await self.async_write_register("charge_enable", 1)
+            # await self.async_write_register("charge_target_soc", int(battery_charge_max))
+        
+        elif new_state == "discharging":
+            _LOGGER.info(
+                "⚡ STARTING DISCHARGE CYCLE | Price threshold level: %s | "
+                "Min battery: %s%% | Current battery: %s%% | Mode: %s",
+                price_threshold_level, battery_discharge_min, battery_soc, grid_mode
+            )
+            # Uncomment when ready:
+            # await self.async_write_register("discharge_enable", 1)
+            # await self.async_write_register("discharge_min_soc", int(battery_discharge_min))
+        
+        elif new_state == "idle":
+            _LOGGER.info(
+                "🛑 STOPPING CHARGE/DISCHARGE CYCLE | Mode: %s | "
+                "Previous state: %s",
+                grid_mode, self._current_energy_state
+            )
+            # Uncomment when ready:
+            # await self.async_write_register("charge_enable", 0)
+            # await self.async_write_register("discharge_enable", 0)
+    
+    def get_energy_state_info(self) -> dict:
+        """Get current energy management state info (useful for debugging sensor)."""
+        return {
+            "current_state": self._current_energy_state,
+            "last_change": self._last_state_change.isoformat() if self._last_state_change else None,
+            "current_price": self.current_price,
+            "price_threshold": self.price_threshold,
+        }
+
     async def _async_update_data(self) -> dict:
         """Fetch data from Modbus."""
         if not await self._async_connect():
@@ -269,20 +344,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             self.price_threshold = self.avg_price * (price_threshold_level / 5)  # Scale around 5 = avg
                             # === DYNAMIC PRICE LOGIC ===
                             battery_soc = new_data.get("battery_capacity")
-                     
-                            if grid_mode == "from_grid" and self.current_price < self.price_threshold:
-                                # Price low → charge from grid
-                                # await self.async_write_register("your_charge_enable_key", 1)  # e.g., enable charge rule
-                                _LOGGER.info("starting the charge cycle. lvl: %s max bat: %s, current bat: %s mode: %s",price_threshold_level,battery_charge_max, battery_soc, grid_mode)
-                            elif grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc > 80:
-                                # Price high + battery full → discharge to grid
-                                #await self.async_write_register("your_discharge_enable_key", 1)
-                                _LOGGER.info("starting the discharge cycle. lvl: %s min bat: %s, current bat: %s, mode: %s",price_threshold_level,battery_discharge_min, battery_soc, grid_mode)
-                            else:
-                                _LOGGER.info("stopping the charge/discharge cycle. mode: %s", grid_mode)
-                                # Price not favorable → stop forced charge/discharge
-                                #await self.async_write_register("your_charge_enable_key", 0)
-                                #await self.async_write_register("your_discharge_enable_key", 0)
+                             # Determine desired state
+                            desired_state = self._determine_energy_state(
+                                grid_mode=grid_mode,
+                                current_price=self.current_price,
+                                threshold=self.price_threshold,
+                                battery_soc=battery_soc,
+                                battery_discharge_min=battery_discharge_min
+                            )
+                            
+                            # Only act if state changed
+                            if desired_state != self._current_energy_state:
+                                await self._transition_to_state(
+                                    desired_state,
+                                    price_threshold_level=price_threshold_level,
+                                    battery_charge_max=battery_charge_max,
+                                    battery_discharge_min=battery_discharge_min,
+                                    battery_soc=battery_soc,
+                                    grid_mode=grid_mode
+                                )
+                                self._current_energy_state = desired_state
+                                self._last_state_change = datetime.now()                    
+
                     except ValueError:
                         self.current_price = None
                         self.price_threshold = None
