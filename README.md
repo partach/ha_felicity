@@ -70,7 +70,9 @@ Via the device you can directly control many settings run-time. Be carefull with
 </p>
 
 ## Setting Dynamic Energy managment
-Note: the integration uses internal **schema 1** for this. So this schema will be overwritten and controlled by the integration.
+Note1: the integration uses internal **schema 1** for this. So this schema will be overwritten and controlled by the integration.
+Note2: The Operating mode needs to be set (by user) to Economic mode. The Energy management will not engage in any other mode (Like General).
+
 During setup or with config setting (gear symbol in hub/device overview) you can add a 'Monetary' Home Assistant Device.
 Examples are the Nordpool integration. Look at these integration the details how to setup.
 During config it will display a list of installed Monetary integrations to chose from.
