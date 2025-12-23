@@ -1,5 +1,10 @@
 ## Changelog
 
+### [0.5.1] - Dynamic Energy Management update
+- Norpool override to also use i.e. Tibber
+- Extra Configuration options for Dynamic Energy Management
+- minor fixes
+  
 ### [0.5.0] - Dynamic Energy Management
 - Includes active (dynamic) energy management
 - Ability to connect to Nordpool which wil be use energy price information
