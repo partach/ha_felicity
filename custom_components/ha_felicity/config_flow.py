@@ -394,6 +394,12 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                         multiple=False,
                     )
                 ),
+                vol.Optional("nordpool_override", default=""): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT,  # or PASSWORD, EMAIL, etc.
+                        multiline=False,  # True for textarea
+                    )
+                ),
             }
         )
 
