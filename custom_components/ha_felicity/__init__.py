@@ -229,7 +229,7 @@ class FelicitySerialHub:
         if self.client is not None:
             if self.client.connected:
                 try:
-                    await self.client.close()
+                    self.client.close()
                 except Exception as err:
                     _LOGGER.exception("Unexpected error closing Felicity connection for serial: %s", err)
             self.client = None
@@ -253,7 +253,7 @@ class FelicityTcpHub:
         if self.client is not None:
             if self.client.connected:
                 try:
-                    await self.client.close()
+                    self.client.close()
                 except Exception as err:
                     _LOGGER.exception("Unexpected error closing Felicity connection for tcp: %s", err)
             self.client = None
