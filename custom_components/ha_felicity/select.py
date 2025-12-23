@@ -169,20 +169,14 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
     @property
     def current_option(self) -> str:
         """Return the current selected option from entry options."""
-        return self._entry.options.get(self._option_key, "off")
+        return return getattr(self.coordinator, self._option_key, "off")
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
         if option not in self._attr_options:
             return
 
-        current_options = dict(self._entry.options)
-        current_options[self._option_key] = option
-        # await in front seems to being liked by HA atm
-        self.hass.config_entries.async_update_entry(
-            self._entry,
-            options=current_options
-        )
+        setattr(self.coordinator, self._option_key, option)
 
         _LOGGER.info("Grid mode set to %s via selector", option)
 
