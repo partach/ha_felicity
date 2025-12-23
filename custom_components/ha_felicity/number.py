@@ -65,7 +65,7 @@ async def async_setup_entry(
             coordinator,
             entry,
             option_key="voltage_level",
-            name="Power Level",
+            name="Voltage Level",
             min_val=50,
             max_val=60,
             step=1,
