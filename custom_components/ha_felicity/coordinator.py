@@ -317,15 +317,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             grid_mode = getattr(self.coordinator, "grid_mode", "off") 
 
             # Update Nordpool price
-            self.max_price = None
-            self.min_price = None
-            self.avg_price = None
-            self.price_threshold = None
+            self.max_price = getattr(self.coordinator, "max_price", None)
+            self.min_price = getattr(self.coordinator, "min_price", None)
+            self.avg_price = getattr(self.coordinator, "avg_price", None)
+            self.price_threshold = getattr(self.coordinator, "price_threshold", None)
             if self.nordpool_entity:
                 price_state = self.hass.states.get(self.nordpool_entity)
                 if price_state and price_state.state not in ("unavailable", "unknown"):
                     try:
                         self.current_price = float(price_state.state)
+                        setattr(self.coordinator, "current_price", self.current_price)
                         attrs = price_state.attributes
 
                         # Define possible attribute names for each value (add more if needed)
