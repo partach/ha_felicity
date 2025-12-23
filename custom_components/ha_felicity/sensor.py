@@ -103,7 +103,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="battery_charge_max_level",name="Battery Charge Max Level",min_val=30,max_val=100,step=1,unit="%",icon="mdi:battery-charging-100",device_class="battery"))
     # Battery discharge min level
     entities.append(HA_FelicityInternalNumber(coordinator,entry,option_key="battery_discharge_min_level",name="Battery Discharge Min Level",min_val=10,max_val=70,step=1,unit="%",icon="mdi:battery-charging-20",device_class="battery"))
-    entities.append(HA_FelicityGridModeSelect(coordinator, entry))
+    entities.append(HA_FelicityGridModeSelect(coordinator, entry,option_key="grid_mode"))
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
         entity._attr_device_info = device_info
@@ -116,31 +116,30 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
     _attr_options = ["from_grid", "to_grid", "off"]
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator, entry):
+    def __init__(self, coordinator, entry, option_key: str):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
-        self._attr_entity_category = EntityCategory.CONFIG
+
         self._attr_name = f"{entry.title} Grid Mode"
-        self._attr_unique_id = f"{entry.entry_id}_grid_mode"
-        self._attr_native_value = self._entry.options.get(self._option_key, "off")
+        self._attr_unique_id = f"{entry.entry_id}_{option_key}"
 
     @property
     def current_option(self) -> str:
-        return self._entry.options.get("grid_mode", "off")
+        return self._entry.options.get(self._option_key, "off")
 
     async def async_select_option(self, option: str) -> None:
         if option not in self._attr_options:
             return
 
         current_options = dict(self._entry.options)
-        current_options["grid_mode"] = option
+        current_options[self._option_key] = option
 
         await self.hass.config_entries.async_update_entry(
             self._entry,
             options=current_options
         )
-        self._attr_native_value = value
+
         _LOGGER.info("Grid mode set to %s via selector", option)
 
         await self.coordinator.async_request_refresh()
