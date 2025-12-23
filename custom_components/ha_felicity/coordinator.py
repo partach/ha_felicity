@@ -236,6 +236,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
             await self.async_write_register("econ_rule_1_voltage", 580)
+            await self.async_write_register("econ_rule_1_power", int(power_level * 1000))
         
         elif new_state == "discharging":
             _LOGGER.info(
@@ -243,12 +244,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 "Min battery: %s%% | Current battery: %s%% |  Grid-Mode: %s | Operating-Mode: %s",
                 price_threshold_level, battery_discharge_min, battery_soc, grid_mode, current_operating_mode
             )
-            # Uncomment when ready:
             await self.async_write_register("econ_rule_1_enable", 2) # 2 is schema to discharge
             await self.async_write_register("econ_rule_1_soc", int(battery_discharge_min))
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
             await self.async_write_register("econ_rule_1_voltage", 500)
+            await self.async_write_register("econ_rule_1_power", int(power_level * 1000))
             
         elif new_state == "idle":
             _LOGGER.info(
