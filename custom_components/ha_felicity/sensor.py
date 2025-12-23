@@ -119,8 +119,11 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
         self._entry = entry
+        self._option_key = option_key
+        self._attr_entity_category = EntityCategory.CONFIG
         self._attr_name = f"{entry.title} Grid Mode"
         self._attr_unique_id = f"{entry.entry_id}_grid_mode"
+        self._attr_native_value = self._entry.options.get(self._option_key, "off")
 
     @property
     def current_option(self) -> str:
@@ -137,7 +140,7 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
             self._entry,
             options=current_options
         )
-
+        self._attr_native_value = value
         _LOGGER.info("Grid mode set to %s via selector", option)
 
         await self.coordinator.async_request_refresh()
@@ -168,11 +171,13 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         self._attr_native_step = step
         self._attr_native_unit_of_measurement = unit
         self._attr_mode = NumberMode.SLIDER
+        self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_native_value = self._entry.options.get(self._option_key, self._attr_native_max_value)
         if icon:
             self._attr_icon = icon
         if device_class:
             self._attr_device_class = device_class
-
+    
     @property
     def native_value(self):
         return self._entry.options.get(self._option_key, self._attr_native_max_value)
@@ -187,7 +192,7 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         current_options = dict(self._entry.options)
         current_options[self._option_key] = value
         await self.hass.config_entries.async_update_entry(self._entry, options=current_options)
-    
+        self._attr_native_value = value
         _LOGGER.info("%s set to %.3f via slider", self._attr_name, value)
     
         setattr(self.coordinator, self._option_key, value)
