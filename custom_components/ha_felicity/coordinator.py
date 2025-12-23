@@ -229,7 +229,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_soc", int(battery_charge_max))
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
-            await self.async_write_register("econ_rule_1_voltage", 58)
+            await self.async_write_register("econ_rule_1_voltage", 580)
         
         elif new_state == "discharging":
             _LOGGER.info(
@@ -242,7 +242,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_soc", int(battery_discharge_min))
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
-            await self.async_write_register("econ_rule_1_voltage", 50)
+            await self.async_write_register("econ_rule_1_voltage", 500)
             
         elif new_state == "idle":
             _LOGGER.info(
