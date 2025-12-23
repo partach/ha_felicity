@@ -94,6 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "battery_discharge_min_level": 20,
                 "grid_mode": "off",
                 "power_level" : 5,
+                "voltage_level" : 58,
                 CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
                 "update_interval": 10,
                 "nordpool_entity": None,
