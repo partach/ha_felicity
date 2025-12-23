@@ -169,7 +169,7 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
     @property
     def current_option(self) -> str:
         """Return the current selected option from entry options."""
-        return return getattr(self.coordinator, self._option_key, "off")
+        return getattr(self.coordinator, self._option_key, "off")
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
