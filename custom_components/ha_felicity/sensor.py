@@ -4,15 +4,12 @@ from __future__ import annotations
 import logging
 
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.components.select import SelectEntity
 from homeassistant.components.time import TimeEntity
 from homeassistant.components.date import DateEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.components.number import NumberEntity, NumberMode
-from homeassistant.helpers.entity import EntityCategory
 
 from .const import DOMAIN, _COMBINED_REGISTERS, CONF_INVERTER_MODEL
 from .coordinator import HA_FelicityCoordinator
@@ -77,7 +74,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
         ]    
     entities.extend(nordpool_sensors)
-    # now make sure we have some of our own entities for dynamic energy loading
+
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
         entity._attr_device_info = device_info
