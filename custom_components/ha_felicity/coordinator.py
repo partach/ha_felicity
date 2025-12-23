@@ -49,7 +49,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         override = self.config_entry.options.get("nordpool_override", "") 
         if  override != "":
           self.nordpool_entity = override
-        else
+        else:
           self.nordpool_entity = nordpool_entity
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
@@ -207,7 +207,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         battery_charge_max: float,
         battery_discharge_min: float,
         battery_soc: float | None,
-        grid_mode: str
+        grid_mode: str,
         power_level : int
     ) -> None:
         """Execute state transition with register writes."""
