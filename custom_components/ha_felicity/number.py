@@ -1,0 +1,182 @@
+"""Number entities for the Felicity integration."""
+from __future__ import annotations
+
+import logging
+
+from homeassistant.components.number import NumberEntity, NumberMode
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+
+from .const import DOMAIN, CONF_INVERTER_MODEL
+from .coordinator import HA_FelicityCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities
+):
+    """Set up Felicity number entities based on the coordinator data."""
+    coordinator: HA_FelicityCoordinator = hass.data[DOMAIN][entry.entry_id]
+
+    entities = []
+
+    # Common device_info for all entities from this entry
+    device_info = DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name=entry.title or "Felicity Inverter",
+        manufacturer="Felicity Solar",
+        model=entry.data.get(CONF_INVERTER_MODEL, "T-REX-10KLP3G01"),
+        configuration_url=f"homeassistant://config/integrations/integration/{entry.entry_id}",
+    )
+
+    # Register-based number entities (from coordinator register_map)
+    entities.extend([
+        HA_FelicityNumber(coordinator, entry, key, info)
+        for key, info in coordinator.register_map.items()
+        if info.get("type") == "number"
+    ])
+
+    # Internal configuration number entities (stored in entry.options)
+    entities.extend([
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="price_threshold_level",
+            name="Price Threshold Level",
+            min_val=1,
+            max_val=10,
+            step=1,
+            icon="mdi:counter"
+        ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="battery_charge_max_level",
+            name="Battery Charge Max Level",
+            min_val=30,
+            max_val=100,
+            step=1,
+            unit="%",
+            icon="mdi:battery-charging-100",
+            device_class="battery"
+        ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="battery_discharge_min_level",
+            name="Battery Discharge Min Level",
+            min_val=10,
+            max_val=70,
+            step=1,
+            unit="%",
+            icon="mdi:battery-charging-20",
+            device_class="battery"
+        ),
+    ])
+
+    # Tie all entities to the device
+    for entity in entities:
+        entity._attr_device_info = device_info
+
+    async_add_entities(entities)
+
+
+class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
+    """Representation of a writable number register."""
+
+    def __init__(self, coordinator, entry, key, info):
+        super().__init__(coordinator)
+        self._key = key
+        self._info = info
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_name = f"{entry.title} {info['name']}"
+        self._attr_native_unit_of_measurement = info.get("unit")
+        self._attr_device_class = info.get("device_class")
+        self._attr_native_min_value = info.get("min", 0)
+        self._attr_native_max_value = info.get("max", 100)
+        self._attr_native_step = info.get("step", 1)
+        self._attr_mode = NumberMode.SLIDER
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get(self._key)
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Write the new value to the inverter register."""
+        index = self._info.get("index", 0)
+        if index == 1:
+            packed = int(value * 10)
+        else:
+            packed = int(value)
+        await self.coordinator.async_write_register(self._key, packed)
+        await self.coordinator.async_request_refresh()
+
+
+class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
+    """Generic internal number entity for user settings (live sliders)."""
+
+    def __init__(
+        self,
+        coordinator,
+        entry,
+        option_key: str,
+        name: str,
+        min_val: int,
+        max_val: int,
+        step: int = 1,
+        unit: str = "",
+        icon: str | None = None,
+        device_class: str | None = None,
+    ):
+        super().__init__(coordinator)
+        self._entry = entry
+        self._option_key = option_key
+        self._attr_name = f"{entry.title} {name}"
+        self._attr_unique_id = f"{entry.entry_id}_{option_key}"
+        self._attr_native_min_value = min_val
+        self._attr_native_max_value = max_val
+        self._attr_native_step = step
+        self._attr_native_unit_of_measurement = unit
+        self._attr_mode = NumberMode.SLIDER
+        self._attr_entity_category = EntityCategory.CONFIG
+        
+        if icon:
+            self._attr_icon = icon
+        if device_class:
+            self._attr_device_class = device_class
+
+    @property
+    def native_value(self):
+        """Return the current value from entry options."""
+        return self._entry.options.get(
+            self._option_key, 
+            self._attr_native_max_value
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Handle setting new value from UI (slider/box)."""
+        # Clamp and round to step
+        value = max(self.native_min_value, min(self.native_max_value, value))
+        value = round(value / self.native_step) * self.native_step
+
+        # Update options with the generic key
+        current_options = dict(self._entry.options)
+        current_options[self._option_key] = value
+        
+        # IMPORTANT: await is required here
+        await self.hass.config_entries.async_update_entry(
+            self._entry, 
+            options=current_options
+        )
+        
+        _LOGGER.info("%s set to %.3f via slider", self._attr_name, value)
+
+        # Update coordinator attribute if it exists
+        setattr(self.coordinator, self._option_key, value)
+        await self.coordinator.async_request_refresh()
+
+        # Trigger UI update
+        self.async_write_ha_state()
