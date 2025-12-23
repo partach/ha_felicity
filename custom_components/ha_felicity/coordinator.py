@@ -40,6 +40,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.nordpool_entity = nordpool_entity
         # runtime setting (if used) 
         self._current_energy_state = None
+        self._last_state_change = None
         self.current_price = None
         self.max_price = None
         self.min_price = None
