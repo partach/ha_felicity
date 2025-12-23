@@ -311,10 +311,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     new_data[key] = value
 
             # === Load user settings & Nordpool every update ===
-            price_threshold_level = self.config_entry.options.get("price_threshold_level", 5)
-            battery_charge_max = self.config_entry.options.get("battery_charge_max_level", 100)
-            battery_discharge_min = self.config_entry.options.get("battery_discharge_min_level", 20)
-            grid_mode = self.config_entry.options.get("grid_mode", "off")
+            price_threshold_level = getattr(self.coordinator, "price_threshold_level", 5)
+            battery_charge_max = getattr(self.coordinator, "battery_charge_max_level", 100)
+            battery_discharge_min = getattr(self.coordinator, "battery_discharge_min_level", 20)
+            grid_mode = getattr(self.coordinator, "grid_mode", "off") 
+
             # Update Nordpool price
             self.max_price = None
             self.min_price = None
@@ -344,6 +345,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         
                         if self.avg_price is not None: # we need to know the baseline value to determine the logic
                             self.price_threshold = self.avg_price * (price_threshold_level / 5)  # Scale around 5 = avg
+                            setattr(self.coordinator, "price_threshold", self.price_threshold)
                             # === DYNAMIC PRICE LOGIC ===
                             battery_soc = new_data.get("battery_capacity")
                              # Determine desired state
