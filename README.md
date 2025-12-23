@@ -75,14 +75,15 @@ The integration is to be used on own risk.
 Note1: 
  * the integration uses internal **schema 1** for this. 
  * Schema 1 will be activated and controlled by the integration. Make sure the settings in there are inline with the intended use!
- * The integration wil set: The date on Today (if not idle), Voltage depending on charge (58) and discharge (50), SOC on configured setting (max battery / min battery, see below)
+   Weekdays and Time Start, Time Stop will not be set by the integration. The user has to set those to a default usefull for them.
+ * The integration wil set: The date on Today (if not idle), Voltage depending on charge (58) and discharge (50) but can be overwritten, SOC on configured setting (max battery / min battery, see below)
 
 Note2: The Operating mode needs to be set (by user) to Economic mode. The Energy management will not engage in any other mode (Like General).
 
 During setup or with config setting (gear symbol in hub/device overview) you can add a 'Monetary' Home Assistant Device.
 Examples are the Nordpool integration. Look at the integration details there on how to setup (not covered here).
 During first setup or during run-time configuration (device gear symbol) it will display a list of installed Monetary integrations to chose from.
-Currently Nordpool is tested to work.
+Currently Nordpool and Tibber (via Norpool override field in config) are tested to work.
 
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config4.png" width="300"/>
