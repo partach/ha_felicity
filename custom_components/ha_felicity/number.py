@@ -107,10 +107,14 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Write the new value to the inverter register."""
         index = self._info.get("index", 0)
-        if index == 1:
-            packed = int(value * 10)
-        else:
+        if index == 0:
             packed = int(value)
+        elif index == 1:
+            packed = int(value * 10)
+        elif index == 2:
+            packed = int(value * 100)
+        else:
+            return # we do not know what to write and dont want to kill the device with weird register values
         await self.coordinator.async_write_register(self._key, packed)
         await self.coordinator.async_request_refresh()
 
