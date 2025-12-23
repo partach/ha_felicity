@@ -178,8 +178,8 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
 
         current_options = dict(self._entry.options)
         current_options[self._option_key] = option
-
-        await self.hass.config_entries.async_update_entry(
+        # await in front seems to being liked by HA atm
+        self.hass.config_entries.async_update_entry(
             self._entry,
             options=current_options
         )
