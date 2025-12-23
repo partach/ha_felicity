@@ -168,13 +168,24 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         return self._entry.options.get(self._option_key, self._attr_native_max_value)
 
     async def async_set_native_value(self, value: float) -> None:
-        level = int(value)
+        """Handle setting new value from UI (slider/box)."""
+        # Clamp and round to step
+        value = max(self.native_min_value, min(self.native_max_value, value))
+        value = round(value / self.native_step) * self.native_step
+    
+        # Update options with the generic key
         current_options = dict(self._entry.options)
-        current_options[self._option_key] = level
-        self.hass.config_entries.async_update_entry(self._entry, options=current_options)
-        _LOGGER.info("%s set to %s via slider", self._attr_name, level)
+        current_options[self._option_key] = value
+        await self.hass.config_entries.async_update_entry(self._entry, options=current_options)
+    
+        _LOGGER.info("%s set to %.3f via slider", self._attr_name, value)
+    
+        setattr(self.coordinator, self._option_key, value)
         await self.coordinator.async_request_refresh()
-        
+    
+        self.async_write_ha_state()
+    
+            _LOGGER.debug("Price threshold set to %.2f", value)        
 class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
     """Representation of a Felicity sensor (raw register)."""
 
@@ -281,7 +292,7 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        value = getattr(self.coordinator, self._attr_key)
+        value = getattr(self.coordinator, self._key)
         if value is not None:
             return round(value, 3)  # or 4 – clean decimals
         return None
