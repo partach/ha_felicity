@@ -249,11 +249,23 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     try:
                         self.current_price = float(price_state.state)
                         attrs = price_state.attributes
-                        self.max_price = attrs.get("max")  # Today's max price
-                        self.min_price = attrs.get("min")  # Today's min price
-                        self.avg_price = attrs.get("average")  # Today's average price
+
+                        # Define possible attribute names for each value (add more if needed)
+                        max_names = ["max", "max_price", "Max price", "max price", "Max"]  # Priority order
+                        min_names = ["min", "min_price", "Min price", "min price", "Min"]
+                        avg_names = ["average", "average_price", "avg_price", "Avg price", "Average", "Avg", "avg"]
+                        def get_attr(attrs, names, default=None):
+                            for name in names:
+                                value = attrs.get(name)
+                                if value is not None:
+                                    return value
+                            return default
+
+                        self.max_price = get_attr(attrs, max_names)
+                        self.min_price = get_attr(attrs, min_names)
+                        self.avg_price = get_attr(attrs, avg_names)
                         
-                        if self.avg_price is not None:
+                        if self.avg_price is not None: # we need to know the baseline value to determine the logic
                             self.price_threshold = self.avg_price * (price_threshold_level / 5)  # Scale around 5 = avg
                             # === DYNAMIC PRICE LOGIC ===
                             battery_soc = new_data.get("battery_capacity")
