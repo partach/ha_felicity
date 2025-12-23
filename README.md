@@ -72,9 +72,9 @@ Via the device you can directly control many settings run-time. Be carefull with
 ## Setting Dynamic Energy managment
 Note: the integration uses internal **schema 1** for this. So this schema will be overwritten and controlled by the integration.
 During setup or with config setting (gear symbol in hub/device overview) you can add a 'Monetary' Home Assistant Device.
-Examples are Nordpool and Tibber. Look at these integration the details how to setup.
+Examples are the Nordpool integration. Look at these integration the details how to setup.
 During config it will display a list of installed Monetary integrations to chose from.
-Currently Nordpool and Tibber are tested to work.
+Currently Nordpool is tested to work.
 
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config4.png" width="300"/>
