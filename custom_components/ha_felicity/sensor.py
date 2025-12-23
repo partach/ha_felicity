@@ -184,8 +184,7 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         await self.coordinator.async_request_refresh()
     
         self.async_write_ha_state()
-    
-            _LOGGER.debug("Price threshold set to %.2f", value)        
+       
 class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
     """Representation of a Felicity sensor (raw register)."""
 
