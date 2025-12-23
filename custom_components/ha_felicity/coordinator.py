@@ -181,7 +181,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         battery_soc: float | None,
         battery_discharge_min: float,
         battery_charge_max: float,
-        power_level: int
+        power_level: int,
+        voltage_level: int
     ) -> str:
         """Determine what energy state we should be in."""
         
@@ -208,7 +209,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         battery_discharge_min: float,
         battery_soc: float | None,
         grid_mode: str,
-        power_level : int
+        power_level : int,
+        voltage_level: int
+
     ) -> None:
         """Execute state transition with register writes."""
 
@@ -235,7 +238,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_soc", int(battery_charge_max))
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
-            await self.async_write_register("econ_rule_1_voltage", 580)
+            await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
             await self.async_write_register("econ_rule_1_power", int(power_level * 1000))
         
         elif new_state == "discharging":
@@ -248,7 +251,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_soc", int(battery_discharge_min))
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
-            await self.async_write_register("econ_rule_1_voltage", 500)
+            await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
             await self.async_write_register("econ_rule_1_power", int(power_level * 1000))
             
         elif new_state == "idle":
@@ -345,6 +348,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.avg_price = getattr(self, "avg_price", None)
             self.price_threshold = getattr(self, "price_threshold", None)
             self.power_level = getattr(self, "power_level", 5)
+            self.voltage_level = getattr(self, "voltage_level", 58)
             if self.nordpool_entity:
                 price_state = self.hass.states.get(self.nordpool_entity)
                 if price_state and price_state.state not in ("unavailable", "unknown"):
@@ -393,6 +397,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 battery_discharge_min=battery_discharge_min,
                                 battery_charge_max=battery_charge_max,
                                 power_level = self.power_level,
+                                voltage_level = self.voltage_level,
                             )
                             
                             # Only act if state changed
@@ -405,6 +410,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                     battery_soc=battery_soc,
                                     grid_mode=grid_mode,
                                     power_level = self.power_level,
+                                    voltage_level = self.voltage_level,
                                 )
                                 self._current_energy_state = desired_state
                                 self._last_state_change = datetime.now()                    
