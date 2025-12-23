@@ -1,5 +1,16 @@
 ## Changelog
 
+### [0.5.0] - Dynamic Energy Management
+- Includes active (dynamic) energy management
+- Ability to connect to Nordpool which wil be use energy price information
+- Energy data displayed within own entities in the integration
+- Easy manipulation of settings run-time
+- Huge update on device overview
+  - Writable settings directly on the entities
+  - Logic automatically translate to write toward needed registry content
+  - Sections (Diagnostics, Sensor, Configuration)
+    
+
 ### [0.4.0] - Official version
 - Tested and verified working on Modbus serial
 - Includes writable registers via HA service calls (automation possible)
