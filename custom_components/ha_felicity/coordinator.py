@@ -215,15 +215,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # rule1_entity = f"number.{self.config_entry.title.lower().replace(' ', '_')}_economic_mode_rule_1_enable"
         # rule1_state = self.hass.states.get(rule1_entity)
         # rule1_enabled = float(rule1_state.state) if rule1_state and rule1_state.state not in ("unavailable", "unknown") else 0
-
+        now = self._last_state_change
+        valid_month = now.month
+        valid_day = now.day
+        date_16bit = (valid_month * 256) + valid_day
         if new_state == "charging":
             _LOGGER.info(
                 "🔋 STARTING CHARGE CYCLE | Price threshold level: %s | "
                 "Max battery: %s%% | Current battery: %s%% | Grid-Mode: %s | Operating-Mode: %s",
                 price_threshold_level, battery_charge_max, battery_soc, grid_mode, current_operating_mode
             )
-            # Uncomment when ready:
             await self.async_write_register("econ_rule_1_enable", 1) # 1 is schema to charge
+            await self.async_write_register("econ_rule_1_soc", int(battery_charge_max))
+            await self.async_write_register("econ_rule_1_start_day", date_16bit)
+            await self.async_write_register("econ_rule_1_stop_day", date_16bit)
+            await self.async_write_register("econ_rule_1_voltage", 58)
         
         elif new_state == "discharging":
             _LOGGER.info(
@@ -232,13 +238,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 price_threshold_level, battery_discharge_min, battery_soc, grid_mode, current_operating_mode
             )
             # Uncomment when ready:
-            await self.async_write_register("econ_rule_1_enable", 2) # 1 is schema to charge
-        
+            await self.async_write_register("econ_rule_1_enable", 2) # 2 is schema to discharge
+            await self.async_write_register("econ_rule_1_soc", int(battery_discharge_min))
+            await self.async_write_register("econ_rule_1_start_day", date_16bit)
+            await self.async_write_register("econ_rule_1_stop_day", date_16bit)
+            await self.async_write_register("econ_rule_1_voltage", 50)
+            
         elif new_state == "idle":
             _LOGGER.info(
                 "🛑 STOPPING CHARGE/DISCHARGE CYCLE | Grid-Mode: %s | Operating-Mode: %s| Previous state: %s",
                 grid_mode, current_operating_mode, self._current_energy_state)
             await self.async_write_register("econ_rule_1_enable", 0) # 0 is Disable
+            # dont bother with other settings, will not be used anyhow.
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
