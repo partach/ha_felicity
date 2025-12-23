@@ -155,10 +155,7 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
     @property
     def native_value(self):
         """Return the current value from entry options."""
-        return self._entry.options.get(
-            self._option_key, 
-            self._attr_native_max_value
-        )
+        return getattr(self.coordinator, self._option_key, self._attr_native_max_value)
 
     async def async_set_native_value(self, value: float) -> None:
         """Handle setting new value from UI (slider/box)."""
@@ -166,16 +163,6 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         value = max(self.native_min_value, min(self.native_max_value, value))
         value = round(value / self.native_step) * self.native_step
 
-        # Update options with the generic key
-        current_options = dict(self._entry.options)
-        current_options[self._option_key] = value
-        
-        # IMPORTANT: await is not required here (seems to give an error?)
-        self.hass.config_entries.async_update_entry(
-            self._entry, 
-            options=current_options
-        )
-        
         _LOGGER.info("%s set to %.3f via slider", self._attr_name, value)
 
         # Update coordinator attribute if it exists
