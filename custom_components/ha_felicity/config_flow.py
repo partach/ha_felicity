@@ -56,6 +56,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
         """Initialize the config flow."""
         self._connection_type = None
+        self._user_input = {}
 
     @staticmethod
     @callback
@@ -70,6 +71,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             current_nordpool = self.config_entry.options.get("nordpool_entity")
         if user_input is not None:
             self._connection_type = user_input[CONF_CONNECTION_TYPE]
+            self._user_input = user_input
             # Store initial common options to pass forward if needed, 
             # though usually we just collect them in the final step.
             if self._connection_type == CONNECTION_TYPE_SERIAL:
@@ -189,6 +191,15 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
                     data=final_data,
+                    options={
+                        "price_threshold_level": 5,
+                        "battery_charge_max_level": 100,
+                        "battery_discharge_min_level": 20,
+                        "grid_mode": "off",
+                        CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+                        "update_interval": self._user_input.get("update_interval", 10),
+                        "nordpool_entity": self._user_input.get("nordpool_entity"),
+                    }
                 )
 
             except ConnectionError:
@@ -238,6 +249,15 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
                     data=final_data,
+                    options={
+                        "price_threshold_level": 5,
+                        "battery_charge_max_level": 100,
+                        "battery_discharge_min_level": 20,
+                        "grid_mode": "off",
+                        CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+                        "update_interval": self._user_input.get("update_interval", 10),
+                        "nordpool_entity": self._user_input.get("nordpool_entity"),
+                    }
                 )
 
             except ConnectionError:
