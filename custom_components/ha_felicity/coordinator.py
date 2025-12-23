@@ -311,22 +311,22 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     new_data[key] = value
 
             # === Load user settings & Nordpool every update ===
-            price_threshold_level = getattr(self.coordinator, "price_threshold_level", 5)
-            battery_charge_max = getattr(self.coordinator, "battery_charge_max_level", 100)
-            battery_discharge_min = getattr(self.coordinator, "battery_discharge_min_level", 20)
-            grid_mode = getattr(self.coordinator, "grid_mode", "off") 
+            price_threshold_level = getattr(self, "price_threshold_level", 5)
+            battery_charge_max = getattr(self, "battery_charge_max_level", 100)
+            battery_discharge_min = getattr(self, "battery_discharge_min_level", 20)
+            grid_mode = getattr(self, "grid_mode", "off") 
 
             # Update Nordpool price
-            self.max_price = getattr(self.coordinator, "max_price", None)
-            self.min_price = getattr(self.coordinator, "min_price", None)
-            self.avg_price = getattr(self.coordinator, "avg_price", None)
-            self.price_threshold = getattr(self.coordinator, "price_threshold", None)
+            self.max_price = getattr(self, "max_price", None)
+            self.min_price = getattr(self, "min_price", None)
+            self.avg_price = getattr(self, "avg_price", None)
+            self.price_threshold = getattr(self, "price_threshold", None)
             if self.nordpool_entity:
                 price_state = self.hass.states.get(self.nordpool_entity)
                 if price_state and price_state.state not in ("unavailable", "unknown"):
                     try:
                         self.current_price = float(price_state.state)
-                        setattr(self.coordinator, "current_price", self.current_price)
+                        setattr(self, "current_price", self.current_price)
                         attrs = price_state.attributes
 
                         # Define possible attribute names for each value (add more if needed)
@@ -346,7 +346,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         
                         if self.avg_price is not None: # we need to know the baseline value to determine the logic
                             self.price_threshold = self.avg_price * (price_threshold_level / 5)  # Scale around 5 = avg
-                            setattr(self.coordinator, "price_threshold", self.price_threshold)
+                            setattr(self, "price_threshold", self.price_threshold)
                             # === DYNAMIC PRICE LOGIC ===
                             battery_soc = new_data.get("battery_capacity")
                              # Determine desired state
