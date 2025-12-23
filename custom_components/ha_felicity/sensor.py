@@ -74,13 +74,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
         ]    
     entities.extend(nordpool_sensors)
-
+    entities.append(
+        HA_FelicityEnergyStateSensor(coordinator, entry)
+    )
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
         entity._attr_device_info = device_info
     async_add_entities(entities)
 
-     
+class HA_FelicityEnergyStateSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing current energy management state."""
+    
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_name = f"{entry.title} Energy State"
+        self._attr_unique_id = f"{entry.entry_id}_energy_state"
+        self._attr_icon = "mdi:lightning-bolt"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+    
+    @property
+    def native_value(self):
+        """Return the current state."""
+        return self.coordinator._current_energy_state or "unknown"
+    
+    @property
+    def extra_state_attributes(self):
+        """Return additional state info."""
+        return self.coordinator.get_energy_state_info()     
        
 class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
     """Representation of a Felicity sensor (raw register)."""
