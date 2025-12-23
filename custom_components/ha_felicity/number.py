@@ -49,7 +49,7 @@ async def async_setup_entry(
             min_val=1,
             max_val=10,
             step=1,
-            icon="mdi:counter"
+            icon="mdi:currency-eur"
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -59,7 +59,7 @@ async def async_setup_entry(
             min_val=1,
             max_val=10,
             step=0.5,
-            icon="mdi:counter"
+            icon="mdi:battery-plus-variant"
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -69,7 +69,7 @@ async def async_setup_entry(
             min_val=50,
             max_val=60,
             step=1,
-            icon="mdi:counter"
+            icon="mdi:gauge"
         ),
         HA_FelicityInternalNumber(
             coordinator,
