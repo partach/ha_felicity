@@ -171,9 +171,34 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+
+    coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    if coordinator:
+        # hack to make sure we have the latest options saved.... (this  enables not do save this with reloads runtime)
+        current_price_level = getattr(coordinator, "price_threshold_level", 5)
+        current_charge_max = getattr(coordinator, "battery_charge_max_level", 100)
+        current_discharge_min = getattr(coordinator, "battery_discharge_min_level", 20)
+        current_grid_mode = getattr(coordinator, "grid_mode", "off")
+        current_power_level = getattr(coordinator, "power_level", 5)
+        current_voltage_level = getattr(coordinator, "voltage_level", 58)
+        current_nordpool_override = getattr(coordinator, "nordpool_override", "")
+        
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                "price_threshold_level": current_price_level,
+                "battery_charge_max_level": current_charge_max,
+                "battery_discharge_min_level": current_discharge_min,
+                "grid_mode": current_grid_mode,
+                "power_level": current_power_level,
+                "voltage_level": current_voltage_level,
+                "nordpool_override": current_nordpool_override,
+            }
+        )        
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
+
 
     coordinator = hass.data[DOMAIN].pop(entry.entry_id)
     hub_key = coordinator.hub_key
@@ -184,7 +209,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for e in hass.config_entries.async_entries(DOMAIN)
         if e.entry_id != entry.entry_id
     ]
-    
     # Check if the hub is still used by other entries
     hub_still_used = False
     for other_entry in remaining:
