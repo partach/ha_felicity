@@ -65,7 +65,7 @@ _REGISTERS = {
     "ac_input_frequency": {"address": 4363, "name": "Ac Input Frequency", "unit": "Hz", "device_class": "frequency", "state_class": "measurement", "precision": 2, "index": 2},
     "ac_input_power": {"address": 4364, "name": "Ac Input Power", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3},
     "battery_voltage": {"address": 4365, "name": "Battery Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
-    "battery_current": {"address": 4366, "name": "Battery Current", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 1, "index": 3},
+    "battery_current": {"address": 4366, "name": "Battery Current", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 1, "index": 1},
     "battery_power": {"address": 4367, "name": "Battery Power", "unit": "W", "device_class": "power", "state_class": "measurement", "precision": 0, "index": 3},
     "battery_capacity": {"address": 4368, "name": "Battery Capacity", "unit": "%", "device_class": "battery", "state_class": "measurement", "precision": 1, "index": 1},
     "ac_output_voltage": {"address": 4369, "name": "Ac Output Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
