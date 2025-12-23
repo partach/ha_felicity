@@ -12,6 +12,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.components.number import NumberEntity, NumberMode
+from homeassistant.helpers.entity import EntityCategory
 
 from .const import DOMAIN, _COMBINED_REGISTERS, CONF_INVERTER_MODEL
 from .coordinator import HA_FelicityCoordinator
@@ -110,18 +112,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
     """Live selector for Grid Mode (from_grid / to_grid / off)."""
+
     _attr_icon = "mdi:transmission-tower"
+    _attr_options = ["from_grid", "to_grid", "off"]
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
         self._entry = entry
         self._attr_name = f"{entry.title} Grid Mode"
         self._attr_unique_id = f"{entry.entry_id}_grid_mode"
-        self._attr_options = ["from_grid", "to_grid", "off"]
-        self._attr_current_option = self._entry.options.get("grid_mode", "off")
 
     @property
-    def current_option(self):
+    def current_option(self) -> str:
         return self._entry.options.get("grid_mode", "off")
 
     async def async_select_option(self, option: str) -> None:
@@ -130,9 +133,16 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
 
         current_options = dict(self._entry.options)
         current_options["grid_mode"] = option
-        self.hass.config_entries.async_update_entry(self._entry, options=current_options)
+
+        await self.hass.config_entries.async_update_entry(
+            self._entry,
+            options=current_options
+        )
+
         _LOGGER.info("Grid mode set to %s via selector", option)
+
         await self.coordinator.async_request_refresh()
+        self.async_write_ha_state()
         
 class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
     """Generic internal number entity for user settings (live sliders)."""
@@ -158,6 +168,7 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         self._attr_native_max_value = max_val
         self._attr_native_step = step
         self._attr_native_unit_of_measurement = unit
+        self._attr_mode = NumberMode.SLIDER
         if icon:
             self._attr_icon = icon
         if device_class:
