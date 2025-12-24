@@ -85,29 +85,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hub = hubs[hub_key]
     # Initialize options if not set (for existing installations)
- #   if not entry.options:
-    price_threshold_level = entry.data.get("price_threshold_level", 5)
-    current_charge_max = entry.data.get("battery_charge_max_level", 100)
-    current_discharge_min = entry.data.get("battery_discharge_min_level", 20)
-    current_grid_mode = entry.data.get("grid_mode", "off")
-    current_power_level = entry.data.get("power_level", 5)
-    current_voltage_level = entry.data.get("voltage_level", 58)
-    nordpool_override = entry.data.get("nordpool_override", "")
-    hass.config_entries.async_update_entry(
-        entry,
-        options={
-        "price_threshold_level": price_threshold_level,
-        "battery_charge_max_level": current_charge_max,
-        "battery_discharge_min_level": current_discharge_min,
-        "grid_mode": current_grid_mode,
-        "power_level": current_power_level,
-        "voltage_level": current_voltage_level,
-        CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-        "update_interval": entry.data.get("update_interval", 10),
-        "nordpool_entity": entry.data.get("nordpool_entity"),
-        "nordpool_override": nordpool_override,
-        }
-    )
+    if not entry.options: # seem to keep remembering the override but not if we do comment this out
+        price_threshold_level = entry.data.get("price_threshold_level", 5)
+        current_charge_max = entry.data.get("battery_charge_max_level", 100)
+        current_discharge_min = entry.data.get("battery_discharge_min_level", 20)
+        current_grid_mode = entry.data.get("grid_mode", "off")
+        current_power_level = entry.data.get("power_level", 5)
+        current_voltage_level = entry.data.get("voltage_level", 58)
+        nordpool_override = entry.data.get("nordpool_override", "")
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+            "price_threshold_level": price_threshold_level,
+            "battery_charge_max_level": current_charge_max,
+            "battery_discharge_min_level": current_discharge_min,
+            "grid_mode": current_grid_mode,
+            "power_level": current_power_level,
+            "voltage_level": current_voltage_level,
+            CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+            "update_interval": entry.data.get("update_interval", 10),
+            "nordpool_entity": entry.data.get("nordpool_entity"),
+            "nordpool_override": nordpool_override,
+            }
+        )
     # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
         hass,
@@ -171,30 +171,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-
-    coordinator = hass.data[DOMAIN].get(entry.entry_id)
-    if coordinator:
-        # hack to make sure we have the latest options saved.... (this  enables not do save this with reloads runtime)
-        current_price_level = getattr(coordinator, "price_threshold_level", 5)
-        current_charge_max = getattr(coordinator, "battery_charge_max_level", 100)
-        current_discharge_min = getattr(coordinator, "battery_discharge_min_level", 20)
-        current_grid_mode = getattr(coordinator, "grid_mode", "off")
-        current_power_level = getattr(coordinator, "power_level", 5)
-        current_voltage_level = getattr(coordinator, "voltage_level", 58)
-        current_nordpool_override = getattr(coordinator, "nordpool_override", "")
-        
-        hass.config_entries.async_update_entry(
-            entry,
-            options={
-                "price_threshold_level": current_price_level,
-                "battery_charge_max_level": current_charge_max,
-                "battery_discharge_min_level": current_discharge_min,
-                "grid_mode": current_grid_mode,
-                "power_level": current_power_level,
-                "voltage_level": current_voltage_level,
-                "nordpool_override": current_nordpool_override,
-            }
-        )        
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
