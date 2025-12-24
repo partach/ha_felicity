@@ -84,15 +84,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hubs[hub_key] = FelicityTcpHub(hass, host, port)
 
     hub = hubs[hub_key]
+    price_threshold_level = entry.data.get("price_threshold_level", 5)
+    current_charge_max = entry.data.get("battery_charge_max_level", 100)
+    current_discharge_min = entry.data.get("battery_discharge_min_level", 20)
+    current_grid_mode = entry.data.get("grid_mode", "off")
+    current_power_level = entry.data.get("power_level", 5)
+    current_voltage_level = entry.data.get("voltage_level", 58)
     # Initialize options if not set (for existing installations)
     if not entry.options: # seem to keep remembering the override but not if we do comment this out
-        price_threshold_level = entry.data.get("price_threshold_level", 5)
-        current_charge_max = entry.data.get("battery_charge_max_level", 100)
-        current_discharge_min = entry.data.get("battery_discharge_min_level", 20)
-        current_grid_mode = entry.data.get("grid_mode", "off")
-        current_power_level = entry.data.get("power_level", 5)
-        current_voltage_level = entry.data.get("voltage_level", 58)
-        nordpool_override = entry.data.get("nordpool_override", "")
         hass.config_entries.async_update_entry(
             entry,
             options={
@@ -105,9 +104,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
             "update_interval": entry.data.get("update_interval", 10),
             "nordpool_entity": entry.data.get("nordpool_entity"),
-            "nordpool_override": nordpool_override,
             }
         )
+    else:
+        setattr(self, "price_threshold_level", price_threshold_level)
+        setattr(self, "current_charge_max", current_charge_max)
+        setattr(self, "current_discharge_min", current_discharge_min)
+        setattr(self, "current_grid_mode", current_grid_mode)
+        setattr(self, "current_power_level", current_power_level)
+        setattr(self, "current_voltage_level", current_voltage_level)
     # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
         hass,
