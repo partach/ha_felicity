@@ -1,5 +1,9 @@
 ## Changelog
 
+### [0.5.2] - Minor fixes
+- Several registry fixes (wrong in datasheet)
+- Storage of settings
+
 ### [0.5.1] - Dynamic Energy Management update
 - Norpool override to also use i.e. Tibber
 - Extra Configuration options for Dynamic Energy Management
