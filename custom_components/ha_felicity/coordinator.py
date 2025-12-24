@@ -136,40 +136,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         endian = info.get("endian", "big")
 
         if size == 1:
-            # 16-bit
-            reg_vals = [value & 0xFFFF]
-        
+            reg_vals = [value]
         elif size == 2:
-            # 32-bit (2 × 16-bit)
-            if endian == "big":
-                high = (value >> 16) & 0xFFFF
-                low  = value & 0xFFFF
-                reg_vals = [high, low]
-            else:
-                low  = value & 0xFFFF
-                high = (value >> 16) & 0xFFFF
-                reg_vals = [low, high]
-        
+            high = (value >> 16) & 0xFFFF
+            low = value & 0xFFFF
+            reg_vals = [high, low] if endian == "big" else [low, high]
         elif size == 4:
-            # 64-bit = 2 × 32-bit (HIGH32, LOW32)
-            high32 = (value >> 32) & 0xFFFFFFFF
-            low32  = value & 0xFFFFFFFF
-        
-            # Split each 32-bit into words
+            hh = (value >> 48) & 0xFFFF
+            hl = (value >> 32) & 0xFFFF
+            lh = (value >> 16) & 0xFFFF
+            ll = value & 0xFFFF
             if endian == "big":
-                hh = (high32 >> 16) & 0xFFFF
-                hl = high32 & 0xFFFF
-                lh = (low32 >> 16) & 0xFFFF
-                ll = low32 & 0xFFFF
+                reg_vals = [hh, hl, lh, ll]
             else:
-                hl = (high32 >> 16) & 0xFFFF
-                hh = high32 & 0xFFFF
-                ll = (low32 >> 16) & 0xFFFF
-                lh = low32 & 0xFFFF
-        
-            # Manual order: HIGH32 then LOW32
-            reg_vals = [hh, hl, lh, ll]
-        
+                reg_vals = [ll, lh, hl, hh]
         else:
             _LOGGER.error("Unsupported size %d for write to %s", size, key)
             return False
@@ -331,32 +311,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     # Unpack to raw integer
                     raw = 0
                     if size == 1:
-                        # 16-bit
                         raw = reg_vals[0]
-                    
                     elif size == 2:
-                        # 32-bit (2 × 16-bit)
-                        w0, w1 = reg_vals
+                        high, low = reg_vals
                         if endian == "big":
-                            raw = (w0 << 16) | w1
+                            raw = (high << 16) | low
                         else:
-                            raw = (w1 << 16) | w0
-                    
+                            raw = (low << 16) | high
                     elif size == 4:
-                        # 64-bit = 2 × 32-bit (each 32-bit = 2 × 16-bit)
-                        w0, w1, w2, w3 = reg_vals
-                    
-                        # Build the two 32-bit halves first
                         if endian == "big":
-                            high32 = (w0 << 16) | w1
-                            low32  = (w2 << 16) | w3
+                            raw = (reg_vals[0] << 48) | (reg_vals[1] << 32) | (reg_vals[2] << 16) | reg_vals[3]
                         else:
-                            high32 = (w1 << 16) | w0
-                            low32  = (w3 << 16) | w2
-                    
-                        # Combine into 64-bit (manual says: HIGH then LOW)
-                        raw = (high32 << 32) | low32
-                    
+                            raw = (reg_vals[3] << 48) | (reg_vals[2] << 32) | (reg_vals[1] << 16) | reg_vals[0]
                     else:
                         _LOGGER.warning("Unsupported size %d for %s", size, key)
                         continue
