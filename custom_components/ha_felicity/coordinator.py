@@ -260,12 +260,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
-        return {
+        info = {
             "current_state": self._current_energy_state,
             "last_change": self._last_state_change.isoformat() if self._last_state_change else None,
             "current_price": self.current_price,
             "price_threshold": self.price_threshold,
         }
+
+        # Add kWh for all Wh registers
+        for key, value in self.data.items():
+            info_key = self.register_map.get(key, {})
+            if info_key.get("unit") == "Wh" and value is not None:
+                info[f"{key}_kwh"] = round(value / 1000.0, 3)
+        return info
 
     async def _async_update_data(self) -> dict:
         """Fetch data from Modbus."""
