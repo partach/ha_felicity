@@ -242,9 +242,9 @@ _REGISTERS = {
     "total_load_consumption_energy_year": {"address": 4659, "name": "Totalload Consumption Energy Inquiry Year", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4, "size": 2, "endian": "little"},
     "total_load_consumption_energy_month": {"address": 4661, "name": "Totalload Consumption Energy Inquiry Month", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4, "size": 2, "endian": "little"},
     "total_load_consumption_energy_day": {"address": 4663, "name": "Totalload Consumption Energy Inquiry Day", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 4, "size": 2, "endian": "little"},
-    "Electricity meter power L1": {"address": 4864, "name": "Electricity meter power L1", "unit": "W", "device_class": "power", "precision": 0, "index": 1, "size": 2, "endian": "little},
-    "Electricity meter power L2": {"address": 4866, "name": "Electricity meter power L2", "unit": "W", "device_class": "power", "precision": 0, "index": 1, "size": 2, "endian": "little},
-    "Electricity meter power L3": {"address": 4868, "name": "Electricity meter power L3", "unit": "W", "device_class": "power", "precision": 0, "index": 1, "size": 2, "endian": "little},
+    "Electricity meter power L1": {"address": 4864, "name": "Electricity meter power L1", "unit": "W", "device_class": "power", "precision": 0, "index": 1, "size": 2, "endian": "little"},
+    "Electricity meter power L2": {"address": 4866, "name": "Electricity meter power L2", "unit": "W", "device_class": "power", "precision": 0, "index": 1, "size": 2, "endian": "little"},
+    "Electricity meter power L3": {"address": 4868, "name": "Electricity meter power L3", "unit": "W", "device_class": "power", "precision": 0, "index": 1, "size": 2, "endian": "little"},
 
     "operating_mode": {"address": 8451,"name": "Operating Mode","precision": 0,"index": 0,"type": "select","options": ["General mode (self-use, load priority)","Backup mode (grid-tied, no battery discharge)","Economic mode (scheduled charge-discharge)"]},
 
