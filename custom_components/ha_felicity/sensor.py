@@ -141,7 +141,16 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
             self.coordinator.last_update_success
             and self.coordinator.data.get(self._key) is not None
         )
-
+        
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Add kWh attribute for Wh registers."""
+        attrs = {}
+        unit = self._info.get("unit")
+        value = self.coordinator.data.get(self._key)
+        if unit == "Wh" and value is not None:
+            attrs["kWh"] = round(value / 1000.0, 3)
+        return attrs
 
 class HA_FelicityCombinedSensor(CoordinatorEntity, SensorEntity):
     """Representation of a combined/post-processed sensor."""
