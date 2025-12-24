@@ -106,13 +106,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "nordpool_entity": entry.data.get("nordpool_entity"),
             }
         )
-    else:
-        setattr(self, "price_threshold_level", price_threshold_level)
-        setattr(self, "current_charge_max", current_charge_max)
-        setattr(self, "current_discharge_min", current_discharge_min)
-        setattr(self, "current_grid_mode", current_grid_mode)
-        setattr(self, "current_power_level", current_power_level)
-        setattr(self, "current_voltage_level", current_voltage_level)
+
     # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
         hass,
@@ -126,7 +120,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Store config and hub_key for unload cleanup
     coordinator.config = config
     coordinator.hub_key = hub_key
-        
+    setattr(coordinator, "price_threshold_level", price_threshold_level)
+    setattr(coordinator, "current_charge_max", current_charge_max)
+    setattr(coordinator, "current_discharge_min", current_discharge_min)
+    setattr(coordinator, "current_grid_mode", current_grid_mode)
+    setattr(coordinator, "current_power_level", current_power_level)
+    setattr(coordinator, "current_voltage_level", current_voltage_level)
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     # First data refresh
