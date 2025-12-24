@@ -70,7 +70,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             elif size == 4 and raw >= 0x8000000000000000:
                 return raw - 0x10000000000000000
             return raw
-        elif index == 8:  # /10 (and signed possible)
+        elif index == 8: # /10 (and signed possible)
             # First make signed if needed
             if size == 1 and raw >= 0x8000:
                 raw -= 0x10000
@@ -78,7 +78,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 raw -= 0x100000000
             elif size == 4 and raw >= 0x8000000000000000:
                 raw -= 0x10000000000000000
-            return raw / 10.0
             return raw / 10.0
         else:
             return raw  # index 0,4,5,6,7 – raw
