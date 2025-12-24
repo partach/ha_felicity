@@ -55,8 +55,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
         if index == 1:  # /10 – only for size=1
-            if size != 1:
-                _LOGGER.warning("Index 1 (/10) used with size=%d – applying anyway", size)
             return raw / 10.0
         elif index == 2:  # /100 – only for size=1
             if size != 1:
