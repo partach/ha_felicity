@@ -85,29 +85,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hub = hubs[hub_key]
     # Initialize options if not set (for existing installations)
-    if not entry.options:
-        price_threshold_level = entry.data.get("price_threshold_level", 5)
-        current_charge_max = entry.data.get("battery_charge_max_level", 100)
-        current_discharge_min = entry.data.get("battery_discharge_min_level", 20)
-        current_grid_mode = entry.data.get("grid_mode", "off")
-        current_power_level = entry.data.get("power_level", 5)
-        current_voltage_level = entry.data.get("voltage_level", 58)
-        nordpool_override = entry.data.get("nordpool_override", "")
-        hass.config_entries.async_update_entry(
-            entry,
-            options={
-            "price_threshold_level": price_threshold_level,
-            "battery_charge_max_level": current_charge_max,
-            "battery_discharge_min_level": current_discharge_min,
-            "grid_mode": current_grid_mode,
-            "power_level": current_power_level,
-            "voltage_level": current_voltage_level,
-            CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-            "update_interval": entry.data.get("update_interval", 10),
-            "nordpool_entity": entry.data.get("nordpool_entity"),
-            "nordpool_override": nordpool_override,
-            }
-        )
+ #   if not entry.options:
+    price_threshold_level = entry.data.get("price_threshold_level", 5)
+    current_charge_max = entry.data.get("battery_charge_max_level", 100)
+    current_discharge_min = entry.data.get("battery_discharge_min_level", 20)
+    current_grid_mode = entry.data.get("grid_mode", "off")
+    current_power_level = entry.data.get("power_level", 5)
+    current_voltage_level = entry.data.get("voltage_level", 58)
+    nordpool_override = entry.data.get("nordpool_override", "")
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+        "price_threshold_level": price_threshold_level,
+        "battery_charge_max_level": current_charge_max,
+        "battery_discharge_min_level": current_discharge_min,
+        "grid_mode": current_grid_mode,
+        "power_level": current_power_level,
+        "voltage_level": current_voltage_level,
+        CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+        "update_interval": entry.data.get("update_interval", 10),
+        "nordpool_entity": entry.data.get("nordpool_entity"),
+        "nordpool_override": nordpool_override,
+        }
+    )
     # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
         hass,
