@@ -47,7 +47,7 @@ Options:
 Let the install config of the integration guide you as it asks you for the needed data.
 
 ## Serial and TCP
-It supports modbus USB dongle and TCP connection
+It supports modbus USB dongle and TCP Modbus connection
 
 ## Configuration options
 <p align="center">
@@ -73,15 +73,15 @@ The integration is to be used on own risk.
 
 ## Setting Dynamic Energy managment
 Note1: 
- * the integration uses internal **schema 1** for this. 
- * Schema 1 will be activated and controlled by the integration. Make sure the settings in there are inline with the intended use!
-   Weekdays and Time Start, Time Stop will not be set by the integration. The user has to set those to a default usefull for them.
+ * the integration uses internal **Econ Rule 1** for this. 
+ * Rule 1 will be activated and controlled by the integration. Make sure the settings in there are inline with the intended use!
+   **Weekdays, Time Start and Time Stop will not be set by the integration**. The user has to set those to a default usefull for them.
  * The integration wil set: The date on Today (if not idle), Voltage depending on charge (58) and discharge (50) but can be overwritten, SOC on configured setting (max battery / min battery, see below)
 
-Note2: The Operating mode needs to be set (by user) to Economic mode. The Energy management will not engage in any other mode (Like General).
+Note2: The Operating mode **must be set (by user) to Economic mode**. The Energy management feature will not engage in any other mode (Like General).
 
 During setup or with config setting (gear symbol in hub/device overview) you can add a 'Monetary' Home Assistant Device.
-Examples are the Nordpool integration. Look at the integration details there on how to setup (not covered here).
+Examples are the Nordpool integration or Tibber. Look at the Nordpool integration details on how to set that up (not covered here).
 During first setup or during run-time configuration (device gear symbol) it will display a list of installed Monetary integrations to chose from.
 Currently Nordpool and Tibber (via Norpool override field in config) are tested to work.
 
@@ -94,13 +94,13 @@ The operation is pretty straightforward. (Maybe further version will support mor
 Use `Price Threshold Level (1-10)` To set the desired price point level. (It can take about 10 sec. for the integration to calculate that into a **Base-Threshold-Price**)
 Based on settings the unit will either engage when The Actual Current Price is above Base-Threshold-Price or below.
 
-Example: Max price = 0.30 Euro, Min Price = 0.20 Euro and Avergage Price = 0.25 Euro
+Example: Max price = 0.30 Euro, Min Price = 0.20 Euro and Avergage Price = 0.25 Euro (collected via Nordpool or Tibber)
 When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0.25.
 
-The Grid Mode setting:
+**The Grid Mode setting**:
  * If `Grid Mode` <em>(From-grid, To-Grid, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro
  * If `Grid Mode` <em>(From-grid, To-Grid, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro
-Additional variables are `Battery Charge Max Level` and `Battery Charge Min Level`.
+**Additional variables** are `Battery Charge Max Level` and `Battery Charge Min Level`.
  * In `From Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Max Level`
  * In `To Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Min Level`
 
