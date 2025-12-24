@@ -143,7 +143,7 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
         )
         
     @property
-    def extra_state_attributes(self) -> dict[str, Any]:
+    def extra_state_attributes(self):
         """Add kWh attribute for Wh registers."""
         attrs = {}
         unit = self._info.get("unit")
