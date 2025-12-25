@@ -14,7 +14,6 @@ class FelicityInverterCard extends LitElement {
       _keyOptions: { type: Array },
       _selectedStatus: { type: String },
       _selectedSection: { type: String },
-      _entityPrefix: { type: String },
     };
   }
 
@@ -27,7 +26,37 @@ class FelicityInverterCard extends LitElement {
     this._allEntities = [];
     this._keyOptions = [];
     this._selectedSection = "energy_flow"; // Default to energy flow
-    this._entityPrefix = "felicity_inverter";
+    this._energyCache ??= {};
+  }
+  static getConfigElement() {
+    return document.createElement("felicity-inverter-card-editor");
+  }
+
+  _getOverride(key) {
+    const o = this.config.overrides?.[key];
+    if (!o) return null;
+
+    if (typeof o === "string") {
+      return { entity: o };
+    }
+    return o;
+  }
+
+  _convertEnergyToPower(key, entity) {
+    const now = Date.now();
+    const value = Number(entity.state);
+
+    const prev = this._energyCache[key];
+    this._energyCache[key] = { value, ts: now };
+
+    if (!prev) return 0;
+
+    const deltaKWh = value - prev.value;
+    const deltaHours = (now - prev.ts) / 3_600_000;
+
+    if (deltaHours <= 0) return 0;
+
+    return Math.round((deltaKWh / deltaHours) * 1000);
   }
 
   setConfig(config) {
@@ -43,29 +72,24 @@ class FelicityInverterCard extends LitElement {
 
   updated(changedProps) {
     if (changedProps.has("hass")) {
-      this._resolveEntityPrefix();
-      this._updateEntitiesAndKeys();
+      this._resolveDeviceEntities();
     }
   }
 
-  _resolveEntityPrefix() {
-    if (!this.config.device_id || !this.hass?.devices) return;
+  _resolveDeviceEntities() {
+    if (!this.config.device_id || !this.hass) return;
 
-    const device = this.hass.devices[this.config.device_id];
+    const device = this.hass.devices?.[this.config.device_id];
     if (!device) return;
 
-    const entityId = device.entities?.[0];
-    if (!entityId) return;
+    const entityRegistry = this.hass.entities;
+    if (!entityRegistry) return;
 
-    const parts = entityId.split(".");
-    if (parts.length >= 2) {
-      this._entityPrefix = parts[1];
-    }
-  }
-  _updateEntitiesAndKeys() {
-    this._allEntities = Object.keys(this.hass.states)
-      .filter(eid => eid.includes(this._entityPrefix))
-      .sort();
+    this._deviceEntities = Object.values(entityRegistry)
+      .filter(e => e.device_id === this.config.device_id)
+      .map(e => e.entity_id);
+
+    this._allEntities = this._deviceEntities.slice().sort();
   }
 
   render() {
@@ -108,8 +132,9 @@ class FelicityInverterCard extends LitElement {
               <style>
                 .flow-diagram {
                   position: relative;
-                  height: 250px;
-                  margin: 20px 0;
+                  height: 240px;
+                  margin: 2px 0;
+                  padding: 2px 0;
                 }
                 
                 .flow-item {
@@ -118,12 +143,13 @@ class FelicityInverterCard extends LitElement {
                   display: flex;
                   flex-direction: column;
                   align-items: center;
-                  gap: 4px;
+                  gap: 2px;
                   z-index: 2;
                 }
                 
                 .flow-item ha-icon {
                   font-size: 40px;
+                  margin-bottom: -2px;
                 }
                 
                 .power-value {
@@ -144,17 +170,23 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .pv { 
-                  top: 15px; 
+                  top: 10px; 
                   left: 15%; 
                   transform: translateX(-50%);
-                  gap: 2px;
+                  gap: 0px;
                 }
-                
+
+                .pv ha-icon {
+                  font-size: 50px !important;
+                }
+                .grid ha-icon {
+                  font-size: 50px !important;
+                }
                 .grid { 
-                  top: 15px; 
+                  top: 10px; 
                   right: 15%; 
                   transform: translateX(50%);
-                  gap: 2px;
+                  gap: 0px;
                 }
                 
                 .inverter { 
@@ -166,12 +198,16 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .battery { 
-                  bottom: 15px; 
+                  bottom: 10px; 
                   left: 15%; 
                   transform: translateX(-50%);
                   flex-direction: row;
                   align-items: center;
-                  gap: 8px;
+                  gap: 2px;
+                }
+
+                .battery ha-icon {
+                  font-size: 40px !important;
                 }
                 
                 .battery-info {
@@ -182,13 +218,14 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .home { 
-                  bottom: 15px; 
+                  bottom: 10px; 
                   right: 15%; 
                   transform: translateX(50%);
+                  gap: 0px;
                 }
                 
                 .backup { 
-                  bottom: 15px; 
+                  bottom: 10px; 
                   left: 50%; 
                   transform: translateX(-50%);
                 }
@@ -196,6 +233,7 @@ class FelicityInverterCard extends LitElement {
                 .inverter ha-icon {
                   font-size: 50px !important;
                   color: orange;
+                  filter: drop-shadow(0 0 10px orange);
                 }
                 
                 svg.flow-svg {
@@ -242,35 +280,52 @@ class FelicityInverterCard extends LitElement {
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <path 
-                  class="flow-path ${this._getPower('pv_total_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path charging ${this._getPower('pv_input_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 20 22 L 47 48" 
                   vector-effect="non-scaling-stroke"
                 />
+                <!-- Grid to Inverter (bidirectional) -->
                 <path 
-                  class="flow-path ${Math.abs(this._getPower('ac_input_power')) > 50 ? 'active ' + (this._getPower('ac_input_power') > 0 ? 'grid-import' : 'grid-export reverse') : 'inactive'}" 
+                  class="flow-path ${(() => {
+                    const power = parseFloat(this._getPower('ac_input_power')) || 0;
+                    // Check if there's a grid state method, or use a sensor
+                    const gridState = this._getValue('grid_state'); // You might need to add this sensor
+                    if (power <= 50) return 'inactive';
+                    // If no grid state sensor, you might need to determine from other sensors
+                    // For now, assuming import if power > 0
+                    return 'active grid-import'; // Change this based on your grid direction sensor
+                  })()} " 
                   d="M 80 22 L 53 48" 
                   vector-effect="non-scaling-stroke"
                 />
+                <!-- Inverter to Battery (bidirectional) -->
                 <path 
-                  class="flow-path ${Math.abs(this._getPower('battery_power')) > 50 ? 'active ' + (this._getPower('battery_power') > 0 ? 'charging' : 'discharging reverse') : 'inactive'}" 
-                  d="M 47 52 L 20 78" 
+                  class="flow-path ${(() => {
+                    const power = parseFloat(this._getPower('battery_power')) || 0;
+                    const state = this._getBatteryState();
+                    if (power <= 50) return 'inactive';
+                    if (state === 'Charging') return 'active charging';
+                    if (state === 'Discharging') return 'active discharging reverse';
+                    return 'inactive';
+                  })()} " 
+                  d="M 47 52 L 25 73" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path ${this._getPower('ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
-                  d="M 53 52 L 80 78" 
+                  d="M 53 52 L 75 73" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path ${this._getPower('backup_load') > 50 ? 'active' : 'inactive'}" 
-                  d="M 50 52 L 50 78" 
+                  d="M 50 52 L 50 73" 
                   vector-effect="non-scaling-stroke"
                 />
               </svg>
 
               <div class="flow-item pv">
                 <ha-icon icon="mdi:solar-panel-large"></ha-icon>
-                <div class="power-value">${this._getPower("pv_total_power")} W</div>
+                <div class="power-value">${this._getPower("pv_input_power")} W</div>
                 <div class="label">PV</div>
               </div>
 
@@ -398,16 +453,37 @@ class FelicityInverterCard extends LitElement {
       </ha-card>
     `;
   }
+
   _getEntityId(key) {
-    // NEW: override support
+    // explicit override always wins
     const override = this.config.overrides?.[key];
     if (override) return override;
 
-    return `sensor.${this._entityPrefix}_${key}`;
+    if (!this._deviceEntities?.length) return null;
+
+    return this._deviceEntities.find(
+      eid =>
+        eid.startsWith("sensor.") &&
+        eid.endsWith(key)
+    );
   }
+
   _getValue(key) {
-    const entity = this.hass.states[this._getEntityId(key)];
-    return entity ? entity.state : null;
+    const override = this._getOverride(key);
+    const entityId = override?.entity ?? this._getEntityId(key);
+    const entity = this.hass.states[entityId];
+    if (!entity) return null;
+
+    const unit = entity.attributes?.unit_of_measurement;
+
+    if (
+      override?.mode === "energy_to_power" &&
+      unit?.toLowerCase().includes("wh")
+    ) {
+      return this._convertEnergyToPower(key, entity);
+    }
+
+    return Number(entity.state);
   }
 
   _getPower(key) {
@@ -417,18 +493,12 @@ class FelicityInverterCard extends LitElement {
 
   _getBatteryIcon() {
     const soc = this._getValue("battery_capacity");
-    if (soc == null) return "";
-    const s = parseInt(soc);
-    if (s >= 90) return "-100";
-    if (s >= 80) return "-90";
-    if (s >= 70) return "-80";
-    if (s >= 60) return "-70";
-    if (s >= 50) return "-60";
-    if (s >= 40) return "-50";
-    if (s >= 30) return "-40";
-    if (s >= 20) return "-30";
-    if (s >= 10) return "-20";
-    return "-10";
+    if (soc == null) return "-outline";
+
+    const s = Math.max(0, Math.min(100, parseInt(soc)));
+    const rounded = Math.round(s / 10) * 10;
+
+    return `-${rounded}`;
   }
 
   _getBatteryState() {
@@ -592,4 +662,74 @@ class FelicityInverterCard extends LitElement {
   }
 }
 
+class FelicityInverterCardEditor extends LitElement {
+  static get properties() {
+    return {
+      hass: {},
+      _config: {},
+    };
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+  }
+
+  get _deviceId() {
+    return this._config.device_id || "";
+  }
+
+  render() {
+    if (!this.hass) return html``;
+
+    return html`
+      <ha-form
+        .hass=${this.hass}
+        .data=${this._config}
+        .schema=${this._schema()}
+        @value-changed=${this._valueChanged}
+      ></ha-form>
+    `;
+  }
+
+  _schema() {
+    return [
+      {
+        name: "name",
+        selector: { text: {} },
+      },
+      {
+        name: "device_id",
+        selector: {
+          device: {
+            integration: "ha_felicity",
+          },
+        },
+      },
+      {
+        name: "overrides",
+        selector: {
+          object: {},
+        },
+      },
+    ];
+  }
+
+  _valueChanged(ev) {
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: ev.detail.value },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+}
+
+customElements.define(
+  "felicity-inverter-card-editor",
+  FelicityInverterCardEditor
+);
+
+
 customElements.define("felicity-inverter-card", FelicityInverterCard);
+customElements.define("felicity-inverter-card-editor",FelicityInverterCardEditor);
