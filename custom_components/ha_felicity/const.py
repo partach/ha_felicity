@@ -321,6 +321,15 @@ _COMBINED_REGISTERS = {
         "name": "Total PV Power",
         "precision": 0,
     },
+    "ac_active_power": {
+        "sources": ["invert_active_power", "invert_active_power_l2", "invert_active_power_l3"],
+        "calc": lambda p1, p2, p3: (p1 or 0) + (p2 or 0) + (p3 or 0),
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Total AC Active Power",
+        "precision": 0,
+    },
     "econ_rule_1": {
         "sources": [
             "econ_rule_1_enable",
@@ -505,9 +514,6 @@ REGISTER_SETS = {
             "pv3_input_power",
             "total_ac_output_active_power",
             "total_ac_output_apparent_power",
-            "Electricity meter power L1",
-            "Electricity meter power L2",
-            "Electricity meter power L3",
             # Add combined keys if you want them always visible
             "pv_generated_energy_total",
             "load_consumption_energy_total",
