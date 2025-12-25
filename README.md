@@ -14,7 +14,7 @@ Currently supports one type: T-REX-10KLP3G01
 <p align="center">
 <img src="https://github.com/partach/ha_felicity/blob/main/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
 <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20card.png" width="300" style="vertical-align: middle; margin: 0 10px;"/>
-<br><em>Inverter that is supported and card included (card installed separately)</em>
+<br><em>Inverter that is supported and card included</em>
 </p>
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20hub.png" width="600"/>
@@ -104,6 +104,17 @@ When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0
  * In `To Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Min Level`
 
 IMPORTANT: The integration is depedent on the Monetary Integration to contiously supply the data.
+
+## Installing the card
+After installation of the integration you need to first reboot.
+After the reboot go to:
+`Settings` --> `Dashboards` --> `3 dot menu on right top` --> `Resources` --> `Add Resource button`
+In the dialog fill in:
+1. `URL:` /local/community/ha_felicity/ha_felicity.js
+2. `Resource Type`: Select Java script module
+3. Press `Create`
+4. Refresh browser (Not needed to reboot)
+
 
 ## Discussion 
 See [here](https://github.com/partach/ha_felicity/discussions)
