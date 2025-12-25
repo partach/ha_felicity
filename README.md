@@ -12,14 +12,13 @@ Currently supports one type: T-REX-10KLP3G01
 
 
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/T-REX-10KLP3G01.png" width="200"/>
-  <br>
-  <em>Inverter that is supported</em>
+<img src="https://github.com/partach/ha_felicity/blob/main/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
+<img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20card.png" width="300" style="vertical-align: middle; margin: 0 10px;"/>
+<br><em>Inverter that is supported and card included (card installed separately)</em>
 </p>
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20hub.png" width="600"/>
-  <br>
-  <em>Home assistant hub view</em>
+  <br><em>Home assistant hub view</em>
 </p>
 
 ## Features
