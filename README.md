@@ -13,7 +13,7 @@ Currently supports one type: T-REX-10KLP3G01
 
 <p align="center">
 <img src="https://github.com/partach/ha_felicity/blob/main/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
-<img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20card.png" width="300" style="vertical-align: middle; margin: 0 10px;"/>
+<img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20card.png" width="400" style="vertical-align: middle; margin: 0 10px;"/>
 <br><em>Inverter that is supported and card included</em>
 </p>
 <p align="center">
