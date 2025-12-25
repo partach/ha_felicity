@@ -148,7 +148,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .flow-item ha-icon {
-                  font-size: 40px;
+                  font-size: 50px;
                   margin-bottom: -2px;
                 }
                 
@@ -176,12 +176,6 @@ class FelicityInverterCard extends LitElement {
                   gap: 0px;
                 }
 
-                .pv ha-icon {
-                  font-size: 50px !important;
-                }
-                .grid ha-icon {
-                  font-size: 50px !important;
-                }
                 .grid { 
                   top: 10px; 
                   right: 15%; 
@@ -205,10 +199,6 @@ class FelicityInverterCard extends LitElement {
                   align-items: center;
                   gap: 2px;
                 }
-
-                .battery ha-icon {
-                  font-size: 40px !important;
-                }
                 
                 .battery-info {
                   display: flex;
@@ -221,7 +211,15 @@ class FelicityInverterCard extends LitElement {
                   bottom: 10px; 
                   right: 15%; 
                   transform: translateX(50%);
+                  flex-direction: row;
+                  align-items: center;
                   gap: 0px;
+                }
+                .home-info {
+                  display: flex;
+                  flex-direction: column;
+                  gap: 2px;
+                  text-align: left;
                 }
                 
                 .backup { 
@@ -324,24 +322,24 @@ class FelicityInverterCard extends LitElement {
               </svg>
 
               <div class="flow-item pv">
-                <ha-icon icon="mdi:solar-panel-large"></ha-icon>
+                <ha-icon .hass=${this.hass} icon="mdi:solar-panel-large"></ha-icon>
                 <div class="power-value">${this._getPower("pv_input_power")} W</div>
                 <div class="label">PV</div>
               </div>
 
               <div class="flow-item grid">
-                <ha-icon icon="mdi:transmission-tower"></ha-icon>
+                <ha-icon .hass=${this.hass} icon="mdi:transmission-tower"></ha-icon>
                 <div class="power-value">${this._getPower("ac_input_power")} W</div>
                 <div class="label">Grid</div>
               </div>
 
               <div class="flow-item inverter">
-                <ha-icon icon="mdi:lightning-bolt"></ha-icon>
+                <ha-icon .hass=${this.hass} icon="mdi:lightning-bolt"></ha-icon>
                 <div class="label">Inverter</div>
               </div>
 
               <div class="flow-item battery">
-                <ha-icon icon="mdi:battery${this._getBatteryIcon()}"></ha-icon>
+                <ha-icon .hass=${this.hass} icon="${this._getBatteryIcon()}"></ha-icon>
                 <div class="battery-info">
                   <div class="soc">${this._getValue("battery_capacity") ?? "—"} %</div>
                   <div class="power-value">${Math.abs(this._getPower("battery_power"))} W</div>
@@ -350,9 +348,11 @@ class FelicityInverterCard extends LitElement {
               </div>
 
               <div class="flow-item home">
-                <ha-icon icon="mdi:home"></ha-icon>
-                <div class="power-value">${this._getPower("ac_output_active_power")} W</div>
-                <div class="label">Home Load</div>
+                <ha-icon .hass=${this.hass} icon="mdi:home"></ha-icon>
+                <div class="battery-info">
+                  <div class="power-value">${this._getPower("ac_output_active_power")} W</div>
+                  <div class="label">Home Load</div>
+                </div>  
               </div>
 
               <div class="flow-item backup">
@@ -492,13 +492,22 @@ class FelicityInverterCard extends LitElement {
   }
 
   _getBatteryIcon() {
+    return "mdi:battery-charging"
+  }
+
+  _getBattery2Icon() {
     const soc = this._getValue("battery_capacity");
-    if (soc == null) return "-outline";
+    if (soc == null || isNaN(soc)) return "mdi:battery-outline";
 
-    const s = Math.max(0, Math.min(100, parseInt(soc)));
-    const rounded = Math.round(s / 10) * 10;
+    const s = Math.max(0, Math.min(100, Math.round(soc)));
 
-    return `-${rounded}`;
+    if (s >= 95) return "mdi:battery-100";
+    if (s >= 75) return "mdi:battery-70";
+    if (s >= 55) return "mdi:battery-50";
+    if (s >= 35) return "mdi:battery-30";
+    if (s >= 15) return "mdi:battery-20";
+
+    return "mdi:battery-outline";
   }
 
   _getBatteryState() {
