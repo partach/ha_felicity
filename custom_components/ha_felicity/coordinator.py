@@ -40,6 +40,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # runtime setting (if used) 
         self._current_energy_state = None
         self._last_state_change = None
+        self._current_day = None
         self.current_price = None
         self.max_price = None
         self.min_price = None
@@ -390,6 +391,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 self.price_threshold = self.avg_price + (self.max_price - self.avg_price) * ratio
                             
                             setattr(self, "price_threshold", self.price_threshold)
+                            now = datetime.now()
+                            current_day = now.day
+                            if self._last_state_change is None: # be safe about it
+                                self._last_state_change = now
+                                self._current_day = current_day
+
+                            if current_day != self._current_day:
+                                _LOGGER.info("Midnight detected - reconfirming energy state")
+                                # Force idle to trigger re-evaluation
+                                self._current_energy_state = "idle"
+                                self._current_day = current_day
+                            
                             # === DYNAMIC PRICE LOGIC ===
                             battery_soc = new_data.get("battery_capacity")
                              # Determine desired state
@@ -417,7 +430,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                     voltage_level = self.voltage_level,
                                 )
                                 self._current_energy_state = desired_state
-                                self._last_state_change = datetime.now()                    
+                                self._last_state_change = now
 
                     except ValueError:
                         self.current_price = None
