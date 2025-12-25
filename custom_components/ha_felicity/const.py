@@ -477,6 +477,7 @@ REGISTER_SETS = {
         key: info
         for key, info in _REGISTERS.items()
         if key in {
+            "ac_active_power",
             "working_mode",
             "sn",
             "warning_state_1",
