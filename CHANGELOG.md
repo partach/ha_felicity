@@ -1,6 +1,6 @@
 ## Changelog
 
-### [0.5.2] - Minor fixes
+### [0.5.3] - Card included
 - Added energy flow card, see Readme for install instruction
 - Register improvements
 
