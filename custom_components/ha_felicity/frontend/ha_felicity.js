@@ -60,10 +60,12 @@ class FelicityInverterCard extends LitElement {
   }
 
   setConfig(config) {
-    if (!config.entities && !config.econ_rules) {
-      throw new Error("You must define 'entities' or 'econ_rules'");
-    }
-    this.config = config;
+    this.config = {
+      advanced: false,
+      ...config,
+    };
+
+    this._selectedSection = "energy_flow";
   }
 
   getCardSize() {
@@ -101,40 +103,43 @@ class FelicityInverterCard extends LitElement {
 
     return html`
       <ha-card>
-        <div class="header">${this.config.name || "Felicity Inverter"}</div>
-
+        ${this.config.name ? html`
+          <div class="header">${this.config.name}</div>
+        ` : ""}
         <!-- Section Selector -->
-        <div class="section-selector">
-          <select @change=${e => this._selectedSection = e.target.value}>
-            <option value="energy_flow" ?selected=${this._selectedSection === "energy_flow"}>
-              Energy Flow
-            </option>
-            ${this.config.entities?.length > 0 ? html`
-              <option value="sensors" ?selected=${this._selectedSection === "sensors"}>
-                Main Sensors
+        ${this.config.advanced ? html`
+          <div class="section-selector">
+            <select @change=${e => this._selectedSection = e.target.value}>
+              <option value="energy_flow" ?selected=${this._selectedSection === "energy_flow"}>
+                Energy Flow
               </option>
-            ` : ""}
-            ${this.config.econ_rules?.length > 0 ? html`
-              <option value="econ_rules" ?selected=${this._selectedSection === "econ_rules"}>
-                Economic Rules
+              ${this.config.entities?.length > 0 ? html`
+                <option value="sensors" ?selected=${this._selectedSection === "sensors"}>
+                  Main Sensors
+                </option>
+              ` : ""}
+              ${this.config.econ_rules?.length > 0 ? html`
+                <option value="econ_rules" ?selected=${this._selectedSection === "econ_rules"}>
+                  Economic Rules
+                </option>
+              ` : ""}
+              <option value="write_register" ?selected=${this._selectedSection === "write_register"}>
+                Write Register
               </option>
-            ` : ""}
-            <option value="write_register" ?selected=${this._selectedSection === "write_register"}>
-              Write Register
-            </option>
-          </select>
-        </div>
+            </select>
+          </div>
+        ` : ""}
 
         <!-- SECTION 1: Energy Flow -->
         ${this._selectedSection === "energy_flow" ? html`
-          <div class="section">
+          <div class="section energy-flow">
             <div class="flow-diagram">
               <style>
                 .flow-diagram {
                   position: relative;
                   height: 240px;
-                  margin: 2px 0;
-                  padding: 2px 0;
+                  margin: 0px 0;
+                  padding: 0px 0;
                 }
                 
                 .flow-item {
@@ -148,7 +153,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .flow-item ha-icon {
-                  font-size: 50px;
+                  font-size: 30px;
                   margin-bottom: -2px;
                 }
                 
@@ -159,8 +164,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .soc {
-                  font-size: 1.2em;
-                  font-weight: bold;
+                  font-size: 1em;
                   color: var(--success-color, #4caf50);
                 }
                 
@@ -189,6 +193,14 @@ class FelicityInverterCard extends LitElement {
                   transform: translate(-50%, -50%);
                   flex-direction: column-reverse;
                   gap: 4px;
+                }
+                .state { 
+                  top: 10%; 
+                  left: 50%; 
+                  transform: translate(-50%, -50%);
+                  flex-direction: column-reverse;
+                  gap: 2px;
+                  font-weight: bold;
                 }
                 
                 .battery { 
@@ -229,7 +241,6 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .inverter ha-icon {
-                  font-size: 50px !important;
                   color: orange;
                   filter: drop-shadow(0 0 10px orange);
                 }
@@ -332,7 +343,13 @@ class FelicityInverterCard extends LitElement {
                 <div class="power-value">${this._getPower("ac_input_power")} W</div>
                 <div class="label">Grid</div>
               </div>
-
+              <div class="flow-item state">
+                <div class="label">
+                  Operation: ${this._getStateLabel("operating_mode")}
+                  &nbsp;|&nbsp;
+                  State: ${this._getStateLabel("energy_state")}
+                </div>
+              </div>
               <div class="flow-item inverter">
                 <ha-icon .hass=${this.hass} icon="mdi:lightning-bolt"></ha-icon>
                 <div class="label">Inverter</div>
@@ -340,15 +357,15 @@ class FelicityInverterCard extends LitElement {
 
               <div class="flow-item battery">
                 <ha-icon .hass=${this.hass} icon="${this._getBatteryIcon()}"></ha-icon>
-                <div class="battery-info">
-                  <div class="soc">${this._getValue("battery_capacity") ?? "—"} %</div>
+                <div class="soc">
+                  ${this._getValue("battery_voltage") ?? "—"}V-${this._getValue("battery_capacity") ?? "—"}%
                   <div class="power-value">${Math.abs(this._getPower("battery_power"))} W</div>
                   <div class="label">${this._getBatteryState()}</div>
                 </div>
               </div>
 
               <div class="flow-item home">
-                <ha-icon .hass=${this.hass} icon="mdi:home"></ha-icon>
+                <ha-icon .hass=${this.hass} icon="mdi:home-lightning-bolt"></ha-icon>
                 <div class="battery-info">
                   <div class="power-value">${this._getPower("ac_output_active_power")} W</div>
                   <div class="label">Home Load</div>
@@ -455,16 +472,13 @@ class FelicityInverterCard extends LitElement {
   }
 
   _getEntityId(key) {
-    // explicit override always wins
-    const override = this.config.overrides?.[key];
-    if (override) return override;
+    const override = this._getOverride(key);
+    if (override?.entity) return override.entity;
 
     if (!this._deviceEntities?.length) return null;
 
-    return this._deviceEntities.find(
-      eid =>
-        eid.startsWith("sensor.") &&
-        eid.endsWith(key)
+    return this._deviceEntities.find(eid =>
+      eid.endsWith(`_${key}`)
     );
   }
 
@@ -486,27 +500,65 @@ class FelicityInverterCard extends LitElement {
     return Number(entity.state);
   }
 
+  _truncateFromSecondSpace(text) {
+    if (!text) return text;
+    const parts = String(text).split(" ");
+    return parts.length > 2 ? parts.slice(0, 2).join(" ") : text;
+  }
+
+  _getStateLabel(key) {
+    const state = this._getState(key);
+    const label = state === "—" ? "Unknown" : state;
+    return this._truncateFromSecondSpace(label);
+  }
+
+  _getState(key) {
+    const entityId = this._getEntityId(key);
+    if (!entityId) return "—";
+
+    const entity = this.hass.states[entityId];
+    if (!entity) return "—";
+
+    const domain = entityId.split(".")[0];
+
+    // Select → textual state
+    if (domain === "select") {
+      return entity.state;
+    }
+
+    // Number / Sensor → numeric if possible
+    if (domain === "number" || domain === "sensor") {
+      const val = Number(entity.state);
+      return isNaN(val) ? entity.state : val;
+    }
+
+    // Fallback (switch, binary_sensor, etc.)
+    return entity.state ?? "—";
+  }
+
   _getPower(key) {
     const val = this._getValue(key);
     return val != null ? Math.abs(val).toFixed(0) : "0";
   }
 
   _getBatteryIcon() {
-    return "mdi:battery-charging"
-  }
+    const soc = parseFloat(this._getState("battery_capacity"));
+    if (soc == null || isNaN(soc)) return "mdi:battery-charging";
 
-  _getBattery2Icon() {
-    const soc = this._getValue("battery_capacity");
-    if (soc == null || isNaN(soc)) return "mdi:battery-outline";
+    const val = Math.max(0, Math.min(100, Math.round(soc)));
 
-    const s = Math.max(0, Math.min(100, Math.round(soc)));
-
-    if (s >= 95) return "mdi:battery-100";
-    if (s >= 75) return "mdi:battery-70";
-    if (s >= 55) return "mdi:battery-50";
-    if (s >= 35) return "mdi:battery-30";
-    if (s >= 15) return "mdi:battery-20";
-
+    // 6. Logic: Check from highest to lowest
+    if (val >= 95) return "mdi:battery";
+    if (val >= 85) return "mdi:battery-90";
+    if (val >= 75) return "mdi:battery-80";
+    if (val >= 65) return "mdi:battery-70";
+    if (val >= 55) return "mdi:battery-60";
+    if (val >= 45) return "mdi:battery-50";
+    if (val >= 35) return "mdi:battery-40";
+    if (val >= 25) return "mdi:battery-30";
+    if (val >= 15) return "mdi:battery-20";
+    if (val >= 5)  return "mdi:battery-10";
+    
     return "mdi:battery-outline";
   }
 
@@ -572,16 +624,16 @@ class FelicityInverterCard extends LitElement {
   static get styles() {
     return css`
       ha-card {
-        padding: 16px;
+        padding: 2px;
       }
       .header {
         font-size: 1.4em;
         font-weight: bold;
-        margin-bottom: 16px;
+        margin-bottom: 3px;
         text-align: center;
       }
       .section-selector {
-        margin-bottom: 16px;
+        margin-bottom: 3px;
       }
       .section-selector select {
         width: 100%;
@@ -598,8 +650,9 @@ class FelicityInverterCard extends LitElement {
         border-color: var(--primary-color);
         background: var(--card-background-color);
       }
-      .section {
-        margin-bottom: 24px;
+      .section.energy-flow {
+        margin-top: 1px;
+        margin-bottom: 1px;
       }
       .section-title {
         font-size: 1.1em;
@@ -742,3 +795,13 @@ customElements.define(
 
 customElements.define("felicity-inverter-card", FelicityInverterCard);
 customElements.define("felicity-inverter-card-editor",FelicityInverterCardEditor);
+
+(function () {
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "felicity-inverter-card",
+    name: "felicity-inverter-card",
+    description: "Visualize Felicity Inverter", 
+    preview: true,
+  });
+})();
