@@ -1,6 +1,10 @@
 ## Changelog
 
 ### [0.5.2] - Minor fixes
+- Added energy flow card, see Readme for install instruction
+- Register improvements
+
+### [0.5.2] - Minor fixes
 - Several registry fixes (wrong in datasheet)
 - Storage of settings
 
