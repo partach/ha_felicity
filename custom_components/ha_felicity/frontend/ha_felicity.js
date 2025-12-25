@@ -164,10 +164,14 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .soc {
-                  font-size: 1em;
+                  font-size: 1.2em;
+                  font-weight: bold;
                   color: var(--success-color, #4caf50);
                 }
-                
+                .volt {
+                  font-size: 0.85em;
+                  color: var(--success-color, #4caf50);
+                }
                 .label {
                   font-size: 0.85em;
                   color: var(--secondary-text-color);
@@ -188,20 +192,19 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .inverter { 
-                  top: 50%; 
-                  left: 50%; 
-                  transform: translate(-50%, -50%);
-                  flex-direction: column-reverse;
-                  gap: 4px;
-                  font-size: 70px
-                }
-                .state { 
-                  top: 10%; 
+                  top: 49%; 
                   left: 50%; 
                   transform: translate(-50%, -50%);
                   flex-direction: column-reverse;
                   gap: 2px;
-                  font-weight: bold;
+                  font-size: 65px
+                }
+                .state { 
+                  top: 15%; 
+                  left: 50%; 
+                  transform: translate(-50%, -50%);
+                  flex-direction: column-reverse;
+                  gap: 2px;
                 }
                 
                 .battery { 
@@ -328,7 +331,27 @@ class FelicityInverterCard extends LitElement {
                 />
                 <path 
                   class="flow-path ${this._getPower('ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
-                  d="M 50 52 L 50 73" 
+                  d="M 50 54 L 50 74" 
+                  vector-effect="non-scaling-stroke"
+                />
+                <path 
+                  class="flow-path 'inactive'}" 
+                  d="M 47 45 L 53 45" 
+                  vector-effect="non-scaling-stroke"
+                />
+                <path 
+                  class="flow-path 'inactive'}" 
+                  d="M 53 45 L 53 55" 
+                  vector-effect="non-scaling-stroke"
+                />
+                <path 
+                  class="flow-path 'inactive'}" 
+                  d="M 53 55 L 47 55" 
+                  vector-effect="non-scaling-stroke"
+                />
+                <path 
+                  class="flow-path 'inactive'}" 
+                  d="M 47 55 L 47 45" 
                   vector-effect="non-scaling-stroke"
                 />
               </svg>
@@ -346,9 +369,17 @@ class FelicityInverterCard extends LitElement {
               </div>
               <div class="flow-item state">
                 <div class="label">
-                  Operation: ${this._getStateLabel("operating_mode")}
+                  Rule: ${this._getStateLabel("economic_mode_rule_1_enable")}
                   &nbsp;|&nbsp;
                   State: ${this._getStateLabel("energy_state")}
+                </div>
+                <div class="label">
+                  Operation: ${this._getStateLabel("operating_mode")}
+                </div>  
+                <div class="label">
+                  Price: ${this._getStateLabel("current_price")}
+                  &nbsp;|&nbsp;
+                  Threshold: ${this._getStateLabel("price_threshold")}
                 </div>
               </div>
               <div class="flow-item inverter">
@@ -357,8 +388,8 @@ class FelicityInverterCard extends LitElement {
 
               <div class="flow-item battery">
                 <ha-icon .hass=${this.hass} icon="${this._getBatteryIcon()}"></ha-icon>
-                <div class="soc">
-                  ${this._getValue("battery_voltage") ?? "—"}V-${this._getValue("battery_capacity") ?? "—"}%
+                <div class="soc">${this._getValue("battery_capacity") ?? "—"}%
+                  <div class="volt">${this._getValue("battery_voltage") ?? "—"}V</div>
                   <div class="power-value">${Math.abs(this._getPower("battery_power"))} W</div>
                   <div class="label">${this._getBatteryState()}</div>
                 </div>
@@ -800,8 +831,9 @@ customElements.define("felicity-inverter-card-editor",FelicityInverterCardEditor
   window.customCards = window.customCards || [];
   window.customCards.push({
     type: "felicity-inverter-card",
-    name: "felicity-inverter-card",
+    name: "Felicity Inverter Card",
     description: "Visualize Felicity Inverter", 
     preview: true,
+    preview_url: "/local/ha_felicity/thecard.png"
   });
 })();
