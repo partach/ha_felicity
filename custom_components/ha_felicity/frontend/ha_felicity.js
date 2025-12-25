@@ -188,11 +188,12 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .inverter { 
-                  top: 40%; 
+                  top: 50%; 
                   left: 50%; 
                   transform: translate(-50%, -50%);
                   flex-direction: column-reverse;
                   gap: 4px;
+                  font-size: 70px
                 }
                 .state { 
                   top: 10%; 
@@ -317,23 +318,23 @@ class FelicityInverterCard extends LitElement {
                     if (state === 'Discharging') return 'active discharging reverse';
                     return 'inactive';
                   })()} " 
-                  d="M 47 52 L 25 73" 
+                  d="M 47 52 L 27 72" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
-                  class="flow-path ${this._getPower('ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path ${this._getPower('total_ac_active_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 53 52 L 75 73" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
-                  class="flow-path ${this._getPower('backup_load') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path ${this._getPower('ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 50 52 L 50 73" 
                   vector-effect="non-scaling-stroke"
                 />
               </svg>
 
               <div class="flow-item pv">
-                <ha-icon .hass=${this.hass} icon="mdi:solar-panel-large"></ha-icon>
+                <ha-icon .hass=${this.hass} icon="mdi:solar-power-variant"></ha-icon>
                 <div class="power-value">${this._getPower("pv_input_power")} W</div>
                 <div class="label">PV</div>
               </div>
@@ -352,7 +353,6 @@ class FelicityInverterCard extends LitElement {
               </div>
               <div class="flow-item inverter">
                 <ha-icon .hass=${this.hass} icon="mdi:lightning-bolt"></ha-icon>
-                <div class="label">Inverter</div>
               </div>
 
               <div class="flow-item battery">
@@ -367,13 +367,13 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item home">
                 <ha-icon .hass=${this.hass} icon="mdi:home-lightning-bolt"></ha-icon>
                 <div class="battery-info">
-                  <div class="power-value">${this._getPower("ac_output_active_power")} W</div>
+                  <div class="power-value">${this._getPower("total_ac_active_power")} W</div>
                   <div class="label">Home Load</div>
                 </div>  
               </div>
 
               <div class="flow-item backup">
-                <div class="power-value">${this._getPower("backup_load") || 0} W</div>
+                <div class="power-value">${this._getPower("ac_output_active_power") || 0} W</div>
                 <div class="label">Backup Load</div>
               </div>
             </div>
