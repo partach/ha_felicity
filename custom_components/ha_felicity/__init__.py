@@ -92,9 +92,19 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
     })
     _LOGGER.debug("Card registered: %s", card_url)
 
-async def async_update_options(self, entry: ConfigEntry) -> None:
-    """Reload entry when options change."""
-    await self.hass.config_entries.async_reload(entry.entry_id)
+
+async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options change — reload only if register set changed."""
+    old_set = entry.options.get(CONF_REGISTER_SET)
+    new_set = entry.options.get(CONF_REGISTER_SET)  # after change
+
+    if old_set != new_set:
+        await hass.config_entries.async_reload(entry.entry_id)
+    else:
+        # Just refresh data for other option changes
+        coordinator = hass.data[DOMAIN].get(entry.entry_id)
+        if coordinator:
+            await coordinator.async_request_refresh()
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
@@ -126,15 +136,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     nordpool_override = entry.options.get("nordpool_override")
     update_interval = entry.options.get("update_interval", 10)
 
-    price_threshold_level = entry.options.get("price_threshold_level", 5)
-    current_charge_max = entry.options.get("battery_charge_max_level", 100)
-    current_discharge_min = entry.options.get("battery_discharge_min_level", 20)
-    current_grid_mode = entry.options.get("grid_mode", "off")
-    current_power_level = entry.options.get("power_level", 5)
-    current_voltage_level = entry.options.get("voltage_level", 58)
+    #price_threshold_level = entry.options.get("price_threshold_level", 5)
+    #current_charge_max = entry.options.get("battery_charge_max_level", 100)
+    #current_discharge_min = entry.options.get("battery_discharge_min_level", 20)
+    #current_grid_mode = entry.options.get("grid_mode", "off")
+    #current_power_level = entry.options.get("power_level", 5)
+    #current_voltage_level = entry.options.get("voltage_level", 58)
     
     # Select register set from options (filtered on model's registers)
-    register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
     if register_set_key not in model_data["sets"]:
         _LOGGER.warning("Invalid register set '%s', falling back to full", register_set_key)
         selected_registers = model_data["registers"]
@@ -241,60 +250,27 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    coordinator = hass.data[DOMAIN].pop(entry.entry_id)
-    if coordinator:
-        # hack to make sure we have the latest options saved.... (this  enables not do save this with reloads runtime)
-        current_price_level = getattr(coordinator, "price_threshold_level", 5)
-        current_charge_max = getattr(coordinator, "battery_charge_max_level", 100)
-        current_discharge_min = getattr(coordinator, "battery_discharge_min_level", 20)
-        current_grid_mode = getattr(coordinator, "grid_mode", "off")
-        current_power_level = getattr(coordinator, "power_level", 5)
-        current_voltage_level = getattr(coordinator, "voltage_level", 58)
-        register_set_key =  entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-        update_interval = entry.options.get("update_interval", 10)
-        nordpool_entity =  entry.options.get("nordpool_entity")
-        nordpool_override = entry.options.get("nordpool_override")
-    
-        _LOGGER.debug("Writing additional options to config")
-        hass.config_entries.async_update_entry(
-            entry,
-            options={
-            "price_threshold_level": current_price_level,
-            "battery_charge_max_level": current_charge_max,
-            "battery_discharge_min_level": current_discharge_min,
-            "grid_mode": current_grid_mode,
-            "power_level": current_power_level,
-            "voltage_level": current_voltage_level,
-            CONF_REGISTER_SET: register_set_key,
-            "update_interval": update_interval,
-            "nordpool_entity": nordpool_entity,
-            "nordpool_override": nordpool_override,
-            }
-        )         
+    coordinator = hass.data[DOMAIN].pop(entry.entry_id, None)
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
 
-    hub_key = coordinator.hub_key
-
-    # Check if any other active entries still use this hub
-    remaining = [
-        e
-        for e in hass.config_entries.async_entries(DOMAIN)
-        if e.entry_id != entry.entry_id
-    ]
-    # Check if the hub is still used by other entries
-    hub_still_used = False
-    for other_entry in remaining:
-        other_coordinator = hass.data[DOMAIN].get(other_entry.entry_id)
-        if other_coordinator and getattr(other_coordinator, "hub_key", None) == hub_key:
-            hub_still_used = True
-            break
-
-    if not hub_still_used:
-        hub = hass.data[DOMAIN]["hubs"].pop(hub_key, None)
-        if hub:
-            await hub.close()
+    if coordinator:
+        hub_key = coordinator.hub_key
+        # Close hub only if no other entries use it
+        remaining_entries = [
+            e for e in hass.config_entries.async_entries(DOMAIN)
+            if e.entry_id != entry.entry_id
+        ]
+        if not any(
+            hass.data[DOMAIN].get(e.entry_id).hub_key == hub_key
+            for e in remaining_entries
+            if hass.data[DOMAIN].get(e.entry_id)
+        ):
+            hub = hass.data[DOMAIN]["hubs"].pop(hub_key, None)
+            if hub:
+                await hub.close()
 
     return True
 
