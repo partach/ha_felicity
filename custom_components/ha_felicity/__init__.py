@@ -253,7 +253,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_power_level = getattr(coordinator, "power_level", 5)
         current_voltage_level = getattr(coordinator, "voltage_level", 58)
         
-        await hass.config_entries.async_update_entry(
+        hass.config_entries.async_update_entry(
             entry,
             options={
                 "price_threshold_level": current_price_level,
