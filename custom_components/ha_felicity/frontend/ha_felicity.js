@@ -133,8 +133,17 @@ class FelicityInverterCard extends LitElement {
         <!-- SECTION 1: Energy Flow -->
         ${this._selectedSection === "energy_flow" ? html`
           <div class="section energy-flow">
+            <!-- Control Dropdowns -->
+            <div class="flow-controls">
+              ${this._renderGridModeSelect()} &nbsp
+              ${this._renderPriceThresholdSelect()} 
+            </div>           
             <div class="flow-diagram">
               <style>
+                .card-root {
+                  display: flex;
+                  flex-direction: column;
+                }              
                 .flow-diagram {
                   position: relative;
                   height: 240px;
@@ -250,7 +259,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 svg.flow-svg {
-                  position: absolute;
+                  position: relative;
                   top: 0;
                   left: 0;
                   width: 100%;
@@ -258,7 +267,15 @@ class FelicityInverterCard extends LitElement {
                   pointer-events: none;
                   z-index: 1;
                 }
-                
+
+                .flow-controls {
+                  display: flex;
+                  flex-direction: row;
+                  gap: 10px;
+                  align-items: center;
+                  margin-bottom: 1px;
+                  position: relative;
+                }
                 .flow-path {
                   fill: none;
                   stroke: var(--primary-color, #03a9f4);
@@ -369,19 +386,15 @@ class FelicityInverterCard extends LitElement {
               </div>
               <div class="flow-item state">
                 <div class="label">
-                  Rule: ${this._getStateLabel("economic_mode_rule_1_enable")}
-                  &nbsp;|&nbsp;
-                  State: ${this._getStateLabel("energy_state")}
-                </div>
-                <div class="label">
                   Operation: ${this._getStateLabel("operating_mode")}
                 </div>  
                 <div class="label">
-                  Price: ${this._getStateLabel("current_price")}
+                  Price now: ${this._getStateLabel("current_price")}
                   &nbsp;|&nbsp;
-                  Threshold: ${this._getStateLabel("price_threshold")}
+                  State: ${this._getStateLabel("energy_state")}
                 </div>
               </div>
+              
               <div class="flow-item inverter">
                 <ha-icon .hass=${this.hass} icon="mdi:lightning-bolt"></ha-icon>
               </div>
@@ -597,6 +610,110 @@ class FelicityInverterCard extends LitElement {
     const power = this._getValue("battery_power");
     if (power == null) return "Idle";
     return power > 0 ? "Charging" : power < 0 ? "Discharging" : "Idle";
+  }
+
+  _renderGridModeSelect() {
+    const entityId = this._getEntityId("grid_mode");
+    if (!entityId) return html``;
+
+    const entity = this.hass.states[entityId];
+    if (!entity) return html``;
+
+    const currentValue = entity.state;
+    const options = entity.attributes?.options || [];
+
+    return html`
+      <div class="control-group">
+        <label>Grid Mode:</label>
+        <select 
+          @change=${(e) => this._handleGridModeChange(entityId, e.target.value)}
+          .value=${currentValue}
+        >
+          ${options.map(opt => html`
+            <option value="${opt}" ?selected=${opt === currentValue}>
+              ${opt}
+            </option>
+          `)}
+        </select>
+      </div>
+    `;
+  }
+
+  
+  _renderPriceThresholdSelect() {
+    const minPrice = this._getValue("today_min_price");
+    const avgPrice = this._getValue("today_avg_price");
+    const maxPrice = this._getValue("today_max_price");
+    const thresholdEntityId = this._getEntityId("price_threshold_level");
+
+    if (!thresholdEntityId || minPrice == null || avgPrice == null || maxPrice == null) {
+      return html``;
+    }
+
+    const thresholdEntity = this.hass.states[thresholdEntityId];
+    if (!thresholdEntity) return html``;
+
+    const currentLevel = parseInt(thresholdEntity.state) || 1;
+    const priceOptions = this._calculatePriceThresholds(minPrice, avgPrice, maxPrice);
+
+    return html`
+      <div class="control-group">
+        <label>Price Threshold:</label>
+        <select 
+          @change=${(e) => this._handlePriceThresholdChange(thresholdEntityId, e.target.value)}
+          .value=${currentLevel}
+        >
+          ${priceOptions.map((opt, index) => {
+            const level = index + 1;
+            return html`
+              <option value="${level}" ?selected=${level === currentLevel}>
+                Level ${level}: ${opt.toFixed(4)}
+              </option>
+            `;
+          })}
+        </select>
+      </div>
+    `;
+  }
+
+  _calculatePriceThresholds(minPrice, avgPrice, maxPrice) {
+    const thresholds = [];
+    
+    for (let level = 1; level <= 10; level++) {
+      let threshold;
+      if (level <= 5) {
+        const ratio = (level - 1) / 4.0;
+        threshold = minPrice + (avgPrice - minPrice) * ratio;
+      } else {
+        const ratio = (level - 5) / 5.0;
+        threshold = avgPrice + (maxPrice - avgPrice) * ratio;
+      }
+      thresholds.push(threshold);
+    }
+    
+    return thresholds;
+  }
+
+  async _handleGridModeChange(entityId, value) {
+    try {
+      await this.hass.callService("select", "select_option", {
+        entity_id: entityId,
+        option: value,
+      });
+    } catch (err) {
+      console.error("Failed to change grid mode:", err);
+    }
+  }
+
+  async _handlePriceThresholdChange(entityId, level) {
+    try {
+      await this.hass.callService("number", "set_value", {
+        entity_id: entityId,
+        value: parseInt(level),
+      });
+    } catch (err) {
+      console.error("Failed to change price threshold level:", err);
+    }
   }
 
   async _sendWrite() {
@@ -818,11 +935,6 @@ class FelicityInverterCardEditor extends LitElement {
   }
 }
 
-customElements.define(
-  "felicity-inverter-card-editor",
-  FelicityInverterCardEditor
-);
-
 
 customElements.define("felicity-inverter-card", FelicityInverterCard);
 customElements.define("felicity-inverter-card-editor",FelicityInverterCardEditor);
@@ -834,6 +946,5 @@ customElements.define("felicity-inverter-card-editor",FelicityInverterCardEditor
     name: "Felicity Inverter Card",
     description: "Visualize Felicity Inverter", 
     preview: true,
-    preview_url: "/local/ha_felicity/thecard.png"
   });
 })();
