@@ -241,9 +241,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if not unload_ok:
-        return False
     coordinator = hass.data[DOMAIN].pop(entry.entry_id)
     if coordinator:
         # hack to make sure we have the latest options saved.... (this  enables not do save this with reloads runtime)
@@ -258,6 +255,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         nordpool_entity =  entry.options.get("nordpool_entity")
         nordpool_override = entry.options.get("nordpool_override")
     
+        _LOGGER.debug("Writing additional options to config")
         hass.config_entries.async_update_entry(
             entry,
             options={
@@ -273,6 +271,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "nordpool_override": nordpool_override,
             }
         )         
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok:
+        return False
 
     hub_key = coordinator.hub_key
 
