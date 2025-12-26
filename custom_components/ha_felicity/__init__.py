@@ -90,7 +90,7 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
         "res_type": "module",
         "url": card_url,
     })
-    LOGGER.debug("Card registered: %s", card_url)
+    _LOGGER.debug("Card registered: %s", card_url)
     
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
