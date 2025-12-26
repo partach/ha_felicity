@@ -160,14 +160,15 @@ class FelicityInverterCard extends LitElement {
                   gap: 2px;
                   z-index: 2;
                 }
-                
+
                 .flow-item ha-icon {
-                  font-size: 30px;
                   margin-bottom: -2px;
+                  --mdc-icon-size: 30px;
+                  color: var(--secondary-text-color);
                 }
                 
                 .power-value {
-                  font-size: 1.0em;
+                  font-size: 1.2em;
                   font-weight: bold;
                   color: var(--primary-color, #03a9f4);
                 }
@@ -181,6 +182,11 @@ class FelicityInverterCard extends LitElement {
                 .label {
                   font-size: 0.85em;
                   color: var(--secondary-text-color);
+                }
+                .labelbold {
+                  font-size: 1.1em;
+                  font-weight: bold;
+                  color: #f4f003ff;
                 }
                 
                 .pv { 
@@ -198,12 +204,11 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .inverter { 
-                  top: 49%; 
+                  top: 48%; 
                   left: 50%; 
                   transform: translate(-50%, -50%);
                   flex-direction: column-reverse;
                   gap: 2px;
-                  font-size: 65px
                 }
                 .state { 
                   top: 15%; 
@@ -248,11 +253,14 @@ class FelicityInverterCard extends LitElement {
                   bottom: 10px; 
                   left: 50%; 
                   transform: translateX(-50%);
+                  flex-direction: row;
+                  align-items: center;
+                  gap: 0px;                
                 }
                 
                 .inverter ha-icon {
                   color: orange;
-                  filter: drop-shadow(0 0 10px orange);
+                  filter: drop-shadow(0 0 12px orange);
                 }
                 
                 svg.flow-svg {
@@ -268,7 +276,8 @@ class FelicityInverterCard extends LitElement {
                 .flow-controls {
                   display: flex;
                   flex-direction: row;
-                  gap: 10px;
+                  gap: 5px;
+                  left: 10%;
                   align-items: center;
                   margin-bottom: 1px;
                   position: relative;
@@ -350,12 +359,12 @@ class FelicityInverterCard extends LitElement {
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 47 45 L 53 45" 
+                  d="M 47 42 L 53 42" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 53 45 L 53 55" 
+                  d="M 53 42 L 53 55" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
@@ -365,7 +374,7 @@ class FelicityInverterCard extends LitElement {
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 47 55 L 47 45" 
+                  d="M 47 55 L 47 42" 
                   vector-effect="non-scaling-stroke"
                 />
               </svg>
@@ -386,9 +395,9 @@ class FelicityInverterCard extends LitElement {
                   Operation: ${this._getStateLabel("operating_mode")}
                 </div>  
                 <div class="label">
-                  Price now: ${this._getStateLabel("current_price")}
+                  Price now: <span class="labelbold">${this._getStateLabel("current_price")}</span>
                   &nbsp;|&nbsp;
-                  State: ${this._getStateLabel("energy_state")}
+                  State: <span class="labelbold">${this._getStateLabel("energy_state")}</span>
                 </div>
               </div>
               
@@ -414,8 +423,11 @@ class FelicityInverterCard extends LitElement {
               </div>
 
               <div class="flow-item backup">
-                <div class="power-value">${this._getPower("ac_output_active_power") || 0} W</div>
-                <div class="label">Backup Load</div>
+                <ha-icon .hass=${this.hass} icon="mdi:home-battery-outline"></ha-icon>
+                <div class="battery-info">
+                  <div class="power-value">${this._getPower("ac_output_active_power") || 0} W</div>
+                  <div class="label">Backup Load</div>
+                </div>
               </div>
             </div>
           </div>
@@ -621,7 +633,7 @@ class FelicityInverterCard extends LitElement {
 
     return html`
       <div class="control-group">
-        <label>Grid Mode:</label>
+        <span class="label">Grid Mode:</span>
         <select 
           @change=${(e) => this._handleGridModeChange(entityId, e.target.value)}
           .value=${currentValue}
@@ -655,7 +667,7 @@ class FelicityInverterCard extends LitElement {
 
     return html`
       <div class="control-group">
-        <label>Price Threshold:</label>
+        <span class="label">Price Threshold:</span>
         <select 
           @change=${(e) => this._handlePriceThresholdChange(thresholdEntityId, e.target.value)}
           .value=${currentLevel}
