@@ -351,11 +351,11 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
-
+        current_config = {**self.config_entry.data, **self.config_entry.options}
         # Get current values from options (with defaults)
-        current_register_set = self.config_entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-        current_interval = self.config_entry.options.get("update_interval", 10)
-        current_nordpool = self.config_entry.options.get("nordpool_entity")
+        current_register_set = current_config.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+        current_interval = current_config.get("update_interval", 10)
+        current_nordpool = current_config.get("nordpool_entity")
         
         data_schema = vol.Schema(
             {
