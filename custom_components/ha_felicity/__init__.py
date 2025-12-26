@@ -147,7 +147,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     current_power_level = entry.options.get("power_level", 5)
     current_voltage_level = entry.options.get("voltage_level", 58)
     # Initialize options if not set (for existing installations)
-    if not entry.options: # seem to keep remembering the override but not if we do comment this out
+    if not entry.options: # seems to keep remembering the override but not if we do comment this out
         hass.config_entries.async_update_entry(
             entry,
             options={
@@ -247,7 +247,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_power_level = getattr(coordinator, "power_level", 5)
         current_voltage_level = getattr(coordinator, "voltage_level", 58)
         
-        hass.config_entries.async_update_entry(
+        await hass.config_entries.async_update_entry(
             entry,
             options={
                 "price_threshold_level": current_price_level,
@@ -285,6 +285,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update."""
+    
     await hass.config_entries.async_reload(entry.entry_id)
 
 
