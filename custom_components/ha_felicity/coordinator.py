@@ -25,34 +25,36 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         config_entry=ConfigEntry,
         nordpool_entity: str | None = None,
         nordpool_override: str | None = None,
+        update_interval: int = 10,
     ):
         """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name="Felicity",
-            update_interval=timedelta(seconds=10),
+            update_interval=timedelta(seconds=update_interval),
         )
         self.client = client
         self.slave_id = slave_id
         self.register_map = register_map
         self._address_groups = groups
-        self.connected = False
-        # runtime setting (if used) 
-        self._current_energy_state = None
-        self._last_state_change = None
-        self._current_day = None
-        self.current_price = None
-        self.max_price = None
-        self.min_price = None
-        self.avg_price = None
-        self.price_threshold = None
         self.config_entry = config_entry
+        
+        # Nordpool: override wins over entity
+        self.nordpool_entity = nordpool_override or nordpool_entity
+        
+        # Runtime state
+        self.connected = False
+        self._current_energy_state: str | None = None
+        self._last_state_change: datetime | None = None
+        self._current_day: int | None = None
 
-        if  nordpool_override != "":
-          self.nordpool_entity = nordpool_override
-        else:
-          self.nordpool_entity = nordpool_entity
+        # Price tracking
+        self.current_price: float | None = None
+        self.max_price: float | None = None
+        self.min_price: float | None = None
+        self.avg_price: float | None = None
+        self.price_threshold: float | None = None
 
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
@@ -82,7 +84,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return raw / 10.0
         else:
             return raw  # index 0,4,5,6,7 – raw
-        
+
+    #obsolete, think about removing.
     def _group_addresses(self, reg_map: dict) -> Dict[int, list]:
         """Group consecutive register addresses to minimize requests."""
         # Note: This method returns a Dict, but _async_update_data expects a list of dicts 
@@ -125,9 +128,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         return self.connected
             
     async def async_write_register(self, key: str, value: int) -> bool:
-        """Write to register, handling size."""
+        """Write to a register, handling size and endianness."""
         if key not in self.register_map:
-            _LOGGER.error("Unknown key %s", key)
+            _LOGGER.error("Attempt to write unknown register key: %s", key)
             return False
 
         info = self.register_map[key]
@@ -136,25 +139,22 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         endian = info.get("endian", "big")
 
         if size == 1:
-            reg_vals = [value]
+            values = [value]
         elif size == 2:
             high = (value >> 16) & 0xFFFF
             low = value & 0xFFFF
-            reg_vals = [high, low] if endian == "big" else [low, high]
+            values = [high, low] if endian == "big" else [low, high]
         elif size == 4:
-            hh = (value >> 48) & 0xFFFF
-            hl = (value >> 32) & 0xFFFF
-            lh = (value >> 16) & 0xFFFF
-            ll = value & 0xFFFF
-            if endian == "big":
-                reg_vals = [hh, hl, lh, ll]
-            else:
-                reg_vals = [ll, lh, hl, hh]
+            values = []
+            for i in range(3, -1, -1):
+                values.append((value >> (i * 16)) & 0xFFFF)
+            if endian == "little":
+                values.reverse()
         else:
-            _LOGGER.error("Unsupported size %d for write to %s", size, key)
+            _LOGGER.error("Unsupported register size %d for key %s", size, key)
             return False
 
-        return await self.async_write_registers(address, reg_vals)
+        return await self.async_write_registers(address, values)
 
     async def async_write_registers(self, start_address: int, values: list[int]) -> bool:
         """Write multiple registers."""
@@ -173,93 +173,67 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Exception writing registers at %s: %s", start_address, err)
             return False
             
-    def _determine_energy_state(
-        self, 
-        grid_mode: str, 
-        current_price: float, 
-        threshold: float, 
-        battery_soc: float | None,
-        battery_discharge_min: float,
-        battery_charge_max: float,
-        power_level: int,
-        voltage_level: int
-    ) -> str:
-        """Determine what energy state we should be in."""
-        
-        # Safety check
+    def _determine_energy_state(self, battery_soc: float | None) -> str:
+        """Determine desired energy management state."""
+        opts = self.config_entry.options
+
+        grid_mode = opts.get("grid_mode", "off")
+        if grid_mode == "off":
+            return "idle"
+
+        threshold_level = opts.get("price_threshold_level", 5)
+        charge_max = opts.get("battery_charge_max_level", 100)
+        discharge_min = opts.get("battery_discharge_min_level", 20)
+
         if battery_soc is None:
             return "idle"
-        
-        # Charging logic
-        if (grid_mode == "from_grid") and (current_price < threshold) and (battery_soc <= battery_charge_max):
+
+        if self.current_price is None or self.price_threshold is None:
+            return "idle"
+
+        if grid_mode == "from_grid" and self.current_price < self.price_threshold and battery_soc <= charge_max:
             return "charging"
-        
-        # Discharging logic
-        elif (grid_mode == "to_grid") and (current_price > threshold) and (battery_soc >= battery_discharge_min):
+        if grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc >= discharge_min:
             return "discharging"
-        
-        # Default to idle
+
         return "idle"
+
+# Get current operating mode from select entity if needed
+# operating_mode_entity = f"select.{self.config_entry.title.lower().replace(' ', '_')}_operating_mode"
+# operating_mode_state = self.hass.states.get(operating_mode_entity)
+# current_operating_mode = operating_mode_state.state if operating_mode_state else "unknown"
     
-    async def _transition_to_state(
-        self,
-        new_state: str,
-        price_threshold_level: float,
-        battery_charge_max: float,
-        battery_discharge_min: float,
-        battery_soc: float | None,
-        grid_mode: str,
-        power_level : int,
-        voltage_level: int
-
-    ) -> None:
-        """Execute state transition with register writes."""
-
-        # Get current operating mode from select entity
-        operating_mode_entity = f"select.{self.config_entry.title.lower().replace(' ', '_')}_operating_mode"
-        operating_mode_state = self.hass.states.get(operating_mode_entity)
-        current_operating_mode = operating_mode_state.state if operating_mode_state else "unknown"
-        
-        # Get current econ_rule_1_enable from number entity
-        # rule1_entity = f"number.{self.config_entry.title.lower().replace(' ', '_')}_economic_mode_rule_1_enable"
-        # rule1_state = self.hass.states.get(rule1_entity)
-        # rule1_enabled = float(rule1_state.state) if rule1_state and rule1_state.state not in ("unavailable", "unknown") else 0
+    async def _transition_to_state(self, new_state: str) -> None:
+        """Apply state change via economic rule 1."""
+        opts = self.config_entry.options
         now = datetime.now()
-        valid_month = now.month
-        valid_day = now.day
-        date_16bit = (valid_month * 256) + valid_day
-        if new_state == "charging":
-            _LOGGER.info(
-                "🔋 STARTING CHARGE CYCLE | Price threshold level: %s | "
-                "Max battery: %s%% | Current battery: %s%% | Grid-Mode: %s | Operating-Mode: %s",
-                price_threshold_level, battery_charge_max, battery_soc, grid_mode, current_operating_mode
-            )
-            await self.async_write_register("econ_rule_1_enable", 1) # 1 is schema to charge
-            await self.async_write_register("econ_rule_1_soc", int(battery_charge_max))
+        date_16bit = (now.month << 8) | now.day
+
+        power_level = opts.get("power_level", 5)
+        voltage_level = opts.get("voltage_level", 58)
+        soc_limit = (
+            opts.get("battery_charge_max_level", 100)
+            if new_state == "charging"
+            else opts.get("battery_discharge_min_level", 20)
+        )
+
+        enable_value = {"charging": 1, "discharging": 2, "idle": 0}[new_state]
+
+        _LOGGER.info(
+            "Energy state → %s | Price: %.4f | Threshold: %.4f | SOC limit: %d%%",
+            new_state.upper(),
+            self.current_price or 0,
+            self.price_threshold or 0,
+            soc_limit,
+        )
+
+        await self.async_write_register("econ_rule_1_enable", enable_value)
+        if new_state != "idle":
+            await self.async_write_register("econ_rule_1_soc", int(soc_limit))
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
             await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
             await self.async_write_register("econ_rule_1_power", int(power_level * 1000))
-        
-        elif new_state == "discharging":
-            _LOGGER.info(
-                "⚡ STARTING DISCHARGE CYCLE | Price threshold level: %s | "
-                "Min battery: %s%% | Current battery: %s%% |  Grid-Mode: %s | Operating-Mode: %s",
-                price_threshold_level, battery_discharge_min, battery_soc, grid_mode, current_operating_mode
-            )
-            await self.async_write_register("econ_rule_1_enable", 2) # 2 is schema to discharge
-            await self.async_write_register("econ_rule_1_soc", int(battery_discharge_min))
-            await self.async_write_register("econ_rule_1_start_day", date_16bit)
-            await self.async_write_register("econ_rule_1_stop_day", date_16bit)
-            await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
-            await self.async_write_register("econ_rule_1_power", int(power_level * 1000))
-            
-        elif new_state == "idle":
-            _LOGGER.info(
-                "🛑 STOPPING CHARGE/DISCHARGE CYCLE | Grid-Mode: %s | Operating-Mode: %s| Previous state: %s",
-                grid_mode, current_operating_mode, self._current_energy_state)
-            await self.async_write_register("econ_rule_1_enable", 0) # 0 is Disable
-            # dont bother with other settings, will not be used anyhow.
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
@@ -268,6 +242,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "last_change": self._last_state_change.isoformat() if self._last_state_change else None,
             "current_price": self.current_price,
             "price_threshold": self.price_threshold,
+            "max_price": self.max_price,
+            "min_price": self.min_price,
+            "avg_price": self.avg_price,
         }
 
         # Add kWh for all Wh registers
@@ -278,169 +255,110 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         return info
 
     async def _async_update_data(self) -> dict:
-        """Fetch data from Modbus."""
+        """Fetch latest data from inverter."""
         if not await self._async_connect():
-            raise UpdateFailed("Failed to connect to Felicity")
-    
+            raise UpdateFailed("Cannot connect to Felicity inverter")
+
         new_data = {}
+
         try:
             for group in self._address_groups:
                 start_addr = group["start"]
                 count = group["count"]
-                
+
                 result = await self.client.read_holding_registers(
-                    address=start_addr, count=count, device_id=self.slave_id
+                    address=start_addr,
+                    count=count,
+                    device_id=self.slave_id,
                 )
-                
+
                 if result.isError():
-                    _LOGGER.warning("Modbus read error at %s (skipping group): %s", start_addr, result)
-                    continue  # Skip bad group – don't fail whole update
-    
+                    _LOGGER.warning("Read error at address %d, skipping group", start_addr)
+                    continue
+
                 registers = result.registers
                 pos = 0
                 for key in group["keys"]:
                     info = self.register_map[key]
-                    size = info.get("size", 1)  # 1, 2, or 4 registers
-                    endian = info.get("endian", "big")  # "big" or "little"
+                    size = info.get("size", 1)
+                    endian = info.get("endian", "big")
                     index = info.get("index", 0)
                     precision = info.get("precision", 0)
-    
+
                     if pos + size > len(registers):
-                        _LOGGER.warning(
-                            "Not enough registers for %s (need %d, have %d from pos %d)", 
-                            key, size, len(registers) - pos, pos
-                        )
+                        _LOGGER.warning("Insufficient registers for %s", key)
                         break
-    
-                    reg_vals = registers[pos:pos + size]
+
+                    reg_slice = registers[pos : pos + size]
                     pos += size
-    
-                    # Unpack to raw integer
+
+                    # Reconstruct raw value
                     raw = 0
                     if size == 1:
-                        raw = reg_vals[0]
+                        raw = reg_slice[0]
                     elif size == 2:
-                        high, low = reg_vals
-                        if endian == "big":
-                            raw = (high << 16) | low
-                        else:
-                            raw = (low << 16) | high
+                        raw = (reg_slice[0] << 16) | reg_slice[1] if endian == "big" else (reg_slice[1] << 16) | reg_slice[0]
                     elif size == 4:
-                        if endian == "big":
-                            raw = (reg_vals[0] << 48) | (reg_vals[1] << 32) | (reg_vals[2] << 16) | reg_vals[3]
-                        else:
-                            raw = (reg_vals[3] << 48) | (reg_vals[2] << 32) | (reg_vals[1] << 16) | reg_vals[0]
-                    else:
-                        _LOGGER.warning("Unsupported size %d for %s", size, key)
-                        continue
-    
-                    # Apply scaling
+                        for i, val in enumerate(reg_slice if endian == "big" else reversed(reg_slice)):
+                            raw |= val << (i * 16)
+
                     value = self._apply_scaling(raw, index, size)
-    
-                    # Round if float
                     if isinstance(value, float):
                         value = round(value, precision)
-    
+
                     new_data[key] = value
 
-            # === Load user settings & Nordpool every update ===
-            price_threshold_level = getattr(self, "price_threshold_level", 5)
-            battery_charge_max = getattr(self, "battery_charge_max_level", 100)
-            battery_discharge_min = getattr(self, "battery_discharge_min_level", 20)
-            grid_mode = getattr(self, "grid_mode", "off") 
-
-            # Update Nordpool price
-            self.max_price = getattr(self, "max_price", None)
-            self.min_price = getattr(self, "min_price", None)
-            self.avg_price = getattr(self, "avg_price", None)
-            self.price_threshold = getattr(self, "price_threshold", None)
-            self.power_level = getattr(self, "power_level", 5)
-            self.voltage_level = getattr(self, "voltage_level", 58)
+            # === Nordpool price update & dynamic logic ===
             if self.nordpool_entity:
                 price_state = self.hass.states.get(self.nordpool_entity)
-                if price_state and price_state.state not in ("unavailable", "unknown"):
+                if price_state and price_state.state not in ("unknown", "unavailable"):
                     try:
                         self.current_price = float(price_state.state)
-                        setattr(self, "current_price", self.current_price)
                         attrs = price_state.attributes
 
-                        # Define possible attribute names for each value (add more if needed)
-                        max_names = ["max", "max_price", "Max price", "max price", "Max"]  # Priority order
-                        min_names = ["min", "min_price", "Min price", "min price", "Min"]
-                        avg_names = ["average", "average_price", "avg_price", "Avg price", "Average", "Avg", "avg"]
-                        def get_attr(attrs, names, default=None):
+                        def get_attr(names):
                             for name in names:
-                                value = attrs.get(name)
-                                if value is not None:
-                                    return value
-                            return default
+                                val = attrs.get(name)
+                                if val is not None:
+                                    return val
+                            return None
 
-                        self.max_price = get_attr(attrs, max_names)
-                        self.min_price = get_attr(attrs, min_names)
-                        self.avg_price = get_attr(attrs, avg_names)
-                        
-                        if self.avg_price is not None: # we need to know the baseline value to determine the logic
+                        self.max_price = get_attr(["max", "max_price", "Max price", "max price"])
+                        self.min_price = get_attr(["min", "min_price", "Min price", "min price"])
+                        self.avg_price = get_attr(["average", "average_price", "avg_price", "Avg price", "avg"])
 
-                            if price_threshold_level <= 5:
-                                # Scale between Min (level 1) and Avg (level 5)
-                                # Level 1 -> 0% progress, Level 5 -> 100% progress between Min and Avg
-                                ratio = (price_threshold_level - 1) / 4.0  # (1-1)/4=0, (5-1)/4=1
+                        if self.avg_price is not None and self.min_price is not None and self.max_price is not None:
+                            level = self.config_entry.options.get("price_threshold_level", 5)
+                            if level <= 5:
+                                ratio = (level - 1) / 4.0
                                 self.price_threshold = self.min_price + (self.avg_price - self.min_price) * ratio
                             else:
-                                # Scale between Avg (level 5) and Max (level 10)
-                                # Level 5 -> 0% progress, Level 10 -> 100% progress between Avg and Max
-                                ratio = (price_threshold_level - 5) / 5.0  # (5-5)/5=0, (10-5)/5=1
+                                ratio = (level - 5) / 5.0
                                 self.price_threshold = self.avg_price + (self.max_price - self.avg_price) * ratio
-                            
-                            setattr(self, "price_threshold", self.price_threshold)
-                            now = datetime.now()
-                            current_day = now.day
-                            if self._last_state_change is None: # be safe about it
-                                self._last_state_change = now
-                                self._current_day = current_day
 
-                            if current_day != self._current_day:
-                                _LOGGER.info("Midnight detected - reconfirming energy state")
-                                # Force idle to trigger re-evaluation
+                            # Midnight reset
+                            now = datetime.now()
+                            if self._current_day != now.day:
+                                _LOGGER.info("New day detected — resetting energy state")
                                 self._current_energy_state = "idle"
-                                self._current_day = current_day
-                            
-                            # === DYNAMIC PRICE LOGIC ===
+                                self._current_day = now.day
+
+                            # Determine and apply new state
                             battery_soc = new_data.get("battery_capacity")
-                             # Determine desired state
-                            desired_state = self._determine_energy_state(
-                                grid_mode=grid_mode,
-                                current_price=self.current_price,
-                                threshold=self.price_threshold,
-                                battery_soc=battery_soc,
-                                battery_discharge_min=battery_discharge_min,
-                                battery_charge_max=battery_charge_max,
-                                power_level = self.power_level,
-                                voltage_level = self.voltage_level,
-                            )
-                            
-                            # Only act if state changed
+                            desired_state = self._determine_energy_state(battery_soc)
+
                             if desired_state != self._current_energy_state:
-                                await self._transition_to_state(
-                                    desired_state,
-                                    price_threshold_level=price_threshold_level,
-                                    battery_charge_max=battery_charge_max,
-                                    battery_discharge_min=battery_discharge_min,
-                                    battery_soc=battery_soc,
-                                    grid_mode=grid_mode,
-                                    power_level = self.power_level,
-                                    voltage_level = self.voltage_level,
-                                )
+                                await self._transition_to_state(desired_state)
                                 self._current_energy_state = desired_state
                                 self._last_state_change = now
 
                     except ValueError:
                         self.current_price = None
                         self.price_threshold = None
-                else:
-                    self.current_price = None
             else:
-                self.current_price = None  
+                self.current_price = None
+                self.price_threshold = None
+
             return new_data
 
         except ConnectionException as err:
@@ -450,5 +368,5 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         except ModbusException as err:
             raise UpdateFailed(f"Modbus error: {err}")
         except Exception as err:
-            _LOGGER.error("Unexpected error during Felicity update: %s", err)
-            raise UpdateFailed(f"Update failed: {err}")
+            _LOGGER.exception("Unexpected error in Felicity coordinator update")
+            raise UpdateFailed(f"Unexpected update error: {err}")
