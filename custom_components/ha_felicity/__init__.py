@@ -157,9 +157,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "grid_mode": current_grid_mode,
             "power_level": current_power_level,
             "voltage_level": current_voltage_level,
-            CONF_REGISTER_SET: entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-            "update_interval": entry.options.get("update_interval", 10),
-            "nordpool_entity": entry.options.get("nordpool_entity"),
+            CONF_REGISTER_SET: entry.entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+            "update_interval": entry.entry.data.get("update_interval", 10),
+            "nordpool_entity": entry.entry.data.get("nordpool_entity"),
             }
         ) 
      
