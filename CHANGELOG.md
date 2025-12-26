@@ -1,5 +1,10 @@
 ## Changelog
-
+### [0.6.0] - Persistance fix
+- Issue fixed to correctly maintain all settings
+- Card resource registration fix
+- Small register fix (typo)
+- Added few registers (super set)
+  
 ### [0.5.6] - First install fix
 - Issue fixed for first time users
   
