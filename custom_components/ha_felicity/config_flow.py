@@ -67,7 +67,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle connection type selection."""
         current_nordpool = None
-        if self.config_entry:
+        # Only access config_entry if reconfiguring (it exists)
+        if getattr(self, "config_entry", None):
             current_nordpool = self.config_entry.options.get("nordpool_entity")
         if user_input is not None:
             self._connection_type = user_input[CONF_CONNECTION_TYPE]
