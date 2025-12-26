@@ -188,7 +188,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if battery_soc is None:
             return "idle"
 
-        if self.current_price is None or self.price_threshold is None:
+        if self.current_price is None or threshold_level is None:
             return "idle"
 
         if grid_mode == "from_grid" and self.current_price < self.price_threshold and battery_soc <= charge_max:
