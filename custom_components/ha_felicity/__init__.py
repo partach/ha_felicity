@@ -91,7 +91,11 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
         "url": card_url,
     })
     _LOGGER.debug("Card registered: %s", card_url)
-    
+
+async def async_update_options(self, entry: ConfigEntry) -> None:
+    """Reload entry when options change."""
+    await self.hass.config_entries.async_reload(entry.entry_id)
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
     config = entry.data
@@ -103,6 +107,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     #add nordpool integration
     nordpool_entity = entry.options.get("nordpool_entity")
+    # === Ensure options have defaults (migration-safe) ===
+    updated_options = dict(entry.options)
+    updated_options.setdefault("price_threshold_level", 5)
+    updated_options.setdefault("battery_charge_max_level", 100)
+    updated_options.setdefault("battery_discharge_min_level", 20)
+    updated_options.setdefault("grid_mode", "off")
+    updated_options.setdefault("power_level", 5)
+    updated_options.setdefault("voltage_level", 58)
+    updated_options.setdefault(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+    updated_options.setdefault("update_interval", 10)
+
+    if updated_options != entry.options:
+        hass.config_entries.async_update_entry(entry, options=updated_options)
+    # === Now read from (possibly updated) options ===
+    register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+    nordpool_entity = entry.options.get("nordpool_entity")
+    nordpool_override = entry.options.get("nordpool_override")
+    update_interval = entry.options.get("update_interval", 10)
+
+    price_threshold_level = entry.options.get("price_threshold_level", 5)
+    current_charge_max = entry.options.get("battery_charge_max_level", 100)
+    current_discharge_min = entry.options.get("battery_discharge_min_level", 20)
+    current_grid_mode = entry.options.get("grid_mode", "off")
+    current_power_level = entry.options.get("power_level", 5)
+    current_voltage_level = entry.options.get("voltage_level", 58)
     
     # Select register set from options (filtered on model's registers)
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
@@ -145,57 +174,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hubs[hub_key] = FelicityTcpHub(hass, host, port)
 
     hub = hubs[hub_key]
-    price_threshold_level = entry.options.get("price_threshold_level", 5)
-    current_charge_max = entry.options.get("battery_charge_max_level", 100)
-    current_discharge_min = entry.options.get("battery_discharge_min_level", 20)
-    current_grid_mode = entry.options.get("grid_mode", "off")
-    current_power_level = entry.options.get("power_level", 5)
-    current_voltage_level = entry.options.get("voltage_level", 58)
-    # selected_registers done above
-    update_interval = entry.options.get("update_interval", 10)
-    nordpool_entity =  entry.options.get("nordpool_entity")
-    nordpool_override = entry.options.get("nordpool_override")
-    
-    # Initialize options if not set (for existing installations)
-    if not entry.options: # seems to keep remembering the override but not if we do comment this out
-        hass.config_entries.async_update_entry(
-            entry,
-            options={
-            "price_threshold_level": price_threshold_level,
-            "battery_charge_max_level": current_charge_max,
-            "battery_discharge_min_level": current_discharge_min,
-            "grid_mode": current_grid_mode,
-            "power_level": current_power_level,
-            "voltage_level": current_voltage_level,
-            CONF_REGISTER_SET: selected_registers,
-            "update_interval": update_interval,
-            "nordpool_entity": nordpool_entity,
-            "nordpool_override": nordpool_override,
-            }
-        ) 
-     
+
 
     # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
-        hass,
-        hub.client,
-        config[CONF_SLAVE_ID],
-        selected_registers,
+        hass=hass,
+        client=hub.client,
+        slave_id=config[CONF_SLAVE_ID],
+        registers=selected_registers,
         groups=model_data["groups"],
         config_entry=entry,
         nordpool_entity=nordpool_entity,
-        nordpool_override = nordpool_override
+        nordpool_override=nordpool_override,
+        update_interval=update_interval,
+        economic_config={
+            "price_threshold_level": price_threshold_level,
+            "charge_max": current_charge_max,
+            "discharge_min": current_discharge_min,
+            "grid_mode": current_grid_mode,
+            "power_level": current_power_level,
+            "voltage_level": current_voltage_level,
+        }
     )
     # Store config and hub_key for unload cleanup
     coordinator.config = config
     coordinator.hub_key = hub_key
-    setattr(coordinator, "price_threshold_level", price_threshold_level)
-    setattr(coordinator, "current_charge_max", current_charge_max)
-    setattr(coordinator, "current_discharge_min", current_discharge_min)
-    setattr(coordinator, "current_grid_mode", current_grid_mode)
-    setattr(coordinator, "current_power_level", current_power_level)
-    setattr(coordinator, "current_voltage_level", current_voltage_level)
-    entry.async_on_unload(entry.add_update_listener(update_listener))
 
     # First data refresh
     await coordinator.async_config_entry_first_refresh()
@@ -255,7 +258,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_grid_mode = getattr(coordinator, "grid_mode", "off")
         current_power_level = getattr(coordinator, "power_level", 5)
         current_voltage_level = getattr(coordinator, "voltage_level", 58)
-        conf_register_set =  entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+        register_set_key =  entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
         update_interval = entry.options.get("update_interval", 10)
         nordpool_entity =  entry.options.get("nordpool_entity")
         nordpool_override = entry.options.get("nordpool_override")
@@ -270,7 +273,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "grid_mode": current_grid_mode,
             "power_level": current_power_level,
             "voltage_level": current_voltage_level,
-            CONF_REGISTER_SET: conf_register_set,
+            CONF_REGISTER_SET: register_set_key,
             "update_interval": update_interval,
             "nordpool_entity": nordpool_entity,
             "nordpool_override": nordpool_override,
