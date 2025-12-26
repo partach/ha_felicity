@@ -77,7 +77,7 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
     if not resources.loaded:
         await resources.async_load()
 
-    card_url = f"/hacsfiles/{DOMAIN}/{DOMAIN}.js?hacstag={entry.entry_id}"  # or your version
+    card_url = f"/hacsfiles/{DOMAIN}/{DOMAIN}.js"
     # Or local: f"/local/custom_cards/{DOMAIN}-card.js"
 
     # Check if already registered
