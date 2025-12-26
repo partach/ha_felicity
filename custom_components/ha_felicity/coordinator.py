@@ -24,6 +24,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         groups: list,
         config_entry=ConfigEntry,
         nordpool_entity: str | None = None,
+        nordpool_override: str | None = None,
     ):
         """Initialize the coordinator."""
         super().__init__(
@@ -47,11 +48,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.avg_price = None
         self.price_threshold = None
         self.config_entry = config_entry
-        override = self.config_entry.options.get("nordpool_override", "") 
-        if  override != "":
-          self.nordpool_entity = override
+
+        if  nordpool_override != "":
+          self.nordpool_entity = nordpool_override
         else:
           self.nordpool_entity = nordpool_entity
+
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
