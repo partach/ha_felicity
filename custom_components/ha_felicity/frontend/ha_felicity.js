@@ -167,18 +167,15 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .power-value {
-                  font-size: 1.2em;
+                  font-size: 1.0em;
                   font-weight: bold;
                   color: var(--primary-color, #03a9f4);
                 }
                 
                 .soc {
-                  font-size: 1.2em;
-                  font-weight: bold;
                   color: var(--success-color, #4caf50);
                 }
                 .volt {
-                  font-size: 0.85em;
                   color: var(--success-color, #4caf50);
                 }
                 .label {
