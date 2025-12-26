@@ -67,6 +67,30 @@ async def async_install_frontend_resource(hass: HomeAssistant):
 
     # Offload the blocking file operations to the executor thread
     await hass.async_add_executor_job(install)
+
+async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
+    """Register the custom card as a Lovelace resource."""
+    resources = hass.data.get("lovelace", {}).get("resources")
+    if not resources:
+        return  # YAML mode or not loaded
+
+    if not resources.loaded:
+        await resources.async_load()
+
+    card_url = f"/hacsfiles/{DOMAIN}/{DOMAIN}.js?hacstag={entry.entry_id}"  # or your version
+    # Or local: f"/local/custom_cards/{DOMAIN}-card.js"
+
+    # Check if already registered
+    for item in resources.async_items():
+        if item["url"] == card_url:
+            _LOGGER.debug("Card already registered: %s", card_url)
+            return  # already there
+
+    await resources.async_create_item({
+        "res_type": "module",
+        "url": card_url,
+    })
+    LOGGER.debug("Card registered: %s", card_url)
     
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
@@ -116,12 +140,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hubs[hub_key] = FelicityTcpHub(hass, host, port)
 
     hub = hubs[hub_key]
-    price_threshold_level = entry.data.get("price_threshold_level", 5)
-    current_charge_max = entry.data.get("battery_charge_max_level", 100)
-    current_discharge_min = entry.data.get("battery_discharge_min_level", 20)
-    current_grid_mode = entry.data.get("grid_mode", "off")
-    current_power_level = entry.data.get("power_level", 5)
-    current_voltage_level = entry.data.get("voltage_level", 58)
+    price_threshold_level = entry.options.get("price_threshold_level", 5)
+    current_charge_max = entry.options.get("battery_charge_max_level", 100)
+    current_discharge_min = entry.options.get("battery_discharge_min_level", 20)
+    current_grid_mode = entry.options.get("grid_mode", "off")
+    current_power_level = entry.options.get("power_level", 5)
+    current_voltage_level = entry.options.get("voltage_level", 58)
     # Initialize options if not set (for existing installations)
     if not entry.options: # seem to keep remembering the override but not if we do comment this out
         hass.config_entries.async_update_entry(
@@ -133,11 +157,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "grid_mode": current_grid_mode,
             "power_level": current_power_level,
             "voltage_level": current_voltage_level,
-            CONF_REGISTER_SET: entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-            "update_interval": entry.data.get("update_interval", 10),
-            "nordpool_entity": entry.data.get("nordpool_entity"),
+            CONF_REGISTER_SET: entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+            "update_interval": entry.options.get("update_interval", 10),
+            "nordpool_entity": entry.options.get("nordpool_entity"),
             }
-        )
+        ) 
+     
 
     # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
@@ -173,6 +198,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["services_setup"] = True
 
     await async_install_frontend_resource(hass)
+    await async_register_card(hass,entry)
     return True
 
 async def async_setup_services(hass: HomeAssistant) -> None:
