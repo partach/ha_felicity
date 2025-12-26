@@ -146,6 +146,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     current_grid_mode = entry.options.get("grid_mode", "off")
     current_power_level = entry.options.get("power_level", 5)
     current_voltage_level = entry.options.get("voltage_level", 58)
+    conf_register_set =  entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+    nordpool_entity =  entry.options.get("nordpool_entity")
+    nordpool_override = entry.options.get("nordpool_override")
+    
     # Initialize options if not set (for existing installations)
     if not entry.options: # seems to keep remembering the override but not if we do comment this out
         hass.config_entries.async_update_entry(
@@ -157,9 +161,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "grid_mode": current_grid_mode,
             "power_level": current_power_level,
             "voltage_level": current_voltage_level,
-            CONF_REGISTER_SET: entry.entry.data.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+            CONF_REGISTER_SET: conf_register_set,
             "update_interval": entry.entry.data.get("update_interval", 10),
             "nordpool_entity": entry.entry.data.get("nordpool_entity"),
+            "nordpool_override": entry.entry.data.get("nordpool_override"),
             }
         ) 
      
@@ -173,6 +178,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         groups=model_data["groups"],
         config_entry=entry,
         nordpool_entity=nordpool_entity,
+        nordpool_override = nordpool_override
     )
     # Store config and hub_key for unload cleanup
     coordinator.config = config
