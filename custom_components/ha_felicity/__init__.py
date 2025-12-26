@@ -106,7 +106,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Select register set from options (filtered on model's registers)
     register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-    selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
+    if register_set_key not in model_data["sets"]:
+        _LOGGER.warning("Invalid register set '%s', falling back to full", register_set_key)
+        selected_registers = model_data["registers"]
+    else:
+        selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
+    
 
     # === SAFETY NET: Auto-include missing group keys (prevents update failed) ===
     all_group_keys = {key for group in model_data["groups"] for key in group["keys"]}
