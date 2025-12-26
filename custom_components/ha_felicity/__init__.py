@@ -252,18 +252,25 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         current_grid_mode = getattr(coordinator, "grid_mode", "off")
         current_power_level = getattr(coordinator, "power_level", 5)
         current_voltage_level = getattr(coordinator, "voltage_level", 58)
-        
+        conf_register_set =  entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+        nordpool_entity =  entry.options.get("nordpool_entity")
+        nordpool_override = entry.options.get("nordpool_override")
+    
         hass.config_entries.async_update_entry(
             entry,
             options={
-                "price_threshold_level": current_price_level,
-                "battery_charge_max_level": current_charge_max,
-                "battery_discharge_min_level": current_discharge_min,
-                "grid_mode": current_grid_mode,
-                "power_level": current_power_level,
-                "voltage_level": current_voltage_level,
+            "price_threshold_level": current_price_level,
+            "battery_charge_max_level": current_charge_max,
+            "battery_discharge_min_level": current_discharge_min,
+            "grid_mode": current_grid_mode,
+            "power_level": current_power_level,
+            "voltage_level": current_voltage_level,
+            CONF_REGISTER_SET: conf_register_set,
+            "update_interval": entry.entry.data.get("update_interval", 10),
+            "nordpool_entity": entry.entry.data.get("nordpool_entity"),
+            "nordpool_override": entry.entry.data.get("nordpool_override"),
             }
-        )        
+        )         
 
     hub_key = coordinator.hub_key
 
