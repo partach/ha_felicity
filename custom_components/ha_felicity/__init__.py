@@ -187,14 +187,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         nordpool_entity=nordpool_entity,
         nordpool_override=nordpool_override,
         update_interval=update_interval,
-        economic_config={
-            "price_threshold_level": price_threshold_level,
-            "charge_max": current_charge_max,
-            "discharge_min": current_discharge_min,
-            "grid_mode": current_grid_mode,
-            "power_level": current_power_level,
-            "voltage_level": current_voltage_level,
-        }
     )
     # Store config and hub_key for unload cleanup
     coordinator.config = config
