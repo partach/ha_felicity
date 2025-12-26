@@ -143,7 +143,7 @@ _REGISTERS = {
     "load_consumption_energy_year": {"address": 4452, "name": "Load Consumption Energy Inquiry Year", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 2, "endian": "big"},
     "load_consumption_energy_month": {"address": 4454, "name": "Load Consumption Energy Inquiry Month", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 2, "endian": "big"},
     "load_consumption_energy_day": {"address": 4456, "name": "Load Consumption Energy Inquiry Day", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 2, "endian": "big"},
-    "ac_input_energy_total": {"address": 4458, "name": "Ac Input Energy Inquiry Total", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 1, "endian": "big"},
+    "ac_input_energy_total": {"address": 4458, "name": "Ac Input Energy Inquiry Total", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 4, "endian": "big"},
     "ac_input_energy_year": {"address": 4462, "name": "Ac Input Energy Inquiry Year", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 2, "endian": "big"},
     "ac_input_energy_month": {"address": 4464, "name": "Ac Input Energy Inquiry Month", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 2, "endian": "big"},
     "ac_input_energy_day": {"address": 4466, "name": "Ac Input Energy Inquiry Day", "unit": "Wh", "device_class": "energy", "state_class": "total_increasing", "precision": 0, "index": 1, "size": 2, "endian": "big"},
@@ -214,6 +214,8 @@ _REGISTERS = {
     "n_dc_dc_current_secondary": {"address": 4557, "name": "N Dc/Dc Current  secondary", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 1, "index": 8},
     "max_inner_temperature": {"address": 4558, "name": "Max. Inner Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 8},
     "max_heat_sink_temperature": {"address": 4559, "name": "Max. Heat-Sink Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement", "precision": 1, "index": 8},
+    "CurrBMSAddr": {"address": 4606, "name": "Current BMS Address", "precision": 0, "index": 0},
+    "BMS_Flg": {"address": 4607, "name": "BMS Flag", "precision": 0, "index": 0},
     "charge_voltage_limit": {"address": 4608, "name": "Chargevoltagelimit", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "discharge_voltage_limit": {"address": 4609, "name": "Dischargevoltagelimit", "unit": "V", "device_class": "voltage", "state_class": "measurement", "precision": 1, "index": 1},
     "charge_current_limit": {"address": 4610, "name": "Chargecurrentlimit", "unit": "A", "device_class": "current", "state_class": "measurement", "precision": 1, "index": 1},
@@ -247,7 +249,20 @@ _REGISTERS = {
    # "Electricity meter power L3": {"address": 4868, "name": "Electricity meter power L3", "unit": "W", "device_class": "power", "precision": 0, "index": 1, "size": 2, "endian": "big"},
 
     "operating_mode": {"address": 8451,"name": "Operating Mode","precision": 0,"index": 0,"type": "select","options": ["General mode (self-use, load priority)","Backup mode (grid-tied, no battery discharge)","Economic mode (scheduled charge-discharge)"]},
-
+    
+    "battery_type": {"address": 8483, "name": "Battery type", "precision": 0, "index": 0, "type": "select", "options": ["User defined", "Lithium battery (default)", "FelicitySolar(LPBF series)", "FelicitySolar(LPBA series)", "No battery"]},
+    "battery_pack_series_count": {"address": 8484, "name": "Battery Pack Number in Series", "precision": 0, "index": 0},  # 1~10
+    "battery_charged_voltage": {"address": 8485, "name": "Battery Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_floating_charged_voltage": {"address": 8486, "name": "Battery Floating Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_cutoff_voltage_ongrid_no_bms": {"address": 8487, "name": "Battery Cut-off Voltage (On-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_cutoff_voltage_offgrid_no_bms": {"address": 8488, "name": "Battery Cut-off Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_restart_voltage_offgrid_no_bms": {"address": 8489, "name": "Battery Restart Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
+    "battery_discharge_depth_ongrid_bms": {"address": 8490, "name": "Battery Discharge Depth (On-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "battery_discharge_depth_offgrid_bms": {"address": 8491, "name": "Battery Discharge Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "battery_restart_depth_offgrid_bms": {"address": 8492, "name": "Battery Restart Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
+    "battery_max_charge_current": {"address": 8493, "name": "Battery Max Charged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
+    "battery_max_discharge_current": {"address": 8494, "name": "Battery Max Discharged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
+    
     # Time setting (writeable)
     "time_set_year_month": {"address": 8560, "name": "Time Setting Year-Month", "precision": 0, "index": 99},
     "time_set_day_hour": {"address": 8561, "name": "Time Setting Day-Hour", "precision": 0, "index": 99},
@@ -294,20 +309,13 @@ _REGISTERS = {
     "econ_rule_4_voltage": {"address": 8601, "name": "Rule 4 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
     "econ_rule_4_soc": {"address": 8602, "name": "Rule 4 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_4_power": {"address": 8603, "name": "Rule 4 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
- 
-    # Battery configuration registers (8483–8494)
-    "battery_type": {"address": 8483, "name": "Battery Type", "precision": 0, "index": 5},  # 0: User, 1: Lithium (default), 2: LPBF, 3: LPBA, 4: No battery
-    "battery_pack_series_count": {"address": 8484, "name": "Battery Pack Number in Series", "precision": 0, "index": 0},  # 1~10
-    "battery_charged_voltage": {"address": 8485, "name": "Battery Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
-    "battery_floating_charged_voltage": {"address": 8486, "name": "Battery Floating Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
-    "battery_cutoff_voltage_ongrid_no_bms": {"address": 8487, "name": "Battery Cut-off Voltage (On-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
-    "battery_cutoff_voltage_offgrid_no_bms": {"address": 8488, "name": "Battery Cut-off Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
-    "battery_restart_voltage_offgrid_no_bms": {"address": 8489, "name": "Battery Restart Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1},
-    "battery_discharge_depth_ongrid_bms": {"address": 8490, "name": "Battery Discharge Depth (On-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
-    "battery_discharge_depth_offgrid_bms": {"address": 8491, "name": "Battery Discharge Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
-    "battery_restart_depth_offgrid_bms": {"address": 8492, "name": "Battery Restart Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0},
-    "battery_max_charge_current": {"address": 8493, "name": "Battery Max Charged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
-    "battery_max_discharge_current": {"address": 8494, "name": "Battery Max Discharged Current", "unit": "A", "device_class": "current", "precision": 1, "index": 1},
+    
+    "display_software_version": {"address": 63548, "name": "Display board software version", "precision": 2, "index": 2},
+    "mcu1_software_version": {"address": 63549, "name": "MCU1 software version", "precision": 2, "index": 2},
+    "mcu2_software_version": {"address": 63550, "name": "MCU2 software version", "precision": 2, "index": 2},
+    "display_hardware_version": {"address": 63551, "name": "Display board hardware version", "precision": 2, "index": 2},
+    "control_hardware_version": {"address": 63552, "name": "Control panel hardware version", "precision": 2, "index": 2},
+    "power_hardware_version": {"address": 63553, "name": "Power board hardware version", "precision": 2, "index": 2},
 }
 
 # 2. Combined entities (post-process after reading)
@@ -478,6 +486,7 @@ REGISTER_SETS = {
         for key, info in _REGISTERS.items()
         if key in {
             "ac_active_power",
+            "BMS_Flg",
             "working_mode",
             "sn",
             "warning_state_1",
