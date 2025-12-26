@@ -356,7 +356,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         current_register_set = current_config.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
         current_interval = current_config.get("update_interval", 10)
         current_nordpool = current_config.get("nordpool_entity")
-        current_override = current_config.get("current_override")
+        nordpool_override = current_config.get("nordpool_override")
         
         data_schema = vol.Schema(
             {
