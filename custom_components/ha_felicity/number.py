@@ -140,54 +140,67 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
 class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
-    """Generic internal number entity for user settings (live sliders)."""
+    """Generic internal number entity for user-configurable options (sliders)."""
 
     def __init__(
         self,
         coordinator,
-        entry,
+        entry: ConfigEntry,
         option_key: str,
         name: str,
-        min_val: int,
-        max_val: int,
-        step: int = 1,
-        unit: str = "",
+        min_val: float,
+        max_val: float,
+        step: float = 1,
+        unit: str | None = None,
         icon: str | None = None,
         device_class: str | None = None,
     ):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
+
         self._attr_name = f"{entry.title} {name}"
         self._attr_unique_id = f"{entry.entry_id}_{option_key}"
         self._attr_native_min_value = min_val
         self._attr_native_max_value = max_val
         self._attr_native_step = step
-        self._attr_native_unit_of_measurement = unit
+        if unit:
+            self._attr_native_unit_of_measurement = unit
         self._attr_mode = NumberMode.SLIDER
         self._attr_entity_category = EntityCategory.CONFIG
-        
+
         if icon:
             self._attr_icon = icon
         if device_class:
             self._attr_device_class = device_class
 
     @property
-    def native_value(self):
-        """Return the current value from entry options."""
-        return getattr(self.coordinator, self._option_key, self._attr_native_max_value)
+    def native_value(self) -> float | None:
+        """Return current value from persisted options."""
+        return self._entry.options.get(self._option_key)
 
     async def async_set_native_value(self, value: float) -> None:
-        """Handle setting new value from UI (slider/box)."""
+        """Update the option in config_entry and trigger refresh."""
         # Clamp and round to step
         value = max(self.native_min_value, min(self.native_max_value, value))
-        value = round(value / self.native_step) * self.native_step
+        if self.native_step >= 1:
+            value = round(value) if self.native_step == 1 else round(value / self.native_step) * self.native_step
+        else:
+            value = round(value, 2)  # reasonable for sub-1 steps
 
-        _LOGGER.info("%s set to %.3f via slider", self._attr_name, value)
+        _LOGGER.info("Setting %s to %.3f", self._attr_name, value)
 
-        # Update coordinator attribute if it exists
-        setattr(self.coordinator, self._option_key, value)
+        # Update the actual persisted options
+        updated_options = dict(self._entry.options)
+        updated_options[self._option_key] = value
+
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options=updated_options,
+        )
+
+        # Force immediate coordinator refresh so logic uses new value
         await self.coordinator.async_request_refresh()
 
-        # Trigger UI update
+        # Update entity state in UI
         self.async_write_ha_state()
