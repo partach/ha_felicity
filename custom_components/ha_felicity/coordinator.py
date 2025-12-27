@@ -289,18 +289,27 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         _LOGGER.warning("Insufficient registers for %s", key)
                         break
 
-                    reg_slice = registers[pos : pos + size]
+                    reg_slice = registers[pos:pos + size]
                     pos += size
-
                     # Reconstruct raw value
                     raw = 0
                     if size == 1:
                         raw = reg_slice[0]
                     elif size == 2:
-                        raw = (reg_slice[0] << 16) | reg_slice[1] if endian == "big" else (reg_slice[1] << 16) | reg_slice[0]
+                        if endian == "big":
+                            raw = (reg_slice[0] << 16) | reg_slice[1]
+                        else:
+                            raw = (reg_slice[1] << 16) | reg_slice[0]
                     elif size == 4:
-                        for i, val in enumerate(reg_slice if endian == "big" else reversed(reg_slice)):
-                            raw |= val << (i * 16)
+                        if endian == "big":
+                            raw = (reg_slice[0] << 48) | (reg_slice[1] << 32) | (reg_slice[2] << 16) | reg_slice[3]
+                        else:
+                            raw = (reg_slice[3] << 48) | (reg_slice[2] << 32) | (reg_slice[1] << 16) | reg_slice[0]
+                        if index == 3 and raw >= (1 << 63):
+                            raw -= (1 << 64)
+                    else:
+                        _LOGGER.warning("Unsupported register size %d for key %s", size, key)
+                        continue
 
                     value = self._apply_scaling(raw, index, size)
                     if isinstance(value, float):
