@@ -159,28 +159,27 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
     _attr_options = ["off", "from_grid", "to_grid"]  # "off" first for default
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator, entry: ConfigEntry):
+    def __init__(self, coordinator, entry: ConfigEntry, option_key):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
-        self._attr_name = f"{entry.title} Grid Mode"
-        self._attr_unique_id = f"{entry.entry_id}_grid_mode"
+        self._attr_unique_id = f"{entry.entry_id}_{option_key}"
 
     @property
     def current_option(self) -> str:
         """Return the current selected option from persisted options."""
-        return self._entry.options.get("grid_mode", "off")
+        return self._entry.options.get(option_key, "off")
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option and persist it."""
         if option not in self._attr_options:
             return
 
-        _LOGGER.info("Grid mode set to %s via selector", option)
+        _LOGGER.info("%s set to %s via selector", option_key, option)
 
         # Update persisted options
         updated_options = dict(self._entry.options)
-        updated_options["grid_mode"] = option
+        updated_options[option_key] = option
 
         self.hass.config_entries.async_update_entry(
             self._entry,
