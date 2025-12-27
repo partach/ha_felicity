@@ -168,18 +168,18 @@ class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
     @property
     def current_option(self) -> str:
         """Return the current selected option from persisted options."""
-        return self._entry.options.get(option_key, "off")
+        return self._entry.options.get(self._option_key, "off")
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option and persist it."""
         if option not in self._attr_options:
             return
 
-        _LOGGER.info("%s set to %s via selector", option_key, option)
+        _LOGGER.info("%s set to %s via selector", self._option_key, option)
 
         # Update persisted options
         updated_options = dict(self._entry.options)
-        updated_options[option_key] = option
+        updated_options[self._option_key] = option
 
         self.hass.config_entries.async_update_entry(
             self._entry,
