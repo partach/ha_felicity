@@ -177,7 +177,7 @@ class HA_FelicitySpecialModeSelect(CoordinatorEntity, SelectEntity):
         self._option_key = option_key
         self._select_options = select_options
         self._attr_unique_id = f"{entry.entry_id}_{option_key}"
-        self._attr_name = f"{entry.title} {option_key}"
+        self._attr_name = f"{entry.title} {name}"
         self._attr_options = select_options
         if icon:
             self._attr_icon = icon
