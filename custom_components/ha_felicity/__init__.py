@@ -214,10 +214,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         nordpool_entity=nordpool_entity,
         nordpool_override=nordpool_override,
         update_interval=update_interval,
+        
     )
     # Store config and hub_key for unload cleanup
     coordinator.config = config
     coordinator.hub_key = hub_key
+    coordinator._last_register_set = register_set_key
 
     # First data refresh
     await coordinator.async_config_entry_first_refresh()
