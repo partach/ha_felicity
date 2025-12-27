@@ -58,6 +58,22 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._connection_type = None
         self._user_input = {}
 
+
+    def _get_default_options(self) -> dict:
+        """Return default options, using values from first step if available."""
+        return {
+            "price_threshold_level": self._user_input.get("price_threshold_level", 5),
+            "battery_charge_max_level": self._user_input.get("battery_charge_max_level", 100),
+            "battery_discharge_min_level": self._user_input.get("battery_discharge_min_level", 20),
+            "grid_mode": self._user_input.get("grid_mode", "off"),
+            "power_level": self._user_input.get("power_level", 5),
+            "voltage_level": self._user_input.get("voltage_level", 58),
+            "update_interval": self._user_input.get("update_interval", 10),
+            CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
+            "nordpool_entity": self._user_input.get("nordpool_entity"),
+            "nordpool_override": self._user_input.get("nordpool_override"),
+        }
+    
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry):
@@ -181,10 +197,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PARITY: user_input[CONF_PARITY],
                     CONF_STOPBITS: user_input[CONF_STOPBITS],
                     CONF_BYTESIZE: user_input[CONF_BYTESIZE],
-                    # Defaults for things not asked in this step but required
-                    "update_interval": 10,
                     CONF_INVERTER_MODEL: DEFAULT_INVERTER_MODEL,
-                    CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
                 }
                 
                 await self._async_test_serial_connection(final_data)
@@ -192,15 +205,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
                     data=final_data,
-                    options={
-                        "price_threshold_level": 5,
-                        "battery_charge_max_level": 100,
-                        "battery_discharge_min_level": 20,
-                        "grid_mode": "off",
-                        CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-                        "update_interval": self._user_input.get("update_interval", 10),
-                        "nordpool_entity": self._user_input.get("nordpool_entity"),
-                    }
+                    options=self._get_default_options(),
                 )
 
             except ConnectionError:
@@ -240,9 +245,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_HOST: user_input[CONF_HOST],
                     CONF_PORT: user_input[CONF_PORT],
                     CONF_SLAVE_ID: user_input[CONF_SLAVE_ID],
-                    "update_interval": 10,
                     CONF_INVERTER_MODEL: DEFAULT_INVERTER_MODEL,
-                    CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
                 }
 
                 await self._async_test_tcp_connection(final_data)
@@ -250,15 +253,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
                     data=final_data,
-                    options={
-                        "price_threshold_level": 5,
-                        "battery_charge_max_level": 100,
-                        "battery_discharge_min_level": 20,
-                        "grid_mode": "off",
-                        CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
-                        "update_interval": self._user_input.get("update_interval", 10),
-                        "nordpool_entity": self._user_input.get("nordpool_entity"),
-                    }
+                    options=self._get_default_options(),
                 )
 
             except ConnectionError:
