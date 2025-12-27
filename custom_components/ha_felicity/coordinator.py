@@ -179,23 +179,25 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         grid_mode = opts.get("grid_mode", "off")
         if grid_mode == "off":
+            _LOGGER.info("grid_mode is off, returning idle")
             return "idle"
-
-        threshold_level = opts.get("price_threshold_level", 5)
-        charge_max = opts.get("battery_charge_max_level", 100)
-        discharge_min = opts.get("battery_discharge_min_level", 20)
 
         if battery_soc is None:
+            _LOGGER.info("Battery SOC state unknown, returning idle")
             return "idle"
 
-        if self.current_price is None or threshold_level is None:
+        if self.current_price is None or self.price_threshold is None:
+            _LOGGER.info("current price or price threshold is unknown, returning idle")
             return "idle"
-
+            
+        charge_max = opts.get("battery_charge_max_level", 100)
+        discharge_min = opts.get("battery_discharge_min_level", 20)
+        
         if grid_mode == "from_grid" and self.current_price < self.price_threshold and battery_soc <= charge_max:
             return "charging"
         if grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc >= discharge_min:
             return "discharging"
-
+        
         return "idle"
 
 # Get current operating mode from select entity if needed
@@ -360,6 +362,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 await self._transition_to_state(desired_state)
                                 self._current_energy_state = desired_state
                                 self._last_state_change = now
+                        else:
+                            _LOGGER.debug(
+                                "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",
+                                self.min_price, self.avg_price, self.max_price
+                            )
+                            self.price_threshold = None
 
                     except ValueError:
                         self.current_price = None
