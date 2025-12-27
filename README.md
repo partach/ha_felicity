@@ -57,7 +57,7 @@ It supports modbus USB dongle and TCP Modbus connection
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config2.png" width="300"/>
   <br>
-  <em>Serial Example, choose the settings you need</em>
+  <em>Serial Example, choose the settings you need (2400 baud is sadly default for the TRex)</em>
 </p>
 
 ## Controls
@@ -108,7 +108,7 @@ IMPORTANT: The integration is depedent on the Monetary Integration to contiously
 ## Installing the card
 After installation of the integration you need to first reboot HA.
 The card will be automatically registered by the integration on start up.
-The use the card in your dashboard, go to you dashboard, edit, choose `Add card`.
+To use the card in your dashboard, go to you dashboard, edit, choose `Add card`.
 Choose `Manual`
 Add first line: `type: custom:felicity-inverter-card`
 Then choose the `visual editor` to continue.
