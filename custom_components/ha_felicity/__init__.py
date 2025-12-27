@@ -190,7 +190,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass=hass,
         client=hub.client,
         slave_id=config[CONF_SLAVE_ID],
-        registers=selected_registers,
+        register_map=selected_registers,
         groups=model_data["groups"],
         config_entry=entry,
         nordpool_entity=nordpool_entity,
