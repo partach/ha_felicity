@@ -107,6 +107,14 @@ class FelicityInverterCard extends LitElement {
     const level = parseFloat(this._getValue("price_threshold_level") || 5); // 1-10
     const gridMode = this._getValue("grid_mode") || "off";
 
+    // Price data for yellow line
+    const currentPrice = parseFloat(this._getValue("current_price"));
+    const minPrice = parseFloat(this._getValue("today_min_price"));
+    const avgPrice = parseFloat(this._getValue("today_avg_price"));
+    const maxPrice = parseFloat(this._getValue("today_max_price"));
+
+    const hasPriceData = !isNaN(currentPrice) && !isNaN(minPrice) && !isNaN(maxPrice) && maxPrice > minPrice;
+
     // Full amplitude: use almost full canvas height
     const maxAmplitudePixels = (height - 10) / 2; // leave 5px margin top/bottom
 
@@ -126,19 +134,18 @@ class FelicityInverterCard extends LitElement {
     ctx.moveTo(0, height / 2);
     ctx.lineTo(width, height / 2);
     ctx.strokeStyle = '#666';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 0.5;
     ctx.stroke();
 
     // Draw sine wave
-    const points = 300;
-    ctx.lineWidth = 3;
+    const points = 100;
+    ctx.lineWidth = 1;
 
     for (let i = 0; i <= points; i++) {
       const x = (i / points) * width;
       const phase = (i / points) * Math.PI * 2;
       let y = height / 2 + Math.sin(phase) * maxAmplitudePixels + offsetPixels;
 
-      // Final safety clamp (should never hit due to math, but safe)
       y = Math.max(5, Math.min(height - 5, y));
 
       if (i === 0) {
@@ -156,6 +163,29 @@ class FelicityInverterCard extends LitElement {
         ctx.beginPath();
         ctx.moveTo(x, y);
       }
+    }
+
+  
+    if (hasPriceData) {
+      // Map current price to Y position (linear between min and max price)
+      const priceRatio = (currentPrice - minPrice) / (maxPrice - minPrice);
+      // Invert Y (higher price = higher on canvas)
+      const priceY = height - (priceRatio * (height - 10)) - 5;
+
+      // Draw glowing yellow horizontal line
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(45, priceY);
+      ctx.lineTo(width - 45, priceY);
+
+      ctx.shadowBlur = 12;
+      ctx.shadowColor = "#e7d690ff";
+
+      ctx.strokeStyle = "#cf730aff";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.shadowBlur = 0; // reset
     }
   }
 
@@ -459,13 +489,13 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item pv">
                 <ha-icon .hass=${this.hass} icon="mdi:solar-power-variant"></ha-icon>
                 <div class="power-value">${this._getPower("pv_input_power")} W</div>
-                <div class="label">PV</div>
+                <div class="label"></div>
               </div>
 
               <div class="flow-item grid">
                 <ha-icon .hass=${this.hass} icon="mdi:transmission-tower"></ha-icon>
                 <div class="power-value">${this._getPower("ac_input_power")} W</div>
-                <div class="label">Grid</div>
+                <div class="label"></div>
               </div>
               <div class="flow-item state">
                 <div class="label">
