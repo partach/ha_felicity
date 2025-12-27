@@ -48,10 +48,14 @@ async def async_setup_entry(
 
     # Internal configuration select entity (stored in entry.options)
     entities.append(
-        HA_FelicityGridModeSelect(
-            coordinator, 
-            entry, 
-            option_key="grid_mode"
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="grid_mode",
+            select_options=["off", "from_grid", "to_grid"],
+            name="Grid Mode",
+            icon="mdi:transmission-tower",
+            entity_category=EntityCategory.CONFIG,
         )
     )
 
@@ -152,27 +156,42 @@ class HA_FelicitySelectMulti(CoordinatorEntity, SelectEntity):
         await self.coordinator.async_request_refresh()
 
 
-class HA_FelicityGridModeSelect(CoordinatorEntity, SelectEntity):
-    """Live selector for Grid Mode (from_grid / to_grid / off)."""
+class HA_FelicitySpecialModeSelect(CoordinatorEntity, SelectEntity):
+    """Live selector for Special self made selector"""
 
     _attr_icon = "mdi:transmission-tower"
-    _attr_options = ["off", "from_grid", "to_grid"]  # "off" first for default
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator, entry: ConfigEntry, option_key):
+    def __init__(
+        self,
+        coordinator,
+        entry: ConfigEntry,
+        option_key: str,
+        select_options: list[str],
+        name: str,
+        icon: str | None = None,
+        entity_category: EntityCategory | None = EntityCategory.CONFIG,
+    ):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
+        self._select_options = select_options
         self._attr_unique_id = f"{entry.entry_id}_{option_key}"
+        self._attr_name = f"{entry.title} {option_key}"
+        self._attr_options = select_options
+        if icon:
+            self._attr_icon = icon
+        if entity_category:
+            self._attr_entity_category = entity_category        
 
     @property
     def current_option(self) -> str:
         """Return the current selected option from persisted options."""
-        return self._entry.options.get(self._option_key, "off")
+        return self._entry.options.get(self._option_key, self.select_options[0])
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option and persist it."""
-        if option not in self._attr_options:
+        if option not in self._select_options:
             return
 
         _LOGGER.info("%s set to %s via selector", self._option_key, option)
