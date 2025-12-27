@@ -345,13 +345,15 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-        current_config = {**self.config_entry.data, **self.config_entry.options}
+            updated_options = dict(self.config_entry.options)
+            updated_options.update(user_input)
+            return self.async_create_entry(title="", data=updated_options)
+
         # Get current values from options (with defaults)
-        current_register_set = current_config.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-        current_interval = current_config.get("update_interval", 10)
-        current_nordpool = current_config.get("nordpool_entity")
-        nordpool_override = current_config.get("nordpool_override")
+        current_register_set = config_entry.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+        current_interval = config_entry.get("update_interval", 10)
+        current_nordpool = config_entry.get("nordpool_entity")
+        nordpool_override = config_entry.get("nordpool_override")
         
         data_schema = vol.Schema(
             {
