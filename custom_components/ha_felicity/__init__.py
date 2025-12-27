@@ -101,16 +101,24 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options change — reload only if register set changed."""
-    old_set = entry.options.get(CONF_REGISTER_SET)
-    new_set = entry.options.get(CONF_REGISTER_SET)  # after change
+    # Get the coordinator to access previous register set if needed
+    coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    if not coordinator:
+        return
 
-    if old_set != new_set:
+    # Previous register set (you can store it on coordinator if needed)
+    # But simpler: just reload if register_set changed (we can't know old, but reload is safe)
+    # Or better: always reload on register_set change, refresh otherwise
+    # Since we can't easily get "old" value here, safest is:
+    if entry.options.get(CONF_REGISTER_SET) != getattr(coordinator, "_last_register_set", None):
+        _LOGGER.debug("Register set changed — reloading integration")
+        coordinator._last_register_set = entry.options.get(CONF_REGISTER_SET)
         await hass.config_entries.async_reload(entry.entry_id)
     else:
-        # Just refresh data for other option changes
-        coordinator = hass.data[DOMAIN].get(entry.entry_id)
-        if coordinator:
-            await coordinator.async_request_refresh()
+        _LOGGER.debug("Other options changed — refreshing data")
+        await coordinator.async_request_refresh()
+        # Update stored last set
+        coordinator._last_register_set = entry.options.get(CONF_REGISTER_SET)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
