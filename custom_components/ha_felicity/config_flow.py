@@ -340,7 +340,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: ConfigEntry):
         """Initialize options flow."""
-     #   self.config_entry = config_entry  # HA config fails if this is not removed!
+        self.config_entry = config_entry  # HA config fails if this is not removed!
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
@@ -350,10 +350,10 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=updated_options)
 
         # Get current values from options (with defaults)
-        current_register_set = config_entry.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-        current_interval = config_entry.get("update_interval", 10)
-        current_nordpool = config_entry.get("nordpool_entity")
-        nordpool_override = config_entry.get("nordpool_override")
+        current_register_set = self.config_entry.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+        current_interval = self.config_entry.get("update_interval", 10)
+        current_nordpool = self.config_entry.get("nordpool_entity")
+        nordpool_override = self.config_entry.get("nordpool_override")
         
         data_schema = vol.Schema(
             {
