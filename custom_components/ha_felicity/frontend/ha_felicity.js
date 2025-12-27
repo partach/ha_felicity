@@ -1,4 +1,3 @@
-// felicity-inverter-card.js
 import { LitElement, html, css } from "https://unpkg.com/lit?module";
 
 class FelicityInverterCard extends LitElement {
@@ -27,7 +26,9 @@ class FelicityInverterCard extends LitElement {
     this._keyOptions = [];
     this._selectedSection = "energy_flow"; // Default to energy flow
     this._energyCache ??= {};
+    this.showSineWave = true; // Set to false to hide the sine wave
   }
+
   static getConfigElement() {
     return document.createElement("felicity-inverter-card-editor");
   }
@@ -35,7 +36,6 @@ class FelicityInverterCard extends LitElement {
   _getOverride(key) {
     const o = this.config.overrides?.[key];
     if (!o) return null;
-
     if (typeof o === "string") {
       return { entity: o };
     }
@@ -45,17 +45,12 @@ class FelicityInverterCard extends LitElement {
   _convertEnergyToPower(key, entity) {
     const now = Date.now();
     const value = Number(entity.state);
-
     const prev = this._energyCache[key];
     this._energyCache[key] = { value, ts: now };
-
     if (!prev) return 0;
-
     const deltaKWh = value - prev.value;
     const deltaHours = (now - prev.ts) / 3_600_000;
-
     if (deltaHours <= 0) return 0;
-
     return Math.round((deltaKWh / deltaHours) * 1000);
   }
 
@@ -64,7 +59,6 @@ class FelicityInverterCard extends LitElement {
       advanced: false,
       ...config,
     };
-
     this._selectedSection = "energy_flow";
   }
 
@@ -73,8 +67,11 @@ class FelicityInverterCard extends LitElement {
   }
 
   updated(changedProps) {
+    super.updated(changedProps);
+
     if (changedProps.has("hass")) {
       this._resolveDeviceEntities();
+      this._drawSineWave(); // Redraw when hass changes (level or grid_mode)
     }
   }
 
@@ -92,6 +89,74 @@ class FelicityInverterCard extends LitElement {
       .map(e => e.entity_id);
 
     this._allEntities = this._deviceEntities.slice().sort();
+  }
+
+  _drawSineWave() {
+    if (!this.showSineWave) return;
+
+    const canvas = this.shadowRoot.querySelector('.sine-canvas');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    const level = parseFloat(this._getValue("price_threshold_level") || 5); // 1-10
+    const gridMode = this._getValue("grid_mode") || "off";
+
+    // Full amplitude: use almost full canvas height
+    const maxAmplitudePixels = (height - 10) / 2; // leave 5px margin top/bottom
+
+    // Linear fraction below X-axis = level / 10
+    const fractionBelow = level / 10;
+
+    // Offset in pixels: positive = move up, negative = move down
+    const offsetPixels = (0.5 - fractionBelow) * 2 * maxAmplitudePixels;
+
+    const positiveColor = gridMode === 'to_grid' ? '#4caf50' : '#f44336';
+    const negativeColor = gridMode === 'to_grid' ? '#f44336' : '#4caf50';
+
+    ctx.clearRect(0, 0, width, height);
+
+    // X-axis in middle
+    ctx.beginPath();
+    ctx.moveTo(0, height / 2);
+    ctx.lineTo(width, height / 2);
+    ctx.strokeStyle = '#666';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Draw sine wave
+    const points = 300;
+    ctx.lineWidth = 3;
+
+    for (let i = 0; i <= points; i++) {
+      const x = (i / points) * width;
+      const phase = (i / points) * Math.PI * 2;
+      let y = height / 2 + Math.sin(phase) * maxAmplitudePixels + offsetPixels;
+
+      // Final safety clamp (should never hit due to math, but safe)
+      y = Math.max(5, Math.min(height - 5, y));
+
+      if (i === 0) {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+
+      const isPositive = y < height / 2;
+      ctx.strokeStyle = isPositive ? positiveColor : negativeColor;
+      ctx.stroke();
+
+      if (i < points) {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+      }
+    }
   }
 
   render() {
@@ -186,7 +251,7 @@ class FelicityInverterCard extends LitElement {
                 .labelbold {
                   font-size: 1.1em;
                   font-weight: bold;
-                  color: #f4f003ff;
+                  color: #f4b003ff;
                 }
                 
                 .pv { 
@@ -312,26 +377,38 @@ class FelicityInverterCard extends LitElement {
                 @keyframes flow-reverse {
                   to { stroke-dashoffset: 15; }
                 }
+
+                /* Sine wave canvas */
+                .sine-canvas-container {
+                  position: absolute;
+                  left: 65%;
+                  top: 35%;
+                  width: 30%;
+                  height: 30%;
+                  pointer-events: none;
+                  z-index: 3;
+                }
+                .sine-canvas {
+                  width: 100%;
+                  height: 100%;
+                }
               </style>
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <path 
                   class="flow-path charging ${this._getPower('pv_input_power') > 50 ? 'active' : 'inactive'}" 
-                  d="M 20 22 L 47 48" 
+                  d="M 25 25 L 47 48" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Grid to Inverter (bidirectional) -->
                 <path 
                   class="flow-path ${(() => {
                     const power = parseFloat(this._getPower('ac_input_power')) || 0;
-                    // Check if there's a grid state method, or use a sensor
-                    const gridState = this._getValue('grid_state'); // You might need to add this sensor
+                    const gridState = this._getValue('grid_state'); 
                     if (power <= 50) return 'inactive';
-                    // If no grid state sensor, you might need to determine from other sensors
-                    // For now, assuming import if power > 0
-                    return 'active grid-import'; // Change this based on your grid direction sensor
+                    return 'active grid-import';
                   })()} " 
-                  d="M 80 22 L 53 48" 
+                  d="M 75 25 L 53 48" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Inverter to Battery (bidirectional) -->
@@ -344,12 +421,12 @@ class FelicityInverterCard extends LitElement {
                     if (state === 'Discharging') return 'active discharging reverse';
                     return 'inactive';
                   })()} " 
-                  d="M 47 52 L 27 72" 
+                  d="M 47 52 L 25 75" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path ${this._getPower('total_ac_active_power') > 50 ? 'active' : 'inactive'}" 
-                  d="M 53 52 L 75 73" 
+                  d="M 53 52 L 75 75" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
@@ -429,6 +506,13 @@ class FelicityInverterCard extends LitElement {
                   <div class="label">Backup Load</div>
                 </div>
               </div>
+
+              <!-- Sine Wave Canvas -->
+              ${this.showSineWave ? html`
+                <div class="sine-canvas-container">
+                  <canvas class="sine-canvas"></canvas>
+                </div>
+              ` : ""}
             </div>
           </div>
         ` : ""}
