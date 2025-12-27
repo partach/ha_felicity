@@ -39,6 +39,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.register_map = register_map
         self._address_groups = groups
         self.config_entry = config_entry
+        self._last_register_set: str | None = None
         
         # Nordpool: override wins over entity
         self.nordpool_entity = nordpool_override or nordpool_entity
