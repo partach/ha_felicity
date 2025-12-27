@@ -72,12 +72,12 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
     """Register the custom card as a Lovelace resource."""
     lovelace_data = hass.data.get("lovelace")
     if not lovelace_data:
-        _LOGGER.debug("Unable to get lovelace data (new api 2026.2): %s", card_url)
+        _LOGGER.debug("Unable to get lovelace data (new api 2026.2)")
         return  # YAML mode or Lovelace not loaded
 
     resources = lovelace_data.resources
     if not resources:
-        _LOGGER.debug("Unable to get resources (new api 2026.2): %s", card_url)
+        _LOGGER.debug("Unable to get resources (new api 2026.2)")
         return  # YAML mode or not loaded
 
     if not resources.loaded:
