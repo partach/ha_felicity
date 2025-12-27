@@ -340,7 +340,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: ConfigEntry):
         """Initialize options flow."""
-        self.config_entry = config_entry  # HA config fails if this is not removed!
+        # self.config_entry = config_entry  # read only!! HA config fails if this is not removed!
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
