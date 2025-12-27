@@ -150,6 +150,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     nordpool_override = entry.options.get("nordpool_override")
     update_interval = entry.options.get("update_interval", 10)
 
+
     #price_threshold_level = entry.options.get("price_threshold_level", 5)
     #current_charge_max = entry.options.get("battery_charge_max_level", 100)
     #current_discharge_min = entry.options.get("battery_discharge_min_level", 20)
@@ -164,7 +165,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
     
-
+    _LOGGER.debug("Current entry.options: %s", entry.options)
+    _LOGGER.debug("Selected register_set_key: %s", register_set_key)
+    _LOGGER.debug("Number of selected registers: %d", len(selected_registers))
+    
     # === SAFETY NET: Auto-include missing group keys (prevents update failed) ===
     all_group_keys = {key for group in model_data["groups"] for key in group["keys"]}
     missing = all_group_keys - selected_registers.keys()
