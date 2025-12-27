@@ -8,7 +8,7 @@
 
 Felicity inverter home assistant integration for easy setup and use of the device (via Modbus)
 
-Currently supports one type: T-REX-10KLP3G01
+Currently supports one type: T-REX-10KLP3G01 (and others with similar register setup)
 
 
 <p align="center">
@@ -61,7 +61,8 @@ It supports modbus USB dongle and TCP Modbus connection
 </p>
 
 ## Controls
-Via the device you can directly control many settings run-time. Be carefull with some of these setting as thee affect the behavior of the device.
+Via the device you can directly control many settings run-time. Be carefull with some of these setting as the affect the behavior of the device.
+If you don't know what a register does, don't touch it :)
 The integration is to be used on own risk.
 
 <p align="center">
