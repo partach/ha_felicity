@@ -131,9 +131,10 @@ class FelicityInverterCard extends LitElement {
 
     // X-axis in middle
     ctx.beginPath();
+    ctx.setLineDash([6, 4]);
     ctx.moveTo(0, height / 2);
     ctx.lineTo(width, height / 2);
-    ctx.strokeStyle = '#666';
+    ctx.strokeStyle = '#2a67c9ff';
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
