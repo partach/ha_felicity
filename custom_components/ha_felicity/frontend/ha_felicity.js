@@ -200,8 +200,8 @@ class FelicityInverterCard extends LitElement {
     ctx.font = '10px sans-serif';
     ctx.fillStyle = '#aaa';
     ctx.textAlign = 'center';
-    ctx.fillText(`Max: ${maxPrice.toFixed(2)}`, width / 2, barTop - 5);
-    ctx.fillText(`Min: ${minPrice.toFixed(2)}`, width / 2, barTop + barHeight + 15);
+    ctx.fillText(`Max. Price: ${maxPrice.toFixed(2)}`, width / 2, barTop - 5);
+    ctx.fillText(`Min. Price: ${minPrice.toFixed(2)}`, width / 2, barTop + barHeight + 15);
   }
 
   _drawBatteryBar() {
@@ -292,15 +292,15 @@ class FelicityInverterCard extends LitElement {
     ctx.setLineDash([]);
 
     // Top label (Battery Voltage)
-    ctx.font = '10px sans-serif';
+    ctx.font = '11px sans-serif';
     ctx.fillStyle = '#aaa';
     ctx.textAlign = 'center';
-    ctx.fillText(`${batteryVoltage.toFixed(1)}V`, width / 2, barTop - 5);
+    ctx.fillText(`Voltage: ${batteryVoltage.toFixed(1)}V`, width / 2, barTop - 5);
 
     // Bottom label (Battery Current/Amperage)
     const currentLabel = batteryCurrent >= 0 
-      ? `+${batteryCurrent.toFixed(1)}A` 
-      : `${batteryCurrent.toFixed(1)}A`;
+      ? `Amps: +${batteryCurrent.toFixed(1)}A` 
+      : `Amps: ${batteryCurrent.toFixed(1)}A`;
     ctx.fillText(currentLabel, width / 2, barTop + barHeight + 15);
   }
 
@@ -561,10 +561,10 @@ class FelicityInverterCard extends LitElement {
                 <!-- Grid to Inverter (bidirectional) -->
                 <path 
                   class="flow-path ${(() => {
-                    const power = parseFloat(this._getPower('ac_input_power')) || 0;
-                    const gridState = this._getValue('grid_state'); 
-                    if (power <= 50) return 'inactive';
-                    return 'active grid-import';
+                    const power = parseFloat(this._getValue('ac_input_power')) || 0;
+                    if (Math.abs(power) <= 50) return 'inactive';
+                    if (power > 0) return 'active grid-import';
+                    return 'active grid-export reverse';
                   })()} " 
                   d="M 75 25 L 53 48" 
                   vector-effect="non-scaling-stroke"
@@ -621,7 +621,12 @@ class FelicityInverterCard extends LitElement {
               </div>
 
               <div class="flow-item grid">
-                <ha-icon .hass=${this.hass} icon="mdi:transmission-tower"></ha-icon>
+                <ha-icon .hass=${this.hass} icon="${(() => {
+                  const power = parseFloat(this._getValue('ac_input_power')) || 0;
+                  if (power > 50) return 'mdi:transmission-tower-export';
+                  if (power < -50) return 'mdi:transmission-tower-import';
+                  return 'mdi:transmission-tower';
+                })()}"></ha-icon>
                 <div class="power-value">${this._getPower("ac_input_power")} W</div>
                 <div class="label"></div>
               </div>
