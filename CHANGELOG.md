@@ -1,5 +1,8 @@
 ## Changelog
 
+### [0.6.4] - Documentation and card improvement.
+- Documentation (Readme) update
+  
 ### [0.6.3] - Fix for no price entity selected
 - Fix for Allowing None Price entity
 
