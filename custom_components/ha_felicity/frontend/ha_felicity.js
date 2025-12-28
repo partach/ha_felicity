@@ -26,7 +26,7 @@ class FelicityInverterCard extends LitElement {
     this._keyOptions = [];
     this._selectedSection = "energy_flow"; // Default to energy flow
     this._energyCache ??= {};
-    this.showSineWave = true; // Set to false to hide the sine wave
+    this.showEnergyBar = true; // Set to false to hide the bar
   }
 
   static getConfigElement() {
@@ -71,7 +71,7 @@ class FelicityInverterCard extends LitElement {
 
     if (changedProps.has("hass")) {
       this._resolveDeviceEntities();
-      this._drawSineWave(); // Redraw when hass changes (level or grid_mode)
+      this._drawEnergyBar(); // Redraw when hass changes (level or grid_mode)
     }
   }
 
@@ -91,10 +91,10 @@ class FelicityInverterCard extends LitElement {
     this._allEntities = this._deviceEntities.slice().sort();
   }
 
-  _drawSineWave() {
-    if (!this.showSineWave) return;
+  _drawEnergyBar() {
+    if (!this.showEnergyBar) return;
 
-    const canvas = this.shadowRoot.querySelector('.sine-canvas');
+    const canvas = this.shadowRoot.querySelector('.bar-canvas');
     if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
@@ -104,72 +104,20 @@ class FelicityInverterCard extends LitElement {
     const width = canvas.width;
     const height = canvas.height;
 
-    const level = parseFloat(this._getValue("price_threshold_level") || 5); // 1-10
-    const gridMode = this._getValue("grid_mode") || "off";
-
     // Price data
     const currentPrice = parseFloat(this._getValue("current_price"));
     const minPrice = parseFloat(this._getValue("today_min_price"));
     const avgPrice = parseFloat(this._getValue("today_avg_price"));
     const maxPrice = parseFloat(this._getValue("today_max_price"));
 
+    const level = parseFloat(this._getValue("price_threshold_level") || 5);
+
     const hasPriceData = !isNaN(currentPrice) && !isNaN(minPrice) && !isNaN(avgPrice) && !isNaN(maxPrice) && maxPrice > minPrice;
 
-    // Full amplitude: use almost full canvas height
-    const maxAmplitudePixels = (height - 10) / 2;
-
-    // Linear fraction below X-axis = level / 10
-    const fractionBelow = 1 - (level / 10);
-
-    // Offset in pixels: positive = move up, negative = move down
-    const offsetPixels = (0.5 - fractionBelow) * 2 * maxAmplitudePixels;
-
-    const positiveColor = gridMode === 'to_grid' ? '#4caf50' : '#f44336';
-    const negativeColor = gridMode === 'to_grid' ? '#f44336' : '#4caf50';
-
-    ctx.clearRect(0, 0, width, height);
-
-    // X-axis in middle (dotted)
-    ctx.setLineDash([6, 4]);
-    ctx.beginPath();
-    ctx.moveTo(0, height / 2);
-    ctx.lineTo(width, height / 2);
-    ctx.strokeStyle = '#2a67c9ff';
-    ctx.lineWidth = 0.5;
-    ctx.stroke();
-
-    // Draw sine wave (threshold curve)
-    const points = 100;
-    ctx.lineWidth = 1;
-
-    for (let i = 0; i <= points; i++) {
-      const x = (i / points) * width;
-      const phase = (i / points) * Math.PI * 2;
-      let y = height / 2 + Math.sin(phase) * maxAmplitudePixels + offsetPixels;
-
-      y = Math.max(5, Math.min(height - 5, y));
-
-      if (i === 0) {
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-      } else {
-        ctx.lineTo(x, y);
-      }
-
-      const isPositive = y < height / 2;
-      ctx.strokeStyle = isPositive ? positiveColor : negativeColor;
-      ctx.stroke();
-
-      if (i < points) {
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-      }
-    }
-
-    // === Yellow line: current price relative to threshold ===
+    // Calculate threshold price at current level
+    
+    let thresholdPrice = avgPrice; // fallback
     if (hasPriceData) {
-      // Calculate threshold price at current level (same as coordinator)
-      let thresholdPrice;
       if (level <= 5) {
         const ratio = (level - 1) / 4.0;
         thresholdPrice = minPrice + (avgPrice - minPrice) * ratio;
@@ -177,34 +125,82 @@ class FelicityInverterCard extends LitElement {
         const ratio = (level - 5) / 5.0;
         thresholdPrice = avgPrice + (maxPrice - avgPrice) * ratio;
       }
+    }
 
-      // Difference from threshold (positive = current > threshold)
-      const priceDiff = currentPrice - thresholdPrice;
+    ctx.clearRect(0, 0, width, height);
 
-      // Scale difference using same amplitude as wave
-      const diffPixels = priceDiff * (maxAmplitudePixels / 10); // 10 = full amplitude
 
-      // Y position: center minus offset (higher price = higher on canvas)
-      let priceY = height / 2 + offsetPixels + diffPixels;
+    if (!hasPriceData) {
+      // No data — show empty bar with "No data"
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.textAlign = 'center';
+      ctx.fillText('No price data', width / 2, height / 2);
+      return;
+    }
 
-      // Clamp
-      priceY = Math.max(5, Math.min(height - 5, priceY));
+    // Vertical bar background (min to max)
+    const barWidth = width * 0.4;
+    const barX = width / 2 - barWidth / 2;
+    const barTop = 20;
+    const barHeight = height - 40;
 
-      // Draw dotted glowing yellow line
-      ctx.setLineDash([6, 4]);
+    ctx.fillStyle = '#33333388';
+    ctx.fillRect(barX, barTop, barWidth, barHeight);
+
+    // Function to map price to Y position (linear)
+    const priceToY = (price) => {
+      const ratio = (price - minPrice) / (maxPrice - minPrice);
+      return barTop + barHeight - (ratio * barHeight); // invert Y
+    };
+    if (hasPriceData) {
+      const thresholdY = priceToY(thresholdPrice);
+
+      // Green part: from threshold down to bottom (cheap zone)
+      ctx.fillStyle = '#4caf5088'; // semi-transparent green
+      ctx.fillRect(barX, thresholdY, barWidth, barHeight + barTop - thresholdY);
+
+      // Red part: from top down to threshold (expensive zone)
+      ctx.fillStyle = '#f4433688'; // semi-transparent red
+      ctx.fillRect(barX, barTop, barWidth, thresholdY - barTop);
+    }
+
+
+    // Draw 3 horizontal dotted lines
+    const lines = [
+      { price: avgPrice, color: '#4488ff', label: '', width: 1 },
+      { price: thresholdPrice, color: '#137a08ff', label: '', width: 1 },
+      { price: currentPrice, color: '#ffc800ff', label: '', width: 1 },
+    ];
+
+    ctx.setLineDash([6, 4]);
+
+    lines.forEach(line => {
+      const y = priceToY(line.price);
+
       ctx.beginPath();
-      ctx.moveTo(45, priceY);
-      ctx.lineTo(width - 45, priceY);
+      ctx.moveTo(barX - 5, y);
+      ctx.lineTo(barX + barWidth + 10, y);
 
-      ctx.shadowBlur = 12;
-      ctx.shadowColor = "#e7d690ff";
-      ctx.strokeStyle = "#cf730aff";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = line.color;
+      ctx.lineWidth = line.width;
       ctx.stroke();
 
-      ctx.shadowBlur = 0;
-      ctx.setLineDash([]);
-    }
+      // Label on left
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = line.color;
+      ctx.textAlign = 'right';
+      ctx.fillText(`${line.label} ${line.price.toFixed(2)}`, barX - 5, y + 4);
+    });
+
+    ctx.setLineDash([]);
+
+    // Min/Max labels
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#aaa';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Max: ${maxPrice.toFixed(2)}`, width / 2, barTop - 5);
+    ctx.fillText(`Min: ${minPrice.toFixed(2)}`, width / 2, barTop + barHeight + 15);
   }
 
   render() {
@@ -426,17 +422,17 @@ class FelicityInverterCard extends LitElement {
                   to { stroke-dashoffset: 15; }
                 }
 
-                /* Sine wave canvas */
-                .sine-canvas-container {
+                /* bar canvas */
+                .bar-canvas-container {
                   position: absolute;
                   left: 65%;
-                  top: 35%;
-                  width: 30%;
-                  height: 30%;
+                  top: 33%;
+                  width: 39%;
+                  height: 36%;
                   pointer-events: none;
                   z-index: 3;
                 }
-                .sine-canvas {
+                .bar-canvas {
                   width: 100%;
                   height: 100%;
                 }
@@ -521,8 +517,7 @@ class FelicityInverterCard extends LitElement {
                 </div>  
                 <div class="label">
                   Price now: <span class="labelbold">${this._getStateLabel("current_price")}</span>
-                  &nbsp;|&nbsp;
-                  State: <span class="labelbold">${this._getStateLabel("energy_state")}</span>
+                  --> <span class="labelbold">${this._getStateLabel("energy_state")}</span>
                 </div>
               </div>
               
@@ -555,10 +550,10 @@ class FelicityInverterCard extends LitElement {
                 </div>
               </div>
 
-              <!-- Sine Wave Canvas -->
-              ${this.showSineWave ? html`
-                <div class="sine-canvas-container">
-                  <canvas class="sine-canvas"></canvas>
+              <!-- Bar Canvas -->
+              ${this.showEnergyBar ? html`
+                <div class="bar-canvas-container">
+                  <canvas class="bar-canvas"></canvas>
                 </div>
               ` : ""}
             </div>
