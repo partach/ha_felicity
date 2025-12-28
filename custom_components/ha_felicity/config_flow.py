@@ -126,14 +126,18 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                vol.Optional("nordpool_entity", default=current_nordpool): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain="sensor",
-                        device_class=SensorDeviceClass.MONETARY,  # Nordpool uses monetary class
-                        multiple=False,
+                vol.Optional(
+                    "nordpool_entity", 
+                    default=current_nordpool or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor",
+                            device_class=SensorDeviceClass.MONETARY,
+                            multiple=False,
+                        )
                     )
                 ),
-
             }
         )
 
@@ -388,11 +392,16 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Coerce(int),
                     vol.Range(min=5, max=300),  # 5 seconds to 5 minutes
                 ),
-                vol.Optional("nordpool_entity", default=current_nordpool): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain="sensor",
-                        device_class=SensorDeviceClass.MONETARY,  # Nordpool uses monetary class
-                        multiple=False,
+                vol.Optional(
+                    "nordpool_entity", 
+                    default=current_nordpool or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor",
+                            device_class=SensorDeviceClass.MONETARY,
+                            multiple=False,
+                        )
                     )
                 ),
                 vol.Optional("nordpool_override", default=nordpool_override): selector.TextSelector(
