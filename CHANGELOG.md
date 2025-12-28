@@ -1,5 +1,5 @@
 ## Changelog
-### [0.6.1] - Card improvements
+### [0.6.2] - Card improvements
 - small graphical card improvement to help understand price strategy
 
 ### [0.6.0] - Persistence fix
