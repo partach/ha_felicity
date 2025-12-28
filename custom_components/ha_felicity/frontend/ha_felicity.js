@@ -71,7 +71,8 @@ class FelicityInverterCard extends LitElement {
 
     if (changedProps.has("hass")) {
       this._resolveDeviceEntities();
-      this._drawEnergyBar(); // Redraw when hass changes (level or grid_mode)
+      this._drawEnergyBar();
+      this._drawBatteryBar();
     }
   }
 
@@ -201,6 +202,106 @@ class FelicityInverterCard extends LitElement {
     ctx.textAlign = 'center';
     ctx.fillText(`Max: ${maxPrice.toFixed(2)}`, width / 2, barTop - 5);
     ctx.fillText(`Min: ${minPrice.toFixed(2)}`, width / 2, barTop + barHeight + 15);
+  }
+
+  _drawBatteryBar() {
+    if (!this.showEnergyBar) return;
+
+    const canvas = this.shadowRoot.querySelector('.battery-bar-canvas');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Battery data
+    const batteryVoltage = parseFloat(this._getValue("battery_voltage"));
+    const batteryCapacity = parseFloat(this._getValue("battery_capacity")); // SOC %
+    const dischargeDepth = parseFloat(this._getValue("discharge_depth_on_grid_bms")) || 20;
+    const batteryCurrent = parseFloat(this._getValue("battery_current")) || 0;
+
+    const hasBatteryData = !isNaN(batteryVoltage) && !isNaN(batteryCapacity);
+
+    ctx.clearRect(0, 0, width, height);
+
+    if (!hasBatteryData) {
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.textAlign = 'center';
+      ctx.fillText('No battery data', width / 2, height / 2);
+      return;
+    }
+
+    // Vertical bar setup
+    const barWidth = width * 0.4;
+    const barX = width / 2 - barWidth / 2;
+    const barTop = 20;
+    const barHeight = height - 40;
+
+    // Function to map SOC % to Y position
+    const socToY = (soc) => {
+      return barTop + barHeight - ((soc / 100) * barHeight);
+    };
+
+    // Draw background (empty part - gray)
+    ctx.fillStyle = '#33333388';
+    ctx.fillRect(barX, barTop, barWidth, barHeight);
+
+    // Draw green part (charged portion)
+    const currentY = socToY(batteryCapacity);
+    ctx.fillStyle = '#4caf5088';
+    ctx.fillRect(barX, currentY, barWidth, barHeight + barTop - currentY);
+
+    // Draw yellow part (discharge depth protection zone)
+    const dischargeY = socToY(dischargeDepth);
+    ctx.fillStyle = '#ffc80088';
+    ctx.fillRect(barX, dischargeY, barWidth, barHeight + barTop - dischargeY);
+
+    // Draw dotted line at discharge depth
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(barX - 5, dischargeY);
+    ctx.lineTo(barX + barWidth + 10, dischargeY);
+    ctx.strokeStyle = '#ff9800';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Label for discharge depth
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#ff9800';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${dischargeDepth.toFixed(0)}%`, barX - 5, dischargeY + 4);
+
+    // Draw dotted line at current capacity
+    ctx.beginPath();
+    ctx.moveTo(barX - 5, currentY);
+    ctx.lineTo(barX + barWidth + 10, currentY);
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Label for soc
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#48c021ff';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${batteryCapacity.toFixed(0)}%`, barX - 5, currentY + 4);
+
+    ctx.setLineDash([]);
+
+    // Top label (Battery Voltage)
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#aaa';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${batteryVoltage.toFixed(1)}V`, width / 2, barTop - 5);
+
+    // Bottom label (Battery Current/Amperage)
+    const currentLabel = batteryCurrent >= 0 
+      ? `+${batteryCurrent.toFixed(1)}A` 
+      : `${batteryCurrent.toFixed(1)}A`;
+    ctx.fillText(currentLabel, width / 2, barTop + barHeight + 15);
   }
 
   render() {
@@ -436,6 +537,19 @@ class FelicityInverterCard extends LitElement {
                   width: 100%;
                   height: 100%;
                 }
+                .battery-bar-canvas-container {
+                  position: absolute;
+                  left: -2%;
+                  top: 33%;
+                  width: 39%;
+                  height: 36%;
+                  pointer-events: none;
+                  z-index: 3;
+                }
+                .battery-bar-canvas {
+                  width: 100%;
+                  height: 100%;
+                }
               </style>
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -527,8 +641,7 @@ class FelicityInverterCard extends LitElement {
 
               <div class="flow-item battery">
                 <ha-icon .hass=${this.hass} icon="${this._getBatteryIcon()}"></ha-icon>
-                <div class="soc">${this._getValue("battery_capacity") ?? "—"}%
-                  <div class="volt">${this._getValue("battery_voltage") ?? "—"}V</div>
+                <div class="soc">
                   <div class="power-value">${Math.abs(this._getPower("battery_power"))} W</div>
                   <div class="label">${this._getBatteryState()}</div>
                 </div>
@@ -554,6 +667,9 @@ class FelicityInverterCard extends LitElement {
               ${this.showEnergyBar ? html`
                 <div class="bar-canvas-container">
                   <canvas class="bar-canvas"></canvas>
+                </div>
+                <div class="battery-bar-canvas-container">
+                  <canvas class="battery-bar-canvas"></canvas>
                 </div>
               ` : ""}
             </div>
