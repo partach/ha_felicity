@@ -1,4 +1,7 @@
 ## Changelog
+### [0.6.1] - Card improvements
+- small graphical card improvement to help understand price strategy
+
 ### [0.6.0] - Persistence fix
 - Issue fixed to correctly maintain all settings
 - Card resource registration fix
