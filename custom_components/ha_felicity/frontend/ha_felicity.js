@@ -57,6 +57,7 @@ class FelicityInverterCard extends LitElement {
   setConfig(config) {
     this.config = {
       advanced: false,
+      currency: '\u{20AC}',
       ...config,
     };
     this._selectedSection = "energy_flow";
@@ -188,7 +189,7 @@ class FelicityInverterCard extends LitElement {
       ctx.stroke();
 
       // Label on left
-      ctx.font = '10px sans-serif';
+      ctx.font = '11px sans-serif';
       ctx.fillStyle = line.color;
       ctx.textAlign = 'right';
       ctx.fillText(`${line.label} ${line.price.toFixed(2)}`, barX - 5, y + 4);
@@ -197,11 +198,11 @@ class FelicityInverterCard extends LitElement {
     ctx.setLineDash([]);
 
     // Min/Max labels
-    ctx.font = '10px sans-serif';
+    ctx.font = '11px sans-serif';
     ctx.fillStyle = '#aaa';
     ctx.textAlign = 'center';
-    ctx.fillText(`Max. Price: ${maxPrice.toFixed(2)}`, width / 2, barTop - 5);
-    ctx.fillText(`Min. Price: ${minPrice.toFixed(2)}`, width / 2, barTop + barHeight + 15);
+    ctx.fillText(`Max. Price: ${maxPrice.toFixed(2)}${this.config.currency}`, width / 2, barTop - 5);
+    ctx.fillText(`Min. Price: ${minPrice.toFixed(2)}${this.config.currency}`, width / 2, barTop + barHeight + 15);
   }
 
   _drawBatteryBar() {
@@ -248,17 +249,21 @@ class FelicityInverterCard extends LitElement {
 
     // Draw background (empty part - gray)
     ctx.fillStyle = '#33333388';
-    ctx.fillRect(barX, barTop, barWidth, barHeight);
+    ctx.fillRect(barX + 1, barTop -1, barWidth -1 , barHeight -1);
 
+    // White outline around the battery bar
+    ctx.strokeStyle = '#b9afafff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barX, barTop, barWidth, barHeight);
     // Draw green part (charged portion)
     const currentY = socToY(batteryCapacity);
     ctx.fillStyle = '#4caf5088';
-    ctx.fillRect(barX, currentY, barWidth, barHeight + barTop - currentY);
+    ctx.fillRect(barX + 1 , currentY, barWidth - 1 , barHeight + barTop - currentY);
 
     // Draw yellow part (discharge depth protection zone)
     const dischargeY = socToY(dischargeDepth);
     ctx.fillStyle = '#ffc80088';
-    ctx.fillRect(barX, dischargeY, barWidth, barHeight + barTop - dischargeY);
+    ctx.fillRect(barX - 1 , dischargeY, barWidth - 1, barHeight + barTop - dischargeY);
 
     // Draw dotted line at discharge depth
     ctx.setLineDash([6, 4]);
@@ -270,7 +275,7 @@ class FelicityInverterCard extends LitElement {
     ctx.stroke();
 
     // Label for discharge depth
-    ctx.font = '10px sans-serif';
+    ctx.font = '11px sans-serif';
     ctx.fillStyle = '#ff9800';
     ctx.textAlign = 'right';
     ctx.fillText(`${dischargeDepth.toFixed(0)}%`, barX - 5, dischargeY + 4);
@@ -284,7 +289,7 @@ class FelicityInverterCard extends LitElement {
     ctx.stroke();
 
     // Label for soc
-    ctx.font = '10px sans-serif';
+    ctx.font = '11px sans-serif';
     ctx.fillStyle = '#48c021ff';
     ctx.textAlign = 'right';
     ctx.fillText(`${batteryCapacity.toFixed(0)}%`, barX - 5, currentY + 4);
@@ -398,7 +403,11 @@ class FelicityInverterCard extends LitElement {
                   font-weight: bold;
                   color: #f4b003ff;
                 }
-                
+                .labelbold2 {
+                  font-size: 1.1em;
+                  font-weight: bold;
+                  color: #3753cfff;
+                }
                 .pv { 
                   top: 10px; 
                   left: 15%; 
@@ -522,6 +531,9 @@ class FelicityInverterCard extends LitElement {
                 @keyframes flow-reverse {
                   to { stroke-dashoffset: 15; }
                 }
+                .mirrored {
+                  transform: scaleX(-1);
+                }
 
                 /* bar canvas */
                 .bar-canvas-container {
@@ -554,7 +566,7 @@ class FelicityInverterCard extends LitElement {
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <path 
-                  class="flow-path charging ${this._getPower('pv_input_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path charging ${this._getRawPower('pv_input_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 25 25 L 47 48" 
                   vector-effect="non-scaling-stroke"
                 />
@@ -572,7 +584,7 @@ class FelicityInverterCard extends LitElement {
                 <!-- Inverter to Battery (bidirectional) -->
                 <path 
                   class="flow-path ${(() => {
-                    const power = parseFloat(this._getPower('battery_power')) || 0;
+                    const power = parseFloat(this._getRawPower('battery_power')) || 0;
                     const state = this._getBatteryState();
                     if (power <= 50) return 'inactive';
                     if (state === 'Charging') return 'active charging';
@@ -583,12 +595,12 @@ class FelicityInverterCard extends LitElement {
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
-                  class="flow-path ${this._getPower('total_ac_active_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path ${this._getRawPower('total_ac_active_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 53 52 L 75 75" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
-                  class="flow-path ${this._getPower('ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path ${this._getRawPower('ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 50 54 L 50 74" 
                   vector-effect="non-scaling-stroke"
                 />
@@ -615,19 +627,33 @@ class FelicityInverterCard extends LitElement {
               </svg>
 
               <div class="flow-item pv">
-                <ha-icon .hass=${this.hass} icon="mdi:solar-power-variant"></ha-icon>
-                <div class="power-value">${this._getPower("pv_input_power")} W</div>
+                <ha-icon 
+                  .hass=${this.hass} icon="${(() => {
+                    const power = parseFloat(this._getValue('pv_input_power')) || 0;
+                    if (power > 0) return 'mdi:solar-power-variant';
+                    if (power <= 0) return 'mdi:solar-panel';
+                    return 'mdi:solar-panel';
+                  })()}"
+                ></ha-icon>
+                <div class="power-value">${this._getPower("pv_input_power")}</div>
                 <div class="label"></div>
               </div>
 
               <div class="flow-item grid">
-                <ha-icon .hass=${this.hass} icon="${(() => {
-                  const power = parseFloat(this._getValue('ac_input_power')) || 0;
-                  if (power > 50) return 'mdi:transmission-tower-export';
-                  if (power < -50) return 'mdi:transmission-tower-import';
-                  return 'mdi:transmission-tower';
-                })()}"></ha-icon>
-                <div class="power-value">${this._getPower("ac_input_power")} W</div>
+                <ha-icon 
+                  .hass=${this.hass} 
+                  class="grid-icon ${(() => {
+                    const power = parseFloat(this._getValue('ac_input_power')) || 0;
+                    return power > 50 ? 'mirrored' : '';  // mirror only on export
+                  })()}"
+                  icon="${(() => {
+                    const power = parseFloat(this._getValue('ac_input_power')) || 0;
+                    if (power > 50) return 'mdi:transmission-tower-export';
+                    if (power < -50) return 'mdi:transmission-tower-import';
+                    return 'mdi:transmission-tower';
+                  })()}"
+                ></ha-icon>
+                <div class="power-value">${this._getPower("ac_input_power")}</div>
                 <div class="label"></div>
               </div>
               <div class="flow-item state">
@@ -635,8 +661,8 @@ class FelicityInverterCard extends LitElement {
                   Operation: ${this._getStateLabel("operating_mode")}
                 </div>  
                 <div class="label">
-                  Price now: <span class="labelbold">${this._getStateLabel("current_price")}</span>
-                  --> <span class="labelbold">${this._getStateLabel("energy_state")}</span>
+                  Price now: <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}</span>
+                  --> <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
                 </div>
               </div>
               
@@ -647,7 +673,7 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item battery">
                 <ha-icon .hass=${this.hass} icon="${this._getBatteryIcon()}"></ha-icon>
                 <div class="soc">
-                  <div class="power-value">${Math.abs(this._getPower("battery_power"))} W</div>
+                  <div class="power-value">${this._getPower("battery_power")}</div>
                   <div class="label">${this._getBatteryState()}</div>
                 </div>
               </div>
@@ -655,7 +681,7 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item home">
                 <ha-icon .hass=${this.hass} icon="mdi:home-lightning-bolt"></ha-icon>
                 <div class="battery-info">
-                  <div class="power-value">${this._getPower("total_ac_active_power")} W</div>
+                  <div class="power-value">${this._getPower("total_ac_active_power")}</div>
                   <div class="label">Home Load</div>
                 </div>  
               </div>
@@ -663,7 +689,7 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item backup">
                 <ha-icon .hass=${this.hass} icon="mdi:home-battery-outline"></ha-icon>
                 <div class="battery-info">
-                  <div class="power-value">${this._getPower("ac_output_active_power") || 0} W</div>
+                  <div class="power-value">${this._getPower("ac_output_active_power") || 0}</div>
                   <div class="label">Backup Load</div>
                 </div>
               </div>
@@ -837,9 +863,20 @@ class FelicityInverterCard extends LitElement {
     return entity.state ?? "—";
   }
 
-  _getPower(key) {
+  _getRawPower(key) {
     const val = this._getValue(key);
     return val != null ? Math.abs(val).toFixed(0) : "0";
+  }
+
+  _getPower(key) {
+    const val = this._getValue(key);
+    if (val == null) return "0 W";
+
+    const absVal = Math.abs(val);
+    if (absVal >= 1000) {
+      return (absVal / 1000).toFixed(2) + " kW";
+    }
+    return absVal.toFixed(0) + " W";
   }
 
   _getBatteryIcon() {
@@ -924,7 +961,7 @@ class FelicityInverterCard extends LitElement {
             const level = index + 1;
             return html`
               <option value="${level}" ?selected=${level === currentLevel}>
-                Level ${level}: ${opt.toFixed(4)}
+                ${level}: ${opt.toFixed(3)} ${this.config?.currency ?? '€'}
               </option>
             `;
           })}
