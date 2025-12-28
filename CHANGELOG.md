@@ -1,4 +1,8 @@
 ## Changelog
+
+### [0.6.3] - Fix for no price entity selected
+- Fix for Allowing None Price entity
+
 ### [0.6.2] - Card improvements
 - small graphical card improvement to help understand price strategy
 
