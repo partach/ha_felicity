@@ -204,3 +204,27 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
 
         # Update entity state in UI
         self.async_write_ha_state()
+
+    def _update_range_from_system(self):
+        """Dynamically adjust min/max based on battery voltage system."""
+        if not self.coordinator.data:
+            return
+        battery_voltage = self.coordinator.data.get("battery_nominal_voltage") 
+
+        if battery_voltage is None:
+            return
+
+        # Example logic: 48V system vs 400V high-voltage
+        if battery_voltage >= 400:  # High-voltage system (e.g., Felicity HV packs)
+            new_min = 416
+            new_max = 448
+        else:  # Low-voltage (48V typical)
+            new_min = 48
+            new_max = 60
+
+        # Only update if changed (avoids unnecessary state writes)
+        if (self.native_min_value != new_min or self.native_max_value != new_max):
+            self._attr_native_min_value = new_min
+            self._attr_native_max_value = new_max
+            # Trigger state update so UI reflects new range
+            self.async_write_ha_state()
