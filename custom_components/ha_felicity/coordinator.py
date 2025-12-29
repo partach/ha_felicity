@@ -236,7 +236,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
             await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
-            await self.async_write_register("econ_rule_1_power", int(round(power_level * 1000,0))
+            await self.async_write_register("econ_rule_1_power", int(round(power_level * 1000,0)))
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
