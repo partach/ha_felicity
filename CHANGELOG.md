@@ -1,5 +1,8 @@
 ## Changelog
 
+### [0.6.7] - HV Battery support
+- High Voltage Battery system support
+   
 ### [0.6.5] - Documentation and card improvement.
 - pymodbus version dependency bumped to 3.10
    
