@@ -213,7 +213,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         date_16bit = (now.month << 8) | now.day
 
         power_level = opts.get("power_level", 5)
-        voltage_level = opts.get("voltage_level", 58)
+        voltage_level = opts.get("voltage_level", 58) # safe but how will it go with high voltage systems?
         soc_limit = (
             opts.get("battery_charge_max_level", 100)
             if new_state == "charging"
@@ -319,6 +319,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
 
                     new_data[key] = value
+            # dynamically check which battery system we have.
+            raw_system_voltage = new_data.get("battery_voltage")
+            if raw_system_voltage is not None:
+                new_data["battery_nominal_voltage"] = raw_system_voltage
 
             # === Nordpool price update & dynamic logic ===
             if self.nordpool_entity:
