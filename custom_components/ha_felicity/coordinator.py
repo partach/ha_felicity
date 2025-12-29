@@ -324,7 +324,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if self.nordpool_entity:
                 try: #when nordpool is disabled or uninstalled during runtime
                   price_state = self.hass.states.get(self.nordpool_entity)
-                except Exception as err:
+                except Exception:
                     _LOGGER.exception("Felicity coordinator error, nordpool or override no longer available!")
                     self.nordpool_entity = None
                     self.current_price = self.min_price = self.avg_price = self.max_price = self.price_threshold = None
