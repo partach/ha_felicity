@@ -1,5 +1,8 @@
 ## Changelog
 
+### [0.6.5] - Documentation and card improvement.
+- pymodbus version dependency bumped to 3.10
+   
 ### [0.6.4] - Documentation and card improvement.
 - Documentation (Readme) update
   
