@@ -322,8 +322,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             # === Nordpool price update & dynamic logic ===
             if self.nordpool_entity:
-                price_state = self.hass.states.get(self.nordpool_entity)
-                if price_state and price_state.state not in ("unknown", "unavailable"):
+                try: #when nordpool is disabled or uninstalled during runtime
+                  price_state = self.hass.states.get(self.nordpool_entity)
+                except Exception as err:
+                    _LOGGER.exception("Felicity coordinator error, nordpool or override no longer available!")
+                    self.nordpool_entity = None
+                    self.current_price = self.min_price = self.avg_price = self.max_price = self.price_threshold = None
+                    return new_data # return with what we do have
+                if price_state and price_state.state not in ("unknown", "unavailable", "none"):
                     try:
                         self.current_price = float(price_state.state)
                         attrs = price_state.attributes
