@@ -67,7 +67,7 @@ async def async_setup_entry(
             option_key="voltage_level",
             name="Voltage Level",
             min_val=50,
-            max_val=60,
+            max_val=55, # to check of battery checking mechanism works.
             step=1,
             icon="mdi:gauge"
         ),
