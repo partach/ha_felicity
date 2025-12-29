@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
-
+from homeassistant.core import callback
 from .const import DOMAIN, CONF_INVERTER_MODEL
 from .coordinator import HA_FelicityCoordinator
 
@@ -69,7 +69,8 @@ async def async_setup_entry(
             min_val=50,
             max_val=55, # to check of battery checking mechanism works.
             step=1,
-            icon="mdi:gauge"
+            icon="mdi:gauge",
+            dynamic_range=True
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -154,6 +155,7 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         unit: str | None = None,
         icon: str | None = None,
         device_class: str | None = None,
+        dynamic_range: bool = False,
     ):
         super().__init__(coordinator)
         self._entry = entry
@@ -164,6 +166,8 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         self._attr_native_min_value = min_val
         self._attr_native_max_value = max_val
         self._attr_native_step = step
+        self._dynamic_range = dynamic_range
+        
         if unit:
             self._attr_native_unit_of_measurement = unit
         self._attr_mode = NumberMode.SLIDER
@@ -178,7 +182,14 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
     def native_value(self) -> float | None:
         """Return current value from persisted options."""
         return self._entry.options.get(self._option_key)
-
+    
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        if self._dynamic_range:
+            self._update_range_from_system()
+        super()._handle_coordinator_update()
+        
     async def async_set_native_value(self, value: float) -> None:
         """Update the option in config_entry and trigger refresh."""
         # Clamp and round to step
