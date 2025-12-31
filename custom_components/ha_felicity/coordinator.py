@@ -226,7 +226,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         safe_level = base_level  # default: no change
 
         if max_current == 0:
-            _LOGGER.debug("No current detected — keeping power level %d", base_level)
+            _LOGGER.debug("No current detected — keeping user set power level %d", base_level)
         elif max_current > max_amperage * 0.95:
             safe_level = max(1, base_level - 2)
             _LOGGER.info(
@@ -247,7 +247,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     max_current, base_level, safe_level
                 )
             else:
-                _LOGGER.info("Current low but already at max allowed (%d)", safe_level)
+                _LOGGER.info("Current low but safe setting already at max power set by user (%d)", safe_level)
         else:
             _LOGGER.info(
                 "Current normal (%.1fA) — maintaining power level %d",
