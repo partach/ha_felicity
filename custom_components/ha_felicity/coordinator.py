@@ -210,10 +210,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     
         # Start from last corrected (runtime) or fall back to user setting
         base_level = getattr(self, "last_corrected_power_value", user_level)
-    
-        phase_1 = self.data.get("ac_input_current", 0.0)
-        phase_2 = self.data.get("ac_input_current_l2", 0.0)
-        phase_3 = self.data.get("ac_input_current_l3", 0.0)
+        data = self.data or {}  # ← Critical: use empty dict if None
+        if data == {}:
+            _LOGGER.debug("No data (yet) for phase 1,2,3 current")
+            return user_level
+        phase_1 = data.get("ac_input_current", 0.0)
+        phase_2 = data.get("ac_input_current_l2", 0.0)
+        phase_3 = data.get("ac_input_current_l3", 0.0)
     
         max_current = max(phase_1, phase_2, phase_3)
     
