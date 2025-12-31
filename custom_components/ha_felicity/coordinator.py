@@ -202,42 +202,71 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         
         return "idle"
 
-    def _check_safe_power(self) -> int:
-        """Return safe power level, temporarily reduced if current is high."""
+    async def _check_safe_power(self, new_data: dict) -> int:
+        """Return safe power level, temporarily reduced if current is high.
+        Also writes the value to the device when needed."""
         opts = self.config_entry.options
         user_level = opts.get("power_level", 5)
         max_amperage = opts.get("max_amperage_per_phase", 16)
-    
-        # Start from last corrected (runtime) or fall back to user setting
+
+        # Start from last corrected value or user default
         base_level = getattr(self, "last_corrected_power_value", user_level)
-        data = self.data or {}  # ← Critical: use empty dict if None
-        if data == {}:
-            _LOGGER.debug("No data (yet) for phase 1,2,3 current")
+
+        if not new_data:
+            _LOGGER.debug("No data (yet) for phase currents")
             return user_level
-        phase_1 = data.get("ac_input_current", 0.0)
-        phase_2 = data.get("ac_input_current_l2", 0.0)
-        phase_3 = data.get("ac_input_current_l3", 0.0)
-    
+
+        phase_1 = new_data.get("ac_input_current", 0.0)
+        phase_2 = new_data.get("ac_input_current_l2", 0.0)
+        phase_3 = new_data.get("ac_input_current_l3", 0.0)
+
         max_current = max(phase_1, phase_2, phase_3)
-    
+
+        safe_level = base_level  # default: no change
+
         if max_current == 0:
-            _LOGGER.debug("No current detected — using base power level %d", base_level)
-            safe_level = base_level
-        else:
-            safe_level = base_level
-    
-            if max_current > max_amperage * 0.95:
+            _LOGGER.debug("No current detected — keeping power level %d", base_level)
+        elif max_current > max_amperage * 0.95:
+            safe_level = max(1, base_level - 2)
+            _LOGGER.info(
+                "High current (%.1fA > %.1fA) — reducing power from %d → %d",
+                max_current, max_amperage * 0.95, base_level, safe_level
+            )
+        elif max_current > max_amperage * 0.8:
+            safe_level = max(1, base_level - 1)
+            _LOGGER.info(
+                "Moderate current (%.1fA > %.1fA) — reducing power from %d → %d",
+                max_current, max_amperage * 0.8, base_level, safe_level
+            )
+        elif max_current < max_amperage * 0.6:
+            safe_level = min(user_level, base_level + 1)
+            if safe_level > base_level:
                 _LOGGER.info(
-                    "High current detected (%.1fA > %.1fA limit) — reducing power from %d to %d",
-                    max_current, max_amperage, base_level, max(1, base_level - 2)
+                    "Low current (%.1fA) — increasing power from %d → %d",
+                    max_current, base_level, safe_level
                 )
-                safe_level = max(1, base_level - 2)
-            elif max_current > max_amperage * 0.8:
-                safe_level = max(1, base_level - 1)
-    
-        # Store for next cycle
+            else:
+                _LOGGER.debug("Current low but already at max allowed (%d)", safe_level)
+        else:
+            _LOGGER.debug(
+                "Current normal (%.1fA) — maintaining power level %d",
+                max_current, base_level
+            )
+
+        # Only write if the level actually changed
+        if safe_level != base_level:
+            target_watts = int(round(safe_level * 1000, 0))
+            _LOGGER.debug("Writing new power limit: %dW (level %d)", target_watts, safe_level)
+            try:
+                await self.async_write_register("econ_rule_1_power", target_watts)
+            except Exception as err:
+                _LOGGER.error("Failed to write power limit: %s", err)
+                # Optionally: don't update last_corrected if write failed?
+                # Or retry logic — depends on your needs
+
+        # Always update runtime state (even if write failed — optimistic)
         self.last_corrected_power_value = safe_level
-    
+
         return safe_level
     
     async def _transition_to_state(self, new_state: str) -> None:
@@ -246,7 +275,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         now = datetime.now()
         date_16bit = (now.month << 8) | now.day
         voltage_level = opts.get("voltage_level", 58) # safe but how will it go with high voltage systems?
-        power_level = self._check_safe_power()
         soc_limit = (
             opts.get("battery_charge_max_level", 100)
             if new_state == "charging"
@@ -269,7 +297,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
             await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
-            await self.async_write_register("econ_rule_1_power", int(round(power_level * 1000,0)))
+            # next one is move to checking safe power levels
+            # await self.async_write_register("econ_rule_1_power", int(round(power_level * 1000,0)))
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
@@ -356,7 +385,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             raw_system_voltage = new_data.get("battery_voltage")
             if raw_system_voltage is not None:
                 new_data["battery_nominal_voltage"] = raw_system_voltage
-
             # === Nordpool price update & dynamic logic ===
             if self.nordpool_entity:
                 try: #when nordpool is disabled or uninstalled during runtime
@@ -400,6 +428,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             # Determine and apply new state
                             battery_soc = new_data.get("battery_capacity")
+                            await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
                             desired_state = self._determine_energy_state(battery_soc)
 
                             if desired_state != self._current_energy_state:
