@@ -96,6 +96,18 @@ async def async_setup_entry(
             icon="mdi:battery-charging-20",
             device_class="battery"
         ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="max_amperage_per_phase",
+            name="Max Amperage Per Phase",
+            min_val=10,
+            max_val=63,
+            step=1,
+            unit="A",
+            icon="mdi:sine-wave",
+            device_class="current"
+        ),
     ])
 
     # Tie all entities to the device
