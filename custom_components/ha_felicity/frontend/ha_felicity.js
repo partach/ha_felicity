@@ -573,7 +573,7 @@ class FelicityInverterCard extends LitElement {
                 <!-- Grid to Inverter (bidirectional) -->
                 <path 
                   class="flow-path ${(() => {
-                    const power = parseFloat(this._getValue('ac_input_power')) || 0;
+                    const power = parseFloat(this._getValue('total_ac_input_power')) || 0;
                     if (Math.abs(power) <= 50) return 'inactive';
                     if (power > 0) return 'active grid-import';
                     return 'active grid-export reverse';
@@ -643,17 +643,17 @@ class FelicityInverterCard extends LitElement {
                 <ha-icon 
                   .hass=${this.hass} 
                   class="grid-icon ${(() => {
-                    const power = parseFloat(this._getValue('ac_input_power')) || 0;
+                    const power = parseFloat(this._getValue('total_ac_input_power')) || 0;
                     return power > 50 ? 'mirrored' : '';  // mirror only on export
                   })()}"
                   icon="${(() => {
-                    const power = parseFloat(this._getValue('ac_input_power')) || 0;
+                    const power = parseFloat(this._getValue('total_ac_input_power')) || 0;
                     if (power > 50) return 'mdi:transmission-tower-export';
                     if (power < -50) return 'mdi:transmission-tower-import';
                     return 'mdi:transmission-tower';
                   })()}"
                 ></ha-icon>
-                <div class="power-value">${this._getPower("ac_input_power")}</div>
+                <div class="power-value">${this._getPower("total_ac_input_power")}</div>
                 <div class="label"></div>
               </div>
               <div class="flow-item state">
