@@ -247,9 +247,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     max_current, base_level, safe_level
                 )
             else:
-                _LOGGER.debug("Current low but already at max allowed (%d)", safe_level)
+                _LOGGER.info("Current low but already at max allowed (%d)", safe_level)
         else:
-            _LOGGER.debug(
+            _LOGGER.info(
                 "Current normal (%.1fA) — maintaining power level %d",
                 max_current, base_level
             )
@@ -263,9 +263,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
                 # Optionally: don't update last_corrected if write failed?
-                # Or retry logic — depends on your needs
+                return safe_level
 
-        # Always update runtime state (even if write failed — optimistic)
+        # update runtime state
         self.last_corrected_power_value = safe_level
 
         return safe_level
