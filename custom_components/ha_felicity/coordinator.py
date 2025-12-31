@@ -211,6 +211,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # Start from last corrected value or user default
         base_level = getattr(self, "last_corrected_power_value", user_level)
+        base_level = user_level if base_level is None else base_level
 
         if not new_data:
             _LOGGER.debug("No data (yet) for phase currents")
