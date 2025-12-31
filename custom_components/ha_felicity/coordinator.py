@@ -56,6 +56,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.min_price: float | None = None
         self.avg_price: float | None = None
         self.price_threshold: float | None = None
+        self.last_corrected_power_value: float | None = None
 
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
@@ -201,19 +202,48 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         
         return "idle"
 
-# Get current operating mode from select entity if needed
-# operating_mode_entity = f"select.{self.config_entry.title.lower().replace(' ', '_')}_operating_mode"
-# operating_mode_state = self.hass.states.get(operating_mode_entity)
-# current_operating_mode = operating_mode_state.state if operating_mode_state else "unknown"
+    def _check_safe_power(self) -> int:
+        """Return safe power level, temporarily reduced if current is high."""
+        opts = self.config_entry.options
+        user_level = opts.get("power_level", 5)
+        max_amperage = opts.get("max_amperage_per_phase", 16)
+    
+        # Start from last corrected (runtime) or fall back to user setting
+        base_level = getattr(self, "last_corrected_power_value", user_level)
+    
+        phase_1 = self.coordinator.data.get("ac_input_current", 0.0)
+        phase_2 = self.coordinator.data.get("ac_input_current_l2", 0.0)
+        phase_3 = self.coordinator.data.get("ac_input_current_l3", 0.0)
+    
+        max_current = max(phase_1, phase_2, phase_3)
+    
+        if max_current == 0:
+            _LOGGER.debug("No current detected — using base power level %d", base_level)
+            safe_level = base_level
+        else:
+            safe_level = base_level
+    
+            if max_current > max_amperage * 0.95:
+                _LOGGER.info(
+                    "High current detected (%.1fA > %.1fA limit) — reducing power from %d to %d",
+                    max_current, max_amperage, base_level, max(1, base_level - 2)
+                )
+                safe_level = max(1, base_level - 2)
+            elif max_current > max_amperage * 0.8:
+                safe_level = max(1, base_level - 1)
+    
+        # Store for next cycle
+        self.last_corrected_power_value = safe_level
+    
+        return safe_level
     
     async def _transition_to_state(self, new_state: str) -> None:
         """Apply state change via economic rule 1."""
         opts = self.config_entry.options
         now = datetime.now()
         date_16bit = (now.month << 8) | now.day
-
-        power_level = opts.get("power_level", 5)
         voltage_level = opts.get("voltage_level", 58) # safe but how will it go with high voltage systems?
+        power_level = self._check_safe_power()
         soc_limit = (
             opts.get("battery_charge_max_level", 100)
             if new_state == "charging"
