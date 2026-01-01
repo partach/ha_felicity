@@ -56,8 +56,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.min_price: float | None = None
         self.avg_price: float | None = None
         self.price_threshold: float | None = None
-        self.last_corrected_power_value: float | None = None
+        self.last_corrected_power_value: float | None = None # used in setting rule 1 power checks toward max amperage
         self._last_known_max_amperage: float | None = None
+        self._low_current_cycles = 0 # used to keep jitter out of the system (back and forth contiously writing rule 1 register)
+        self._required_low_cycles = 2
 
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
@@ -260,7 +262,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         elif max_current > max_amperage * 0.8:
             safe_level = max(1, base_level - 1)
             _LOGGER.info("Moderate current %.1fA — reducing to level %d", max_current, safe_level)
-        elif max_current < max_amperage * 0.6:
+        elif max_current < max_amperage * 0.7:
             new_level = min(user_level, base_level + 1)
             if new_level > base_level:
                 safe_level = new_level
