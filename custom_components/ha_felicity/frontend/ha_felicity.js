@@ -683,7 +683,7 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item home">
                 <ha-icon .hass=${this.hass} icon="mdi:home-lightning-bolt"></ha-icon>
                 <div class="battery-info">
-                  <div class="power-value">${this._getPower("total_ac_active_power")}</div>
+                  <div class="power-value">${this._getPower("loadpower_lineside")}</div>
                   <div class="label">Home Load</div>
                 </div>  
               </div>
