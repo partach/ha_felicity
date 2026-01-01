@@ -87,7 +87,7 @@ During first setup or during run-time configuration (device gear symbol) it will
 Currently Nordpool and Tibber (via Norpool override field in config) are tested to work.
 
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config4.png" width="300"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config4.png" width="1000"/>
   <br>
   <em>Dynamic Energy Management and other Settings of the integration</em>
 </p>
