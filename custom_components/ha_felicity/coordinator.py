@@ -57,6 +57,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.avg_price: float | None = None
         self.price_threshold: float | None = None
         self.last_corrected_power_value: float | None = None
+        self._last_known_max_amperage: float | None = None
 
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
@@ -204,70 +205,85 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
     async def _check_safe_power(self, new_data: dict) -> int:
         """Return safe power level, temporarily reduced if current is high.
-        Also writes the value to the device when needed."""
+        Respects external changes (app/manual override) using fresh data.
+        No extra reads needed — uses already-fetched new_data."""
+        
         opts = self.config_entry.options
         user_level = opts.get("power_level", 5)
         max_amperage = opts.get("max_amperage_per_phase", 16)
-
-        # Start from last corrected value or user default
-        base_level = getattr(self, "last_corrected_power_value", user_level)
-        base_level = user_level if base_level is None else base_level
-
+    
+        # --- 1. Safe base_level init ---
+        base_level = getattr(self, "last_corrected_power_value", None)
+        if base_level is None:
+            base_level = user_level
+    
+        # --- 2. Detect config changes (max_amperage or user_level) ---
+        previous_max = getattr(self, "_last_known_max_amperage", None)
+        if previous_max is not None and previous_max != max_amperage:
+            _LOGGER.info(
+                "Max amperage changed: %.1fA → %.1fA — resetting state to user level",
+                previous_max, max_amperage
+            )
+            base_level = user_level
+        self._last_known_max_amperage = max_amperage
+    
+        # --- 3. Early exit if no data ---
         if not new_data:
-            _LOGGER.debug("No data (yet) for phase currents")
-            return user_level
-
+            _LOGGER.debug("No data yet")
+            return base_level
+    
+        # --- 4. Get fresh currents and currently applied power limit ---
         phase_1 = new_data.get("ac_input_current", 0.0)
         phase_2 = new_data.get("ac_input_current_l2", 0.0)
         phase_3 = new_data.get("ac_input_current_l3", 0.0)
-
         max_current = max(phase_1, phase_2, phase_3)
-
-        safe_level = base_level  # default: no change
-
+    
+        # This is the key: use the freshly read register value from new_data!
+        applied_watts = new_data.get("econ_rule_1_power")  # assuming this key exists in new_data
+        if applied_watts is not None:
+            detected_level = max(1, min(user_level, round(applied_watts / 1000)))
+            if abs(detected_level - base_level) >= 1:
+                _LOGGER.info(
+                    "External change detected: power limit %d → %d kW (likely via app) — syncing and re-evaluating safety",
+                    base_level, detected_level
+                )
+                base_level = detected_level  # adopt the new higher (or lower) value
+    
+        # --- 5. Compute safe_level based on current grid draw ---
+        safe_level = base_level
+    
         if max_current == 0:
-            _LOGGER.debug("No current detected — keeping user set power level %d", base_level)
+            _LOGGER.debug("No grid current — keeping current level %d", base_level)
         elif max_current > max_amperage * 0.95:
             safe_level = max(1, base_level - 2)
-            _LOGGER.info(
-                "High current (%.1fA > %.1fA) — reducing power from %d → %d",
-                max_current, max_amperage * 0.95, base_level, safe_level
-            )
+            _LOGGER.warning("High current %.1fA — reducing to level %d", max_current, safe_level)
         elif max_current > max_amperage * 0.8:
             safe_level = max(1, base_level - 1)
-            _LOGGER.info(
-                "Moderate current (%.1fA > %.1fA) — reducing power from %d → %d",
-                max_current, max_amperage * 0.8, base_level, safe_level
-            )
+            _LOGGER.info("Moderate current %.1fA — reducing to level %d", max_current, safe_level)
         elif max_current < max_amperage * 0.6:
-            safe_level = min(user_level, base_level + 1)
-            if safe_level > base_level:
-                _LOGGER.info(
-                    "Low current (%.1fA) — increasing power from %d → %d",
-                    max_current, base_level, safe_level
-                )
+            new_level = min(user_level, base_level + 1)
+            if new_level > base_level:
+                safe_level = new_level
+                _LOGGER.info("Low current %.1fA — recovering to level %d", max_current, safe_level)
             else:
-                _LOGGER.info("Current low but safe setting already at max power set by user (%d)", safe_level)
+                _LOGGER.debug("Low current but already at user max %d", base_level)
         else:
-            _LOGGER.info(
-                "Current normal (%.1fA) — maintaining power level %d",
-                max_current, base_level
-            )
-
-        # Only write if the level actually changed
+            _LOGGER.debug("Normal current %.1fA — maintaining level %d", max_current, base_level)
+    
+        # --- 6. Write only if safety requires change ---
         if safe_level != base_level:
-            target_watts = int(round(safe_level * 1000, 0))
-            _LOGGER.debug("Writing new power limit: %dW (level %d)", target_watts, safe_level)
+            target_watts = int(round(safe_level * 1000))
+            _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
             try:
                 await self.async_write_register("econ_rule_1_power", target_watts)
+                self.last_corrected_power_value = safe_level
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
-                # Optionally: don't update last_corrected if write failed?
-                return safe_level
-
-        # update runtime state
-        self.last_corrected_power_value = safe_level
-
+                # Don't update internal state on failure → retry next cycle
+        else:
+            _LOGGER.debug("No change needed (level %d)", safe_level)
+            self.last_corrected_power_value = safe_level
+    
         return safe_level
     
     async def _transition_to_state(self, new_state: str) -> None:
