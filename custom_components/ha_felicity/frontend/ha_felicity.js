@@ -594,13 +594,15 @@ class FelicityInverterCard extends LitElement {
                   d="M 47 52 L 25 75" 
                   vector-effect="non-scaling-stroke"
                 />
+                <!-- Home load -->
                 <path 
-                  class="flow-path ${this._getRawPower('total_ac_active_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path ${this._getRawPower('loadpower_lineside') > 50 ? 'active' : 'inactive'}" 
                   d="M 53 52 L 75 75" 
                   vector-effect="non-scaling-stroke"
                 />
+                <!-- Backup load -->
                 <path 
-                  class="flow-path ${this._getRawPower('ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path ${this._getRawPower('total_ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 50 54 L 50 74" 
                   vector-effect="non-scaling-stroke"
                 />
@@ -689,7 +691,7 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item backup">
                 <ha-icon .hass=${this.hass} icon="mdi:home-battery-outline"></ha-icon>
                 <div class="battery-info">
-                  <div class="power-value">${this._getPower("ac_output_active_power") || 0}</div>
+                  <div class="power-value">${this._getPower("total_ac_output_active_power") || 0}</div>
                   <div class="label">Backup Load</div>
                 </div>
               </div>
