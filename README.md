@@ -72,7 +72,7 @@ The integration is to be used on own risk.
   <em>Runtime Settings</em>
 </p>
 
-## Setting Dynamic Energy managment
+## Dynamic Energy Managment
 Note1: 
  * the integration uses internal **Econ Rule 1** for this. 
  * Rule 1 will be activated and controlled by the integration. Make sure the settings in there are inline with the intended use!
@@ -89,7 +89,7 @@ Currently Nordpool and Tibber (via Norpool override field in config) are tested 
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config4.png" width="300"/>
   <br>
-  <em>Dynamic Energy Management Settings</em>
+  <em>Dynamic Energy Management and other Settings of the integration</em>
 </p>
 The operation is pretty straightforward. (Maybe further version will support more algorithms)
 Use `Price Threshold Level (1-10)` To set the desired price point level. (It can take about 10 sec. for the integration to calculate that into a **Base-Threshold-Price**)
@@ -107,11 +107,11 @@ When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0
 
 IMPORTANT: The integration is depedent on the Monetary Integration to contiously supply the data.
 
-## Power management
-The integration also supports power management. After instalation, via controls, you can set the maximum amperage of your home electricity setup.
+## Dynamic Power Management
+The integration also supports Dynamic Power Management. After instalation, via configuration entities (see above picture), you can set the maximum amperage of your home electricity setup.
 For example if you have a maximum of 16A per group, set the value to 16A. The integration will then make sure the battery loading will be dialed back if the amperage becomes to high.
 (by decreasing the user requested power level, controlled via rule 1 via the integration).
-It will keep monitorning this and will increase the the battery loading to requested power levels if the amperage becomes lower.
+It will keep monitorning this and will increase the battery loading to requested power levels if the amperage becomes lower.
 
 ## Installing the card
 After installation of the integration you need to first reboot HA.
