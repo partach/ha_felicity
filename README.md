@@ -107,6 +107,12 @@ When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0
 
 IMPORTANT: The integration is depedent on the Monetary Integration to contiously supply the data.
 
+## Power management
+The integration also supports power management. After instalation, via controls, you can set the maximum amperage of your home electricity setup.
+For example if you have a maximum of 16A per group, set the value to 16A. The integration will then make sure the battery loading will be dialed back if the amperage becomes to high.
+(by decreasing the user requested power level, controlled via rule 1 via the integration).
+It will keep monitorning this and will increase the the battery loading to requested power levels if the amperage becomes lower.
+
 ## Installing the card
 After installation of the integration you need to first reboot HA.
 The card will be automatically registered by the integration on start up.
