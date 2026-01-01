@@ -1,5 +1,8 @@
 ## Changelog
 
+### [0.7.0] - Dynamic Power Management
+- Dynamic Power Management build in
+
 ### [0.6.7] - HV Battery support
 - High Voltage Battery system support
    
