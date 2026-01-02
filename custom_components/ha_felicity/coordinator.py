@@ -216,7 +216,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     
         # --- 1. Safe base_level init ---
         base_level = getattr(self, "last_corrected_power_value", 0)
-        if base_level is 0:
+        if base_level == 0:
             base_level = user_level
     
         # --- 2. Detect config changes (max_amperage or user_level) ---
