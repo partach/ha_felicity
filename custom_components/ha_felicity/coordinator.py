@@ -316,7 +316,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.async_write_register("econ_rule_1_start_day", date_16bit)
             await self.async_write_register("econ_rule_1_stop_day", date_16bit)
             await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
-            # next one is move to checking safe power levels
+            # next one is moved to checking safe power levels
             # await self.async_write_register("econ_rule_1_power", int(round(power_level * 1000,0)))
     
     def get_energy_state_info(self) -> dict:
@@ -405,7 +405,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             raw_system_voltage = new_data.get("battery_voltage")
             if raw_system_voltage is not None:
                 new_data["battery_nominal_voltage"] = raw_system_voltage
-
+            safe_power_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
+            new_data["safe_max_power"] = safe_power_level * 1000 # convert from index to watts
             # === Nordpool price update & dynamic logic ===
             if self.nordpool_entity:
                 try: #when nordpool is disabled or uninstalled during runtime
@@ -449,8 +450,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             # Determine and apply new state
                             battery_soc = new_data.get("battery_capacity")
-                            safe_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
-                            new_data["safe_max_power"] = safe_level * 1000 # convert from index to watts
+
                             desired_state = self._determine_energy_state(battery_soc)
 
                             if desired_state != self._current_energy_state:
