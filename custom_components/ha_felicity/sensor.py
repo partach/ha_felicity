@@ -220,7 +220,7 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self):
         try:
-            value = getattr(self.coordinator, self._key)
+            value = self.coordinator.data.get(self._key)
             if value is not None:
                 return round(value, 3)  # or 4 – clean decimals
             return None
