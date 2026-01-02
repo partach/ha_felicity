@@ -449,7 +449,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Determine and apply new state
                             battery_soc = new_data.get("battery_capacity")
                             safe_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
-                            new_data["max_safe_power"] = safe_level * 1000 # convert from index to watts
+                            new_data["safe_max_power"] = safe_level * 1000 # convert from index to watts
                             desired_state = self._determine_energy_state(battery_soc)
 
                             if desired_state != self._current_energy_state:
