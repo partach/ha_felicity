@@ -56,10 +56,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.min_price: float | None = None
         self.avg_price: float | None = None
         self.price_threshold: float | None = None
-        self.last_corrected_power_value = 0 # used in setting rule 1 power checks toward max amperage
+        self.safe_max_power = 0 # used in setting rule 1 power checks toward max amperage
         self._last_known_max_amperage: float | None = None
-        self._low_current_cycles = 0 # used to keep jitter out of the system (back and forth contiously writing rule 1 register)
-        self._required_low_cycles = 2
+    #    self._low_current_cycles = 0 # used to keep jitter out of the system (back and forth contiously writing rule 1 register)
+    #    self._required_low_cycles = 2
 
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
@@ -215,7 +215,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         max_amperage = opts.get("max_amperage_per_phase", 16)
     
         # --- 1. Safe base_level init ---
-        base_level = getattr(self, "last_corrected_power_value", 0)
+        base_level = getattr(self, "safe_max_power", 0)
         if base_level == 0:
             base_level = user_level
     
@@ -278,13 +278,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
             try:
                 await self.async_write_register("econ_rule_1_power", target_watts)
-                self.last_corrected_power_value = safe_level
+                self.safe_max_power = safe_level
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
                 # Don't update internal state on failure → retry next cycle
         else:
             _LOGGER.debug("No change needed (level %d)", safe_level)
-            self.last_corrected_power_value = safe_level
+            self.safe_max_power = safe_level
     
         return safe_level
     
@@ -329,7 +329,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "max_price": self.max_price,
             "min_price": self.min_price,
             "avg_price": self.avg_price,
-            "safe_max_power": self.last_corrected_power_value,
+            "safe_max_power": self.safe_max_power,
         }
 
         # Add kWh for all Wh registers
