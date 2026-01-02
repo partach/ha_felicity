@@ -219,10 +219,14 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        value = getattr(self.coordinator, self._key)
-        if value is not None:
-            return round(value, 3)  # or 4 – clean decimals
-        return None
+        try:
+            value = getattr(self.coordinator, self._key)
+            if value is not None:
+                return round(value, 3)  # or 4 – clean decimals
+            return None
+        except Exception:
+            _LOGGER.debug("failed to get sensor value %s from coordinator", self._key)
+            return None
 
 class HA_FelicityTime(CoordinatorEntity, TimeEntity):
     """Representation of a writable time register."""
