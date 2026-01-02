@@ -278,14 +278,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
             try:
                 await self.async_write_register("econ_rule_1_power", target_watts)
-                new_data["max_safe_power"] = safe_level * 1000 # convert from index to watts
                 self.last_corrected_power_value = safe_level
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
                 # Don't update internal state on failure → retry next cycle
         else:
             _LOGGER.debug("No change needed (level %d)", safe_level)
-            new_data["max_safe_power"] = safe_level * 1000
             self.last_corrected_power_value = safe_level
     
         return safe_level
@@ -450,7 +448,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             # Determine and apply new state
                             battery_soc = new_data.get("battery_capacity")
-                            await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
+                            safe_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
+                            new_data["max_safe_power"] = safe_level * 1000 # convert from index to watts
                             desired_state = self._determine_energy_state(battery_soc)
 
                             if desired_state != self._current_energy_state:
