@@ -406,7 +406,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if raw_system_voltage is not None:
                 new_data["battery_nominal_voltage"] = raw_system_voltage
             safe_power_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
-            new_data["safe_max_power"] = safe_power_level * 1000 # convert from index to watts
+            new_data["safe_max_power"] = int(safe_power_level * 1000) # convert from index to watts
             # === Nordpool price update & dynamic logic ===
             if self.nordpool_entity:
                 try: #when nordpool is disabled or uninstalled during runtime
