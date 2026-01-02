@@ -74,6 +74,7 @@ class FelicityInverterCard extends LitElement {
       this._resolveDeviceEntities();
       this._drawEnergyBar();
       this._drawBatteryBar();
+      this._drawPowerBar();     
     }
   }
 
@@ -309,6 +310,84 @@ class FelicityInverterCard extends LitElement {
     ctx.fillText(currentLabel, width / 2, barTop + barHeight + 15);
   }
 
+
+  _drawPowerBar() {
+    if (!this.showEnergyBar) return;
+
+    const canvas = this.shadowRoot.querySelector('.power-bar-canvas');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Data
+    const userLevel = parseFloat(this._getValue("power_level")) || 0;
+    const safeLevel = parseFloat(this._getValue("safe_max_power")) / 1000 || 0; // convert W → level (assuming 1 level = 1000W)
+    const maxLevel = 10; // assuming max is 10 levels (adjust if different)
+
+    const hasData = userLevel > 0 || safeLevel > 0;
+
+    ctx.clearRect(0, 0, width, height);
+
+    if (!hasData) {
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.textAlign = 'center';
+      ctx.fillText('No power limit data', width / 2, height / 2);
+      return;
+    }
+
+    // Bar setup
+    const barHeight = height * 0.25;
+    const barY = height / 2 - barHeight / 2;
+    const barMargin = 20;
+    const barWidth = width - 2 * barMargin;
+
+    // Background (dark gray)
+    ctx.fillStyle = '#333333aa';
+    ctx.fillRect(barMargin, barY, barWidth, barHeight);
+
+    // Yellow: User-set level
+    const userWidth = (userLevel / maxLevel) * barWidth;
+    ctx.fillStyle = '#4c5fc9cc'; // semi-transparent yellow
+    ctx.fillRect(barMargin, barY, userWidth, barHeight);
+
+    // Green overlay: Current safe level (only if lower than user level)
+    if (safeLevel < userLevel) {
+      const safeWidth = (safeLevel / maxLevel) * barWidth;
+      ctx.fillStyle = '#4caf5088'; // semi-transparent green
+      ctx.fillRect(barMargin, barY, safeWidth, barHeight);
+    }
+
+    // Outline
+    ctx.strokeStyle = '#ffffff88';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barMargin, barY, barWidth, barHeight);
+
+    // Labels
+    //ctx.font = '10px sans-serif';
+    //ctx.fillStyle = '#9e9999ff';
+    //ctx.textAlign = 'left';
+    //ctx.fillText(`${userLevel}`, width - barMargin - 20, barY + barHeight - 4);
+
+    //ctx.textAlign = 'right';
+    //const safeText = safeLevel < userLevel 
+    //  ? `Safe:${safeLevel}`
+    //  : `${safeLevel}`;
+    //ctx.fillStyle = safeLevel < userLevel ? '#ff9800' : '#4caf50';
+    //ctx.fillText(safeText, width - barMargin-60, barY + barHeight -4);
+
+    // Title above
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#c6c2c2dd';
+    ctx.textAlign = 'center';
+    ctx.fillText('Active Power (Limit)', width / 2, barY - 8);
+  }
+
   render() {
     if (!this.hass || !this.config) return html``;
 
@@ -430,11 +509,11 @@ class FelicityInverterCard extends LitElement {
                   gap: 2px;
                 }
                 .state { 
-                  top: 15%; 
+                  top: 8%; 
                   left: 50%; 
                   transform: translate(-50%, -50%);
                   flex-direction: column-reverse;
-                  gap: 2px;
+                  gap: 1px;
                 }
                 
                 .battery { 
@@ -562,6 +641,19 @@ class FelicityInverterCard extends LitElement {
                   width: 100%;
                   height: 100%;
                 }
+                .power-bar-canvas-container {
+                  position: absolute;
+                  left: 35%;
+                  top: 15%; /* places it just below Operation text, above inverter */
+                  width: 32%;
+                  height: 24%;
+                  pointer-events: none;
+                  z-index: 3;
+                }
+                .power-bar-canvas {
+                  width: 100%;
+                  height: 100%;
+                }
               </style>
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -660,10 +752,8 @@ class FelicityInverterCard extends LitElement {
               </div>
               <div class="flow-item state">
                 <div class="label">
-                  Operation: ${this._getStateLabel("operating_mode")}
-                </div>  
-                <div class="label">
-                  Price now: <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}</span>
+                  ${this._getStateLabel("operating_mode")} 
+                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}</span>
                   --> <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
                 </div>
               </div>
@@ -703,6 +793,9 @@ class FelicityInverterCard extends LitElement {
                 </div>
                 <div class="battery-bar-canvas-container">
                   <canvas class="battery-bar-canvas"></canvas>
+                </div>
+                <div class="power-bar-canvas-container">
+                  <canvas class="power-bar-canvas"></canvas>
                 </div>
               ` : ""}
             </div>
