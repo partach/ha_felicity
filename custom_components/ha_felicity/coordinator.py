@@ -419,6 +419,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if price_state and price_state.state not in ("unknown", "unavailable", "none"):
                     try:
                         self.current_price = float(price_state.state)
+                        new_data["current_price"] = self.current_price
                         attrs = price_state.attributes
 
                         def get_attr(names):
@@ -431,7 +432,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         self.max_price = get_attr(["max", "max_price", "Max price", "max price"])
                         self.min_price = get_attr(["min", "min_price", "Min price", "min price"])
                         self.avg_price = get_attr(["average", "average_price", "avg_price", "Avg price", "avg"])
-
+                        new_data["max_price"] = self.max_price
+                        new_data["min_price"] = self.min_price
+                        new_data["avg_price"] = self.avg_price
                         if self.avg_price is not None and self.min_price is not None and self.max_price is not None:
                             level = self.config_entry.options.get("price_threshold_level", 5)
                             if level <= 5:
@@ -440,7 +443,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             else:
                                 ratio = (level - 5) / 5.0
                                 self.price_threshold = self.avg_price + (self.max_price - self.avg_price) * ratio
-
+                            new_data["price_threshold"] = self.price_threshold
                             # Midnight reset
                             now = datetime.now()
                             if self._current_day != now.day:
