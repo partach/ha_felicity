@@ -72,6 +72,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "max_price", "Today Max Price", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "avg_price", "Today Avg Price", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
+            HA_FelicityNordpoolSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
         ]    
     entities.extend(nordpool_sensors)
     entities.append(
