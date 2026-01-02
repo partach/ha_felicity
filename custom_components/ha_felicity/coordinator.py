@@ -278,12 +278,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
             try:
                 await self.async_write_register("econ_rule_1_power", target_watts)
+                new_data["max_safe_power"] = safe_level * 1000 # convert from index to watts
                 self.last_corrected_power_value = safe_level
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
                 # Don't update internal state on failure → retry next cycle
         else:
             _LOGGER.debug("No change needed (level %d)", safe_level)
+            new_data["max_safe_power"] = safe_level * 1000
             self.last_corrected_power_value = safe_level
     
         return safe_level
@@ -404,6 +406,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             raw_system_voltage = new_data.get("battery_voltage")
             if raw_system_voltage is not None:
                 new_data["battery_nominal_voltage"] = raw_system_voltage
+
             # === Nordpool price update & dynamic logic ===
             if self.nordpool_entity:
                 try: #when nordpool is disabled or uninstalled during runtime
