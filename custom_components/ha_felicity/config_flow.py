@@ -67,6 +67,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "battery_discharge_min_level": self._user_input.get("battery_discharge_min_level", 20),
             "grid_mode": self._user_input.get("grid_mode", "off"),
             "power_level": self._user_input.get("power_level", 5),
+            "safe_max_power": self._user_input.get("safe_max_power", 0),
             "voltage_level": self._user_input.get("voltage_level", 58),
             "update_interval": self._user_input.get("update_interval", 10),
             CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
