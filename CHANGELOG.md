@@ -1,6 +1,6 @@
 ## Changelog
 
-### [0.7.1] - Dynamic Power Management on dashboard
+### [0.7.2] - Dynamic Power Management on dashboard
 - Dynamic Power Management visible on card
 
 ### [0.7.0] - Dynamic Power Management
