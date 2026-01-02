@@ -138,6 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     updated_options.setdefault("battery_discharge_min_level", 20)
     updated_options.setdefault("grid_mode", "off")
     updated_options.setdefault("power_level", 5)
+    updated_options.setdefault("safe_max_power", 0)
     updated_options.setdefault("voltage_level", 58)
     updated_options.setdefault(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
     updated_options.setdefault("update_interval", 10)
@@ -149,14 +150,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     nordpool_entity = entry.options.get("nordpool_entity")
     nordpool_override = entry.options.get("nordpool_override")
     update_interval = entry.options.get("update_interval", 10)
-
-
-    #price_threshold_level = entry.options.get("price_threshold_level", 5)
-    #current_charge_max = entry.options.get("battery_charge_max_level", 100)
-    #current_discharge_min = entry.options.get("battery_discharge_min_level", 20)
-    #current_grid_mode = entry.options.get("grid_mode", "off")
-    #current_power_level = entry.options.get("power_level", 5)
-    #current_voltage_level = entry.options.get("voltage_level", 58)
     
     # Select register set from options (filtered on model's registers)
     if register_set_key not in model_data["sets"]:
