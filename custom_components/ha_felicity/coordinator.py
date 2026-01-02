@@ -329,6 +329,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "max_price": self.max_price,
             "min_price": self.min_price,
             "avg_price": self.avg_price,
+            "safe_max_power": self.last_corrected_power_value,
         }
 
         # Add kWh for all Wh registers
