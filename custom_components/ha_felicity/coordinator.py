@@ -56,7 +56,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.min_price: float | None = None
         self.avg_price: float | None = None
         self.price_threshold: float | None = None
-        self.last_corrected_power_value: float | None = None # used in setting rule 1 power checks toward max amperage
+        self.last_corrected_power_value = 0 # used in setting rule 1 power checks toward max amperage
         self._last_known_max_amperage: float | None = None
         self._low_current_cycles = 0 # used to keep jitter out of the system (back and forth contiously writing rule 1 register)
         self._required_low_cycles = 2
@@ -215,8 +215,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         max_amperage = opts.get("max_amperage_per_phase", 16)
     
         # --- 1. Safe base_level init ---
-        base_level = getattr(self, "last_corrected_power_value", None)
-        if base_level is None:
+        base_level = getattr(self, "last_corrected_power_value", 0)
+        if base_level is 0:
             base_level = user_level
     
         # --- 2. Detect config changes (max_amperage or user_level) ---
