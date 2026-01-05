@@ -12,6 +12,11 @@ from pymodbus.exceptions import ModbusException, ConnectionException
 
 _LOGGER = logging.getLogger(__name__)
 
+# Reduce noise from pymodbus
+# Setting parent logger to CRITICAL to catch all sub-loggers
+logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
+logging.getLogger("pymodbus.logging").setLevel(logging.CRITICAL)
+
 class HA_FelicityCoordinator(DataUpdateCoordinator):
     """Felicity Solar Inverter Data Update Coordinator."""
 
