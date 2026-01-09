@@ -16,12 +16,12 @@ Currently supports the following types:
 
 
 <p align="center">
-<img src="https://github.com/partach/ha_felicity/blob/main/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
-<img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20card.png" width="400" style="vertical-align: middle; margin: 0 10px;"/>
+<img src="https://github.com/partach/ha_felicity/blob/main/pictures/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
+<img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20card.png" width="400" style="vertical-align: middle; margin: 0 10px;"/>
 <br><em>Inverter that is supported and card included</em>
 </p>
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20hub.png" width="600"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20hub.png" width="600"/>
   <br><em>Home assistant hub view</em>
 </p>
 
@@ -54,12 +54,12 @@ It supports modbus USB dongle and TCP Modbus connection
 
 ## Configuration options
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config1.png" width="300"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config1.png" width="300"/>
   <br>
   <em>Select Serial or TCP and select model + update refresh interval</em>
 </p>
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config2.png" width="300"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config2.png" width="300"/>
   <br>
   <em>Serial Example, choose the settings you need (2400 baud is sadly default for the TRex)</em>
 </p>
@@ -70,7 +70,7 @@ If you don't know what a register does, don't touch it :)
 The integration is to be used on own risk.
 
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config3.png" width="600"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config3.png" width="600"/>
   <br>
   <em>Runtime Settings</em>
 </p>
@@ -90,7 +90,7 @@ During first setup or during run-time configuration (device gear symbol) it will
 Currently Nordpool and Tibber (via Norpool override field in config) are tested to work.
 
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/HA-felicity%20config4.png" width="1000"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config4.png" width="1000"/>
   <br>
   <em>Dynamic Energy Management and other Settings of the integration</em>
 </p>
