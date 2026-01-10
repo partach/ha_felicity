@@ -50,7 +50,7 @@ Options:
 Let the install config of the integration guide you as it asks you for the needed data.
 
 ## Serial and TCP
-It supports modbus USB dongle and TCP Modbus connection
+It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA168406/) connection
 
 ## Configuration options
 <p align="center">
