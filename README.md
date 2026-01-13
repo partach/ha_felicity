@@ -13,7 +13,7 @@ Currently supports IVGM / TREX types:
 - T-REX-10KLP3G01 (low voltage batteries)
 - T-REX-10KHP3G01 (high voltage batteries)
 - T-REX-50  (in theory, not tested yet)
-- IVGM not test but seems to be similar in setup.
+- IVGM not tested, but seems to be similar in setup.
 - and others with similar register setup
 
 
