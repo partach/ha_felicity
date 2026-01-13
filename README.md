@@ -60,7 +60,7 @@ It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA1
 
 ## Configuration options
 <p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config1.png" width="300"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config5.png" width="300"/>
   <br>
   <em>Select Serial or TCP and select model + update refresh interval</em>
 </p>
