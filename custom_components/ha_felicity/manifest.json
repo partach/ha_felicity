@@ -3,7 +3,7 @@
   "name": "HA-Felicity",
   "codeowners": ["@partach"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["lovelace","frontend"],
   "documentation": "https://github.com/partach/ha_felicity",
   "integration_type": "hub",
   "iot_class": "local_polling",
