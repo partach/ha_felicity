@@ -59,6 +59,9 @@ It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA1
 </p>
 
 ## Configuration options
+Below are the install configuration options. When installing make sure your select 2400 baud as communication speed for the TREX.
+You can immediately select your nordpool integration but this can also be done later. (Later you can even override Nordpool with for example TIBBER).
+This can be done via configuration when the intallation is succesfull (device found). Configuration is set in the hub/device view via the gear icon.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config5.png" width="300"/>
   <br>
@@ -73,7 +76,7 @@ It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA1
 ## Controls
 Via the device you can directly control many settings run-time. Be carefull with some of these setting as the affect the behavior of the device.
 If you don't know what a register does, don't touch it :)
-The integration is to be used on own risk.
+The integration is to be used at own risk.
 
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config3.png" width="600"/>
