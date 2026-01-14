@@ -51,8 +51,9 @@ Options:
      
 Let the install config of the integration guide you as it asks you for the needed data.
 
-## Serial and TCP
-It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA168406/) connection
+## Serial and TCP (Wired and Wireless)
+It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA168406/) connections.
+The 3 possible ways are explained in the picture below. At the moment the last part always requires a RS485 connection to the inverter.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-connect.png" width="600"/>
   <br><em>Ways to connect the inverter</em>
