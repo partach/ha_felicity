@@ -19,7 +19,7 @@ Currently supports IVGM / TREX types:
 
 <p align="center">
 <img src="https://github.com/partach/ha_felicity/blob/main/pictures/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
-<img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20card.png" width="400" style="vertical-align: middle; margin: 0 10px;"/>
+<img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card.gif" width="400" style="vertical-align: middle; margin: 0 10px;"/>
 <br><em>Inverter that is supported and card included</em>
 </p>
 <p align="center">
