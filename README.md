@@ -133,7 +133,10 @@ Choose `Manual`
 Add first line: `type: custom:felicity-inverter-card`
 Then choose the `visual editor` to continue.
 From the `Device` dropdown chose your felicity inverter install.
-
+<p align="center">
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card-expl.png" width="600"/>
+  <br><em>Card usage explained</em>
+</p>
 Advanced settings.
 If you want to override items in the card you can add the following yaml code:
 ```
