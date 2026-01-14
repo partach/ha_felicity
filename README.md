@@ -59,7 +59,7 @@ The 3 possible ways are explained in the picture below. At the moment the last p
   <br><em>Ways to connect the inverter</em>
 </p>
 
-## Configuration options
+## Installation options
 Below are the install configuration options. When installing make sure your select 2400 baud as communication speed for the TREX.
 You can immediately select your nordpool integration but this can also be done later. (Later you can even override Nordpool with for example TIBBER).
 This can be done via configuration when the intallation is succesfull (device found). Configuration is set in the hub/device view via the gear icon.
