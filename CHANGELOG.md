@@ -1,5 +1,8 @@
 ## Changelog
 
+### [0.8.0] - Support for multiple inverter types
+- TREX 50 series added
+
 ### [0.7.2] - Dynamic Power Management on dashboard
 - Dynamic Power Management visible on card
 
