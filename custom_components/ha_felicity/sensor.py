@@ -11,7 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 
-from .const import DOMAIN, _COMBINED_REGISTERS, CONF_INVERTER_MODEL
+from .const import DOMAIN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL 
 from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         identifiers={(DOMAIN, entry.entry_id)},
         name=entry.title or "Felicity Inverter",
         manufacturer="Felicity Solar",
-        model=entry.data.get(CONF_INVERTER_MODEL, "T-REX-10KLP3G01"),
+        model=entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
         configuration_url=f"homeassistant://config/integrations/integration/{entry.entry_id}",
     )
 
@@ -58,11 +58,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     # 7. Combined sensors (Computed values like Total PV Power)
     # Use coordinator property if available, else fallback to const defaults
-    model_combined = getattr(coordinator, "model_combined", _COMBINED_REGISTERS)
-    entities.extend([
-        HA_FelicityCombinedSensor(coordinator, entry, key, info)
-        for key, info in model_combined.items()
-    ])
+    model_combined = coordinator.model_combined  # ← set in coordinator!
+    if model_combined:
+        entities.extend(
+            HA_FelicityCombinedSensor(coordinator, entry, key, info)
+            for key, info in model_combined.items()
+        )
+    else:
+        _LOGGER.warning("No model-specific combined registers found for %s", entry.title)
 
     nordpool_sensors = []
     if coordinator.nordpool_entity:
