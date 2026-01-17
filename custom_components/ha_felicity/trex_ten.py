@@ -431,6 +431,7 @@ REGISTER_SETS_TREX_TEN = {
         for key, info in _REGISTERS.items()
         if key in {
             "ac_active_power",
+            "pv_total_power",
             "BMS_Flg",
             "working_mode",
             "sn",
