@@ -38,10 +38,11 @@ from .const import (
     REGISTER_SET_BASIC,
     REGISTER_SET_BASIC_PLUS,
     REGISTER_SET_FULL,
-    INVERTER_MODEL_IVGM,
+    INVERTER_MODEL_TREX_TEN,
+    INVERTER_MODEL_TREX_FIFTY,
     CONF_INVERTER_MODEL,
     DEFAULT_INVERTER_MODEL,
-    DEFAULT_FIRST_REG,
+    MODEL_REGISTRY,
     DOMAIN,
 )
 
@@ -110,7 +111,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_INVERTER_MODEL, default=DEFAULT_INVERTER_MODEL): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            selector.SelectOptionDict(value=INVERTER_MODEL_IVGM, label="T-REX-10KLP3G01"),
+                            selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TEN, label=INVERTER_MODEL_TREX_TEN),
+                            selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIFTY, label=INVERTER_MODEL_TREX_FIFTY),
                             # Future models go here
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
@@ -277,6 +279,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Test serial connection to the Felicity meter."""
         client = None
         try:
+            inverter_model = data[CONF_INVERTER_MODEL]
+            model_config = MODEL_REGISTRY.get(inverter_model, MODEL_REGISTRY[DEFAULT_INVERTER_MODEL])
+            first_reg = model_config["default_first_reg"]
+            slave_id = data.get(CONF_SLAVE_ID, 1)            
             client = AsyncModbusSerialClient(
                 port=data[CONF_SERIAL_PORT],
                 baudrate=data[CONF_BAUDRATE],
@@ -291,7 +297,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raise ConnectionError("Failed to open serial port")
     
             result = await client.read_holding_registers(
-                address=DEFAULT_FIRST_REG, count=1, device_id=data[CONF_SLAVE_ID]
+                address=first_reg, count=1, device_id=int(slave_id)
             )
             
             if result.isError():
@@ -311,6 +317,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Test TCP connection to the Felicity meter."""
         client = None
         try:
+            inverter_model = data[CONF_INVERTER_MODEL]
+            model_config = MODEL_REGISTRY.get(inverter_model, MODEL_REGISTRY[DEFAULT_INVERTER_MODEL])
+            first_reg = model_config["default_first_reg"]
+            slave_id = data.get(CONF_SLAVE_ID, 1)        
             client = AsyncModbusTcpClient(
                 host=data[CONF_HOST],
                 port=data[CONF_PORT],
@@ -322,7 +332,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 raise ConnectionError(f"Failed to connect to {data[CONF_HOST]}:{data[CONF_PORT]}")
     
             result = await client.read_holding_registers(
-                address=DEFAULT_FIRST_REG, count=1, device_id=data[CONF_SLAVE_ID]
+                address=first_reg, count=1, device_id=int(slave_id)
             )
     
             if result.isError():
