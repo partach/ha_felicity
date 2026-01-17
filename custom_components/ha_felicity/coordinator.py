@@ -97,6 +97,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             elif size == 4 and raw >= 0x8000000000000000:
                 raw -= 0x10000000000000000
             return raw / 10.0
+        elif index == 9: # /100 (and signed possible)
+            # First make signed if needed
+            if size == 1 and raw >= 0x8000:
+                raw -= 0x10000
+            elif size == 2 and raw >= 0x80000000:
+                raw -= 0x100000000
+            elif size == 4 and raw >= 0x8000000000000000:
+                raw -= 0x10000000000000000
+            return raw / 100.0
         else:
             return raw  # index 0,4,5,6,7 – raw
 
