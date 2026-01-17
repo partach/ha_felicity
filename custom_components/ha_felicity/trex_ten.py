@@ -432,6 +432,8 @@ REGISTER_SETS_TREX_TEN = {
         if key in {
             "ac_active_power",
             "pv_total_power",
+            "total_ac_input_power",
+            "load_power_line_side"",
             "BMS_Flg",
             "working_mode",
             "sn",
