@@ -606,7 +606,7 @@ REGISTER_SETS_TREX_TEN = {
             "pv_total_power",
             "total_ac_input_power",
             "total_ac_ouput_active_power",
-            "load_power_line_side"",
+            "load_power_line_side",
             "battery_power",
             "inverter_time",
             "econ_rule_1",
