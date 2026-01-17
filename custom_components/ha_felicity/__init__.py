@@ -29,7 +29,7 @@ from .const import (
     DEFAULT_REGISTER_SET,
     DEFAULT_STOPBITS,
     DOMAIN,
-    MODEL_DATA,
+    MODEL_REGISTRY,
 )
 from .coordinator import HA_FelicityCoordinator
 
@@ -123,111 +123,143 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Felicity from a config entry."""
     config = entry.data
-    connection_type = config.get(CONF_CONNECTION_TYPE, CONNECTION_TYPE_SERIAL)
-    
-    # Select model data (fallback to default model)
-    model = entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
-    model_data = MODEL_DATA.get(model, MODEL_DATA[DEFAULT_INVERTER_MODEL])
+    options = entry.options
 
-    #add nordpool integration
-    nordpool_entity = entry.options.get("nordpool_entity")
-    # === Ensure options have defaults (migration-safe) ===
-    updated_options = dict(entry.options)
-    updated_options.setdefault("price_threshold_level", 5)
-    updated_options.setdefault("battery_charge_max_level", 100)
-    updated_options.setdefault("battery_discharge_min_level", 20)
-    updated_options.setdefault("grid_mode", "off")
-    updated_options.setdefault("power_level", 5)
-    updated_options.setdefault("safe_max_power", 0)
-    updated_options.setdefault("voltage_level", 58)
-    updated_options.setdefault(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-    updated_options.setdefault("update_interval", 10)
+    # ── 1. Determine inverter model ────────────────────────────────────────
+    inverter_model = config.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
 
-    if updated_options != entry.options:
+    try:
+        model_config = MODEL_REGISTRY[inverter_model]
+    except KeyError:
+        _LOGGER.error(
+            "Unsupported inverter model '%s' – falling back to default '%s'",
+            inverter_model, DEFAULT_INVERTER_MODEL
+        )
+        model_config = MODEL_REGISTRY[DEFAULT_INVERTER_MODEL]
+
+    registers = model_config["registers"]
+    combined = model_config["combined"]
+    register_groups = model_config["register_groups"]  # consistent naming
+
+    # ── 2. Apply user-selected register set (if any) ───────────────────────
+    register_set_key = options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
+    selected_registers = registers  # fallback: full set
+
+    if register_set_key in model_config.get("register_sets", {}):
+        selected_set = model_config["register_sets"][register_set_key]
+        selected_registers = {k: registers[k] for k in selected_set if k in registers}
+        _LOGGER.info("Using register set '%s' → %d registers", register_set_key, len(selected_registers))
+    elif register_set_key != DEFAULT_REGISTER_SET:
+        _LOGGER.warning("Requested register set '%s' not found – using full set", register_set_key)
+
+    # ── 3. Safety net: auto-include missing registers referenced by groups ─
+    all_group_keys = set()
+    for group in register_groups:
+        all_group_keys.update(group["keys"])
+
+    missing_keys = all_group_keys - set(selected_registers.keys())
+
+    if missing_keys:
+        _LOGGER.debug(
+            "Safety net: Auto-adding %d missing registers referenced by groups: %s",
+            len(missing_keys),
+            ", ".join(sorted(missing_keys))
+        )
+        for key in missing_keys:
+            if key in registers:
+                selected_registers[key] = registers[key]
+            else:
+                _LOGGER.warning(
+                    "Safety net: Register '%s' referenced in groups but missing from model registers!",
+                    key
+                )
+
+    # ── 4. Nordpool & options migration/defaults ───────────────────────────
+    updated_options = dict(options)
+    defaults_to_set = {
+        "price_threshold_level": 5,
+        "battery_charge_max_level": 100,
+        "battery_discharge_min_level": 20,
+        "grid_mode": "off",
+        "power_level": 5,
+        "safe_max_power": 0,
+        "voltage_level": 58,
+        CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
+        "update_interval": 10,
+    }
+
+    for key, default in defaults_to_set.items():
+        if key not in updated_options:
+            updated_options[key] = default
+
+    if updated_options != options:
         hass.config_entries.async_update_entry(entry, options=updated_options)
-    # === Now read from (possibly updated) options ===
-    register_set_key = entry.options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
-    nordpool_entity = entry.options.get("nordpool_entity")
-    nordpool_override = entry.options.get("nordpool_override")
-    update_interval = entry.options.get("update_interval", 10)
-    
-    # Select register set from options (filtered on model's registers)
-    if register_set_key not in model_data["sets"]:
-        _LOGGER.warning("Invalid register set '%s', falling back to full", register_set_key)
-        selected_registers = model_data["registers"]
-    else:
-        selected_registers = model_data["sets"].get(register_set_key, model_data["registers"])
-    
-    _LOGGER.debug("Current entry.options: %s", entry.options)
-    _LOGGER.debug("Selected register_set_key: %s", register_set_key)
-    _LOGGER.debug("Number of selected registers: %d", len(selected_registers))
-    
-    # === SAFETY NET: Auto-include missing group keys (prevents update failed) ===
-    all_group_keys = {key for group in model_data["groups"] for key in group["keys"]}
-    missing = all_group_keys - selected_registers.keys()
-    if missing:
-        _LOGGER.debug("Auto-adding missing group keys: %s", missing)
-        for key in missing:
-            if key in model_data["registers"]:
-                selected_registers[key] = model_data["registers"][key]
-    # ===========================================================================
 
-    # Get or create shared hub for this connection
+    nordpool_entity = updated_options.get("nordpool_entity")
+    nordpool_override = updated_options.get("nordpool_override")
+    update_interval = updated_options["update_interval"]
+
+    # ── 5. Hub management ──────────────────────────────────────────────────
     hubs = hass.data.setdefault(DOMAIN, {}).setdefault("hubs", {})
-    
-    if connection_type == CONNECTION_TYPE_SERIAL:
+
+    if config[CONF_CONNECTION_TYPE] == CONNECTION_TYPE_SERIAL:
         port = config[CONF_SERIAL_PORT]
-        baudrate = config.get(CONF_BAUDRATE, DEFAULT_BAUDRATE)
+        baud = config.get(CONF_BAUDRATE, DEFAULT_BAUDRATE)
         parity = config.get(CONF_PARITY, DEFAULT_PARITY)
         stopbits = config.get(CONF_STOPBITS, DEFAULT_STOPBITS)
         bytesize = config.get(CONF_BYTESIZE, DEFAULT_BYTESIZE)
-        hub_key = f"serial_{port}_{baudrate}_{parity}_{stopbits}_{bytesize}"
-        
+        hub_key = f"serial_{port}_{baud}_{parity}_{stopbits}_{bytesize}"
+
         if hub_key not in hubs:
-            hubs[hub_key] = FelicitySerialHub(hass, port, baudrate, parity, stopbits, bytesize)
+            from .hub import FelicitySerialHub
+            hubs[hub_key] = FelicitySerialHub(hass, port, baud, parity, stopbits, bytesize)
     else:  # TCP
         host = config[CONF_HOST]
         port = config[CONF_PORT]
         hub_key = f"tcp_{host}_{port}"
-        
+
         if hub_key not in hubs:
+            from .hub import FelicityTcpHub
             hubs[hub_key] = FelicityTcpHub(hass, host, port)
 
     hub = hubs[hub_key]
 
+    # ── 6. Create & configure coordinator ──────────────────────────────────
+    from .coordinator import HA_FelicityCoordinator
 
-    # Create coordinator with shared client and selected registers
     coordinator = HA_FelicityCoordinator(
         hass=hass,
         client=hub.client,
         slave_id=config[CONF_SLAVE_ID],
-        register_map=selected_registers,
-        groups=model_data["groups"],
+        register_map=selected_registers,          # ← now filtered!
+        groups=register_groups,
         config_entry=entry,
         nordpool_entity=nordpool_entity,
         nordpool_override=nordpool_override,
         update_interval=update_interval,
-        
     )
-    # Store config and hub_key for unload cleanup
+
     coordinator.config = config
     coordinator.hub_key = hub_key
     coordinator._last_register_set = register_set_key
 
-    # First data refresh
+    # First refresh
     await coordinator.async_config_entry_first_refresh()
 
-    # Store coordinator
+    # Store coordinator for platforms
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
-    # Forward to sensor platform
+    # Forward platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Services & frontend (once per domain)
     if "services_setup" not in hass.data[DOMAIN]:
         await async_setup_services(hass)
         hass.data[DOMAIN]["services_setup"] = True
 
     await async_install_frontend_resource(hass)
-    await async_register_card(hass,entry)
+    await async_register_card(hass, entry)
+
     return True
 
 async def async_setup_services(hass: HomeAssistant) -> None:
