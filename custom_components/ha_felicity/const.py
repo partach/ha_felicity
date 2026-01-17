@@ -20,6 +20,12 @@ CONF_INVERTER_MODEL = "inverter_model"
 INVERTER_MODEL_TREX_TEN = "T-REX-10K-P3G01"
 INVERTER_MODEL_TREX_FIFTY = "T-REX-50K-P3G01"
 
+SUPPORTED_MODELS = [
+    INVERTER_MODEL_TREX_TEN,
+    INVERTER_MODEL_TREX_FIFTY,
+    # add new ones here
+]
+
 # Serial settings
 CONF_SERIAL_PORT = "serial_port"
 CONF_BAUDRATE = "baudrate"
@@ -96,23 +102,24 @@ def build_groups(registers):
         groups.append(current)
     return groups
 
-_REGISTER_GROUPS_TREX_TEN = build_groups(_REGISTERS_TREX_TEN)  # auto-generated
-_REGISTER_GROUPS_TREX_FIFTY = build_groups(_REGISTERS_TREX_FIFTY)  # auto-generated
 
-MODEL_DATA_TREX_TEN = {
-    INVERTER_MODEL_TREX_TEN: { # KL and KH are the same)
-        "registers": _REGISTERS_TREX_TEN,
-        "groups": _REGISTER_GROUPS_TREX_TEN,
-        "combined": _COMBINED_REGISTERS_TREX_TEN,
-        "sets": REGISTER_SETS_TREX_TEN,
+MODEL_REGISTRY = {
+    INVERTER_MODEL_TREX_TEN: {
+        "registers":        _REGISTERS_TREX_TEN,
+        "combined":         _COMBINED_REGISTERS_TREX_TEN,
+        "register_groups":  build_groups(_REGISTERS_TREX_TEN),
+        "register_sets":    REGISTER_SETS_TREX_TEN,
+        "default_first_reg": 4353,
+        "default_slave_id": 1,
+    },
+
+    INVERTER_MODEL_TREX_FIFTY: {
+        "registers":        _REGISTERS_TREX_FIFTY,
+        "combined":         _COMBINED_REGISTERS_TREX_FIFTY,
+        "register_groups":  build_groups(_REGISTERS_TREX_FIFTY),
+        "register_sets":    REGISTER_SETS_TREX_FIFTY,
+        "default_first_reg": 4357,   # ← different starting point!
+        "default_slave_id": 1,
     },
 }
 
-MODEL_DATA_TREX_FIFTY = {
-    INVERTER_MODEL_TREX_FIFTY: { # KL and KH are the same)
-        "registers": _REGISTERS_TREX_FIFTY,
-        "groups": _REGISTER_GROUPS_TREX_FIFTY,
-        "combined": _COMBINED_REGISTERS_TREX_FIFTY,
-        "sets": REGISTER_SETS_TREX_FIFTY,
-    },
-}
