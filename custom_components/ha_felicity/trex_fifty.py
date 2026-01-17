@@ -362,7 +362,7 @@ _REGISTERS_TREX_FIFTY = {
 }
 
 # Combined registers (post-process)
-_COMBINED_REGISTERS__TREX_FIFTY = {
+_COMBINED_REGISTERS_TREX_FIFTY = {
     "inverter_time": {
         "sources": ["time_year_month", "time_day_time", "time_minutes_seconds", "time_week"],
         "calc": lambda ym, dh, ms, w: {
@@ -378,7 +378,7 @@ _COMBINED_REGISTERS__TREX_FIFTY = {
         },
         "name": "Inverter Time",
     },
-    "pv_total_power": {
+    "pv_power_kw": {
         "sources": ["pv1_power", "pv2_power", "pv3_power", "pv4_power"],
         "calc": lambda p1, p2, p3, p4: (p1 or 0) + (p2 or 0) + (p3 or 0) + (p4 or 0),
         "unit": "kW",
@@ -387,7 +387,16 @@ _COMBINED_REGISTERS__TREX_FIFTY = {
         "name": "Total PV Power",
         "precision": 1,
     },
-    "battery_total_power": {
+    "pv_total_power": {
+        "sources": ["pv1_power", "pv2_power", "pv3_power", "pv4_power"],
+        "calc": lambda p1, p2, p3, p4: round(((p1 or 0) + (p2 or 0) + (p3 or 0) + (p4 or 0)) * 1000),
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Total PV Power",
+        "precision": 0,          # whole number only
+    },
+    "battery_power_kw": {
         "sources": ["bat1_power", "bat2_power"],
         "calc": lambda p1, p2: (p1 or 0) + (p2 or 0),
         "unit": "kW",
@@ -396,6 +405,69 @@ _COMBINED_REGISTERS__TREX_FIFTY = {
         "name": "Total Battery Power",
         "precision": 1,
     },
+    "battery_power": { # we need this one in watts for the card
+        "sources": ["bat1_power", "bat2_power"],
+        "calc": lambda p1, p2: round(((p1 or 0) + (p2 or 0)) * 1000),
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Total Battery Power (W)",
+        "precision": 0,
+    },
+    "home_load_power_kw": {
+        "sources": ["phase_a_home_load_power", "phase_b_home_load_power", "phase_c_home_load_power"],
+        "calc": lambda a, b, c: (a or 0) + (b or 0) + (c or 0),
+        "unit": "kW",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Total Home Load Power",
+        "precision": 1,
+    },
+    "load_power_line_side": { # legacy naming trex-10
+        "sources": ["phase_a_home_load_power", "phase_b_home_load_power", "phase_c_home_load_power"],
+        "calc": lambda a, b, c: round(((a or 0) + (b or 0) + (c or 0)) * 1000),
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Total Home Load Power (W)",
+        "precision": 0,
+    },
+    "generator_active_power_kw": {
+        "sources": ["phase_a_generator_active_power", "phase_b_generator_active_power", "phase_c_generator_active_power"],
+        "calc": lambda a, b, c: (a or 0) + (b or 0) + (c or 0),
+        "unit": "kW",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Generator Active Power",
+        "precision": 1,
+    },
+    "grid_active_power_kw": {
+        "sources": ["phase_a_grid_active_power", "phase_b_grid_active_power", "phase_c_grid_active_power"],
+        "calc": lambda a, b, c: (a or 0) + (b or 0) + (c or 0),
+        "unit": "kW",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Grid Active Power",
+        "precision": 1,
+    },
+    "inverter_active_power_kw": {
+        "sources": ["phase_a_inverter_active_power", "phase_b_inverter_active_power", "phase_c_inverter_active_power"],
+        "calc": lambda a, b, c: (a or 0) + (b or 0) + (c or 0),
+        "unit": "kW",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Inverter Active Power",
+        "precision": 1,
+    },    
+    "load_active_power_kw": {
+        "sources": ["phase_a_load_active_power", "phase_b_load_active_power", "phase_c_load_active_power"],
+        "calc": lambda a, b, c: (a or 0) + (b or 0) + (c or 0),
+        "unit": "kW",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Load Active Power",
+        "precision": 1,
+    },        
     # ECO rules (6, each with grid/gen enable, start/stop time, volt, soc, power)
     "econ_rule_1": {
         "sources": [
@@ -525,4 +597,54 @@ _COMBINED_REGISTERS__TREX_FIFTY = {
     },
     # ... Repeat for eco_rule_2 to eco_rule_6 with appropriate sources
     # (offsets: ECO2 at +7, ECO3 +14, etc. — adjust addresses accordingly)
+}
+REGISTER_SETS_TREX_TEN = {
+    "basic": {
+        key: info
+        for key, info in _REGISTERS.items()
+        if key in {
+            "pv_total_power",
+            "total_ac_input_power",
+            "total_ac_ouput_active_power",
+            "load_power_line_side"",
+            "battery_power",
+            "inverter_time",
+            "econ_rule_1",
+            "econ_rule_2",
+            "econ_rule_3",
+            "econ_rule_4",
+            "econ_rule_5",
+            "econ_rule_6",
+            "alarm_codes",
+            "fault_codes",
+            "generator_frequency",
+            "grid_frequency",
+            "phase_a_home_load_power",
+            "phase_b_home_load_power",
+            "phase_c_home_load_power",
+            "total_generator_power",
+            "total_load_power",
+            "total_grid_power",
+            
+        }
+        and "_secondary" not in key  # ← Excludes duplicates!
+    },
+    "basic_plus": {
+        key: info
+        for key, info in _REGISTERS.items()
+        if (
+             key.startswith((
+               "pv", 
+               "phase_", 
+               "bat", 
+               "bus", 
+               "", 
+               ""
+             ))
+
+           )
+        and "_secondary" not in key
+        and "_alt" not in key
+    },
+    "full": _REGISTERS_TREX_FIFTY,  # All – including secondary if any (or filter here too if you want)
 }
