@@ -224,7 +224,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hub = hubs[hub_key]
 
     # ── 6. Create & configure coordinator ──────────────────────────────────
-    from .coordinator import HA_FelicityCoordinator
 
     coordinator = HA_FelicityCoordinator(
         hass=hass,
