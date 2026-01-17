@@ -598,7 +598,7 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
     # ... Repeat for eco_rule_2 to eco_rule_6 with appropriate sources
     # (offsets: ECO2 at +7, ECO3 +14, etc. — adjust addresses accordingly)
 }
-REGISTER_SETS_TREX_TEN = {
+REGISTER_SETS_TREX_FIFTY = {
     "basic": {
         key: info
         for key, info in _REGISTERS_TREX_FIFTY.items()
