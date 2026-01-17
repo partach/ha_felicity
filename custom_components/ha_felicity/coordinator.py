@@ -11,6 +11,7 @@ from pymodbus.client import AsyncModbusSerialClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 
 _LOGGER = logging.getLogger(__name__)
+from .const import DOMAIN, INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
 
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
@@ -27,7 +28,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         slave_id: int, 
         register_map: dict, 
         groups: list,
-        model_combined,
+        model_combined: dict,
+        inverter_model: str,
         config_entry=ConfigEntry,
         nordpool_entity: str | None = None,
         nordpool_override: str | None = None,
@@ -47,6 +49,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.config_entry = config_entry
         self._last_register_set: str | None = None
         self.model_combined = model_combined
+        self.inverter_model = inverter_model if inverter_model else INVERTER_MODEL_TREX_TEN
         
         # Nordpool: override wins over entity
         self.nordpool_entity = nordpool_override or nordpool_entity
@@ -174,7 +177,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             result = await self.client.write_registers(
                 address=start_address, 
                 values=values, 
-                device_id=self.slave_id
+                device_id=int(self.slave_id)
             )
             if result.isError():
                 _LOGGER.error("Write registers error at %s: %s", start_address, result)
@@ -284,7 +287,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             target_watts = int(round(safe_level * 1000))
             _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
             try:
-                await self.async_write_register("econ_rule_1_power", target_watts)
+                await self._write_type_specific_register("econ_rule_1_power", target_watts)
                 self.safe_max_power = safe_level
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
@@ -294,6 +297,82 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.safe_max_power = safe_level
     
         return safe_level
+        
+    async def _write_type_specific_register(self, register_name: str, value: int) -> None:
+        """
+        Model-specific write behavior.
+        If a handler exists and handles it → done.
+        Otherwise → fallback to standard async_write_register.
+        """
+        handlers = {
+            "econ_rule_1_enable":    self._handle_econ_rule_1_enable,
+            "econ_rule_1_start_day": self._handle_rule_1_start_day,
+            "econ_rule_1_stop_day":  self._handle_rule_1_stop_day,
+            # Add more here as needed:
+            # "econ_rule_1_voltage":   self._handle_rule_1_voltage,
+            # "econ_rule_1_power":     self._handle_rule_1_power,
+            # etc.
+        }
+    
+        handler = handlers.get(register_name)
+        if handler:
+            handled = await handler(value)
+            if handled:
+                _LOGGER.debug("Special handling applied for %s (model %s)", register_name, self.inverter_model)
+                return
+    
+        # Fallback: normal write
+        _LOGGER.debug("Using standard write for %s (no special handler or not handled)", register_name)
+        await self.async_write_register(register_name, value)
+    
+    
+    async def _handle_rule_1_start_day(self, value: int) -> bool:
+        """Handle writing start day register (model-specific)."""
+        if self.inverter_model == INVERTER_MODEL_TREX_TEN:
+            await self.async_write_register("econ_rule_1_start_day", value)
+            return True
+    
+        elif self.inverter_model == INVERTER_MODEL_TREX_FIFTY:
+            # Register not used / not present → silently ignore (no error)
+            _LOGGER.debug("Ignoring econ_rule_1_start_day on 50K model (not applicable)")
+            return True
+    
+        return False  # unknown model → fallback
+    
+    
+    async def _handle_rule_1_stop_day(self, value: int) -> bool:
+        """Handle writing stop day register (model-specific)."""
+        if self.inverter_model == INVERTER_MODEL_TREX_TEN:
+            await self.async_write_register("econ_rule_1_stop_day", value)
+            return True
+    
+        elif self.inverter_model == INVERTER_MODEL_TREX_FIFTY:
+            _LOGGER.debug("Ignoring econ_rule_1_stop_day on 50K model (not applicable)")
+            return True
+    
+        return False
+    
+    
+    async def _handle_econ_rule_1_enable(self, value: int) -> bool:
+        """Handle economic rule 1 enable (model-specific mapping)."""
+        if self.inverter_model == INVERTER_MODEL_TREX_TEN:
+            await self.async_write_register("econ_rule_1_enable", value)
+            return True
+    
+        elif self.inverter_model == INVERTER_MODEL_TREX_FIFTY:
+            if value == 1:   # charging → prefer grid
+                await self.async_write_register("econ_rule_1_grid_charge_enable", 1)
+                await self.async_write_register("econ_rule_1_gen_charge_enable", 0)
+            elif value == 2: # discharging → prefer generator
+                await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
+                await self.async_write_register("econ_rule_1_gen_charge_enable", 1)
+            else:            # idle / unknown → disable both
+                await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
+                await self.async_write_register("econ_rule_1_gen_charge_enable", 0)
+    
+            return True
+    
+        return False
     
     async def _transition_to_state(self, new_state: str) -> None:
         """Apply state change via economic rule 1."""
@@ -317,14 +396,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             soc_limit,
         )
 
-        await self.async_write_register("econ_rule_1_enable", enable_value)
+        await self._write_type_specific_register("econ_rule_1_enable", enable_value)
         if new_state != "idle":
-            await self.async_write_register("econ_rule_1_soc", int(soc_limit))
-            await self.async_write_register("econ_rule_1_start_day", date_16bit)
-            await self.async_write_register("econ_rule_1_stop_day", date_16bit)
-            await self.async_write_register("econ_rule_1_voltage", int(voltage_level * 10))
+            await self._write_type_specific_register("econ_rule_1_soc", int(soc_limit))
+            await self._write_type_specific_register("econ_rule_1_start_day", date_16bit)
+            await self._write_type_specific_register("econ_rule_1_stop_day", date_16bit)
+            await self._write_type_specific_register("econ_rule_1_voltage", int(voltage_level * 10))
             # next one is moved to checking safe power levels
-            # await self.async_write_register("econ_rule_1_power", int(round(power_level * 1000,0)))
+            # await self._write_type_specific_register("econ_rule_1_power", int(round(power_level * 1000,0)))
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
