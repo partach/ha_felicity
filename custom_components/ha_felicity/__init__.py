@@ -232,6 +232,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         register_map=selected_registers,          # ← now filtered!
         groups=register_groups,
         model_combined=model_config["combined"],
+        inverter_model = inverter_model,
         config_entry=entry,
         nordpool_entity=nordpool_entity,
         nordpool_override=nordpool_override,
