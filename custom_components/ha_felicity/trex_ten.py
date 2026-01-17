@@ -433,7 +433,7 @@ REGISTER_SETS_TREX_TEN = {
             "ac_active_power",
             "pv_total_power",
             "total_ac_input_power",
-            "load_power_line_side"",
+            "load_power_line_side",
             "BMS_Flg",
             "working_mode",
             "sn",
