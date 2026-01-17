@@ -12,9 +12,9 @@ For this integration to work you need to have a wired modbus connection to your 
 Currently supports IVGM / TREX types: 
 - T-REX-10KLP3G01 (low voltage batteries)
 - T-REX-10KHP3G01 (high voltage batteries)
-- T-REX-50  (in theory, not tested yet)
-- IVGM not tested, but seems to be similar in setup.
-- and others with similar register setup
+- T-REX-50KHP3G01 is now released with v0.8.0
+- Others with exactly similar register setup as above types
+
 
 
 <p align="center">
@@ -60,6 +60,8 @@ The 3 possible ways are explained in the picture below. At the moment the last p
 </p>
 
 ## Installation options
+T-REX-10KLP3G01 and T-REX-10KHP3G01 can be selected with selecting T-REX-10K-P3G01 (both are the same and high/low voltage batteries are automatically detected).
+Similar for T-REX-50K-P3G01 models.
 Below are the install configuration options. When installing make sure your select 2400 baud as communication speed for the TREX.
 You can immediately select your nordpool integration but this can also be done later. (Later you can even override Nordpool with for example TIBBER).
 This can be done via configuration when the intallation is succesfull (device found). Configuration is set in the hub/device view via the gear icon.
