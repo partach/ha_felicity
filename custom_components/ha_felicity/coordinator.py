@@ -9,9 +9,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pymodbus.client import AsyncModbusSerialClient
 from pymodbus.exceptions import ModbusException, ConnectionException
+from .const import INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
 
 _LOGGER = logging.getLogger(__name__)
-from .const import DOMAIN, INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
 
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
