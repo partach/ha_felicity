@@ -601,7 +601,7 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
 REGISTER_SETS_TREX_TEN = {
     "basic": {
         key: info
-        for key, info in _REGISTERS.items()
+        for key, info in _REGISTERS_TREX_FIFTY.items()
         if key in {
             "pv_total_power",
             "total_ac_input_power",
@@ -631,7 +631,7 @@ REGISTER_SETS_TREX_TEN = {
     },
     "basic_plus": {
         key: info
-        for key, info in _REGISTERS.items()
+        for key, info in _REGISTERS_TREX_FIFTY.items()
         if (
              key.startswith((
                "pv", 
