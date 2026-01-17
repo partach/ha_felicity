@@ -232,6 +232,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         slave_id=config[CONF_SLAVE_ID],
         register_map=selected_registers,          # ← now filtered!
         groups=register_groups,
+        model_combined=model_config["combined"],
         config_entry=entry,
         nordpool_entity=nordpool_entity,
         nordpool_override=nordpool_override,
@@ -241,7 +242,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.config = config
     coordinator.hub_key = hub_key
     coordinator._last_register_set = register_set_key
-    coordinator.model_combined = model_config["combined"]
 
     # First refresh
     await coordinator.async_config_entry_first_refresh()
