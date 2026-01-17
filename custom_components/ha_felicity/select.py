@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 
-from .const import DOMAIN, CONF_INVERTER_MODEL
+from .const import DOMAIN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL
 from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ async def async_setup_entry(
         identifiers={(DOMAIN, entry.entry_id)},
         name=entry.title or "Felicity Inverter",
         manufacturer="Felicity Solar",
-        model=entry.data.get(CONF_INVERTER_MODEL, "T-REX-10KLP3G01"),
+        model=entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL),
         configuration_url=f"homeassistant://config/integrations/integration/{entry.entry_id}",
     )
 
