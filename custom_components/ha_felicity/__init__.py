@@ -210,15 +210,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hub_key = f"serial_{port}_{baud}_{parity}_{stopbits}_{bytesize}"
 
         if hub_key not in hubs:
-            from .hub import FelicitySerialHub
-            hubs[hub_key] = FelicitySerialHub(hass, port, baud, parity, stopbits, bytesize)
+            hubs[hub_key] = FelicitySerialHub(hass, port, baudrate, parity, stopbits, bytesize)
     else:  # TCP
         host = config[CONF_HOST]
         port = config[CONF_PORT]
         hub_key = f"tcp_{host}_{port}"
 
         if hub_key not in hubs:
-            from .hub import FelicityTcpHub
             hubs[hub_key] = FelicityTcpHub(hass, host, port)
 
     hub = hubs[hub_key]
