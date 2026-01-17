@@ -62,7 +62,8 @@ The 3 possible ways are explained in the picture below. At the moment the last p
 ## Installation options
 T-REX-10KLP3G01 and T-REX-10KHP3G01 can be selected with selecting T-REX-10K-P3G01 (both are the same and high/low voltage batteries are automatically detected).
 Similar for T-REX-50K-P3G01 models.
-Below are the install configuration options. When installing make sure your select 2400 baud as communication speed for the TREX.
+Below are the install configuration options. When installing, make sure your select 2400 baud as communication speed for the T-REX-10 series.
+The T-REX-50 series supports 9600 baud according documentation.
 You can immediately select your nordpool integration but this can also be done later. (Later you can even override Nordpool with for example TIBBER).
 This can be done via configuration when the intallation is succesfull (device found). Configuration is set in the hub/device view via the gear icon.
 <p align="center">
