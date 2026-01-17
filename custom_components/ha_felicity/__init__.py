@@ -138,7 +138,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         model_config = MODEL_REGISTRY[DEFAULT_INVERTER_MODEL]
 
     registers = model_config["registers"]
-    combined = model_config["combined"]
     register_groups = model_config["register_groups"]  # consistent naming
 
     # ── 2. Apply user-selected register set (if any) ───────────────────────
@@ -242,6 +241,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.config = config
     coordinator.hub_key = hub_key
     coordinator._last_register_set = register_set_key
+    coordinator.model_combined = model_config["combined"]
 
     # First refresh
     await coordinator.async_config_entry_first_refresh()
