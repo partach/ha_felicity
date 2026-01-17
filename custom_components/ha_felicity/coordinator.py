@@ -27,6 +27,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         slave_id: int, 
         register_map: dict, 
         groups: list,
+        model_combined,
         config_entry=ConfigEntry,
         nordpool_entity: str | None = None,
         nordpool_override: str | None = None,
@@ -45,6 +46,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._address_groups = groups
         self.config_entry = config_entry
         self._last_register_set: str | None = None
+        self.model_combined = model_combined
         
         # Nordpool: override wins over entity
         self.nordpool_entity = nordpool_override or nordpool_entity
