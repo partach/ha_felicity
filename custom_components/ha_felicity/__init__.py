@@ -130,8 +130,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     try:
         model_config = MODEL_REGISTRY[inverter_model]
-    except KeyError:
-        _LOGGER.error(
+    except KeyError: # we do it silently, not with an error because we changed the original type indication. We just fall back on the only supported at that time
+        _LOGGER.debug(
             "Unsupported inverter model '%s' – falling back to default '%s'",
             inverter_model, DEFAULT_INVERTER_MODEL
         )
