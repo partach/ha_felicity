@@ -43,7 +43,9 @@ Currently supports IVGM / TREX types:
 
 ## Installation
 Options:
-1. Install via HACS (is coming in the near future)
+1. Install via HACS
+   * This integration including the card <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=partach&repository=ha_felicity"><img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open in HACS" width="150" height="75"></a>
+    * After HA reboot (Needed for new integrations): choose 'add integration' (in devices and services) and choose `ha_felicity` in the list.
 2. Install manually:
    * The integration: In UI go to `HACS`--> `custom repositories` --> `Repo`: partach/ha_felicity, `Type`: Integration
    * After HA reboot (Needed for new integrations): choose 'add integration' (in devices and services) and choose `ha_felicity` in the list.
