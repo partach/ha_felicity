@@ -120,7 +120,19 @@ class TypeSpecificHandler:
     
         return False  # unknown model → fallback
     
+    async def _handle_operating_mode(self, value: int) -> bool:
+        """Handle writing start day register (model-specific)."""
+        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+            await self.async_write_register("operating_mode", value)
+            return True
     
+        elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
+            # Register not used / not present → silently ignore (no error)
+            _LOGGER.debug("Not yet implemented operating_mode for this model")
+            return True
+    
+        return False  # unknown model → fallback
+          
     async def _handle_rule_1_stop_day(self, value: int) -> bool:
         """Handle writing stop day register (model-specific)."""
         if self._inverter_model == INVERTER_MODEL_TREX_TEN:
