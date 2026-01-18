@@ -10,10 +10,9 @@ Felicity inverter home assistant integration for easy setup and use of the devic
 
 For this integration to work you need to have a wired modbus connection to your inverter either [via this USB dongle](https://www.amazon.nl/Industrial-Converter-Lightningproof-Resettable-Protection/dp/B0B87YJLJQ?source=ps-sl-shoppingads-lpcontext&ref_=fplfs&psc=1&smid=A2FQD9ZIAONBLW) or via something [like this](https://www.kiwi-electronics.com/nl/rs485-to-rj45-ethernet-tcp-ip-to-serial-rail-mount-support-20109?country=NL&utm_term=20109&gad_source=1&gad_campaignid=19763718639&gbraid=0AAAAADuMvucKntnrNZrVkZAHDgps81zYC&gclid=Cj0KCQiAx8PKBhD1ARIsAKsmGbeFZaWC_S38eFyu1NtZ0SP4zyLWwMWG70BRz6Ur1nmBymMCxvSR1_kaAmR9EALw_wcB).
 Currently supports IVGM / TREX types: 
-- T-REX-10KLP3G01 (low voltage batteries)
-- T-REX-10KHP3G01 (high voltage batteries)
-- T-REX-50KHP3G01 is now released with v0.8.0
-- Others with exactly similar register setup as above types
+- The T-REX 5 and 10K series with HP or HL (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3)
+- The T-REX 25K and 50K range is now released with v0.8.0 (has complete new register setup).
+- Others with exactly similar register configurations as above types, just be aware you chose the right configuration matching your type.
 
 
 
