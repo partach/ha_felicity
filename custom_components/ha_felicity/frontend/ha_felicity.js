@@ -658,7 +658,7 @@ class FelicityInverterCard extends LitElement {
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <path 
-                  class="flow-path charging ${this._getRawPower('pv_total_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path charging ${this._getRawPower('total_pv_power') > 50 ? 'active' : 'inactive'}" 
                   d="M 25 25 L 47 48" 
                   vector-effect="non-scaling-stroke"
                 />
@@ -723,13 +723,13 @@ class FelicityInverterCard extends LitElement {
               <div class="flow-item pv">
                 <ha-icon 
                   .hass=${this.hass} icon="${(() => {
-                    const power = parseFloat(this._getValue('pv_total_power')) || 0;
+                    const power = parseFloat(this._getValue('total_pv_power')) || 0;
                     if (power > 0) return 'mdi:solar-power-variant';
                     if (power <= 0) return 'mdi:solar-panel';
                     return 'mdi:solar-panel';
                   })()}"
                 ></ha-icon>
-                <div class="power-value">${this._getPower("pv_total_power")}</div>
+                <div class="power-value">${this._getPower("total_pv_power")}</div>
                 <div class="label"></div>
               </div>
 
