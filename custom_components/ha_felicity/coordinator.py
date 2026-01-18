@@ -425,18 +425,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             now = datetime.now()
                             if self._current_day != now.day:
                                 _LOGGER.info("New day detected — resetting energy state")
-                                self._current_energy_state = "idle"
+                                await self._transition_to_state("idle") # switch to idle to set new schedule.
+                                self._current_energy_state = None # reset this one too
                                 self._current_day = now.day
-
-                            # Determine and apply new state
-                            battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
-
-                            desired_state = self._determine_energy_state(battery_soc)
-
-                            if desired_state != self._current_energy_state:
-                                await self._transition_to_state(desired_state)
-                                self._current_energy_state = desired_state
-                                self._last_state_change = now
+                            else: # done for one round, pick it up in next round    
+                                # Determine and apply new state
+                                battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
+    
+                                desired_state = self._determine_energy_state(battery_soc)
+    
+                                if desired_state != self._current_energy_state:
+                                    await self._transition_to_state(desired_state)
+                                    self._current_energy_state = desired_state
+                                    self._last_state_change = now
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",
