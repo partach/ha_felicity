@@ -285,6 +285,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         )
 
         await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
+        await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
         if new_state != "idle":
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", int(soc_limit))
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
