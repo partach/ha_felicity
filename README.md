@@ -104,7 +104,9 @@ Note1:
  * the integration uses internal **Econ Rule 1** for this. 
  * Rule 1 will be activated and controlled by the integration. Make sure the settings in there are inline with the intended use!
    **Weekdays, Time Start and Time Stop will not be set by the integration**. The user has to set those to a default usefull for them.
- * The integration wil set: The date on Today (if not idle), Voltage depending on charge (58) and discharge (50) but can be overwritten, SOC on configured setting (max battery / min battery, see below)
+ * The integration wil set: The date on Today (on 5/10k series if not idle), Voltage depending on charge and setting in integration <br>
+ (for exampl 58/460 depending on high/low voltage) and discharge but can be overwritten, SOC on configured setting (max battery / min battery, see below)
+ * Settings affected differ per type selected in the installation (5/10k series or 25/50k series)
 
 Note2: The Operating mode **must be set (by user) to Economic mode**. The Energy management feature will not engage in any other mode (Like General).
 
