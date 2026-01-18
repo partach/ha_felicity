@@ -127,6 +127,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # ── 1. Determine inverter model ────────────────────────────────────────
     inverter_model = config.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+    if inverter_model == "T-REX-10KLP3G01": # the older first installation type indication.
+        inverter_model = DEFAULT_INVERTER_MODEL # set to how we now deal with it.
 
     try:
         model_config = MODEL_REGISTRY[inverter_model]
