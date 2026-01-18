@@ -60,11 +60,12 @@ The 3 possible ways are explained in the picture below. At the moment the last p
 </p>
 
 ## Installation options
-T-REX-10KLP3G01 and T-REX-10KHP3G01 can be selected with selecting T-REX-10K-P3G01 (both are the same and high/low voltage batteries are automatically detected).
-Similar for T-REX-50K-P3G01 models.
-Below are the install configuration options. When installing, make sure your select 2400 baud as communication speed for the T-REX-10 series.
-The T-REX-50 series supports 9600 baud according documentation.
-You can immediately select your nordpool integration but this can also be done later. (Later you can even override Nordpool with for example TIBBER).
+The T-REX 5 and 10K series with HP or HL (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3) can be selected with selecting <br>
+**T-REX-10K-P3G01** (All use same register setup).
+The T-REX 25K and 50K range can be select by choosing option **T-REX-50KHP3G01**.
+Below are the install configuration options. When installing, make sure your select **2400 baud** as communication speed for the **T-REX-5/10** series.
+The **T-REX-25/50** series supports 9600 baud according documentation. If it doesnt work at first good to check if a different baud rate helps.
+You can immediately select your monetary (Nordpool) integration but this can also be done later. (Later you can even override Nordpool with for example TIBBER).
 This can be done via configuration when the intallation is succesfull (device found). Configuration is set in the hub/device view via the gear icon.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config5.png" width="300"/>
@@ -76,6 +77,14 @@ This can be done via configuration when the intallation is succesfull (device fo
   <br>
   <em>Serial Example, choose the settings you need (2400 baud is sadly default for the TRex)</em>
 </p>
+
+## Configuration
+After successfull install the integration can be configured at any time with a few settings. See picture on top for location of the gear icon
+- Update interval (the frequency of refresh of data). For the T-REX 5-10k models keep it on 10 sec minimum due to small baud rate.
+- Monetary override. Nordpool is supported by default but also other monetary integrations as Tibber. The format is that it needs a sensor with attributes about min, max, avg price
+If you want use Tibber enter in the override fied: `sensor.tibber_electricity_price` where electricity_price is the sensor with attributes (avg, min, max) and 'tibber' how you named the integration.
+The Felicity integration looks for a variaty of avg_price like fields as attributes and if it finds in the the override sensor, uses that as needed price information. If no information is found, 
+the price information remains unavailable. 
 
 ## Controls
 Via the device you can directly control many settings run-time. Be carefull with some of these setting as the affect the behavior of the device.
@@ -129,9 +138,9 @@ For example if you have a maximum of 16A per group, set the value to 16A. The in
 (by decreasing the user requested power level, controlled via rule 1 via the integration).
 It will keep monitorning this and will increase the battery loading to requested power levels if the amperage becomes lower.
 
-## Installing the card
+## Using the card
 After installation of the integration you need to first reboot HA.
-The card will be automatically registered by the integration on start up.
+The card will be automatically installed and registered by the integration on start up.
 To use the card in your dashboard, go to you dashboard, edit, choose `Add card`.
 Choose `Manual`
 Add first line: `type: custom:felicity-inverter-card`
