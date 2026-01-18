@@ -65,8 +65,8 @@ def determine_battery_soc(self, data: dict) -> int | float | None:
         _LOGGER.debug("Neither bat1_soc nor bat2_soc available on 50K model")
         return None
 
-  _LOGGER.warning("Unsupported model for battery SOC: %s", self.inverter_model)
-  return None
+    _LOGGER.warning("Unsupported model for battery SOC: %s", self.inverter_model)
+    return None
           
 async def write_type_specific_register(self, register_name: str, value: int) -> None:
     """
@@ -154,4 +154,4 @@ async def _handle_econ_rule_1_enable(self, value: int) -> bool:
   
         return True
   
-      return False
+    return False
