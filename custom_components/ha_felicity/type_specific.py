@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Any
+from typing import Any
 from .const import INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
 _LOGGER = logging.getLogger(__name__)
 
