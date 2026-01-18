@@ -76,7 +76,7 @@ This can be done via configuration when the intallation is succesfull (device fo
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config2.png" width="300"/>
   <br>
-  <em>Serial Example, choose the settings you need (2400 baud is sadly default for the TRex)</em>
+  <em>Serial Example, choose the settings you need (2400 baud is sadly default for the TRex 5-10k series)</em>
 </p>
 
 ## Configuration
