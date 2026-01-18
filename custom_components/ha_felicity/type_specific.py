@@ -2,7 +2,73 @@ import logging
 from .const import INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
 _LOGGER = logging.getLogger(__name__)
 
-async def _write_type_specific_register(self, register_name: str, value: int) -> None:
+
+def determine_battery_voltage(self, data: dict) -> int | float | None:
+  if self.inverter_model == INVERTER_MODEL_TREX_TEN:
+      voltage = data.get("battery_voltage")
+      if voltage is not None:
+          return voltage
+      _LOGGER.debug("battery_voltage missing on 10K model")
+      return None
+
+  elif self.inverter_model == INVERTER_MODEL_TREX_FIFTY:
+      bat1 = data.get("bat1_voltage")
+      bat2 = data.get("bat2_voltage")
+
+#            if bat1 is not None and bat2 is not None:
+#                return (bat1 + bat2) / 2
+      if bat1 is not None:
+          return bat1
+      elif bat2 is not None:
+          return bat2
+      else:
+          _LOGGER.debug("Neither bat1_voltage nor bat2_voltage available")
+          return None
+          
+def determine_battery_soc(self, data: dict) -> int | float | None:
+  """
+  Determine the representative battery SOC based on model.
+  For 10K: single battery SOC.
+  For 50K:
+    - Both available → return the minimum (most conservative)
+    - Only one available → return that one
+    - Neither → return None
+  """
+  if self.inverter_model == INVERTER_MODEL_TREX_TEN:
+      soc = data.get("battery_capacity")
+      if soc is not None:
+          return soc
+      _LOGGER.debug("battery_capacity missing on 10K model")
+      return None
+
+  elif self.inverter_model == INVERTER_MODEL_TREX_FIFTY:
+      bat1 = data.get("bat1_soc")
+      bat2 = data.get("bat2_soc")
+
+      # Case 1: Both batteries report a value → return the minimum
+      if bat1 is not None and bat2 is not None:
+          min_soc = min(bat1, bat2)
+          _LOGGER.debug("Dual battery SOC: bat1=%.1f%%, bat2=%.1f%% → using minimum %.1f%%",
+                       bat1, bat2, min_soc)
+          return min_soc
+
+      # Case 2: Only one battery has a value → use that one
+      if bat1 is not None:
+          _LOGGER.debug("Only bat1_soc available: %.1f%% (bat2 missing)", bat1)
+          return bat1
+
+      if bat2 is not None:
+          _LOGGER.debug("Only bat2_soc available: %.1f%% (bat1 missing)", bat2)
+          return bat2
+
+      # Case 3: Neither has a value
+      _LOGGER.debug("Neither bat1_soc nor bat2_soc available on 50K model")
+      return None
+
+  _LOGGER.warning("Unsupported model for battery SOC: %s", self.inverter_model)
+  return None
+          
+async def write_type_specific_register(self, register_name: str, value: int) -> None:
       """
       Model-specific write behavior.
       If a handler exists and handles it → done.
