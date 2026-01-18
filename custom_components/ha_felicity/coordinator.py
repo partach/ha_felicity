@@ -2,12 +2,11 @@
 
 import logging
 from datetime import timedelta
-from typing import Dict
+from typing import Dict, Any
 from datetime import datetime
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from pymodbus.client import AsyncModbusSerialClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 from .const import INVERTER_MODEL_TREX_TEN # only for determining default
 from .type_specific import TypeSpecificHandler
