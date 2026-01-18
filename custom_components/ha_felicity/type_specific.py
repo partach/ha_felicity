@@ -121,18 +121,70 @@ class TypeSpecificHandler:
         return False  # unknown model → fallback
     
     async def _handle_operating_mode(self, value: int) -> bool:
-        """Handle writing start day register (model-specific)."""
+        """
+          {"charging": 1, "discharging": 2, "idle": 0}
+          Handle writing start operating mode register (model-specific).
+          for trex-10   0: General mode (self-generation and self-use, priority to load power supply)
+                        1: Backup mode (grid-connected battery does not discharge, PV is charged first)
+                        2: Economic mode (time-of-use electricity price/scheduled charging and discharging)
+          for trex-50   System Mode (0 Selling Mode, 1 Zero Export To Load, 2 Zero Export To CT)
+                        Zero Export To Load Sell Enable (0 Disabled, 1 Enabled)
+                        Zero Export To CT Sell Enable (0 Disabled, 1 Enabled)
+                        Zero-export mode selection (0 CT, 1 Meter)
+        """
         if self._inverter_model == INVERTER_MODEL_TREX_TEN:
-            await self.async_write_register("operating_mode", value)
+            if value == 0: # assume idle
+                await self.async_write_register("operating_mode", 0)
+            elif value in (1,2): # assume Economic mode, enabled to_grid or from_grid 
+                await self.async_write_register("operating_mode", 2) # skip back-up mode for now
+            else:
+              _LOGGER.warning("Operating mode unknown for TREX10 series, not changing registers")
             return True
     
         elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
-            # Register not used / not present → silently ignore (no error)
-            _LOGGER.debug("Not yet implemented operating_mode for this model")
+            if value == 0: # assume idle, we dont control but we need to set things back if we did (but defaults no know atm)
+    #            await self.async_write_register("econ_rule_1_grid_charge_enable", 0) # already happens in coordinator
+                await self.async_write_register("system_mode", 2) # default no sell
+            elif value == 1: # Charge and we want to control
+                await self.async_write_register("system_mode", 2) # allows charge
+                if self.register_map.get("eco_timeofuse",0) == 0:
+                    _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
+                await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+            elif value == 2: # discharge to grid and we want to control
+                if self.register_map.get("eco_timeofuse",0) == 0:
+                    _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
+                await self.async_write_register("zero_export_to_ct_sell_enable", 1) # Provide back to grid if needed. (to_grid or from_grid is enabled)
+                await self.async_write_register("system_mode", 0)
+                await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+            else:    
+              _LOGGER.warning("Operating mode unknown for TREX50 series, not changing registers")
             return True
     
         return False  # unknown model → fallback
-          
+
+    async def _handle_econ_rule_1_enable(self, value: int) -> bool:
+        """
+           Handle economic rule 1 enable (model-specific mapping).
+           0 is off, 1 is charging, 2 is discharging
+        """
+        
+        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+            await self.async_write_register("econ_rule_1_enable", value) # same setup as in trex-10
+            return True
+      
+        elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
+            if value == 1:   # charging → 
+                await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
+            elif value == 2: # discharging → 
+                await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
+            else:            # idle / unknown → disable both
+                await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
+      
+            return True
+      
+        return False
+    
+    
     async def _handle_rule_1_stop_day(self, value: int) -> bool:
         """Handle writing stop day register (model-specific)."""
         if self._inverter_model == INVERTER_MODEL_TREX_TEN:
@@ -146,7 +198,11 @@ class TypeSpecificHandler:
         return False
         
     async def _handle_econ_rule_1_power(self, value: int) -> bool:
-        """Handle writing stop day register (model-specific)."""
+        """
+          Handle writing stop power register (model-specific).
+          for trex-10: in watts (also used in coordinator)
+          for trex-50: in kW and Zero-export Power (assumed rule is leading and this value is independent)
+        """
         if self._inverter_model == INVERTER_MODEL_TREX_TEN:
             await self.async_write_register("econ_rule_1_power", value)
             return True
@@ -157,26 +213,6 @@ class TypeSpecificHandler:
       
         return False   
     
-    async def _handle_econ_rule_1_enable(self, value: int) -> bool:
-        """Handle economic rule 1 enable (model-specific mapping)."""
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
-            await self.async_write_register("econ_rule_1_enable", value)
-            return True
-      
-        elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
-            if value == 1:   # charging → prefer grid
-                await self.async_write_register("econ_rule_1_grid_charge_enable", 1)
-               # await self.async_write_register("econ_rule_1_gen_charge_enable", 0)
-            elif value == 2: # discharging → prefer generator
-                await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
-               # await self.async_write_register("econ_rule_1_gen_charge_enable", 1)
-            else:            # idle / unknown → disable both
-                await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
-               # await self.async_write_register("econ_rule_1_gen_charge_enable", 0)
-      
-            return True
-      
-        return False
         
     async def async_write_register(self, key: str, value: int) -> bool:
         """Write to a register, handling size and endianness."""
@@ -188,7 +224,16 @@ class TypeSpecificHandler:
         address = info["address"]
         size = info.get("size", 1)
         endian = info.get("endian", "big")
-    
+        index = info.get("index", 0)
+
+        if index in (1, 8):    # /10 fields
+            value = int(round(value * 10.0))   # 12.3 → 123
+        elif index in (2, 9):  # /100 fields (including power factor 0.01)
+            value = int(round(value * 100.0))  # 0.95 → 95
+        elif index == 3:       # signed – usually no scaling needed, but cast to int
+            value = int(value)
+        # index 0 or other → no scaling
+        
         if size == 1:
             values = [value]
         elif size == 2:
