@@ -1,6 +1,5 @@
 import logging
-from typing import Optional
-from pymodbus.client import AsyncModbusSerialClient
+from typing import Optional, Any
 from .const import INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
 _LOGGER = logging.getLogger(__name__)
 
@@ -12,10 +11,10 @@ class TypeSpecificHandler:
         inverter_model: str,
         register_map: dict,
     ):
-    self._inverter_model = inverter_model
-    self.client = client
-    self.slave_id = slave_id
-    self.register_map = register_map
+        self._inverter_model = inverter_model
+        self.client = client
+        self.slave_id = slave_id
+        self.register_map = register_map
 
     def determine_battery_voltage(self, data: dict) -> int | float | None:
         if self._inverter_model == INVERTER_MODEL_TREX_TEN:
