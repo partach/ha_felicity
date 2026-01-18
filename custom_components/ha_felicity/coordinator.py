@@ -10,7 +10,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from pymodbus.client import AsyncModbusSerialClient
 from pymodbus.exceptions import ModbusException, ConnectionException
 from .const import INVERTER_MODEL_TREX_TEN # only for determining default
-from .type_specific import write_type_specific_register, determine_battery_voltage, determine_battery_soc
+from .type_specific import TypeSpecificHandler
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     def __init__(
         self, 
         hass: HomeAssistant, 
-        client: AsyncModbusSerialClient, 
+        client: Any, 
         slave_id: int, 
         register_map: dict, 
         groups: list,
@@ -51,6 +51,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._last_register_set: str | None = None
         self.model_combined = model_combined
         self.inverter_model = inverter_model if inverter_model else INVERTER_MODEL_TREX_TEN
+        self.TypeSpecificHandler = TypeSpecificHandler(client=self.client, slave_id=self.slave_id, inverter_model=self.inverter_model, register_map=self.register_map)
         
         # Nordpool: override wins over entity
         self.nordpool_entity = nordpool_override or nordpool_entity
@@ -152,52 +153,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 return False
         return self.connected
             
-    async def async_write_register(self, key: str, value: int) -> bool:
-        """Write to a register, handling size and endianness."""
-        if key not in self.register_map:
-            _LOGGER.error("Attempt to write unknown register key: %s", key)
-            return False
-
-        info = self.register_map[key]
-        address = info["address"]
-        size = info.get("size", 1)
-        endian = info.get("endian", "big")
-
-        if size == 1:
-            values = [value]
-        elif size == 2:
-            high = (value >> 16) & 0xFFFF
-            low = value & 0xFFFF
-            values = [high, low] if endian == "big" else [low, high]
-        elif size == 4:
-            values = []
-            for i in range(3, -1, -1):
-                values.append((value >> (i * 16)) & 0xFFFF)
-            if endian == "little":
-                values.reverse()
-        else:
-            _LOGGER.error("Unsupported register size %d for key %s", size, key)
-            return False
-
-        return await self.async_write_registers(address, values)
-
-    async def async_write_registers(self, start_address: int, values: list[int]) -> bool:
-        """Write multiple registers."""
-        try:
-            result = await self.client.write_registers(
-                address=start_address, 
-                values=values, 
-                device_id=int(self.slave_id)
-            )
-            if result.isError():
-                _LOGGER.error("Write registers error at %s: %s", start_address, result)
-                return False
-            _LOGGER.debug("Successfully wrote registers at %s: %s", start_address, values)
-            return True
-        except Exception as err:
-            _LOGGER.error("Exception writing registers at %s: %s", start_address, err)
-            return False
-            
     def _determine_energy_state(self, battery_soc: float | None) -> str:
         """Determine desired energy management state."""
         opts = self.config_entry.options
@@ -297,7 +252,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             target_watts = int(round(safe_level * 1000))
             _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
             try:
-                await write_type_specific_register("econ_rule_1_power", target_watts)
+                await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
                 self.safe_max_power = safe_level
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
@@ -330,14 +285,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             soc_limit,
         )
 
-        await write_type_specific_register("econ_rule_1_enable", enable_value)
+        await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
         if new_state != "idle":
-            await write_type_specific_register("econ_rule_1_soc", int(soc_limit))
-            await write_type_specific_register("econ_rule_1_start_day", date_16bit)
-            await write_type_specific_register("econ_rule_1_stop_day", date_16bit)
-            await write_type_specific_register("econ_rule_1_voltage", int(voltage_level * 10))
+            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", int(soc_limit))
+            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
+            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_stop_day", date_16bit)
+            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_voltage", int(voltage_level * 10))
             # next one is moved to checking safe power levels, should not be done here
-            # await write_type_specific_register("econ_rule_1_power", int(round(power_level * 1000,0)))
+            # await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", int(round(power_level * 1000,0)))
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
@@ -424,7 +379,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                     new_data[key] = value
             # dynamically check which battery system we have.
-            raw_system_voltage = determine_battery_voltage(new_data)
+            raw_system_voltage = self.TypeSpecificHandler.determine_battery_voltage(new_data)
             if raw_system_voltage is not None:
                 new_data["battery_nominal_voltage"] = raw_system_voltage
             safe_power_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
@@ -474,7 +429,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 self._current_day = now.day
 
                             # Determine and apply new state
-                            battery_soc = determine_battery_soc(new_data)
+                            battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
 
                             desired_state = self._determine_energy_state(battery_soc)
 
