@@ -38,6 +38,7 @@ from .const import (
     REGISTER_SET_BASIC,
     REGISTER_SET_BASIC_PLUS,
     REGISTER_SET_FULL,
+    INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_FIFTY,
     CONF_INVERTER_MODEL,
@@ -111,6 +112,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_INVERTER_MODEL, default=DEFAULT_INVERTER_MODEL): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
+                            selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIVE, label=INVERTER_MODEL_TREX_FIVE),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TEN, label=INVERTER_MODEL_TREX_TEN),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIFTY, label=INVERTER_MODEL_TREX_FIFTY),
                             # Future models go here
