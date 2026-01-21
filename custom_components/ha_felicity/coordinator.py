@@ -334,7 +334,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         device_id=self.slave_id,
                     )
                 except Exception as err:
-                    _LOGGER.error("Read error at address %d, count: %d", start_addr, count)
+                    _LOGGER.error("Read error at address %d, count: %d error:%s", start_addr, count, err)
 
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
