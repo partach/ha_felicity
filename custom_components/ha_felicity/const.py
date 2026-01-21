@@ -1,6 +1,7 @@
 """Constants for the Felicity integration."""
 from .trex_fifty import _REGISTERS_TREX_FIFTY, _COMBINED_REGISTERS_TREX_FIFTY, REGISTER_SETS_TREX_FIFTY
 from .trex_ten import _REGISTERS_TREX_TEN, _COMBINED_REGISTERS_TREX_TEN, REGISTER_SETS_TREX_TEN 
+from .trex_five import _REGISTERS_TREX_FIVE, _COMBINED_REGISTERS_TREX_FIVE, REGISTER_SETS_TREX_FIVE 
 
 
 DOMAIN = "ha_felicity"
@@ -17,10 +18,12 @@ CONF_REGISTER_SET = "register_set"
 CONF_INVERTER_MODEL = "inverter_model"
 
 # Supported inverter models
+INVERTER_MODEL_TREX_FIVE = "T-REX-5K-P1G01"
 INVERTER_MODEL_TREX_TEN = "T-REX-10K-P3G01"
 INVERTER_MODEL_TREX_FIFTY = "T-REX-50KHP3G01"
 
 SUPPORTED_MODELS = [
+    INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_FIFTY,
     # add new ones here
@@ -104,6 +107,14 @@ def build_groups(registers):
 
 
 MODEL_REGISTRY = {
+    INVERTER_MODEL_TREX_FIVE: {
+        "registers":        _REGISTERS_TREX_FIVE,
+        "combined":         _COMBINED_REGISTERS_TREX_FIVE,
+        "register_groups":  build_groups(_REGISTERS_TREX_FIVE),
+        "register_sets":    REGISTER_SETS_TREX_FIVE,
+        "default_first_reg": 4353,
+        "default_slave_id": 1,
+    },
     INVERTER_MODEL_TREX_TEN: {
         "registers":        _REGISTERS_TREX_TEN,
         "combined":         _COMBINED_REGISTERS_TREX_TEN,
