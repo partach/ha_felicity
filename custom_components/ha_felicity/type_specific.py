@@ -1,6 +1,6 @@
 import logging
 from typing import Any
-from .const import INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
+from .const import INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_FIFTY
 _LOGGER = logging.getLogger(__name__)
 
 class TypeSpecificHandler:
@@ -17,11 +17,11 @@ class TypeSpecificHandler:
         self.register_map = register_map
 
     def determine_battery_voltage(self, data: dict) -> int | float | None:
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             voltage = data.get("battery_voltage")
             if voltage is not None:
                 return voltage
-            _LOGGER.debug("battery_voltage missing on 10K model")
+            _LOGGER.debug("battery_voltage missing on 5/10K model")
             return None
       
         elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
@@ -47,7 +47,7 @@ class TypeSpecificHandler:
           - Only one available → return that one
           - Neither → return None
         """
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             soc = data.get("battery_capacity")
             if soc is not None:
                 return soc
@@ -109,7 +109,7 @@ class TypeSpecificHandler:
       
     async def _handle_rule_1_start_day(self, value: int) -> bool:
         """Handle writing start day register (model-specific)."""
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             await self.async_write_register("econ_rule_1_start_day", value)
             return True
     
@@ -132,7 +132,7 @@ class TypeSpecificHandler:
                         Zero Export To CT Sell Enable (0 Disabled, 1 Enabled)
                         Zero-export mode selection (0 CT, 1 Meter)
         """
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             if value == 0: # assume idle
                 await self.async_write_register("operating_mode", 0)
             elif value in (1,2): # assume Economic mode, enabled to_grid or from_grid 
@@ -168,7 +168,7 @@ class TypeSpecificHandler:
            0 is off, 1 is charging, 2 is discharging
         """
         
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             await self.async_write_register("econ_rule_1_enable", value) # same setup as in trex-10
             return True
       
@@ -187,7 +187,7 @@ class TypeSpecificHandler:
     
     async def _handle_rule_1_stop_day(self, value: int) -> bool:
         """Handle writing stop day register (model-specific)."""
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             await self.async_write_register("econ_rule_1_stop_day", value)
             return True
     
@@ -203,7 +203,7 @@ class TypeSpecificHandler:
           for trex-10: in watts (also used in coordinator)
           for trex-50: in kW and Zero-export Power (assumed rule is leading and this value is independent)
         """
-        if self._inverter_model == INVERTER_MODEL_TREX_TEN:
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             await self.async_write_register("econ_rule_1_power", value)
             return True
       
