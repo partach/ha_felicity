@@ -327,12 +327,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             for group in self._address_groups:
                 start_addr = group["start"]
                 count = group["count"]
-
-                result = await self.client.read_holding_registers(
-                    address=start_addr,
-                    count=count,
-                    device_id=self.slave_id,
-                )
+                try:
+                    result = await self.client.read_holding_registers(
+                        address=start_addr,
+                        count=count,
+                        device_id=self.slave_id,
+                    )
+                except Exception as err:
+                    _LOGGER.error("Read error at address %d, count: %d", start_addr, count)
 
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
