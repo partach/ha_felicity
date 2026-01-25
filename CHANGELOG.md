@@ -1,5 +1,8 @@
 ## Changelog
 
+### [0.8.2] - Support for multiple inverter types
+- TREX 5 series added
+  
 ### [0.8.0] - Support for multiple inverter types
 - TREX 50 series added
 
