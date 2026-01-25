@@ -35,20 +35,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities.extend([
         HA_FelicityTime(coordinator, entry, key, info)
         for key, info in coordinator.register_map.items()
-        if info.get("type") == "time"
+        if info.get("type") == "time8bit"
     ])
     
     # 3. Date entities
     entities.extend([
         HA_FelicityDate(coordinator, entry, key, info)
         for key, info in coordinator.register_map.items()
-        if info.get("type") == "date"
+        if info.get("type") == "date8bit"
     ])
     
 
     # 6. Regular sensors from selected registers 
     # Filter out keys that were already added as specific entity types above
-    special_types = {"select", "time", "date", "select_multi", "number"}
+    special_types = {"select", "time8bit", "date8bit", "select_multi", "number"}
     entities.extend([
         HA_FelicitySensor(coordinator, entry, key, info)
         for key, info in coordinator.register_map.items()
@@ -240,6 +240,7 @@ class HA_FelicityTime(CoordinatorEntity, TimeEntity):
         self._info = info
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = f"{entry.title} {info['name']}"
+        self._time_error = False 
 
     @property
     def native_value(self):
@@ -248,13 +249,20 @@ class HA_FelicityTime(CoordinatorEntity, TimeEntity):
             return None
         hours = raw >> 8
         minutes = raw & 0xFF
+        theTime = raw
         from datetime import time
-        return time(hour=hours, minute=minutes)
+        try:
+           theTime = time(hour=hours, minute=minutes)
+        except Exception as err:
+            self._time_error = True
+           _LOGGER.debug("Failed to interpret time of register with error:%s, returning raw value: %s", err, theTime)  
+        return theTime
 
     async def async_set_value(self, value) -> None:
         # value is datetime.time
-        packed = (value.hour << 8) | value.minute
-        await self.coordinator.async_write_register(self._key, packed)
+        if not self._time_error: # only write if the value makes sense
+          packed = (value.hour << 8) | value.minute
+          await self.coordinator.async_write_register(self._key, packed)
         await self.coordinator.async_request_refresh()
 
 
