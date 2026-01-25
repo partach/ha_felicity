@@ -254,15 +254,15 @@ class HA_FelicityTime(CoordinatorEntity, TimeEntity):
         try:
            theTime = time(hour=hours, minute=minutes)
         except Exception as err:
-            self._time_error = True
+           self._time_error = True
            _LOGGER.debug("Failed to interpret time of register with error:%s, returning raw value: %s", err, theTime)  
         return theTime
 
     async def async_set_value(self, value) -> None:
         # value is datetime.time
         if not self._time_error: # only write if the value makes sense
-          packed = (value.hour << 8) | value.minute
-          await self.coordinator.async_write_register(self._key, packed)
+           packed = (value.hour << 8) | value.minute
+           await self.coordinator.async_write_register(self._key, packed)
         await self.coordinator.async_request_refresh()
 
 
