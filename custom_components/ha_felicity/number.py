@@ -148,7 +148,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
             packed = int(value * 100)
         else:
             return # we do not know what to write and dont want to kill the device with weird register values
-        await self.coordinator.async_write_register(self._key, packed)
+        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
 
