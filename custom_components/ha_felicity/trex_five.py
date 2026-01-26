@@ -220,7 +220,7 @@ _REGISTERS_TREX_FIVE = {
     "econ_rule_1_stop_time": {"address": 8570, "name": "Rule 1 Stop Time", "precision": 0, "index": 0, "type": "time8bit"},
     "econ_rule_1_start_day": {"address": 8571, "name": "Rule 1 Start Date", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_1_stop_day": {"address": 8572, "name": "Rule 1 Stop Date", "precision": 0, "index": 0, "type": "date8bit"},
-    "econ_rule_1_effective_week": {"address": 8573, "name": "Rule 1 Effective Days", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
+    "econ_rule_1_effective_week": {"address": 8573, "name": "Rule 1 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
     "econ_rule_1_voltage": {"address": 8574, "name": "Rule 1 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
     "econ_rule_1_soc": {"address": 8575, "name": "Rule 1 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_1_power": {"address": 8576, "name": "Rule 1 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
