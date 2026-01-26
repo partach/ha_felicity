@@ -247,12 +247,14 @@ class HA_FelicityTime(CoordinatorEntity, TimeEntity):
         raw = self.coordinator.data.get(self._key)
         if raw is None:
             return None
+        # currently only time8bit exist so we assume that setup
         hours = raw >> 8
         minutes = raw & 0xFF
         theTime = raw
         from datetime import time
         try:
            theTime = time(hour=hours, minute=minutes)
+           self._time_error = False
         except Exception as err:
            self._time_error = True
            _LOGGER.debug("Failed to interpret time of register with error:%s, returning raw value: %s", err, theTime)  
@@ -261,6 +263,7 @@ class HA_FelicityTime(CoordinatorEntity, TimeEntity):
     async def async_set_value(self, value) -> None:
         # value is datetime.time
         if not self._time_error: # only write if the value makes sense
+            #   we let the write_type_specific_register take care of special treatment? Not yet as we only have on type atm
            packed = (value.hour << 8) | value.minute
            await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
         await self.coordinator.async_request_refresh()
@@ -275,22 +278,32 @@ class HA_FelicityDate(CoordinatorEntity, DateEntity):
         self._info = info
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = f"{entry.title} {info['name']}"
+        self._date_error = False 
 
     @property
     def native_value(self):
         raw = self.coordinator.data.get(self._key)
         if raw is None:
             return None
+        # currently only date8bit exist so we assume that setup
         month = raw >> 8
         day = raw & 0xFF
+        theDate = raw
         from datetime import date
-        # Year is arbitrary as the register only holds month/day
-        return date(year=2025, month=month, day=day)
+        try:
+           theDate = date(year=2025, month=month, day=day)
+           self._date_error = False
+        except Exception as err:
+           self._date_error = True
+           _LOGGER.debug("Failed to interpret date of register with error:%s, returning raw value: %s", err, theDate)  
+        return theDate
 
     async def async_set_value(self, value) -> None:
         # value is datetime.date
-        packed = (value.month << 8) | value.day
-        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
+        if not self._date_error:
+            #   we let the write_type_specific_register take care of special treatment? Not yet as we only have on type atm
+            packed = (value.month << 8) | value.day
+            await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
         await self.coordinator.async_request_refresh()
 
 
