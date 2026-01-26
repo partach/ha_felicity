@@ -262,7 +262,7 @@ class HA_FelicityTime(CoordinatorEntity, TimeEntity):
         # value is datetime.time
         if not self._time_error: # only write if the value makes sense
            packed = (value.hour << 8) | value.minute
-           await self.coordinator.async_write_register(self._key, packed)
+           await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
         await self.coordinator.async_request_refresh()
 
 
@@ -290,7 +290,7 @@ class HA_FelicityDate(CoordinatorEntity, DateEntity):
     async def async_set_value(self, value) -> None:
         # value is datetime.date
         packed = (value.month << 8) | value.day
-        await self.coordinator.async_write_register(self._key, packed)
+        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
         await self.coordinator.async_request_refresh()
 
 
