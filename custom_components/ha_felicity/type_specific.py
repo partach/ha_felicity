@@ -225,6 +225,7 @@ class TypeSpecificHandler:
         size = info.get("size", 1)
         endian = info.get("endian", "big")
         index = info.get("index", 0)
+    #     type = info.get("type", "") # Not yet use this, later maybe we also make sure we use the type specifics here like time8bit, etc.
 
         if index in (1, 8):    # /10 fields
             value = int(round(value * 10.0))   # 12.3 → 123
