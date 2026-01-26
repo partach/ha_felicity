@@ -139,15 +139,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Write the new value to the inverter register."""
-        index = self._info.get("index", 0)
-        if index == 0:
-            packed = int(value)
-        elif index == 1:
-            packed = int(value * 10)
-        elif index == 2:
-            packed = int(value * 100)
-        else:
-            return # we do not know what to write and dont want to kill the device with weird register values
+        # in the write function we will determine if the register needs special care (index)
         await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
