@@ -99,7 +99,7 @@ class HA_FelicitySelect(CoordinatorEntity, SelectEntity):
         if option not in self._attr_options:
             return
         value = self._attr_options.index(option)
-        success = await self.coordinator.async_write_register(self._key, value)
+        success = await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, value)
         if success:
             # Optimistic update
             self.coordinator.data[self._key] = value
@@ -152,7 +152,7 @@ class HA_FelicitySelectMulti(CoordinatorEntity, SelectEntity):
             days.append(option)
 
         value = sum(1 << i for i, day in enumerate(self._attr_options) if day in days)
-        await self.coordinator.async_write_register(self._key, value)
+        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, value)
         await self.coordinator.async_request_refresh()
 
 
