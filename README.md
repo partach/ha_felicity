@@ -62,7 +62,7 @@ The 3 possible ways are explained in the picture below. At the moment the last p
 </p>
 
 ## Installation options
-The T-REX 5 and 10K series with HP or HL (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3) can be selected with selecting <br>
+The T-REX 5 and 10K series with HP or HL (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3) can be selected with selecting
 **T-REX-10K-P3G01** (All use same register setup).
 The T-REX 25K and 50K range can be select by choosing option **T-REX-50KHP3G01**.
 Below are the install configuration options. When installing, make sure your select **2400 baud** as communication speed for the **T-REX-5/10** series.
