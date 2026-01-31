@@ -161,9 +161,11 @@ If you want to override items in the card you can add the following yaml code:
 type: custom:felicity-inverter-card
 device_id: <some big hex nr translation of your device which was set in visual mode> 
 overrides:
-  total_ac_active_power: sensor.<your house usage in watts sensor>
-  pv_input_power: sensor.<your total pv in watts sensor>
-  ac_input_power: sensor.<your house total grid sensor>
+  loadpower_lineside: sensor.<your house usage in watts sensor>
+  total_ac_output_active_power: sensor.<your backup usage in watts sensor>
+  total_pv_power: sensor.<your total pv in watts sensor>
+  total_ac_input_power: sensor.<your house total grid sensor>
+  battery_power: sensor.<your house total battery sensor>
 ```
 
 `the override declarations only have to be used if there is more electricity generated or used then felicity is aware off`
