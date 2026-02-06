@@ -1,5 +1,7 @@
 ## Changelog
-
+### [0.8.4] - Fix inverter selection bug
+- Solving bug in inverter selection
+  
 ### [0.8.3] - Support for multiple inverter types
 - Issue with writing rule sliders fixed
 - Issue with TREX50 write rule handled (not fixed, still missing requirements)
