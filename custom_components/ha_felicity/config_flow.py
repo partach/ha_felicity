@@ -87,6 +87,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle connection type selection."""
         current_nordpool = None
         # Only access config_entry if reconfiguring (it exists)
+        default_model = (
+            user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+            if user_input else DEFAULT_INVERTER_MODEL
+        )
         if getattr(self, "config_entry", None):
             current_nordpool = self.config_entry.options.get("nordpool_entity")
         if user_input is not None:
@@ -109,7 +113,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode=selector.SelectSelectorMode.DROPDOWN,
                     )
                 ),
-                vol.Optional(CONF_INVERTER_MODEL, default=DEFAULT_INVERTER_MODEL): selector.SelectSelector(
+                vol.Optional(CONF_INVERTER_MODEL, default=default_model): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIVE, label=INVERTER_MODEL_TREX_FIVE),
@@ -165,7 +169,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for port in ports if port.device
         ]
         port_options.sort(key=lambda x: x["value"])
-
+        selected_model = user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_NAME, default="Felicity Inverter"): str,
@@ -206,7 +210,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PARITY: user_input[CONF_PARITY],
                     CONF_STOPBITS: user_input[CONF_STOPBITS],
                     CONF_BYTESIZE: user_input[CONF_BYTESIZE],
-                    CONF_INVERTER_MODEL: DEFAULT_INVERTER_MODEL,
+                    CONF_INVERTER_MODEL: selected_model,
                 }
                 
                 await self._async_test_serial_connection(final_data)
@@ -232,7 +236,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_tcp(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle TCP connection configuration."""
         errors = {}
-
+        selected_model = user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_NAME, default="Felicity Inverter"): str,
@@ -254,7 +258,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_HOST: user_input[CONF_HOST],
                     CONF_PORT: user_input[CONF_PORT],
                     CONF_SLAVE_ID: user_input[CONF_SLAVE_ID],
-                    CONF_INVERTER_MODEL: DEFAULT_INVERTER_MODEL,
+                    CONF_INVERTER_MODEL: selected_model,
                 }
 
                 await self._async_test_tcp_connection(final_data)
