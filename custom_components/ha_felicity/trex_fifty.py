@@ -30,11 +30,11 @@ _REGISTERS_TREX_FIFTY = {
     "bat1_insulation_resistance_1": {'address': 4405, 'name': 'Bat1- insulation resistance', 'precision': 0, 'index': 0, 'unit': 'KΩ', 'state_class': 'measurement'},  # Note: key dupes fixed with _1
     "bat2_insulation_resistance": {'address': 4406, 'name': 'Bat2+ insulation resistance', 'precision': 0, 'index': 0, 'unit': 'KΩ', 'state_class': 'measurement'},
     "bat2_insulation_resistance_1": {'address': 4407, 'name': 'Bat2- insulation resistance', 'precision': 0, 'index': 0, 'unit': 'KΩ', 'state_class': 'measurement'},
-    "bat1_soc": {'address': 4408, 'name': 'Bat1 SOC', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement'},
-    "bat1_soh": {'address': 4409, 'name': 'Bat1 SOH', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement'},
+    "bat1_soc": {'address': 4408, 'name': 'Bat1 SOC', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
+    "bat1_soh": {'address': 4409, 'name': 'Bat1 SOH', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
     "bat1_capacity": {'address': 4410, 'name': 'Bat1 Capacity', 'precision': 0, 'index': 0, 'unit': 'AH', 'state_class': 'measurement'},
-    "bat2_soc": {'address': 4411, 'name': 'Bat2 SOC', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement'},
-    "bat2_soh": {'address': 4412, 'name': 'Bat2 SOH', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement'},
+    "bat2_soc": {'address': 4411, 'name': 'Bat2 SOC', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
+    "bat2_soh": {'address': 4412, 'name': 'Bat2 SOH', 'precision': 1, 'index': 1, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
     "bat2_capacity": {'address': 4413, 'name': 'Bat2 Capacity', 'precision': 0, 'index': 0, 'unit': 'AH', 'state_class': 'measurement'},
     "bus_voltage": {'address': 4414, 'name': 'Bus voltage', 'precision': 1, 'index': 1, 'unit': 'V', 'device_class': 'voltage', 'state_class': 'measurement'},
     "bus_voltage_1": {'address': 4415, 'name': 'Bus+ voltage', 'precision': 1, 'index': 1, 'unit': 'V', 'device_class': 'voltage', 'state_class': 'measurement'},
@@ -165,10 +165,10 @@ _REGISTERS_TREX_FIFTY = {
     "grid_start_signal": {'address': 8477, 'name': 'Grid start signal', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
     "generator_cooldown_time": {'address': 8478, 'name': 'Generator cooldown time', 'precision': 1, 'index': 1, 'unit': 'hours', 'state_class': 'measurement'},
     "generator_forced_to_run": {'address': 8479, 'name': 'Generator forced to run', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
-    "soc_of_the_grid_auto_start_charge": {'address': 8480, 'name': 'SOC of the Grid Auto Start Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement'},
-    "soc_of_the_grid_exit_charge": {'address': 8481, 'name': 'SOC of the Grid Exit Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement'},
-    "soc_of_the_gen_auto_start_charge": {'address': 8482, 'name': 'SOC of the GEN Auto Start Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement'},
-    "soc_of_the_gen_exit_charge": {'address': 8483, 'name': 'SOC of the GEN Exit Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement'},
+    "soc_of_the_grid_auto_start_charge": {'address': 8480, 'name': 'SOC of the Grid Auto Start Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
+    "soc_of_the_grid_exit_charge": {'address': 8481, 'name': 'SOC of the Grid Exit Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
+    "soc_of_the_gen_auto_start_charge": {'address': 8482, 'name': 'SOC of the GEN Auto Start Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
+    "soc_of_the_gen_exit_charge": {'address': 8483, 'name': 'SOC of the GEN Exit Charge', 'precision': 0, 'index': 0, 'device_class': 'battery', 'state_class': 'measurement','unit': '%'},
     "grid_charge_current": {'address': 8484, 'name': 'Grid Charge Current', 'precision': 1, 'index': 1, 'unit': 'A', 'device_class': 'current', 'state_class': 'measurement'},
     "gen_charge_current": {'address': 8485, 'name': 'GEN Charge Current', 'precision': 1, 'index': 1, 'unit': 'A', 'device_class': 'current', 'state_class': 'measurement'},
     "gen_start_signal": {'address': 8486, 'name': 'GEN Start Signal', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
@@ -439,7 +439,7 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "name": "Load Active Power kW",
         "precision": 1,
     },
-    "total_generator_power": {
+    "total_generator_active_power": {
         "sources": ["phase_a_generator_active_power", "phase_b_generator_active_power", "phase_c_generator_active_power"],
         "calc": lambda a, b, c: round(((a or 0) + (b or 0) + (c or 0)) * 1000),
         "unit": "W",
@@ -448,7 +448,7 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "name": "Total Generator Active Power",
         "precision": 0,
     },
-    "total_grid_power": {
+    "total_grid_active_power": {
         "sources": ["phase_a_grid_active_power", "phase_b_grid_active_power", "phase_c_grid_active_power"],
         "calc": lambda a, b, c: round(((a or 0) + (b or 0) + (c or 0)) * 1000),
         "unit": "W",
