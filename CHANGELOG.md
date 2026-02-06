@@ -1,4 +1,8 @@
 ## Changelog
+
+### [0.8.5] - TREX 25k and 50k small register bugs
+- register tweaks
+
 ### [0.8.4] - Fix inverter selection bug
 - Solving bug in inverter selection
   
