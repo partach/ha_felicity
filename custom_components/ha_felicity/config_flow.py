@@ -169,7 +169,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for port in ports if port.device
         ]
         port_options.sort(key=lambda x: x["value"])
-        selected_model = user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+        selected_model = (
+            user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+            if user_input else DEFAULT_INVERTER_MODEL
+        )
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_NAME, default="Felicity Inverter"): str,
@@ -236,7 +239,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_tcp(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle TCP connection configuration."""
         errors = {}
-        selected_model = user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+        selected_model = (
+            user_input.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+            if user_input else DEFAULT_INVERTER_MODEL
+        )
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_NAME, default="Felicity Inverter"): str,
