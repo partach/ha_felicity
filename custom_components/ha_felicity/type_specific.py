@@ -18,15 +18,15 @@ class TypeSpecificHandler:
 
     def determine_battery_voltage(self, data: dict) -> int | float | None:
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
-            voltage = data.get("battery_voltage") * 10 # it is an index 1
+            voltage = data.get("battery_voltage")
             if voltage is not None:
                 return voltage
             _LOGGER.debug("battery_voltage missing on 5/10K model")
             return None
       
         elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
-            bat1 = data.get("bat1_voltage") * 10 # it is an index 1
-            bat2 = data.get("bat2_voltage")* 10 # it is an index 1
+            bat1 = data.get("bat1_voltage")
+            bat2 = data.get("bat2_voltage")
       
             if bat1 is not None:
                 return bat1 
