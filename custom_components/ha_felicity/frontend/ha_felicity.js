@@ -520,7 +520,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .battery {
-                  bottom: 80px;
+                  bottom: 70px;
                   left: 15%; 
                   transform: translateX(-50%);
                   flex-direction: row;
@@ -536,7 +536,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .home {
-                  bottom: 80px;
+                  bottom: 70px;
                   right: 15%; 
                   transform: translateX(50%);
                   flex-direction: row;
@@ -551,7 +551,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .backup {
-                  bottom: 80px;
+                  bottom: 70px;
                   left: 50%; 
                   transform: translateX(-50%);
                   flex-direction: row;
