@@ -384,7 +384,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     new_data[key] = value
             # dynamically check which battery system we have.
             raw_system_voltage = self.TypeSpecificHandler.determine_battery_voltage(new_data)
-            if new_data["battery_nominal_voltage"] != raw_system_voltage
+            if new_data["battery_nominal_voltage"] != raw_system_voltage:
               _LOGGER.debug("Battery voltage retrieved: %dV, was: %dV", raw_system_voltage,  new_data["battery_nominal_voltage"])
             if raw_system_voltage is not None:
                 new_data["battery_nominal_voltage"] = raw_system_voltage
