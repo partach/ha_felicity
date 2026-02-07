@@ -358,13 +358,13 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "name": "Total PV Power kW",
         "precision": 1,
     },
-    "pv_total_power": {
+    "total_pv_power": {
         "sources": ["pv1_power", "pv2_power", "pv3_power", "pv4_power"],
         "calc": lambda p1, p2, p3, p4: round(((p1 or 0) + (p2 or 0) + (p3 or 0) + (p4 or 0)) * 1000),
         "unit": "W",
         "device_class": "power",
         "state_class": "measurement",
-        "name": "Total PV Power",
+        "name": "total_pv_power",
         "precision": 0,          # whole number only
     },
     "battery_power_kw": {
@@ -385,22 +385,13 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "name": "Battery Power",
         "precision": 0,
     },
-    "home_load_power_kw": {
-        "sources": ["phase_a_home_load_power", "phase_b_home_load_power", "phase_c_home_load_power"],
-        "calc": lambda a, b, c: (a or 0) + (b or 0) + (c or 0),
-        "unit": "kW",
-        "device_class": "power",
-        "state_class": "measurement",
-        "name": "Total Home Load Power kW",
-        "precision": 1,
-    },
-    "load_power_line_side": { # legacy naming trex-10
+    "total_ac_output_active_power": { # legacy  naming trex-10
         "sources": ["phase_a_home_load_power", "phase_b_home_load_power", "phase_c_home_load_power"],
         "calc": lambda a, b, c: round(((a or 0) + (b or 0) + (c or 0)) * 1000),
         "unit": "W",
         "device_class": "power",
         "state_class": "measurement",
-        "name": "Total Home Load Power (W)",
+        "name": "total_ac_output_active_power",
         "precision": 0,
     },
     "generator_active_power_kw": {
@@ -420,6 +411,42 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "state_class": "measurement",
         "name": "Grid Active Power kW",
         "precision": 1,
+    },
+    "ct_active_power_kw": {
+        "sources": ["phase_a_ct_active_power", "phase_b_ct_active_power", "phase_c_ct_active_power"],
+        "calc": lambda a, b, c: (a or 0) + (b or 0) + (c or 0),
+        "unit": "kW",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "CT Active Power kW",
+        "precision": 1,
+    },
+    "total_ac_input_power": { # legacy naming trex 10
+        "sources": ["phase_a_ct_active_power", "phase_b_ct_active_power", "phase_c_ct_active_power"],
+        "calc": lambda a, b, c: round(((a or 0) + (b or 0) + (c or 0)) * 1000),
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "total_ac_input_power",
+        "precision": 0,
+    },
+    "calculated_load_power_kw": {
+        "sources": ["ct_active_power_kw", "total_grid_power"],
+        "calc": lambda a, b: ((a or 0) - (b or 0)),
+        "unit": "kW",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "Caculated Load Power kW",
+        "precision": 0,
+    },
+    "loadpower_lineside": { # legacy naming TREX
+        "sources": ["ct_active_power_kw", "total_grid_power"],
+        "calc": lambda a, b: round(((a or 0) - (b or 0)) * 1000),
+        "unit": "W",
+        "device_class": "power",
+        "state_class": "measurement",
+        "name": "loadpower_lineside",
+        "precision": 0,
     },
     "inverter_active_power_kw": {
         "sources": ["phase_a_inverter_active_power", "phase_b_inverter_active_power", "phase_c_inverter_active_power"],
