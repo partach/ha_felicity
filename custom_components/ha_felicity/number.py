@@ -229,9 +229,9 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         if battery_voltage is None:
             return
 
-        # Example logic: 48V system vs 400V high-voltage
-        if battery_voltage >= 400:  # High-voltage system (e.g., Felicity HV packs)
-            new_min = 416
+        # Example logic: 48V system vs 300-400V high-voltage
+        if battery_voltage >= 300:  # High-voltage system (e.g., Felicity HV packs)
+            new_min = 300
             new_max = 448
         else:  # Low-voltage (48V typical)
             new_min = 48
