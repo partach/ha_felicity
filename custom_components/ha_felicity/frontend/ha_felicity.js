@@ -222,7 +222,7 @@ class FelicityInverterCard extends LitElement {
     // Battery data
     const batteryVoltage = parseFloat(this._getValue("battery_voltage"));
     const batteryCapacity = parseFloat(this._getValue("battery_capacity")); // SOC %
-    const dischargeDepth = parseFloat(this._getValue("discharge_depth_on_grid_bms")) || 20;
+    const dischargeDepth = parseFloat(this._getValue("battery_discharge_depth_on_grid_bms")) || 20;
     const batteryCurrent = parseFloat(this._getValue("battery_current")) || 0;
 
     const hasBatteryData = !isNaN(batteryVoltage) && !isNaN(batteryCapacity);
