@@ -1,7 +1,9 @@
 ## Changelog
 
-### [0.8.7] - TREX 25k and 50k small register bugs
+### [0.8.8] - Inverter type handling, card updpate
+- Card update for adding generator (TREX 25-50k)
 - register tweaks
+- small bug fixes
 
 ### [0.8.4] - Fix inverter selection bug
 - Solving bug in inverter selection
