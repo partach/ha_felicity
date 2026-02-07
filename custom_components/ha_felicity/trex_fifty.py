@@ -521,13 +521,13 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "name": "Battery Capacity",
         "precision": 1,
     },
-    "discharge_depth_on_grid_bms": { # legacy naming
+    "battery_discharge_depth_on_grid_bms": { # legacy naming
         "sources": ["soc_of_the_battery_low_alarm"],
         "calc": lambda s1: round(s1),
         "unit": "%",
         "device_class": "battery",
         "state_class": "measurement",
-        "name": "discharge_depth_on_grid_bms",
+        "name": "battery_discharge_depth_on_grid_bms",
         "precision": 1,
     },
     # ECO rules (6, each with grid/gen enable, start/stop time, volt, soc, power)
