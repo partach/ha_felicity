@@ -484,6 +484,52 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "name": "Total Grid Active Power",
         "precision": 0,
     },
+    "battery_voltage": {
+        "sources": ["bat1_voltage", "bat2_voltage"],
+        "calc": lambda v1, v2: (
+            round((v1 + v2) / 2, 1) if v1 is not None and v2 is not None and v1 > 0 and v2 > 0
+            else v1 if v1 is not None and v1 > 0
+            else v2 if v2 is not None and v2 > 0
+            else None
+        ),
+        "unit": "V",
+        "device_class": "voltage",
+        "state_class": "measurement",
+        "name": "Battery Voltage",
+        "precision": 1,
+    },
+    "battery_current": {
+        "sources": ["bat1_current", "bat2_current"],
+        "calc": lambda c1, c2: round((c1 or 0) + (c2 or 0), 1),
+        "unit": "A",
+        "device_class": "current",
+        "state_class": "measurement",
+        "name": "Battery Current",
+        "precision": 1,
+    },
+    "battery_capacity": {
+        "sources": ["bat1_soc", "bat2_soc"],
+        "calc": lambda s1, s2: (
+            round((s1 + s2) / 2, 1) if s1 is not None and s2 is not None and s1 > 0 and s2 > 0
+            else s1 if s1 is not None and s1 > 0
+            else s2 if s2 is not None and s2 > 0
+            else None
+        ),
+        "unit": "%",
+        "device_class": "battery",
+        "state_class": "measurement",
+        "name": "Battery Capacity",
+        "precision": 1,
+    },
+    "discharge_depth_on_grid_bms": { # legacy naming
+        "sources": ["soc_of_the_battery_low_alarm"],
+        "calc": lambda s1: round(s1),
+        "unit": "%",
+        "device_class": "battery",
+        "state_class": "measurement",
+        "name": "discharge_depth_on_grid_bms",
+        "precision": 1,
+    },
     # ECO rules (6, each with grid/gen enable, start/stop time, volt, soc, power)
     "econ_rule_1": {
         "sources": [
