@@ -54,6 +54,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         
         # Nordpool: override wins over entity
         self.nordpool_entity = nordpool_override or nordpool_entity
+        self.original_nordpool_entity = nordpool_entity
+        self.override_nordpool_entity = nordpool_override
         
         # Runtime state
         self.connected = False
@@ -387,14 +389,27 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             safe_power_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
             new_data["safe_max_power"] = int(safe_power_level * 1000) # convert from 1-10 scale to watts
             # === Nordpool price update & dynamic logic ===
-            if self.nordpool_entity:
-                try: #when nordpool is disabled or uninstalled during runtime
-                  price_state = self.hass.states.get(self.nordpool_entity)
+            if self.nordpool_entity: # do we have any price state information?
+                price_state = None
+                try: # when nordpool or override is disabled or uninstalled during runtime you get an exception here
+                  if self.override_nordpool_entity: # override has precedence
+                      price_state = self.hass.states.get(self.override_nordpool_entity)
+                  elif self.original_nordpool_entity:
+                      price_state = self.hass.states.get(self.original_nordpool_entity)
+                  else:    
+                      price_state = None # Should not happen as there would not be any entity declared on init
                 except Exception:
-                    _LOGGER.exception("Felicity coordinator error, nordpool or override no longer available!")
-                    self.nordpool_entity = None
-                    self.current_price = self.min_price = self.avg_price = self.max_price = self.price_threshold = None
-                    return new_data # return with what we do have
+                    _LOGGER.exception("Felicity coordinator error, price state not retreivable!")
+                    if self.original_nordpool_entity:
+                        try: # let's try to go back to the default in case override was there but no longer is
+                          price_state = self.hass.states.get(self.original_nordpool_entity)
+                        except Exception:
+                            _LOGGER.exception("Felicity coordinator error, price state nordpool no longer available!")
+                            self.current_price = self.min_price = self.avg_price = self.max_price = self.price_threshold = None
+                            return new_data # return with what we do have
+                    else:
+                        self.current_price = self.min_price = self.avg_price = self.max_price = self.price_threshold = None
+                        return new_data # return with what we do have
                 if price_state and price_state.state not in ("unknown", "unavailable", "none"):
                     try:
                         self.current_price = float(price_state.state)
