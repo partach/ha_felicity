@@ -18,22 +18,20 @@ class TypeSpecificHandler:
 
     def determine_battery_voltage(self, data: dict) -> int | float | None:
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
-            voltage = data.get("battery_voltage")
+            voltage = data.get("battery_voltage") * 10 # it is an index 1
             if voltage is not None:
                 return voltage
             _LOGGER.debug("battery_voltage missing on 5/10K model")
             return None
       
         elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
-            bat1 = data.get("bat1_voltage")
-            bat2 = data.get("bat2_voltage")
+            bat1 = data.get("bat1_voltage") * 10 # it is an index 1
+            bat2 = data.get("bat2_voltage")* 10 # it is an index 1
       
-      #            if bat1 is not None and bat2 is not None:
-      #                return (bat1 + bat2) / 2
             if bat1 is not None:
-                return bat1
+                return bat1 
             elif bat2 is not None:
-                return bat2
+                return bat2 
             else:
                 _LOGGER.debug("Neither bat1_voltage nor bat2_voltage available")
                 return None
@@ -48,18 +46,18 @@ class TypeSpecificHandler:
           - Neither → return None
         """
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
-            soc = data.get("battery_capacity")
+            soc = data.get("battery_capacity") * 10
             if soc is not None:
                 return soc
             _LOGGER.debug("battery_capacity missing on 10K model")
             return None
         
         elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
-            bat1 = data.get("bat1_soc")
-            bat2 = data.get("bat2_soc")
+            bat1 = data.get("bat1_soc") * 10
+            bat2 = data.get("bat2_soc") * 10
         
             # Case 1: Both batteries report a value → return the minimum
-            if bat1 is not None and bat2 is not None:
+            if bat1 is not None and bat2 is not None and bat2 != 0:
                 min_soc = min(bat1, bat2)
                 _LOGGER.debug("Dual battery SOC: bat1=%.1f%%, bat2=%.1f%% → using minimum %.1f%%",
                              bat1, bat2, min_soc)
