@@ -429,8 +429,9 @@ class FelicityInverterCard extends LitElement {
           <div class="section energy-flow">
             <!-- Control Dropdowns -->
             <div class="flow-controls">
-              ${this._renderGridModeSelect()} &nbsp
-              ${this._renderPriceThresholdSelect()} 
+              ${this._renderGridModeSelect()}
+              ${this._renderPriceThresholdSelect()}
+              ${this._renderPowerLevelSelect()}
             </div>           
             <div class="flow-diagram">
               <style>
@@ -440,7 +441,7 @@ class FelicityInverterCard extends LitElement {
                 }              
                 .flow-diagram {
                   position: relative;
-                  height: 240px;
+                  height: 340px;
                   margin: 0px 0;
                   padding: 0px 0;
                 }
@@ -508,16 +509,18 @@ class FelicityInverterCard extends LitElement {
                   flex-direction: column-reverse;
                   gap: 2px;
                 }
-                .state { 
-                  top: 8%; 
-                  left: 50%; 
-                  transform: translate(-50%, -50%);
-                  flex-direction: column-reverse;
-                  gap: 1px;
+                .state {
+                  bottom: 8px;
+                  left: 4%;
+                  transform: none;
+                  flex-direction: row;
+                  gap: 4px;
+                  align-items: center;
+                  z-index: 4;
                 }
                 
-                .battery { 
-                  bottom: 10px; 
+                .battery {
+                  bottom: 80px;
                   left: 15%; 
                   transform: translateX(-50%);
                   flex-direction: row;
@@ -532,8 +535,8 @@ class FelicityInverterCard extends LitElement {
                   text-align: left;
                 }
                 
-                .home { 
-                  bottom: 10px; 
+                .home {
+                  bottom: 80px;
                   right: 15%; 
                   transform: translateX(50%);
                   flex-direction: row;
@@ -547,8 +550,8 @@ class FelicityInverterCard extends LitElement {
                   text-align: left;
                 }
                 
-                .backup { 
-                  bottom: 10px; 
+                .backup {
+                  bottom: 80px;
                   left: 50%; 
                   transform: translateX(-50%);
                   flex-direction: row;
@@ -556,6 +559,13 @@ class FelicityInverterCard extends LitElement {
                   gap: 0px;                
                 }
                 
+                .generator {
+                  top: 10px;
+                  left: 50%;
+                  transform: translateX(-50%);
+                  gap: 0px;
+                }
+
                 .inverter ha-icon {
                   color: orange;
                   filter: drop-shadow(0 0 12px orange);
@@ -572,13 +582,30 @@ class FelicityInverterCard extends LitElement {
                 }
 
                 .flow-controls {
+                  display: grid;
+                  grid-template-columns: 1fr 1fr 1fr;
+                  gap: 6px;
+                  margin-bottom: 4px;
+                  padding: 0 4px;
+                }
+                .control-group {
                   display: flex;
-                  flex-direction: row;
-                  gap: 5px;
-                  left: 10%;
-                  align-items: center;
-                  margin-bottom: 1px;
-                  position: relative;
+                  flex-direction: column;
+                  gap: 2px;
+                  align-items: stretch;
+                }
+                .control-group .control-label {
+                  font-size: 0.72em;
+                  color: var(--secondary-text-color);
+                  text-align: center;
+                }
+                .control-group select {
+                  width: 100%;
+                  padding: 4px 2px;
+                  font-size: 0.82em;
+                  border-radius: 4px;
+                  border: 1px solid var(--divider-color);
+                  background: var(--card-background-color);
                 }
                 .flow-path {
                   fill: none;
@@ -618,9 +645,9 @@ class FelicityInverterCard extends LitElement {
                 .bar-canvas-container {
                   position: absolute;
                   left: 65%;
-                  top: 33%;
+                  top: 28%;
                   width: 39%;
-                  height: 36%;
+                  height: 32%;
                   pointer-events: none;
                   z-index: 3;
                 }
@@ -631,9 +658,9 @@ class FelicityInverterCard extends LitElement {
                 .battery-bar-canvas-container {
                   position: absolute;
                   left: -2%;
-                  top: 33%;
+                  top: 28%;
                   width: 39%;
-                  height: 36%;
+                  height: 32%;
                   pointer-events: none;
                   z-index: 3;
                 }
@@ -643,12 +670,12 @@ class FelicityInverterCard extends LitElement {
                 }
                 .power-bar-canvas-container {
                   position: absolute;
-                  left: 35%;
-                  top: 15%; /* places it just below Operation text, above inverter */
-                  width: 32%;
-                  height: 24%;
+                  right: 2%;
+                  bottom: 2px;
+                  width: 48%;
+                  height: 18%;
                   pointer-events: none;
-                  z-index: 3;
+                  z-index: 4;
                 }
                 .power-bar-canvas {
                   width: 100%;
@@ -693,9 +720,21 @@ class FelicityInverterCard extends LitElement {
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Backup load -->
-                <path 
-                  class="flow-path ${this._getRawPower('total_ac_output_active_power') > 50 ? 'active' : 'inactive'}" 
-                  d="M 50 54 L 50 74" 
+                <path
+                  class="flow-path ${this._getRawPower('total_ac_output_active_power') > 50 ? 'active' : 'inactive'}"
+                  d="M 50 54 L 50 74"
+                  vector-effect="non-scaling-stroke"
+                />
+                <!-- Generator to Inverter -->
+                <path
+                  class="flow-path ${(() => {
+                    const val = this._getValue('total_generator_active_power');
+                    const power = val != null ? parseFloat(val) : 0;
+                    if (Math.abs(power) <= 50) return 'inactive';
+                    if (power > 0) return 'active charging';
+                    return 'active discharging reverse';
+                  })()} "
+                  d="M 50 20 L 50 42"
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
@@ -750,9 +789,22 @@ class FelicityInverterCard extends LitElement {
                 <div class="power-value">${this._getPower("total_ac_input_power")}</div>
                 <div class="label"></div>
               </div>
+              <div class="flow-item generator">
+                <ha-icon
+                  .hass=${this.hass}
+                  icon="${(() => {
+                    const val = this._getValue('total_generator_active_power');
+                    const power = val != null ? Math.abs(parseFloat(val)) : 0;
+                    return power > 50 ? 'mdi:engine' : 'mdi:engine-off-outline';
+                  })()}"
+                ></ha-icon>
+                <div class="power-value">${this._getPower("total_generator_active_power")}</div>
+                <div class="label">Generator</div>
+              </div>
+
               <div class="flow-item state">
                 <div class="label">
-                  ${this._getStateLabel("operating_mode")} 
+                  ${this._getStateLabel("operating_mode")}
                   <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}</span>
                   --> <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
                 </div>
@@ -1013,7 +1065,7 @@ class FelicityInverterCard extends LitElement {
 
     return html`
       <div class="control-group">
-        <span class="label">Grid Mode:</span>
+        <span class="control-label">Grid Mode</span>
         <select 
           @change=${(e) => this._handleGridModeChange(entityId, e.target.value)}
           .value=${currentValue}
@@ -1047,7 +1099,7 @@ class FelicityInverterCard extends LitElement {
 
     return html`
       <div class="control-group">
-        <span class="label">Price Threshold:</span>
+        <span class="control-label">Price Threshold</span>
         <select 
           @change=${(e) => this._handlePriceThresholdChange(thresholdEntityId, e.target.value)}
           .value=${currentLevel}
@@ -1102,6 +1154,43 @@ class FelicityInverterCard extends LitElement {
       });
     } catch (err) {
       console.error("Failed to change price threshold level:", err);
+    }
+  }
+
+  _renderPowerLevelSelect() {
+    const entityId = this._getEntityId("power_level");
+    if (!entityId) return html``;
+
+    const entity = this.hass.states[entityId];
+    if (!entity) return html``;
+
+    const currentLevel = parseInt(entity.state) || 5;
+
+    return html`
+      <div class="control-group">
+        <span class="control-label">Power Level</span>
+        <select
+          @change=${(e) => this._handlePowerLevelChange(entityId, e.target.value)}
+          .value=${currentLevel}
+        >
+          ${[1,2,3,4,5,6,7,8,9,10].map(level => html`
+            <option value="${level}" ?selected=${level === currentLevel}>
+              ${level}
+            </option>
+          `)}
+        </select>
+      </div>
+    `;
+  }
+
+  async _handlePowerLevelChange(entityId, value) {
+    try {
+      await this.hass.callService("number", "set_value", {
+        entity_id: entityId,
+        value: parseInt(value),
+      });
+    } catch (err) {
+      console.error("Failed to change power level:", err);
     }
   }
 
