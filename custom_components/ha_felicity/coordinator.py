@@ -384,6 +384,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     new_data[key] = value
             # dynamically check which battery system we have.
             raw_system_voltage = self.TypeSpecificHandler.determine_battery_voltage(new_data)
+            new_data["battery_nominal_voltage"] = raw_system_voltage
 #             _LOGGER.debug("Battery voltage retrieved: %dV", raw_system_voltage)
             safe_power_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
             new_data["safe_max_power"] = int(safe_power_level * 1000) # convert from 1-10 scale to watts
