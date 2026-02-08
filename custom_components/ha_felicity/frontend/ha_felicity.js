@@ -224,6 +224,8 @@ class FelicityInverterCard extends LitElement {
     const batteryCapacity = parseFloat(this._getValue("battery_capacity")); // SOC %
     const dischargeDepth = parseFloat(this._getValue("battery_discharge_depth_on_grid_bms")) || 20;
     const batteryCurrent = parseFloat(this._getValue("battery_current")) || 0;
+    const batterySetMax = parseFloat(this._getValue("battery_charge_max_level")) || 0;
+    const batterySetMin = parseFloat(this._getValue("battery_discharge_min_level")) || 0;
 
     const hasBatteryData = !isNaN(batteryVoltage) && !isNaN(batteryCapacity);
 
@@ -266,11 +268,41 @@ class FelicityInverterCard extends LitElement {
     ctx.fillStyle = '#ffc80088';
     ctx.fillRect(barX - 1 , dischargeY, barWidth - 1, barHeight + barTop - dischargeY);
 
+    const chargeMaxY = socToY(batterySetMax);
+    // Draw dotted line at max set capacity
+    ctx.beginPath();
+    ctx.moveTo(barX - 2, chargeMaxY);
+    ctx.lineTo(barX + barWidth + 2, chargeMaxY);
+    ctx.strokeStyle = '#1d44f4';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Label for max charge
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#0e7fc1';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${batterySetMax.toFixed(0)}%`, barX + 105, chargeMaxY + 4);
+
+    const chargeMinY = socToY(batterySetMin);
+    // Draw dotted line at max set capacity
+    ctx.beginPath();
+    ctx.moveTo(barX - 2, chargeMinY);
+    ctx.lineTo(barX + barWidth + 2, chargeMinY);
+    ctx.strokeStyle = '#1d44f4';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Label for min charge
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#0e7fc1';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${batterySetMin.toFixed(0)}%`, barX + 105, chargeMinY + 4);
+
     // Draw dotted line at discharge depth
     ctx.setLineDash([6, 4]);
     ctx.beginPath();
-    ctx.moveTo(barX - 5, dischargeY);
-    ctx.lineTo(barX + barWidth + 10, dischargeY);
+    ctx.moveTo(barX - 2, dischargeY);
+    ctx.lineTo(barX + barWidth + 2, dischargeY);
     ctx.strokeStyle = '#ff9800';
     ctx.lineWidth = 1;
     ctx.stroke();
@@ -283,8 +315,8 @@ class FelicityInverterCard extends LitElement {
 
     // Draw dotted line at current capacity
     ctx.beginPath();
-    ctx.moveTo(barX - 5, currentY);
-    ctx.lineTo(barX + barWidth + 10, currentY);
+    ctx.moveTo(barX - 2, currentY);
+    ctx.lineTo(barX + barWidth + 2, currentY);
     ctx.strokeStyle = '#4caf50';
     ctx.lineWidth = 2;
     ctx.stroke();
@@ -441,7 +473,7 @@ class FelicityInverterCard extends LitElement {
                 }              
                 .flow-diagram {
                   position: relative;
-                  height: 340px;
+                  height: 320px;
                   margin: 0px 0;
                   padding: 0px 0;
                 }
@@ -452,7 +484,7 @@ class FelicityInverterCard extends LitElement {
                   display: flex;
                   flex-direction: column;
                   align-items: center;
-                  gap: 2px;
+                  gap: 1px;
                   z-index: 2;
                 }
 
@@ -489,14 +521,14 @@ class FelicityInverterCard extends LitElement {
                   color: #3753cfff;
                 }
                 .pv { 
-                  top: 10px; 
+                  top: 8px; 
                   left: 15%; 
                   transform: translateX(-50%);
                   gap: 0px;
                 }
 
                 .grid { 
-                  top: 10px; 
+                  top: 8px; 
                   right: 15%; 
                   transform: translateX(50%);
                   gap: 0px;
@@ -510,7 +542,7 @@ class FelicityInverterCard extends LitElement {
                   gap: 2px;
                 }
                 .state {
-                  bottom: 23px;
+                  bottom: 15px;
                   left: 4%;
                   transform: none;
                   flex-direction: row;
@@ -560,7 +592,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .generator {
-                  top: 10px;
+                  top: 8px;
                   left: 50%;
                   transform: translateX(-50%);
                   gap: 0px;
@@ -584,7 +616,7 @@ class FelicityInverterCard extends LitElement {
                 .flow-controls {
                   display: grid;
                   grid-template-columns: 1fr 1fr 1fr;
-                  gap: 6px;
+                  gap: 3px;
                   margin-bottom: 4px;
                   padding: 0 4px;
                 }
@@ -722,13 +754,13 @@ class FelicityInverterCard extends LitElement {
                 <!-- Backup load -->
                 <path
                   class="flow-path ${this._getRawPower('total_ac_output_active_power') > 50 ? 'active' : 'inactive'}"
-                  d="M 50 54 L 50 64"
+                  d="M 50 55 L 50 66"
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Generator to Inverter -->
                 <path
                   class="flow-path ${(() => {
-                    const val = this._getValue('total_generator_power');
+                    const val = this._getValue('total_generator_active_power');
                     const power = val != null ? parseFloat(val) : 0;
                     if (Math.abs(power) <= 50) return 'inactive';
                     if (power > 0) return 'active charging';
@@ -793,20 +825,19 @@ class FelicityInverterCard extends LitElement {
                 <ha-icon
                   .hass=${this.hass}
                   icon="${(() => {
-                    const val = this._getValue('total_generator_power');
+                    const val = this._getValue('total_generator_active_power');
                     const power = val != null ? Math.abs(parseFloat(val)) : 0;
                     return power > 50 ? 'mdi:generator-stationary' : 'mdi:power-plug-off-outline';
                   })()}"
                 ></ha-icon>
-                <div class="power-value">${this._getPower("total_generator_power")}</div>
-                <div class="label">Generator</div>
+                <div class="power-value">${this._getPower("total_generator_active_power")}</div>
               </div>
 
               <div class="flow-item state">
                 <div class="label">
-                  ${this._getStateLabel("operating_mode")}
-                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}</span>
-                  --> <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
+                  ${this._getStateLabel("operating_mode")} | now:
+                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}<br></span>
+                  State: <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
                 </div>
               </div>
               
