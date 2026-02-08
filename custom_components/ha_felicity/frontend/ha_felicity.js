@@ -172,7 +172,7 @@ class FelicityInverterCard extends LitElement {
     // Draw 3 horizontal dotted lines
     const lines = [
       { price: avgPrice, color: '#4488ff', label: '', width: 1 },
-      { price: thresholdPrice, color: '#137a08ff', label: '', width: 1 },
+      { price: thresholdPrice, color: 'rgb(12, 101, 190)', label: '', width: 1 },
       { price: currentPrice, color: '#ffc800ff', label: '', width: 1 },
     ];
 
@@ -180,6 +180,7 @@ class FelicityInverterCard extends LitElement {
 
     lines.forEach(line => {
       const y = priceToY(line.price);
+      const pos = line.price==thresholdPrice? barWidth + 30 : 0;
 
       ctx.beginPath();
       ctx.moveTo(barX - 5, y);
@@ -193,7 +194,7 @@ class FelicityInverterCard extends LitElement {
       ctx.font = '11px sans-serif';
       ctx.fillStyle = line.color;
       ctx.textAlign = 'right';
-      ctx.fillText(`${line.label} ${line.price.toFixed(2)}`, barX - 5, y + 4);
+      ctx.fillText(`${line.label} ${line.price.toFixed(2)}`, barX - 5 + pos, y + 4);
     });
 
     ctx.setLineDash([]);
@@ -281,7 +282,7 @@ class FelicityInverterCard extends LitElement {
     ctx.font = '11px sans-serif';
     ctx.fillStyle = '#0e7fc1';
     ctx.textAlign = 'right';
-    ctx.fillText(`${batterySetMax.toFixed(0)}%`, barX + 105, chargeMaxY + 4);
+    ctx.fillText(`${batterySetMax.toFixed(0)}%`,  barX +  barWidth + 26, chargeMaxY + 4);
 
     const chargeMinY = socToY(batterySetMin);
     // Draw dotted line at max set capacity
@@ -296,7 +297,7 @@ class FelicityInverterCard extends LitElement {
     ctx.font = '11px sans-serif';
     ctx.fillStyle = '#0e7fc1';
     ctx.textAlign = 'right';
-    ctx.fillText(`${batterySetMin.toFixed(0)}%`, barX + 105, chargeMinY + 4);
+    ctx.fillText(`${batterySetMin.toFixed(0)}%`, barX + barWidth + 26, chargeMinY + 4);
 
     // Draw dotted line at discharge depth
     ctx.setLineDash([6, 4]);
@@ -535,7 +536,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .inverter { 
-                  top: 48%; 
+                  top: 39%; 
                   left: 50%; 
                   transform: translate(-50%, -50%);
                   flex-direction: column-reverse;
@@ -677,7 +678,7 @@ class FelicityInverterCard extends LitElement {
                 .bar-canvas-container {
                   position: absolute;
                   left: 65%;
-                  top: 28%;
+                  top: 25%;
                   width: 39%;
                   height: 32%;
                   pointer-events: none;
@@ -690,7 +691,7 @@ class FelicityInverterCard extends LitElement {
                 .battery-bar-canvas-container {
                   position: absolute;
                   left: -2%;
-                  top: 28%;
+                  top: 25%;
                   width: 39%;
                   height: 32%;
                   pointer-events: none;
@@ -718,7 +719,7 @@ class FelicityInverterCard extends LitElement {
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <path 
                   class="flow-path charging ${this._getRawPower('total_pv_power') > 50 ? 'active' : 'inactive'}" 
-                  d="M 25 25 L 47 48" 
+                  d="M 25 15 L 47 38" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Grid to Inverter (bidirectional) -->
@@ -729,7 +730,7 @@ class FelicityInverterCard extends LitElement {
                     if (power > 0) return 'active grid-import';
                     return 'active grid-export reverse';
                   })()} " 
-                  d="M 75 25 L 53 48" 
+                  d="M 75 15 L 53 38" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Inverter to Battery (bidirectional) -->
@@ -742,19 +743,19 @@ class FelicityInverterCard extends LitElement {
                     if (state === 'Discharging') return 'active discharging reverse';
                     return 'inactive';
                   })()} " 
-                  d="M 47 52 L 25 75" 
+                  d="M 47 42 L 25 65" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Home load -->
                 <path 
                   class="flow-path ${this._getRawPower('loadpower_lineside') > 50 ? 'active' : 'inactive'}" 
-                  d="M 53 52 L 75 75" 
+                  d="M 53 42 L 75 65" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Backup load -->
                 <path
                   class="flow-path ${this._getRawPower('total_ac_output_active_power') > 50 ? 'active' : 'inactive'}"
-                  d="M 50 55 L 50 66"
+                  d="M 50 45 L 50 63"
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Generator to Inverter -->
@@ -766,27 +767,27 @@ class FelicityInverterCard extends LitElement {
                     if (power > 0) return 'active charging';
                     return 'active discharging reverse';
                   })()} "
-                  d="M 50 25 L 50 42"
+                  d="M 50 20 L 50 33"
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 47 42 L 53 42" 
+                  d="M 47 33 L 53 33" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 53 42 L 53 55" 
+                  d="M 53 33 L 53 45" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 53 55 L 47 55" 
+                  d="M 53 45 L 47 45" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 47 55 L 47 42" 
+                  d="M 47 45 L 47 33" 
                   vector-effect="non-scaling-stroke"
                 />
               </svg>
@@ -881,94 +882,6 @@ class FelicityInverterCard extends LitElement {
                   <canvas class="power-bar-canvas"></canvas>
                 </div>
               ` : ""}
-            </div>
-          </div>
-        ` : ""}
-
-        <!-- SECTION 2: Main Sensors -->
-        ${this._selectedSection === "sensors" && this.config.entities?.length > 0 ? html`
-          <div class="section">
-            <div class="section-title">Main Sensors</div>
-            <div class="entities">
-              ${this.config.entities.map(item => {
-                const stateObj = this.hass.states[item.entity_id];
-                const state = stateObj?.state ?? "unavailable";
-                const unit = item.unit || stateObj?.attributes?.unit_of_measurement || "";
-                return html`
-                  <div class="entity">
-                    <span>${item.name || stateObj?.attributes?.friendly_name || item.entity_id}</span>
-                    <span class="${state === "unavailable" ? "unavailable" : ""}">
-                      ${state} ${unit}
-                    </span>
-                  </div>
-                `;
-              })}
-            </div>
-          </div>
-        ` : ""}
-
-        <!-- SECTION 3: Economic Rules -->
-        ${this._selectedSection === "econ_rules" && this.config.econ_rules?.length > 0 ? html`
-          <div class="section">
-            <div class="section-title">Economic Rules</div>
-            <select @change=${e => this._selectedRuleIndex = e.target.selectedIndex}>
-              ${this.config.econ_rules.map((rule, i) => html`
-                <option value="${i}" ?selected=${i === this._selectedRuleIndex}>
-                  ${rule.name || `Rule ${i + 1}`}
-                </option>
-              `)}
-            </select>
-
-            ${ruleStateObj
-              ? html`
-                  <div class="rule">
-                    <div class="rule-title">
-                      ${selectedRule.name || `Rule ${this._selectedRuleIndex + 1}`}: ${ruleStateObj.state}
-                    </div>
-                    <div class="rule-grid">
-                      <div>Enabled:</div><div>${ruleAttrs.enabled ?? "N/A"}</div>
-                      <div>Start Time:</div><div>${ruleAttrs.start_time ?? "N/A"}</div>
-                      <div>Stop Time:</div><div>${ruleAttrs.stop_time ?? "N/A"}</div>
-                      <div>Start Date:</div><div>${ruleAttrs.start_date ?? "N/A"}</div>
-                      <div>Stop Date:</div><div>${ruleAttrs.stop_date ?? "N/A"}</div>
-                      <div>Days:</div><div>${ruleAttrs.days?.join(", ") ?? "N/A"}</div>
-                      <div>Voltage:</div><div>${ruleAttrs.voltage_v !== undefined ? ruleAttrs.voltage_v + " V" : "N/A"}</div>
-                      <div>SOC:</div><div>${ruleAttrs.soc_value !== undefined ? ruleAttrs.soc_value + " %" : "N/A"}</div>
-                      <div>Power:</div><div>${ruleAttrs.power_w !== undefined ? ruleAttrs.power_w + " W" : "N/A"}</div>
-                    </div>
-                  </div>
-                `
-              : html`<div class="rule unavailable">Selected rule unavailable</div>`
-            }
-          </div>
-        ` : ""}
-
-        <!-- SECTION 4: Write Register -->
-        ${this._selectedSection === "write_register" ? html`
-          <div class="section">
-            <div class="section-title">Write Register</div>
-            <div class="write-section">
-              <select @change=${e => this._selectedEntity = e.target.value}>
-                <option value="">Select Inverter Entity</option>
-                ${this._allEntities.map(eid => html`
-                  <option value="${eid}">${eid}</option>
-                `)}
-              </select>
-
-              <input
-                type="text"
-                placeholder="Register Key (e.g., econ_rule_1_enable)"
-                @input=${e => this._selectedKey = e.target.value.trim()}
-              />
-
-              <input
-                type="text"
-                placeholder="Value (number or option text)"
-                @input=${e => this._writeValue = e.target.value}
-              />
-
-              <button @click=${this._sendWrite}>Send</button>
-              <div class="status">${this._selectedStatus || ""}</div>
             </div>
           </div>
         ` : ""}
