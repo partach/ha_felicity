@@ -1,6 +1,6 @@
 ## Changelog
 
-### [0.8.8] - Inverter type handling, card updpate
+### [0.8.9] - Inverter type handling, card updpate
 - Card update for adding generator (TREX 25-50k)
 - register tweaks
 - small bug fixes
