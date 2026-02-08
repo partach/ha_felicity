@@ -35,7 +35,17 @@ class TypeSpecificHandler:
             else:
                 _LOGGER.debug("Neither bat1_voltage nor bat2_voltage available")
                 return None
-              
+    
+    def determine_rule_power(self, data: dict) -> int | None:
+        power = data.get("econ_rule_1_power")
+        if power is not None:
+            if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+                return round(power / 1000) # these use Watts
+            elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
+                return round(power) # these use kW
+        _LOGGER.debug("econ_rule_1_power not found / is None")
+        return None
+    
     def determine_battery_soc(self, data: dict) -> int | float | None:
         """
         Determine the representative battery SOC based on model.
