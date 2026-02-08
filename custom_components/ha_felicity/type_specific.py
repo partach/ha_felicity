@@ -215,7 +215,7 @@ class TypeSpecificHandler:
     async def async_write_register(self, key: str, value: int) -> bool:
         """Write to a register, handling size and endianness."""
         if key not in self.register_map:
-            _LOGGER.error("Attempt to write unknown register key: %s", key)
+            _LOGGER.error("Attempt to write unknown register key: %s with value", key, value)
             return False
     
         info = self.register_map[key]
