@@ -269,7 +269,7 @@ _REGISTERS_TREX_FIFTY = {
     "econ_rule_2_voltage": {'address': 8724, 'name': 'ECO2_Volt', 'precision': 1, 'index': 1, 'unit': 'V', 'device_class': 'voltage', 'state_class': 'measurement'},
     "econ_rule_2_soc": {'address': 8725, 'name': 'ECO2_SOC', 'precision': 0, 'index': 0, 'unit': '%', 'device_class': 'battery', 'state_class': 'measurement'},
     "econ_rule_2_power": {'address': 8726, 'name': 'ECO2_Power', 'precision': 1, 'index': 1, 'unit': 'kW', 'device_class': 'power', 'state_class': 'measurement'},
-    "econ_rule_3_grid_charge_enable": {'address': 8727, 'name': 'econ_rule_3_grid_charge_enable', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
+    "econ_rule_3_grid_charge_enable": {'address': 8727, 'name': 'ECO3_grid_charge_enable', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
     "econ_rule_3_gen_charge_enable": {'address': 8728, 'name': 'ECO3_gen_charge_enable', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
     "econ_rule_3_start_time": {'address': 8729, 'name': 'ECO3_start_time', 'precision': 0, 'index': 0, 'type': 'time8bit', 'state_class': 'measurement'},
     "econ_rule_3_stop_time": {'address': 8730, 'name': 'ECO3_stop_time', 'precision': 0, 'index': 0, 'type': 'time8bit', 'state_class': 'measurement'},
