@@ -154,8 +154,12 @@ From the `Device` dropdown chose your felicity inverter install.
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card-expl.png" width="600"/>
   <br><em>Card usage explained</em>
 </p>
-Advanced settings.
-If you want to override items in the card you can add the following yaml code:
+
+## Advanced settings
+
+If you want to override items in the card you can add the below items in your code.
+DISCLAIMER: It only overrides the visual values, not the actual values in the integration.
+So use with some caution as it can paint a different picture then you maybe intend.
 
 ```
 type: custom:felicity-inverter-card
@@ -166,9 +170,21 @@ overrides:
   total_pv_power: sensor.<your total pv in watts sensor>
   total_ac_input_power: sensor.<your house total grid sensor>
   battery_power: sensor.<your house total battery sensor>
+  total_generator_active_power: sensor.<your generator sensor>
+  battery_voltage: sensor.<your battery voltage sensor>
+  battery_current: sensor.<your battery current sensor>
+  battery_capacity: sensor.<your battery capacity sensor>
+  battery_discharge_depth_on_grid_bms: sensor.<your battery min dept charge setting>
+  current_price: sensor.<>
+  today_min_price: sensor.<>
+  today_avg_price: sensor.<>
+  today_max_price: sensor.<>
+  price_threshold_level: sensor.<>
+  power_level: sensor.<>
+  safe_max_power: sensor.<>
 ```
 
-`the override declarations only have to be used if there is more electricity generated or used then felicity is aware off`
+The override declarations can for example be used if there is more power generated or used then felicity is aware off.
 
 ## Discussion 
 See [here](https://github.com/partach/ha_felicity/discussions)
