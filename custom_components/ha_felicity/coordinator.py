@@ -217,9 +217,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         max_current = max(phase_1, phase_2, phase_3)
     
         # This is the key: use the freshly read register value from new_data!
-        applied_watts = new_data.get("econ_rule_1_power")  # assuming this key exists in new_data
-        if applied_watts is not None:
-            detected_level = max(1, min(user_level, round(applied_watts / 1000)))
+        applied_kwatts = self.TypeSpecificHandler.determine_rule_power(new_data) # works in kW
+        if applied_kwatts is not None:
+            detected_level = max(1, min(user_level, applied_kwatts))
             if abs(detected_level - base_level) >= 1:
                 _LOGGER.info(
                     "External change detected: power limit %d → %d kW (likely via app) — syncing and re-evaluating safety",
