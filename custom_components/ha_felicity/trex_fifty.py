@@ -192,7 +192,7 @@ _REGISTERS_TREX_FIFTY = {
     "zero_export_to_ct_sell_enable": {'address': 8518, 'name': 'Zero Export To CT Sell Enable', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
     "max_export_power_to_grid": {'address': 8519, 'name': 'Max-Export power to grid', 'precision': 1, 'index': 1, 'unit': 'kW', 'device_class': 'power', 'state_class': 'measurement'},
     "grid_peak_shaving_enable": {'address': 8520, 'name': 'Grid Peak Shaving Enable', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
-    "grid_peak_shaving_power": {'address': 8521, 'name': 'Grid Peak Shaving Power', 'precision': 1, 'index': 1, 'unit': 'kW', 'device_class': 'power', 'state_class': 'measurement'},
+    "grid_peak_shaving_power": {'address': 8521, 'name': 'Grid Peak Shaving Power', 'precision': 1, 'index': 1, 'unit': 'kW', 'type': 'number', 'device_class': 'power', 'state_class': 'measurement'},
     "zero_export_power": {'address': 8522, 'name': 'Zero-export Power', 'precision': 0, 'index': 3, 'unit': 'W', 'device_class': 'power', 'state_class': 'measurement'},
     "zero_export_mode_selection": {'address': 8523, 'name': 'Zero-export mode selection', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['CT', 'Meter']},
     "energy_priority": {'address': 8525, 'name': 'Energy priority', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Bat First', 'Load First']},
