@@ -211,11 +211,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return base_level
     
         # --- 4. Get fresh currents and currently applied power limit ---
-        phase_1 = new_data.get("ac_input_current", 0.0)
-        phase_2 = new_data.get("ac_input_current_l2", 0.0)
-        phase_3 = new_data.get("ac_input_current_l3", 0.0)
-        max_current = max(phase_1, phase_2, phase_3)
-    
+        max_current = self.TypeSpecificHandler.determine_max_amperage(new_data)
         # This is the key: use the freshly read register value from new_data!
         applied_kwatts = self.TypeSpecificHandler.determine_rule_power(new_data) # works in kW
         if applied_kwatts is not None:
