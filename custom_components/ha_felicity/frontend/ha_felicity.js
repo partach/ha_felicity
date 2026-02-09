@@ -418,7 +418,7 @@ class FelicityInverterCard extends LitElement {
     ctx.font = '10px sans-serif';
     ctx.fillStyle = '#c6c2c2dd';
     ctx.textAlign = 'center';
-    ctx.fillText('Active Power (Limit)', width / 2, barY - 8);
+    ctx.fillText('Active Power (Limit)', width / 2, barY -3 );
   }
 
   render() {
@@ -519,7 +519,7 @@ class FelicityInverterCard extends LitElement {
                 .labelbold2 {
                   font-size: 1.1em;
                   font-weight: bold;
-                  color: #3753cfff;
+                  color: rgb(83, 110, 234);
                 }
                 .pv { 
                   top: 8px; 
@@ -543,13 +543,20 @@ class FelicityInverterCard extends LitElement {
                   gap: 2px;
                 }
                 .state {
-                  bottom: 15px;
-                  left: 4%;
-                  transform: none;
+                  bottom: 3px;
+                  left: 50%;
+                  transform: translateX(-50%);
                   flex-direction: row;
                   gap: 4px;
                   align-items: center;
                   z-index: 4;
+                  /* New: background bar */
+                  background-color: rgba(92, 86, 86, 0.65);      /* semi-transparent black (dark theme friendly) */
+                  color: white;                               /* ensure text is readable */
+                  padding: 4px 10px;                          /* inner spacing */
+                  border-radius: 10px;                        /* rounded corners = pill shape */
+                  backdrop-filter: blur(4px);                 /* optional: nice frosted glass effect */
+                  box-shadow: 0 2px 6px rgba(0,0,0,0.3);      /* subtle shadow for depth */
                 }
                 
                 .battery {
@@ -703,9 +710,9 @@ class FelicityInverterCard extends LitElement {
                 }
                 .power-bar-canvas-container {
                   position: absolute;
-                  right: 2%;
-                  bottom: 2px;
-                  width: 48%;
+                  right: 30%;
+                  bottom: 17px;
+                  width: 40%;
                   height: 18%;
                   pointer-events: none;
                   z-index: 4;
@@ -836,9 +843,9 @@ class FelicityInverterCard extends LitElement {
 
               <div class="flow-item state">
                 <div class="label">
-                  ${this._getStateLabel("operating_mode")} | now:
-                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}<br></span>
-                  State: <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
+                  ${this._getStateLabel("operational_mode")} | now:
+                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency} </span>
+                  | State: <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
                 </div>
               </div>
               
@@ -927,7 +934,7 @@ class FelicityInverterCard extends LitElement {
   _getStateLabel(key) {
     const state = this._getState(key);
     const label = state === "—" ? "Unknown" : state;
-    return this._truncateFromSecondSpace(label);
+    return label;
   }
 
   _getState(key) {
