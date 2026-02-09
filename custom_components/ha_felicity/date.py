@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.components.time import TimeEntity
 from homeassistant.components.date import DateEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
