@@ -4,10 +4,10 @@ from __future__ import annotations
 import logging
 
 from homeassistant.components.time import TimeEntity
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.entity import DeviceInfo
 
 from .const import DOMAIN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL
 from .coordinator import HA_FelicityCoordinator
