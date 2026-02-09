@@ -45,7 +45,30 @@ class TypeSpecificHandler:
                 return round(power) # these use kW
         _LOGGER.debug("econ_rule_1_power not found / is None")
         return None
+
+    def determine_operational_mode(self, data: dict) -> str | None:
+         """
+          for trex-10   0: General mode (self-generation and self-use, priority to load power supply)
+                        1: Backup mode (grid-connected battery does not discharge, PV is charged first)
+                        2: Economic mode (time-of-use electricity price/scheduled charging and discharging)
+          for trex-50   System Mode (0 Selling Mode, 1 Zero Export To Load, 2 Zero Export To CT)
+                        Zero Export To Load Sell Enable (0 Disabled, 1 Enabled)
+                        Zero Export To CT Sell Enable (0 Disabled, 1 Enabled)
+                        Zero-export mode selection (0 CT, 1 Meter)
         
+        """
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+            mode = data.get("operating_mode", "?")
+            return mode # should be textual as it is a select
+        elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
+            mode = data.get("system_mode", "?")
+            loadToSell = data.get("zero_export_to_load_sell_enable", "?")
+            CTtoSell = data.get("zero_export_to_ct_sell_enable", "?")
+            modeSelection = data.get("zero_export_mode_selection", "?")
+            return f"{mode} (LtS:{loadToSell},CTtS:{CTtoSell},Sel:{CT[modeSelection]})"
+        _LOGGER.debug("Unable to determine operational mode")
+        return None
+
     def determine_max_amperage(self, data: dict) -> float:
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             phase_1 = data.get("ac_input_current", 0.0)
@@ -232,6 +255,8 @@ class TypeSpecificHandler:
       
         elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
             await self.async_write_register("econ_rule_1_power", int(round(value / 1000.0))) # for trex fifty it is in kW
+            # in testing it seemed that this register also needs to be set to the same amount to enable charging at least. Not sure for selling...
+            await self.async_write_register("grid_peak_shaving_power", int(round(value / 1000.0))) # for trex fifty it is in kW
             return True
       
         return False   
