@@ -47,7 +47,7 @@ class TypeSpecificHandler:
         return None
 
     def determine_operational_mode(self, data: dict) -> str | None:
-         """
+        """
           for trex-10   0: General mode (self-generation and self-use, priority to load power supply)
                         1: Backup mode (grid-connected battery does not discharge, PV is charged first)
                         2: Economic mode (time-of-use electricity price/scheduled charging and discharging)
@@ -55,7 +55,6 @@ class TypeSpecificHandler:
                         Zero Export To Load Sell Enable (0 Disabled, 1 Enabled)
                         Zero Export To CT Sell Enable (0 Disabled, 1 Enabled)
                         Zero-export mode selection (0 CT, 1 Meter)
-        
         """
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             mode = data.get("operating_mode", "?")
