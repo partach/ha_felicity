@@ -64,7 +64,7 @@ class TypeSpecificHandler:
             loadToSell = data.get("zero_export_to_load_sell_enable", "?")
             CTtoSell = data.get("zero_export_to_ct_sell_enable", "?")
             modeSelection = data.get("zero_export_mode_selection", "?")
-            return f"{mode} (LtS:{loadToSell},CTtS:{CTtoSell},Sel:{CT[modeSelection]})"
+            return f"{mode} (LtS:{loadToSell},CTtS:{CTtoSell},Sel:{modeSelection})"
         _LOGGER.debug("Unable to determine operational mode")
         return None
 
