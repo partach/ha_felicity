@@ -81,6 +81,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities.append(
         HA_FelicityEnergyStateSensor(coordinator, entry)
     )
+    entities.append(
+        HA_FelicitySimpleSensor(coordinator,"operational_mode","Operational Mode")
+    )
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
         entity._attr_device_info = device_info
@@ -226,6 +229,27 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
             value = self.coordinator.data.get(self._key)
             if value is not None:
                 return round(value, 3)  # or 4 – clean decimals
+            return None
+        except Exception:
+            _LOGGER.debug("failed to get sensor value %s from coordinator", self._key)
+            return None
+
+class HA_FelicitySimpleSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for Nordpool price data from coordinator."""
+    def __init__(self, coordinator, key, name):
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = f"{coordinator.config_entry.title} {name}"
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{key}"
+        self._attr_state_class = None
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self):
+        try:
+            value = self.coordinator.data.get(self._key)
+            if value is not None:
+                return value
             return None
         except Exception:
             _LOGGER.debug("failed to get sensor value %s from coordinator", self._key)
