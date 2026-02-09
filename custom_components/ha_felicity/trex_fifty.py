@@ -387,7 +387,7 @@ _COMBINED_REGISTERS_TREX_FIFTY = {
         "precision": 0,
     },
     "total_ac_output_active_power": { # legacy  naming trex-10
-        "sources": ["phase_a_home_load_power", "phase_b_home_load_power", "phase_c_home_load_power"],
+        "sources": ["phase_a_load_active_power", "phase_b_load_active_power", "phase_c_load_active_power"],
         "calc": lambda a, b, c: round(((a or 0) + (b or 0) + (c or 0)) * 1000),
         "unit": "W",
         "device_class": "power",
