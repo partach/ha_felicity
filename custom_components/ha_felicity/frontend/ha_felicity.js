@@ -481,6 +481,7 @@ class FelicityInverterCard extends LitElement {
                 
                 .flow-item {
                   position: absolute;
+                  font-size: 0.8em;
                   text-align: center;
                   display: flex;
                   flex-direction: column;
@@ -519,7 +520,7 @@ class FelicityInverterCard extends LitElement {
                 .labelbold2 {
                   font-size: 1.1em;
                   font-weight: bold;
-                  color: rgb(83, 110, 234);
+                  color: rgb(104, 171, 248);
                 }
                 .pv { 
                   top: 8px; 
@@ -544,6 +545,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 .state {
                   bottom: 3px;
+                  width: 95%;
                   left: 50%;
                   transform: translateX(-50%);
                   flex-direction: row;
@@ -551,12 +553,9 @@ class FelicityInverterCard extends LitElement {
                   align-items: center;
                   z-index: 4;
                   /* New: background bar */
-                  background-color: rgba(92, 86, 86, 0.65);      /* semi-transparent black (dark theme friendly) */
-                  color: white;                               /* ensure text is readable */
-                  padding: 4px 10px;                          /* inner spacing */
-                  border-radius: 10px;                        /* rounded corners = pill shape */
-                  backdrop-filter: blur(4px);                 /* optional: nice frosted glass effect */
-                  box-shadow: 0 2px 6px rgba(0,0,0,0.3);      /* subtle shadow for depth */
+                  background-color: rgba(126, 123, 123, 0.65);
+                  padding: 4px 10px;
+                  border-radius: 7px;
                 }
                 
                 .battery {
