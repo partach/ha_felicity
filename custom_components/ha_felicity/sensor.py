@@ -291,12 +291,14 @@ class HA_FelicityTime(CoordinatorEntity, TimeEntity):
 
     async def async_set_value(self, value) -> None:
         # value is datetime.time
-        if not self._time_error: # only write if the value makes sense
-            #   we let the write_type_specific_register take care of special treatment? Not yet as we only have on type atm
-           packed = (value.hour << 8) | value.minute
-           await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
-        await self.coordinator.async_request_refresh()
-
+        try:
+            if not self._time_error: # only write if the value makes sense
+                #   we let the write_type_specific_register take care of special treatment? Not yet as we only have on type atm
+               packed = (value.hour << 8) | value.minute
+               await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
+            await self.coordinator.async_request_refresh()
+        except Exception as err:
+            _LOGGER.error("Failed to set time for %s: %s", self._key, err)        
 
 class HA_FelicityDate(CoordinatorEntity, DateEntity):
     """Representation of a writable date (month/day) register."""
@@ -320,7 +322,8 @@ class HA_FelicityDate(CoordinatorEntity, DateEntity):
         theDate = raw
         from datetime import date
         try:
-           theDate = date(year=2025, month=month, day=day)
+           current_year = date.today().year 
+           theDate = date(year=current_year, month=month, day=day)
            self._date_error = False
         except Exception as err:
            self._date_error = True
@@ -328,11 +331,14 @@ class HA_FelicityDate(CoordinatorEntity, DateEntity):
         return theDate
 
     async def async_set_value(self, value) -> None:
-        # value is datetime.date
-        if not self._date_error:
-            #   we let the write_type_specific_register take care of special treatment? Not yet as we only have on type atm
-            packed = (value.month << 8) | value.day
-            await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
-        await self.coordinator.async_request_refresh()
+        try:
+            # value is datetime.date
+            if not self._date_error:
+                #   we let the write_type_specific_register take care of special treatment? Not yet as we only have on type atm
+                packed = (value.month << 8) | value.day
+                await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, packed)
+            await self.coordinator.async_request_refresh()
+        except Exception as err:
+            _LOGGER.error("Failed to set date for %s: %s", self._key, err)        
 
 
