@@ -35,7 +35,7 @@ from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR,Platform.NUMBER,Platform.SELECT]
+PLATFORMS = [Platform.SENSOR,Platform.NUMBER,Platform.SELECT, Platform.DATE, Platform.TIME]
 
 async def async_install_frontend_resource(hass: HomeAssistant):
     """Ensure the frontend JS file is copied to the www/community folder."""
