@@ -281,7 +281,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.price_threshold or 0,
             soc_limit,
         )
-
         await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
         await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
         if new_state != "idle":
@@ -378,7 +377,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
 
                     new_data[key] = value
-            # dynamically check which battery system we have.
+            # dynamically check which system we have an appropriated settings.
+            operational_mode = self.TypeSpecificHandler.determine_operational_mode(new_data)
+            new_data["operational_mode"] = operational_mode
             raw_system_voltage = self.TypeSpecificHandler.determine_battery_voltage(new_data)
             new_data["battery_nominal_voltage"] = raw_system_voltage
 #             _LOGGER.debug("Battery voltage retrieved: %dV", raw_system_voltage)
