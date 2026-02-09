@@ -17,24 +17,40 @@ class TypeSpecificHandler:
         self.register_map = register_map
 
     def determine_battery_voltage(self, data: dict) -> int | float | None:
+        """
+        Determine the representative battery voltage.
+        - For TREX-5/10: uses battery_voltage
+        - For TREX-50: prefers bat1_voltage if valid, falls back to bat2_voltage
+        - Considers voltage <= 0 or None as invalid/missing
+        """
+        MIN_VALID_VOLTAGE = 10.0  # Arbitrary but safe threshold (e.g. <10V is unrealistic for a battery pack)
+    
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             voltage = data.get("battery_voltage")
-            if voltage is not None:
+            if voltage is not None and voltage > MIN_VALID_VOLTAGE:
                 return voltage
-            _LOGGER.debug("battery_voltage missing on 5/10K model")
+            _LOGGER.debug("battery_voltage missing or invalid (≤%.1fV) on 5/10K model", MIN_VALID_VOLTAGE)
             return None
-      
+    
         elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
             bat1 = data.get("bat1_voltage")
             bat2 = data.get("bat2_voltage")
-      
-            if bat1 is not None:
-                return bat1 
-            elif bat2 is not None:
-                return bat2 
-            else:
-                _LOGGER.debug("Neither bat1_voltage nor bat2_voltage available")
-                return None
+    
+            # Prefer bat1 if valid
+            if bat1 is not None and bat1 > MIN_VALID_VOLTAGE:
+                return bat1
+    
+            # Fall back to bat2 if valid
+            if bat2 is not None and bat2 > MIN_VALID_VOLTAGE:
+                _LOGGER.debug("Using bat2_voltage as fallback (bat1 invalid or missing)")
+                return bat2
+    
+            _LOGGER.debug("No valid battery voltage available (bat1=%s, bat2=%s)", bat1, bat2)
+            return None
+    
+        else:
+            _LOGGER.debug("Unknown inverter model %s – cannot determine battery voltage", self._inverter_model)
+            return None
     
     def determine_rule_power(self, data: dict) -> int | None:
         power = data.get("econ_rule_1_power")
