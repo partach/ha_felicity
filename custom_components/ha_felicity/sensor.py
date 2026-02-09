@@ -77,12 +77,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
         ]    
     entities.extend(nordpool_sensors)
-    entities.append(
-        HA_FelicityEnergyStateSensor(coordinator, entry)
-    )
-    entities.append(
+    simple_sensors = [
         HA_FelicitySimpleSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
         HA_FelicitySimpleSensor(coordinator,"operational_mode","Operational Mode")
+    ]
+    entities.extend(simple_sensors)
+    entities.append(
+        HA_FelicityEnergyStateSensor(coordinator, entry)
     )
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
