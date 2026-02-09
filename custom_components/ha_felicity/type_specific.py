@@ -56,15 +56,29 @@ class TypeSpecificHandler:
                         Zero Export To CT Sell Enable (0 Disabled, 1 Enabled)
                         Zero-export mode selection (0 CT, 1 Meter)
         """
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
-            mode = data.get("operating_mode", "?")
-            return mode # should be textual as it is a select
-        elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
-            mode = data.get("system_mode", "?")
-            loadToSell = data.get("zero_export_to_load_sell_enable", "?")
-            CTtoSell = data.get("zero_export_to_ct_sell_enable", "?")
-            modeSelection = data.get("zero_export_mode_selection", "?")
-            return f"{mode} (LtS:{loadToSell},CTtS:{CTtoSell},Sel:{modeSelection})"
+        try:
+            if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+                modes = {
+                    0:    "General mode",
+                    1:    "Backup mode",
+                    2:    "Economic mode",
+                }           
+                mode = data.get("operating_mode", 0)
+                return modes[mode] # should be textual as it is a select
+            elif self._inverter_model == INVERTER_MODEL_TREX_FIFTY:
+                modes = {
+                    0:    "Selling Mode",
+                    1:    "Zero Export To Load",
+                    2:    "Zero Export To CT",
+                }
+                CT = {0:"CT", 1: "Meter"}
+                mode = data.get("system_mode", 0)
+                loadToSell = data.get("zero_export_to_load_sell_enable", 0)
+                CTtoSell = data.get("zero_export_to_ct_sell_enable", 0)
+                modeSelection = data.get("zero_export_mode_selection", 0)
+                return f"{modes[mode]} (LtS:{loadToSell},CTtS:{CTtoSell},Sel:{CT[modeSelection]})"
+        except Exception as err:
+            _LOGGER.debug("Error in determening operational mode: %s", err)
         _LOGGER.debug("Unable to determine operational mode")
         return None
 
