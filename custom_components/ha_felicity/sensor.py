@@ -75,13 +75,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "max_price", "Today Max Price", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "avg_price", "Today Avg Price", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
         ]    
     entities.extend(nordpool_sensors)
     entities.append(
         HA_FelicityEnergyStateSensor(coordinator, entry)
     )
     entities.append(
+        HA_FelicitySimpleSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
         HA_FelicitySimpleSensor(coordinator,"operational_mode","Operational Mode")
     )
     # let's make sure we tie all the sensors to the device:
@@ -236,9 +236,13 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
 
 class HA_FelicitySimpleSensor(CoordinatorEntity, SensorEntity):
     """Sensor for Nordpool price data from coordinator."""
-    def __init__(self, coordinator, key, name):
+    def __init__(self, coordinator, key: str, name: str, unit: str = "", icon: str | None = None):
         super().__init__(coordinator)
         self._key = key
+        if unit:
+            self._attr_native_unit_of_measurement = unit
+        if icon:
+            self._attr_icon = icon
         self._attr_name = f"{coordinator.config_entry.title} {name}"
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{key}"
         self._attr_state_class = None
