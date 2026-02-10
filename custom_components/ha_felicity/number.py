@@ -125,7 +125,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
         self._key = key
         self._info = info
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_name = f"{entry.title} {info['name']}"
+        self._attr_name = f"{entry.title} {info.get("name")}"
         self._attr_native_unit_of_measurement = info.get("unit")
         self._attr_device_class = info.get("device_class")
         self._attr_native_min_value = info.get("min", 0)
