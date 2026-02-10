@@ -216,6 +216,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     
         # --- 4. Get fresh currents and currently applied power limit ---
         max_current = self.TypeSpecificHandler.determine_max_amperage(new_data)
+        if max_current is not None:
+            new_data["highest_grid_current_now"] = max_current
         # This is the key: use the freshly read register value from new_data!
         applied_kwatts = self.TypeSpecificHandler.determine_rule_power(new_data) # works in kW
         if applied_kwatts is not None:
