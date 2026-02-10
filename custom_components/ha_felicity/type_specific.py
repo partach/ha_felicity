@@ -308,6 +308,8 @@ class TypeSpecificHandler:
             value = int(round(value * 10.0))   # 12.3 → 123
         elif index in (2, 9):  # /100 fields (including power factor 0.01)
             value = int(round(value * 100.0))  # 0.95 → 95
+        elif index in (4, 10):  # /100 fields
+            value = int(round(value * 1000.0))  # 0.095 → 95
         elif index == 3:       # signed – usually no scaling needed, but cast to int
             value = int(value)
         # index 0 or other → no scaling
