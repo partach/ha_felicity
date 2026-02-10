@@ -74,7 +74,8 @@ class FelicityInverterCard extends LitElement {
       this._resolveDeviceEntities();
       this._drawEnergyBar();
       this._drawBatteryBar();
-      this._drawPowerBar();     
+      this._drawPowerBar();
+      this._drawCurrentBar();       
     }
   }
 
@@ -360,7 +361,7 @@ class FelicityInverterCard extends LitElement {
     // Data
     const userLevel = parseFloat(this._getValue("power_level")) || 0;
     const safeLevel = parseFloat(this._getValue("safe_max_power")) / 1000 || 0; // convert W → level (assuming 1 level = 1000W)
-    const maxLevel = 10; // assuming max is 10 levels (adjust if different)
+    const maxLevel = 15;
 
     const hasData = userLevel > 0 || safeLevel > 0;
 
@@ -384,9 +385,9 @@ class FelicityInverterCard extends LitElement {
     ctx.fillStyle = '#333333aa';
     ctx.fillRect(barMargin, barY, barWidth, barHeight);
 
-    // Yellow: User-set level
+    // User-set level
     const userWidth = (userLevel / maxLevel) * barWidth;
-    ctx.fillStyle = '#4c5fc9cc'; // semi-transparent yellow
+    ctx.fillStyle = '#4c5fc9cc'; // semi-transparent blue
     ctx.fillRect(barMargin, barY, userWidth, barHeight);
 
     // Green overlay: Current safe level (only if lower than user level)
@@ -419,6 +420,82 @@ class FelicityInverterCard extends LitElement {
     ctx.fillStyle = '#c6c2c2dd';
     ctx.textAlign = 'center';
     ctx.fillText('Active Power (Limit)', width / 2, barY -3 );
+  }
+
+  _drawCurrentBar() {
+    if (!this.showEnergyBar) return;
+
+    const canvas = this.shadowRoot.querySelector('.current-bar-canvas');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Data
+    const currentLevel = parseFloat(this._getValue("peak_grid_current_now")) || 0;
+    const safeLevel = parseFloat(this._getValue("max_amperage_per_phase")) || 0;
+    const maxLevel = 25;
+
+    const hasNoData = currentLevel == 0 && safeLevel == 0;
+
+    ctx.clearRect(0, 0, width, height);
+
+    if (hasNoData) {
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.textAlign = 'center';
+      ctx.fillText('No current limit data', width / 2, height / 2);
+      return;
+    }
+
+    // Bar setup
+    const barHeight = height * 0.25;
+    const barY = height / 2 - barHeight / 2;
+    const barMargin = 20;
+    const barWidth = width - 2 * barMargin;
+
+    // Background (dark gray)
+    ctx.fillStyle = '#333333aa';
+    ctx.fillRect(barMargin, barY, barWidth, barHeight);
+
+    // 1. Draw the SAFE MAX bar first (blue background range)
+    const safeWidth = Math.min((safeLevel / maxLevel) * barWidth, barWidth);
+    ctx.fillStyle = '#4c5fc9cc'; // semi-transparent blue
+    ctx.fillRect(barMargin, barY, safeWidth, barHeight);
+
+    // 2. Draw the CURRENT usage ON TOP (green fill)
+    const currentWidth = Math.min((currentLevel / maxLevel) * barWidth, barWidth);
+    ctx.fillStyle = '#4cc988cc'; // semi-transparent green
+    ctx.fillRect(barMargin, barY, currentWidth, barHeight);
+
+
+    // Outline
+    ctx.strokeStyle = '#ffffff88';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barMargin, barY, barWidth, barHeight);
+
+    // Labels
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#9e9999ff';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${currentLevel}`, width - barMargin - 20, barY + barHeight - 4);
+
+    //ctx.textAlign = 'right';
+    //const safeText = safeLevel < currentLevel 
+    //  ? `Safe:${safeLevel}`
+    //  : `${safeLevel}`;
+    //ctx.fillStyle = safeLevel < currentLevel ? '#ff9800' : '#4caf50';
+    //ctx.fillText(safeText, width - barMargin-60, barY + barHeight -4);
+
+    // Title above
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#c6c2c2dd';
+    ctx.textAlign = 'center';
+    ctx.fillText('Grid input current (Limit)', width / 2, barY -3 );
   }
 
   render() {
@@ -481,7 +558,7 @@ class FelicityInverterCard extends LitElement {
                 
                 .flow-item {
                   position: absolute;
-                  font-size: 0.8em;
+                  font-size: 1.1em;
                   text-align: center;
                   display: flex;
                   flex-direction: column;
@@ -520,7 +597,7 @@ class FelicityInverterCard extends LitElement {
                 .labelbold2 {
                   font-size: 1.1em;
                   font-weight: bold;
-                  color: rgb(104, 171, 248);
+                  color: #03a9f4;
                 }
                 .pv { 
                   top: 8px; 
@@ -549,12 +626,12 @@ class FelicityInverterCard extends LitElement {
                   left: 50%;
                   transform: translateX(-50%);
                   flex-direction: row;
-                  gap: 4px;
+                  gap: 2px;
                   align-items: center;
                   z-index: 4;
                   /* New: background bar */
                   background-color: rgba(126, 123, 123, 0.65);
-                  padding: 4px 10px;
+                  padding: 2px 5px;
                   border-radius: 7px;
                 }
                 
@@ -709,7 +786,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 .power-bar-canvas-container {
                   position: absolute;
-                  right: 30%;
+                  left: 5%;
                   bottom: 17px;
                   width: 40%;
                   height: 18%;
@@ -717,6 +794,19 @@ class FelicityInverterCard extends LitElement {
                   z-index: 4;
                 }
                 .power-bar-canvas {
+                  width: 100%;
+                  height: 100%;
+                }
+                .current-bar-canvas-container {
+                  position: absolute;
+                  right: 5%;
+                  bottom: 17px;
+                  width: 40%;
+                  height: 18%;
+                  pointer-events: none;
+                  z-index: 4;
+                }
+                .current-bar-canvas {
                   width: 100%;
                   height: 100%;
                 }
@@ -886,6 +976,9 @@ class FelicityInverterCard extends LitElement {
                 </div>
                 <div class="power-bar-canvas-container">
                   <canvas class="power-bar-canvas"></canvas>
+                </div>
+                <div class="current-bar-canvas-container">
+                  <canvas class="current-bar-canvas"></canvas>
                 </div>
               ` : ""}
             </div>
