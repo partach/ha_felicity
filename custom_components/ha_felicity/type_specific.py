@@ -312,7 +312,8 @@ class TypeSpecificHandler:
             value = int(round(value * 1000.0))  # 0.095 → 95
         elif index == 3:       # signed – usually no scaling needed, but cast to int
             value = int(value)
-        # index 0 or other → no scaling
+        else    
+            value = int(round(value)) # just ensure we deal with whole number 
         
         if size == 1:
             values = [value]
@@ -337,7 +338,7 @@ class TypeSpecificHandler:
         try:
             result = await self.client.write_registers(
                 address=start_address, 
-                values=values, 
+                values=values,
                 device_id=int(self.slave_id)
             )
             if result.isError():
