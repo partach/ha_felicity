@@ -391,8 +391,8 @@ class FelicityInverterCard extends LitElement {
     ctx.fillRect(barMargin, barY, userWidth, barHeight);
 
     // Green overlay: Current safe level (only if lower than user level)
+    const safeWidth = (safeLevel / maxLevel) * barWidth;
     if (safeLevel < userLevel) {
-      const safeWidth = (safeLevel / maxLevel) * barWidth;
       ctx.fillStyle = '#4caf5088'; // semi-transparent green
       ctx.fillRect(barMargin, barY, safeWidth, barHeight);
     }
@@ -403,17 +403,15 @@ class FelicityInverterCard extends LitElement {
     ctx.strokeRect(barMargin, barY, barWidth, barHeight);
 
     // Labels
-    //ctx.font = '10px sans-serif';
-    //ctx.fillStyle = '#9e9999ff';
-    //ctx.textAlign = 'left';
-    //ctx.fillText(`${userLevel}`, width - barMargin - 20, barY + barHeight - 4);
-
-    //ctx.textAlign = 'right';
-    //const safeText = safeLevel < userLevel 
-    //  ? `Safe:${safeLevel}`
-    //  : `${safeLevel}`;
-    //ctx.fillStyle = safeLevel < userLevel ? '#ff9800' : '#4caf50';
-    //ctx.fillText(safeText, width - barMargin-60, barY + barHeight -4);
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = 'rgb(252, 249, 249)';
+    ctx.textAlign = 'right';
+    const safePos = safeLevel<(maxLevel-3)? safeWidth + 35 : safeWidth + 50
+    if (safeLevel!=userLevel){
+      ctx.fillText(`${safeLevel}`, userWidth + 35, barY + barHeight -4);
+    }
+    ctx.fillStyle = 'rgb(86, 243, 123)';
+    ctx.fillText(`(${userLevel})`, safePos , barY + barHeight - 4);
 
     // Title above
     ctx.font = '10px sans-serif';
@@ -480,16 +478,14 @@ class FelicityInverterCard extends LitElement {
 
     // Labels
     ctx.font = '10px sans-serif';
-    ctx.fillStyle = '#9e9999ff';
-    ctx.textAlign = 'left';
-    ctx.fillText(`${currentLevel}`, width - barMargin - 20, barY + barHeight - 4);
-
-    //ctx.textAlign = 'right';
-    //const safeText = safeLevel < currentLevel 
-    //  ? `Safe:${safeLevel}`
-    //  : `${safeLevel}`;
-    //ctx.fillStyle = safeLevel < currentLevel ? '#ff9800' : '#4caf50';
-    //ctx.fillText(safeText, width - barMargin-60, barY + barHeight -4);
+    ctx.fillStyle = 'rgb(252, 249, 249)';
+    ctx.textAlign = 'right';
+    const safePos = safeLevel<(maxLevel-3)? safeWidth + 35 : safeWidth + 50
+    if (currentLevel < safeLevel - 2){
+      ctx.fillText(`(${safeLevel})`, safePos, barY + barHeight -4);
+    }
+    ctx.fillStyle = 'rgb(86, 243, 123)';
+    ctx.fillText(`${currentLevel}`, currentWidth + 35, barY + barHeight - 4);
 
     // Title above
     ctx.font = '10px sans-serif';
@@ -558,7 +554,7 @@ class FelicityInverterCard extends LitElement {
                 
                 .flow-item {
                   position: absolute;
-                  font-size: 1.1em;
+                  font-size: 1.0em;
                   text-align: center;
                   display: flex;
                   flex-direction: column;
