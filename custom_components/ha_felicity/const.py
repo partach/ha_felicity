@@ -60,22 +60,13 @@ DEFAULT_FIRST_REG = 4353
 # 1 = /10 → precision 1, index 1;
 # 2 = /100 → precision 2, index 2; 
 # 3 = signed index;
-# 4 = energy high/low index; (obsolete)
-# 5 = faults/warnings/modes/flags index; (doesnt do anything port procesing)
+# 4 = /1000  → precision 2, index 4;
+# 5 = faults/warnings/modes/flags index; (doesnt do anything for processing)
 # 6 = time index; (obsolete)
 # 7 = % index (doesnt really do anything yet)
 # 8 = signed index and /10; 
-# 99 -> dont show as sensor, it is a combined value, see combined registers
-
-
-# Optional: Strict full without duplicates
-# "full": {k: v for k, v in _REGISTERS.items() if "_secondary" not in k and "_alt" not in k},
-# Precision and index based on the "Multiple" column
-# 0 = dont process or packed → precision 0, index 0
-# -1 = /10 → precision 1, index 1 (or 8 if signed)
-# -2 = /100 → precision 2, index 2 (or 3 if signed)
-# 5 = faults/warnings/modes/flags index
-# 99 = combined/time or other special
+# 9 = signed index and /100; 
+# 99 -> dont show as sensor, it is a sub-part of a combined value, see combined registers
 
 # Model-specific data (extend for new models)
 def build_groups(registers):
