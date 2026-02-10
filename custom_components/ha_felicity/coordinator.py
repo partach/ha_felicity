@@ -91,6 +91,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             elif size == 4 and raw >= 0x8000000000000000:
                 return raw - 0x10000000000000000
             return raw
+        elif index == 4:  # /1000 – only for size=1
+            if size != 1:
+                _LOGGER.warning("Index 4 (/1000) used with size=%d – applying anyway", size)
+            return raw / 1000.0
         elif index == 8: # /10 (and signed possible)
             # First make signed if needed
             if size == 1 and raw >= 0x8000:
