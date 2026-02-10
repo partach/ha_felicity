@@ -331,6 +331,25 @@ _REGISTERS_TREX_FIFTY = {
     "gen1uftime": {'address': 8791, 'name': 'Gen1UFTime', 'precision': 2, 'index': 2, 'unit': 's', 'state_class': 'measurement'},
     "gen2ufvalue": {'address': 8792, 'name': 'Gen2UFValue', 'precision': 2, 'index': 2, 'unit': 'Hz', 'device_class': 'frequency', 'state_class': 'measurement'},
     "gen2uftime": {'address': 8793, 'name': 'Gen2UFTime', 'precision': 2, 'index': 2, 'unit': 's', 'state_class': 'measurement'},
+    
+    "device_type": {"address": 63488, "name": "Device Type", "precision": 0, "index": 0},
+    "device_sub_type": {"address": 63489, "name": "Device Sub Type", "precision": 0, "index": 0},
+    "protocol_version": {"address": 63490, "name": "Protocol Version", "precision": 0, "index": 4},
+    "communication_information": {"address": 63491, "name": "Communication Information", "precision": 0, "index": 0},
+    "serial_number_part_1": {"address": 63492, "name": "Serial Number part 1", "precision": 0, "index": 0 },
+    "serial_number_part_2": {"address": 63493, "name": "Serial Number part 2", "precision": 0, "index": 0 },
+    "serial_number_part_3": {"address": 63494, "name": "Serial Number part 3", "precision": 0, "index": 0 },
+    "serial_number_part_4": {"address": 63495, "name": "Serial Number part 4", "precision": 0, "index": 0 },
+    "serial_number_part_5": {"address": 63496, "name": "Serial Number part 5", "precision": 0, "index": 0 },
+    "serial_number_length": {"address": 63497, "name": "Serial Number Length", "precision": 0, "index": 0},
+    "display_software_version": {"address": 63498, "name": "Display Software Version", "precision": 0,"index": 4},
+    "dsp1_software_version": {"address": 63499, "name": "DSP1 Version", "precision": 0,"index": 4},
+    "dsp2_software_version": {"address": 63500, "name": "DSP2 Version", "precision": 0,"index": 4},
+    "dashboard_hardware_version": {"address": 63501, "name": "Dashboard Hardware Version", "precision": 0, "index": 4},
+    "control_board_hardware_version": {"address": 63502, "name": "Control Board Hardware Version", "precision": 0, "index": 4},
+    "power_board_hardware_version": {"address": 63503, "name": "Power Board Hardware Version", "precision": 0, "index": 4},
+    "flash_data_version": {"address": 63508, "name": "Flash Data Version", "precision": 0, "index": 0},
+
 }
 
 # Combined registers (post-process)
