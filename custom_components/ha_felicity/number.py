@@ -130,8 +130,12 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
         self._attr_device_class = info.get("device_class")
         self._attr_native_min_value = info.get("min", 0)
         self._attr_native_max_value = info.get("max", 100)
-        self._attr_native_step = info.get("step", 1)
-        self._attr_mode = NumberMode.SLIDER
+        if self._info.get("unit") in ("V", "A", "W", "kW") or "voltage" in self._key or "current" in self._key:
+            self._attr_mode = NumberMode.BOX
+            self._attr_native_step = info.get("step", 0.1)
+        else:
+            self._attr_native_step = info.get("step", 1)
+            self._attr_mode = NumberMode.SLIDER
 
     @property
     def native_value(self):
