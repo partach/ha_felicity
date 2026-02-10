@@ -62,7 +62,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities.extend(nordpool_sensors)
     simple_sensors = [
         HA_FelicitySimpleSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
-        HA_FelicitySimpleSensor(coordinator,"operational_mode","Operational Mode")
+        HA_FelicitySimpleSensor(coordinator,"operational_mode","Operational Mode"),
+        HA_FelicitySimpleSensor(coordinator,"highest_grid_current_now","Peak Grid Current Now", "A"),
     ]
     entities.extend(simple_sensors)
     entities.append(
