@@ -13,6 +13,9 @@ class FelicityInverterCard extends LitElement {
       _keyOptions: { type: Array },
       _selectedStatus: { type: String },
       _selectedSection: { type: String },
+      _showOptionBattery: { type: Boolean },
+      _showOptionPrice: { type: Boolean },
+      _showOptionBar: { type: Boolean },
     };
   }
 
@@ -27,6 +30,9 @@ class FelicityInverterCard extends LitElement {
     this._selectedSection = "energy_flow"; // Default to energy flow
     this._energyCache ??= {};
     this.showEnergyBar = true; // Set to false to hide the bar
+    this._showOptionBattery = true;
+    this._showOptionPrice = true;
+    this._showOptionBar = true;
   }
 
   static getConfigElement() {
@@ -60,7 +66,11 @@ class FelicityInverterCard extends LitElement {
       currency: '\u{20AC}',
       ...config,
     };
+    this.showOptionPrice   = config.show_option_price   ?? true;
+    this.showOptionBattery = config.show_option_battery ?? true;
+    this.showOptionBar     = config.show_option_bar     ?? true;
     this._selectedSection = "energy_flow";
+    this.requestUpdate();
   }
 
   getCardSize() {
@@ -408,10 +418,10 @@ class FelicityInverterCard extends LitElement {
     ctx.textAlign = 'right';
     const safePos = safeLevel<(maxLevel-3)? safeWidth + 35 : safeWidth + 50
     if (safeLevel!=userLevel){
-      ctx.fillText(`${safeLevel}`, userWidth + 35, barY + barHeight -4);
+      ctx.fillText(`${safeLevel}`, safePos, barY + barHeight -4);
     }
     ctx.fillStyle = 'rgb(86, 243, 123)';
-    ctx.fillText(`(${userLevel})`, safePos , barY + barHeight - 4);
+    ctx.fillText(`(${userLevel})`, userWidth + 35, barY + barHeight - 4);
 
     // Title above
     ctx.font = '10px sans-serif';
@@ -963,13 +973,19 @@ class FelicityInverterCard extends LitElement {
               </div>
 
               <!-- Bar Canvas -->
-              ${this.showEnergyBar ? html`
+              ${this.showOptionPrice ? html`
                 <div class="bar-canvas-container">
                   <canvas class="bar-canvas"></canvas>
                 </div>
+              ` : ""}
+
+              ${this.showOptionBattery ? html`
                 <div class="battery-bar-canvas-container">
                   <canvas class="battery-bar-canvas"></canvas>
                 </div>
+              ` : ""}
+
+              ${this.showOptionBar ? html`
                 <div class="power-bar-canvas-container">
                   <canvas class="power-bar-canvas"></canvas>
                 </div>
@@ -1437,6 +1453,35 @@ class FelicityInverterCardEditor extends LitElement {
         selector: {
           object: {},
         },
+      },
+
+      // Visibility toggles (checkboxes)
+      {
+        name: "show_option_price",
+        label: "Show Price Information",
+        description: "Display current/min/max/avg price and threshold",
+        selector: {
+          boolean: {},
+        },
+        default: true,
+      },
+      {
+        name: "show_option_battery",
+        label: "Show Battery Information",
+        description: "Display battery SOC, voltage, current, etc.",
+        selector: {
+          boolean: {},
+        },
+        default: true,
+      },
+      {
+        name: "show_option_bar",
+        label: "Show Power & Current Bars",
+        description: "Display visual power limit and current limit bars",
+        selector: {
+          boolean: {},
+        },
+        default: true,
       },
     ];
   }
