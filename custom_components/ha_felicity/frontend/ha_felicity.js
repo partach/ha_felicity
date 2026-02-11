@@ -16,6 +16,8 @@ class FelicityInverterCard extends LitElement {
       _showOptionBattery: { type: Boolean },
       _showOptionPrice: { type: Boolean },
       _showOptionBar: { type: Boolean },
+      _maxPowerVal: { type: Number },
+      _maxCurrentVal: { type: Number },
     };
   }
 
@@ -33,6 +35,8 @@ class FelicityInverterCard extends LitElement {
     this._showOptionBattery = true;
     this._showOptionPrice = true;
     this._showOptionBar = true;
+    this._maxPowerVal = 15;
+    this._maxCurrentVal = 25;
   }
 
   static getConfigElement() {
@@ -69,6 +73,8 @@ class FelicityInverterCard extends LitElement {
     this.showOptionPrice   = config.show_option_price   ?? true;
     this.showOptionBattery = config.show_option_battery ?? true;
     this.showOptionBar     = config.show_option_bar     ?? true;
+    this._maxPowerVal    = config.max_power ?? 15;
+    this._maxCurrentVal    = config.max_current ?? 25;
     this._selectedSection = "energy_flow";
     this.requestUpdate();
   }
@@ -371,7 +377,7 @@ class FelicityInverterCard extends LitElement {
     // Data
     const userLevel = parseFloat(this._getValue("power_level")) || 0;
     const safeLevel = parseFloat(this._getValue("safe_max_power")) / 1000 || 0; // convert W → level (assuming 1 level = 1000W)
-    const maxLevel = 15;
+    const maxLevel = this._maxPowerVal;
 
     const hasData = userLevel > 0 || safeLevel > 0;
 
@@ -446,7 +452,7 @@ class FelicityInverterCard extends LitElement {
     // Data
     const currentLevel = parseFloat(this._getValue("peak_grid_current_now")) || 0;
     const safeLevel = parseFloat(this._getValue("max_amperage_per_phase")) || 0;
-    const maxLevel = 25;
+    const maxLevel = this._maxCurrentVal;
 
     const hasNoData = currentLevel == 0 && safeLevel == 0;
 
@@ -1417,79 +1423,151 @@ class FelicityInverterCardEditor extends LitElement {
     this._config = { ...config };
   }
 
-  get _deviceId() {
-    return this._config.device_id || "";
-  }
-
   render() {
     if (!this.hass) return html``;
 
     return html`
-      <ha-form
-        .hass=${this.hass}
-        .data=${this._config}
-        .schema=${this._schema()}
-        @value-changed=${this._valueChanged}
-      ></ha-form>
+      <style>
+        .config-section {
+          margin-bottom: 16px;
+        }
+
+        .config-row {
+          margin-bottom: 12px;
+        }
+
+        .checkbox-group {
+          border: 1px solid var(--divider-color);
+          border-radius: 4px;
+          padding: 8px 12px;
+          margin-top: 8px;
+        }
+
+        .checkbox-group-title {
+          font-weight: 500;
+          margin-bottom: 8px;
+          font-size: 0.95em;
+        }
+
+        .checkbox-item {
+          display: flex;
+          align-items: center;
+          margin: 2px 0;
+          min-height: 32px;
+        }
+
+        ha-textfield {
+          width: 50%;
+        }
+
+        ha-checkbox {
+          margin-right: 8px;
+        }
+
+        .checkbox-label {
+          flex: 1;
+          font-size: 0.9em;
+          cursor: pointer;
+        }
+      </style>
+
+      <div class="config-section">
+        <div class="config-row">
+          <ha-textfield
+            label="Card Name"
+            .value=${this._config.name || ""}
+            @input=${(e) => this._valueChanged("name", e.target.value)}
+          ></ha-textfield>
+        </div>
+
+        <div class="config-row">
+          <ha-selector
+            .hass=${this.hass}
+            .selector=${{ device: { integration: "ha_felicity" } }}
+            .value=${this._config.device_id || ""}
+            @value-changed=${(e) => this._valueChanged("device_id", e.detail.value)}
+            label="Device"
+          ></ha-selector>
+        </div>
+
+        <div class="config-row">
+          <ha-textfield
+            label="Maximum System Current (A)"
+            type="number"
+            .value=${this._config.max_current || ""}
+            @input=${(e) => this._valueChanged("max_current", Number(e.target.value))}
+            min="16"
+            max="50"
+            step="1"
+          ></ha-textfield>
+          <ha-textfield
+            label="Maximum System Power (X1000 W)"
+            type="number"
+            .value=${this._config.max_power || ""}
+            @input=${(e) => this._valueChanged("max_power", Number(e.target.value))}
+            min="10"
+            max="25"
+            step="1"
+          ></ha-textfield>
+        </div>
+
+        <div class="config-row">
+          <ha-selector
+            .hass=${this.hass}
+            .selector=${{ object: {} }}
+            .value=${this._config.overrides || {}}
+            @value-changed=${(e) => this._valueChanged("overrides", e.detail.value)}
+            label="Sensor Overrides (Advanced)"
+          ></ha-selector>
+        </div>
+      </div>
+
+      <div class="checkbox-group">
+        <div class="checkbox-group-title">Visibility Options</div>
+        
+        <div class="checkbox-item">
+          <ha-checkbox
+            .checked=${this._config.show_option_price !== false}
+            @change=${(e) => this._valueChanged("show_option_price", e.target.checked)}
+          ></ha-checkbox>
+          <label class="checkbox-label" @click=${() => this._toggleCheckbox("show_option_price")}>
+            Show Price Information
+          </label>
+        </div>
+
+        <div class="checkbox-item">
+          <ha-checkbox
+            .checked=${this._config.show_option_battery !== false}
+            @change=${(e) => this._valueChanged("show_option_battery", e.target.checked)}
+          ></ha-checkbox>
+          <label class="checkbox-label" @click=${() => this._toggleCheckbox("show_option_battery")}>
+            Show Battery Information
+          </label>
+        </div>
+
+        <div class="checkbox-item">
+          <ha-checkbox
+            .checked=${this._config.show_option_bar !== false}
+            @change=${(e) => this._valueChanged("show_option_bar", e.target.checked)}
+          ></ha-checkbox>
+          <label class="checkbox-label" @click=${() => this._toggleCheckbox("show_option_bar")}>
+            Show Power & Current Bars
+          </label>
+        </div>
+      </div>
     `;
   }
 
-  _schema() {
-    return [
-      {
-        name: "name",
-        selector: { text: {} },
-      },
-      {
-        name: "device_id",
-        selector: {
-          device: {
-            integration: "ha_felicity",
-          },
-        },
-      },
-      {
-        name: "overrides",
-        selector: {
-          object: {},
-        },
-      },
-
-      // Visibility toggles (checkboxes)
-      {
-        name: "show_option_price",
-        label: "Show Price Information",
-        description: "Display current/min/max/avg price and threshold",
-        selector: {
-          boolean: {},
-        },
-        default: true,
-      },
-      {
-        name: "show_option_battery",
-        label: "Show Battery Information",
-        description: "Display battery SOC, voltage, current, etc.",
-        selector: {
-          boolean: {},
-        },
-        default: true,
-      },
-      {
-        name: "show_option_bar",
-        label: "Show Power & Current Bars",
-        description: "Display visual power limit and current limit bars",
-        selector: {
-          boolean: {},
-        },
-        default: true,
-      },
-    ];
+  _toggleCheckbox(field) {
+    const currentValue = this._config[field] !== false;
+    this._valueChanged(field, !currentValue);
   }
 
-  _valueChanged(ev) {
+  _valueChanged(field, value) {
+    const newConfig = { ...this._config, [field]: value };
     this.dispatchEvent(
       new CustomEvent("config-changed", {
-        detail: { config: ev.detail.value },
+        detail: { config: newConfig },
         bubbles: true,
         composed: true,
       })
