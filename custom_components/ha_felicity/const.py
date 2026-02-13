@@ -21,6 +21,7 @@ CONF_INVERTER_MODEL = "inverter_model"
 INVERTER_MODEL_TREX_FIVE = "T-REX-5K-P1G01"
 INVERTER_MODEL_TREX_TEN = "T-REX-10K-P3G01"
 INVERTER_MODEL_TREX_FIFTY = "T-REX-50KHP3G01"
+INVERTER_MODEL_TREX_TWENTY_FIVE = "T-REX-25KHP3G01"
 
 SUPPORTED_MODELS = [
     INVERTER_MODEL_TREX_FIVE,
@@ -120,6 +121,15 @@ MODEL_REGISTRY = {
         "combined":         _COMBINED_REGISTERS_TREX_FIFTY,
         "register_groups":  build_groups(_REGISTERS_TREX_FIFTY),
         "register_sets":    REGISTER_SETS_TREX_FIFTY,
+        "default_first_reg": 4357,   # ← different starting point!
+        "default_slave_id": 1,
+    },
+    
+    INVERTER_MODEL_TREX_TWENTY_FIVE: {
+        "registers":        _REGISTERS_TREX_TWENTY_FIVE,
+        "combined":         _COMBINED_REGISTERS_TREX_TWENTY_FIVE,
+        "register_groups":  build_groups(_REGISTERS_TWENTY_FIVE),
+        "register_sets":    REGISTER_SETS_TWENTY_FIVE,
         "default_first_reg": 4357,   # ← different starting point!
         "default_slave_id": 1,
     },
