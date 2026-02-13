@@ -131,7 +131,7 @@ MODEL_REGISTRY = {
         "registers":        _REGISTERS_TREX_TWENTY_FIVE,
         "combined":         _COMBINED_REGISTERS_TREX_TWENTY_FIVE,
         "register_groups":  build_groups(_REGISTERS_TWENTY_FIVE),
-        "register_sets":    REGISTER_SETS_TWENTY_FIVE,
+        "register_sets":    REGISTER_SETS_TREX_TWENTY_FIVE,
         "default_first_reg": 4357,   # ← different starting point!
         "default_slave_id": 1,
     },
