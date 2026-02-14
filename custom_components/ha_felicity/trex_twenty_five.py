@@ -678,7 +678,7 @@ _COMBINED_REGISTERS_TREX_TWENTY_FIVE = {
         "name": "Economic Mode Rule 6",
     },
 }
-REGISTER_SETS_TREX_FIFTY = {
+REGISTER_SETS_TREX_TWENTY_FIVE = {
     "basic": {
         key: info for key, info in _REGISTERS_TREX_TWENTY_FIVE.items()
         if key in {
