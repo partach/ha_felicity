@@ -108,6 +108,40 @@ async def async_setup_entry(
             icon="mdi:sine-wave",
             device_class="current"
         ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="battery_capacity_kwh",
+            name="Battery Capacity",
+            min_val=1,
+            max_val=100,
+            step=1,
+            unit="kWh",
+            icon="mdi:battery-heart-variant",
+            device_class="energy"
+        ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="efficiency_factor",
+            name="Battery Efficiency Factor",
+            min_val=0.70,
+            max_val=1.0,
+            step=0.01,
+            icon="mdi:percent-circle-outline",
+        ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="daily_consumption_estimate",
+            name="Daily Consumption Estimate",
+            min_val=0,
+            max_val=100,
+            step=0.5,
+            unit="kWh",
+            icon="mdi:home-lightning-bolt",
+            device_class="energy"
+        ),
     ])
 
     # Tie all entities to the device

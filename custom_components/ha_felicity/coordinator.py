@@ -1,9 +1,9 @@
 """Data update coordinator for Felicity with proper async handling."""
 
 import logging
-from datetime import timedelta
+import math
+from datetime import timedelta, datetime
 from typing import Dict, Any
-from datetime import datetime
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -33,6 +33,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         config_entry=ConfigEntry,
         nordpool_entity: str | None = None,
         nordpool_override: str | None = None,
+        forecast_entity: str | None = None,
         update_interval: int = 10,
     ):
         """Initialize the coordinator."""
@@ -71,8 +72,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.price_threshold: float | None = None
         self.safe_max_power = 0 # used in setting rule 1 power checks toward max amperage
         self._last_known_max_amperage: float | None = None
-    #    self._low_current_cycles = 0 # used to keep jitter out of the system (back and forth contiously writing rule 1 register)
-    #    self._required_low_cycles = 2
+
+        # Forecast & schedule
+        self.forecast_entity = forecast_entity
+        self.hourly_prices_today: list | None = None
+        self.hourly_prices_tomorrow: list | None = None
+        self.pv_forecast_today: float | None = None
+        self.pv_forecast_remaining: float | None = None
+        self.pv_forecast_tomorrow: float | None = None
+        self.scheduled_slots: set = set()
+        self.cheap_slots_remaining: int = 0
+        self.grid_energy_planned: float = 0.0
+        self.schedule_status: str = "unknown"
 
         
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
@@ -155,7 +166,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         return self.connected
             
     def _determine_energy_state(self, battery_soc: float | None) -> str:
-        """Determine desired energy management state."""
+        """Determine desired energy management state using schedule or fallback."""
         opts = self.config_entry.options
 
         grid_mode = opts.get("grid_mode", "off")
@@ -167,19 +178,256 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Battery SOC state unknown, returning idle")
             return "idle"
 
+        charge_max = opts.get("battery_charge_max_level", 100)
+        discharge_min = opts.get("battery_discharge_min_level", 20)
+
+        # Schedule-based decision (when hourly price data is available)
+        if self.hourly_prices_today and self.scheduled_slots:
+            slot_idx = self._current_slot_index()
+            if slot_idx is not None and slot_idx in self.scheduled_slots:
+                if grid_mode == "from_grid" and battery_soc <= charge_max:
+                    return "charging"
+                if grid_mode == "to_grid" and battery_soc >= discharge_min:
+                    return "discharging"
+            return "idle"
+
+        # Fallback: simple price threshold comparison (no hourly data available)
         if self.current_price is None or self.price_threshold is None:
             _LOGGER.info("current price or price threshold is unknown, returning idle")
             return "idle"
-            
-        charge_max = opts.get("battery_charge_max_level", 100)
-        discharge_min = opts.get("battery_discharge_min_level", 20)
-        
+
         if grid_mode == "from_grid" and self.current_price < self.price_threshold and battery_soc <= charge_max:
             return "charging"
         if grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc >= discharge_min:
             return "discharging"
-        
+
         return "idle"
+
+    def _current_slot_index(self) -> int | None:
+        """Get the current time slot index based on price array granularity."""
+        if not self.hourly_prices_today:
+            return None
+        now = datetime.now()
+        num_slots = len(self.hourly_prices_today)
+        minutes_per_slot = (24 * 60) / num_slots
+        current_slot = int((now.hour * 60 + now.minute) / minutes_per_slot)
+        return min(current_slot, num_slots - 1)
+
+    def _retrieve_hourly_prices(self, price_state) -> None:
+        """Extract full day's price array from Nordpool entity attributes."""
+        if not price_state:
+            self.hourly_prices_today = None
+            self.hourly_prices_tomorrow = None
+            return
+
+        attrs = price_state.attributes or {}
+
+        def _extract_prices(attr_names):
+            for key in attr_names:
+                val = attrs.get(key)
+                if isinstance(val, list) and len(val) > 0:
+                    if isinstance(val[0], dict):
+                        return [float(entry.get("value", 0)) for entry in val]
+                    else:
+                        return [float(v) if v is not None else 0.0 for v in val]
+            return None
+
+        self.hourly_prices_today = _extract_prices(["today", "prices_today", "raw_today"])
+        self.hourly_prices_tomorrow = _extract_prices(["tomorrow", "prices_tomorrow", "raw_tomorrow"])
+
+        if self.hourly_prices_today:
+            _LOGGER.debug("Retrieved %d price slots for today", len(self.hourly_prices_today))
+        if self.hourly_prices_tomorrow:
+            _LOGGER.debug("Retrieved %d price slots for tomorrow", len(self.hourly_prices_tomorrow))
+
+    def _retrieve_pv_forecast(self) -> None:
+        """Retrieve PV production forecast from configured entity."""
+        if not self.forecast_entity:
+            self.pv_forecast_today = None
+            self.pv_forecast_remaining = None
+            self.pv_forecast_tomorrow = None
+            return
+
+        state = self.hass.states.get(self.forecast_entity)
+        if not state or state.state in ("unknown", "unavailable"):
+            self.pv_forecast_today = None
+            self.pv_forecast_remaining = None
+            return
+
+        try:
+            self.pv_forecast_today = float(state.state)
+        except (ValueError, TypeError):
+            self.pv_forecast_today = None
+            self.pv_forecast_remaining = None
+            return
+
+        now = datetime.now()
+        attrs = state.attributes or {}
+        remaining = None
+
+        # Try Forecast.Solar (wh_hours) or Solcast (detailedHourly) hourly breakdown
+        wh_data = attrs.get("wh_hours") or attrs.get("detailedHourly")
+        if isinstance(wh_data, dict):
+            try:
+                remaining_wh = 0.0
+                for ts_str, value in wh_data.items():
+                    ts = self._parse_forecast_time(ts_str)
+                    if ts and ts >= now:
+                        remaining_wh += float(value)
+                remaining = remaining_wh / 1000.0
+            except Exception as err:
+                _LOGGER.debug("Could not parse forecast hourly data: %s", err)
+
+        # Fallback: estimate remaining PV using solar bell curve
+        if remaining is None and self.pv_forecast_today:
+            remaining = self._estimate_remaining_pv(self.pv_forecast_today, now)
+
+        self.pv_forecast_remaining = round(remaining, 2) if remaining is not None else None
+
+        # Tomorrow forecast: try separate entity
+        self.pv_forecast_tomorrow = None
+        tomorrow_entity = self.config_entry.options.get("forecast_entity_tomorrow")
+        if tomorrow_entity:
+            t_state = self.hass.states.get(tomorrow_entity)
+            if t_state and t_state.state not in ("unknown", "unavailable"):
+                try:
+                    self.pv_forecast_tomorrow = float(t_state.state)
+                except (ValueError, TypeError):
+                    pass
+
+    @staticmethod
+    def _parse_forecast_time(time_str: str):
+        """Try to parse a forecast timestamp string to naive datetime."""
+        try:
+            return datetime.fromisoformat(str(time_str).replace("Z", "+00:00")).replace(tzinfo=None)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _estimate_remaining_pv(total_kwh: float, now: datetime) -> float:
+        """Estimate remaining PV production using a solar bell curve."""
+        sunrise, sunset = 6, 20
+        if now.hour >= sunset:
+            return 0.0
+        if now.hour < sunrise:
+            return total_kwh
+        total_minutes = (sunset - sunrise) * 60
+        elapsed = (now.hour - sunrise) * 60 + now.minute
+        fraction = max(0.0, min(1.0, elapsed / total_minutes))
+        produced_fraction = (1 - math.cos(math.pi * fraction)) / 2
+        return round(total_kwh * (1 - produced_fraction), 2)
+
+    def _calculate_schedule(self, battery_soc: float | None) -> None:
+        """Calculate optimal charge/discharge schedule based on prices, forecast, and battery."""
+        opts = self.config_entry.options
+        grid_mode = opts.get("grid_mode", "off")
+
+        if grid_mode == "off" or not self.hourly_prices_today:
+            self.scheduled_slots = set()
+            self.cheap_slots_remaining = 0
+            self.grid_energy_planned = 0.0
+            self.schedule_status = "off" if grid_mode == "off" else "no_price_data"
+            return
+
+        now = datetime.now()
+        prices = self.hourly_prices_today
+        num_slots = len(prices)
+        minutes_per_slot = (24 * 60) / num_slots
+        current_slot = int((now.hour * 60 + now.minute) / minutes_per_slot)
+        current_slot = min(current_slot, num_slots - 1)
+        slot_duration_hours = minutes_per_slot / 60.0
+
+        battery_capacity = opts.get("battery_capacity_kwh", 10)
+        power_level = opts.get("power_level", 5)
+        efficiency = opts.get("efficiency_factor", 0.90)
+        charge_max = opts.get("battery_charge_max_level", 100)
+        discharge_min = opts.get("battery_discharge_min_level", 20)
+        consumption_est = opts.get("daily_consumption_estimate", 10)
+
+        remaining = [(i, prices[i]) for i in range(current_slot, num_slots) if prices[i] is not None]
+
+        if not remaining:
+            self.scheduled_slots = set()
+            self.cheap_slots_remaining = 0
+            self.grid_energy_planned = 0.0
+            self.schedule_status = "day_complete"
+            return
+
+        current_kwh = (battery_soc / 100.0) * battery_capacity if battery_soc is not None else 0
+        hours_left = len(remaining) * slot_duration_hours
+        pv_remaining = self.pv_forecast_remaining or 0.0
+        consumption_remaining = (consumption_est / 24.0) * hours_left
+        net_pv = max(0.0, pv_remaining - consumption_remaining)
+        energy_per_slot = power_level * slot_duration_hours
+
+        energy_target = 0.0  # for logging
+
+        if grid_mode == "from_grid":
+            target_kwh = (charge_max / 100.0) * battery_capacity
+            energy_deficit = max(0.0, target_kwh - current_kwh - net_pv)
+            energy_target = energy_deficit
+
+            if energy_deficit <= 0:
+                self.scheduled_slots = set()
+                self.cheap_slots_remaining = 0
+                self.grid_energy_planned = 0.0
+                self.schedule_status = "no_action_needed"
+                return
+
+            effective_per_slot = energy_per_slot * efficiency
+            slots_needed = math.ceil(energy_deficit / effective_per_slot) if effective_per_slot > 0 else 0
+            sorted_slots = sorted(remaining, key=lambda x: x[1])
+            selected = sorted_slots[:slots_needed]
+
+            self.scheduled_slots = {s[0] for s in selected}
+            self.cheap_slots_remaining = len(self.scheduled_slots)
+            self.grid_energy_planned = round(min(energy_deficit, slots_needed * effective_per_slot), 2)
+
+            if selected:
+                self.price_threshold = max(s[1] for s in selected)
+
+        elif grid_mode == "to_grid":
+            min_kwh = (discharge_min / 100.0) * battery_capacity
+            sellable = max(0.0, current_kwh - min_kwh) * efficiency
+            energy_target = sellable
+
+            if sellable <= 0:
+                self.scheduled_slots = set()
+                self.cheap_slots_remaining = 0
+                self.grid_energy_planned = 0.0
+                self.schedule_status = "no_action_needed"
+                return
+
+            slots_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
+            sorted_slots = sorted(remaining, key=lambda x: -x[1])
+            selected = sorted_slots[:slots_needed]
+
+            self.scheduled_slots = {s[0] for s in selected}
+            self.cheap_slots_remaining = len(self.scheduled_slots)
+            self.grid_energy_planned = round(min(sellable, slots_needed * energy_per_slot), 2)
+
+            if selected:
+                self.price_threshold = min(s[1] for s in selected)
+
+        else:
+            self.scheduled_slots = set()
+            self.cheap_slots_remaining = 0
+            self.grid_energy_planned = 0.0
+
+        # Update schedule status
+        if not self.scheduled_slots:
+            self.schedule_status = "no_action_needed"
+        elif current_slot in self.scheduled_slots:
+            self.schedule_status = "active"
+        else:
+            self.schedule_status = "waiting"
+
+        _LOGGER.debug(
+            "Schedule: mode=%s, target=%.1fkWh, net_pv=%.1fkWh, slots=%d, status=%s, threshold=%.4f",
+            grid_mode, energy_target, net_pv,
+            len(self.scheduled_slots), self.schedule_status,
+            self.price_threshold or 0,
+        )
 
     async def _check_safe_power(self, new_data: dict) -> int:
         """Return safe power level, temporarily reduced if current is high.
@@ -307,6 +555,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "min_price": self.min_price,
             "avg_price": self.avg_price,
             "safe_max_power": self.safe_max_power,
+            "pv_forecast_today": self.pv_forecast_today,
+            "pv_forecast_remaining": self.pv_forecast_remaining,
+            "pv_forecast_tomorrow": self.pv_forecast_tomorrow,
+            "cheap_slots_remaining": self.cheap_slots_remaining,
+            "grid_energy_planned": self.grid_energy_planned,
+            "schedule_status": self.schedule_status,
+            "scheduled_slot_count": len(self.scheduled_slots),
+            "price_slots_today": len(self.hourly_prices_today) if self.hourly_prices_today else 0,
         }
 
         # Add kWh for all Wh registers
@@ -384,8 +640,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     new_data[key] = value
             # dynamically check which battery system we have.
             raw_system_voltage = self.TypeSpecificHandler.determine_battery_voltage(new_data)
-            if new_data["battery_nominal_voltage"] != raw_system_voltage
-              _LOGGER.debug("Battery voltage retrieved: %dV, was: %dV", raw_system_voltage,  new_data["battery_nominal_voltage"])
+            if new_data.get("battery_nominal_voltage") != raw_system_voltage:
+                _LOGGER.debug("Battery voltage retrieved: %sV, was: %sV", raw_system_voltage, new_data.get("battery_nominal_voltage"))
             if raw_system_voltage is not None:
                 new_data["battery_nominal_voltage"] = raw_system_voltage
             safe_power_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
@@ -447,12 +703,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 await self._transition_to_state("idle") # switch to idle to set new schedule.
                                 self._current_energy_state = None # reset this one too
                                 self._current_day = now.day
-                            else: # done for one round, pick it up in next round    
-                                # Determine and apply new state
+                            else: # done for one round, pick it up in next round
+                                # Retrieve hourly prices and PV forecast for schedule
+                                self._retrieve_hourly_prices(price_state)
+                                self._retrieve_pv_forecast()
+
+                                # Determine battery SOC and calculate optimal schedule
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
-    
+                                self._calculate_schedule(battery_soc)
+
+                                # Update new_data with schedule results (may override manual threshold)
+                                new_data["price_threshold"] = self.price_threshold
+                                new_data["pv_forecast_today"] = self.pv_forecast_today
+                                new_data["pv_forecast_remaining"] = self.pv_forecast_remaining
+                                new_data["pv_forecast_tomorrow"] = self.pv_forecast_tomorrow
+                                new_data["cheap_slots_remaining"] = self.cheap_slots_remaining
+                                new_data["grid_energy_planned"] = self.grid_energy_planned
+                                new_data["schedule_status"] = self.schedule_status
+
                                 desired_state = self._determine_energy_state(battery_soc)
-    
+
                                 if desired_state != self._current_energy_state:
                                     await self._transition_to_state(desired_state)
                                     self._current_energy_state = desired_state

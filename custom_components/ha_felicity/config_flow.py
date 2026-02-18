@@ -72,9 +72,14 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "safe_max_power": self._user_input.get("safe_max_power", 0),
             "voltage_level": self._user_input.get("voltage_level", 58),
             "update_interval": self._user_input.get("update_interval", 10),
+            "battery_capacity_kwh": self._user_input.get("battery_capacity_kwh", 10),
+            "efficiency_factor": self._user_input.get("efficiency_factor", 0.90),
+            "daily_consumption_estimate": self._user_input.get("daily_consumption_estimate", 10),
             CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
             "nordpool_entity": self._user_input.get("nordpool_entity"),
             "nordpool_override": self._user_input.get("nordpool_override"),
+            "forecast_entity": self._user_input.get("forecast_entity"),
+            "forecast_entity_tomorrow": self._user_input.get("forecast_entity_tomorrow"),
         }
     
     @staticmethod
@@ -379,6 +384,8 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
             current_interval = my_options.get("update_interval", 10)
             current_nordpool = my_options.get("nordpool_entity")
             nordpool_override = my_options.get("nordpool_override")
+            current_forecast = my_options.get("forecast_entity")
+            current_forecast_tomorrow = my_options.get("forecast_entity_tomorrow")
         except Exception:
             _LOGGER.exception("Error with options")
 
@@ -427,8 +434,30 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional("nordpool_override", default=nordpool_override): selector.TextSelector(
                     selector.TextSelectorConfig(
-                        type=selector.TextSelectorType.TEXT,  # or PASSWORD, EMAIL, etc.
-                        multiline=False,  # True for textarea
+                        type=selector.TextSelectorType.TEXT,
+                        multiline=False,
+                    )
+                ),
+                vol.Optional(
+                    "forecast_entity",
+                    default=current_forecast or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor",
+                            multiple=False,
+                        )
+                    )
+                ),
+                vol.Optional(
+                    "forecast_entity_tomorrow",
+                    default=current_forecast_tomorrow or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor",
+                            multiple=False,
+                        )
                     )
                 ),
             }

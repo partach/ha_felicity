@@ -185,6 +185,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "power_level": 5,
         "safe_max_power": 0,
         "voltage_level": 58,
+        "battery_capacity_kwh": 10,
+        "efficiency_factor": 0.90,
+        "daily_consumption_estimate": 10,
         CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
         "update_interval": 10,
     }
@@ -198,6 +201,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     nordpool_entity = updated_options.get("nordpool_entity")
     nordpool_override = updated_options.get("nordpool_override")
+    forecast_entity = updated_options.get("forecast_entity")
     update_interval = updated_options["update_interval"]
 
     # ── 5. Hub management ──────────────────────────────────────────────────
@@ -236,6 +240,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         config_entry=entry,
         nordpool_entity=nordpool_entity,
         nordpool_override=nordpool_override,
+        forecast_entity=forecast_entity,
         update_interval=update_interval,
     )
 

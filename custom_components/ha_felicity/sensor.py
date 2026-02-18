@@ -76,8 +76,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "avg_price", "Today Avg Price", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
-        ]    
+            HA_FelicityNordpoolSensor(coordinator, "cheap_slots_remaining", "Cheap Slots Remaining", "slots"),
+            HA_FelicityNordpoolSensor(coordinator, "grid_energy_planned", "Grid Energy Planned", "kWh"),
+        ]
     entities.extend(nordpool_sensors)
+
+    # Schedule / forecast sensors (always added when nordpool is configured)
+    if coordinator.nordpool_entity:
+        entities.append(HA_FelicityScheduleStatusSensor(coordinator, entry))
+    if coordinator.forecast_entity:
+        entities.extend([
+            HA_FelicityNordpoolSensor(coordinator, "pv_forecast_today", "PV Forecast Today", "kWh"),
+            HA_FelicityNordpoolSensor(coordinator, "pv_forecast_remaining", "PV Forecast Remaining", "kWh"),
+            HA_FelicityNordpoolSensor(coordinator, "pv_forecast_tomorrow", "PV Forecast Tomorrow", "kWh"),
+        ])
     entities.append(
         HA_FelicityEnergyStateSensor(coordinator, entry)
     )
@@ -85,6 +97,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     for entity in entities:
         entity._attr_device_info = device_info
     async_add_entities(entities)
+
+class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing EMS schedule optimization status."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_name = f"{entry.title} Schedule Status"
+        self._attr_unique_id = f"{entry.entry_id}_schedule_status"
+        self._attr_icon = "mdi:calendar-clock"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self):
+        return self.coordinator.schedule_status or "unknown"
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "cheap_slots_remaining": self.coordinator.cheap_slots_remaining,
+            "grid_energy_planned_kwh": self.coordinator.grid_energy_planned,
+            "scheduled_slot_count": len(self.coordinator.scheduled_slots),
+            "pv_forecast_today_kwh": self.coordinator.pv_forecast_today,
+            "pv_forecast_remaining_kwh": self.coordinator.pv_forecast_remaining,
+            "pv_forecast_tomorrow_kwh": self.coordinator.pv_forecast_tomorrow,
+            "price_slots_today": len(self.coordinator.hourly_prices_today) if self.coordinator.hourly_prices_today else 0,
+            "has_tomorrow_prices": bool(self.coordinator.hourly_prices_tomorrow),
+        }
+
 
 class HA_FelicityEnergyStateSensor(CoordinatorEntity, SensorEntity):
     """Sensor showing current energy management state."""
