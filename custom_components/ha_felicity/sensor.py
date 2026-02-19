@@ -76,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ]
     entities.extend(simple_sensors)
     entities.append(HA_FelicityEnergyStateSensor(coordinator, entry))
+    entities.append(HA_FelicityScheduleStatusSensor(coordinator, entry))
     entities.append(HA_FelicityChargeLikelihoodSensor(coordinator, entry))
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
