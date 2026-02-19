@@ -507,11 +507,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     def _calculate_available_info(self, battery_soc: float | None) -> None:
         """Calculate available slots and charge likelihood (always visible, regardless of price_mode).
 
-        This gives the user insight into how many slots remain below/above their
-        current threshold and whether the battery target is likely to be met.
+        Always shows informational slot counts — even when grid_mode is off.
+        When grid_mode is off, defaults to from_grid perspective (slots below threshold).
         """
         opts = self.config_entry.options
         grid_mode = opts.get("grid_mode", "off")
+        price_mode = opts.get("price_mode", "manual")
 
         if not self.slot_prices_today or self.price_threshold is None:
             self.available_slots_at_threshold = 0
@@ -535,19 +536,24 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         energy_per_slot = safe_power_kw * slot_duration_hours * efficiency
 
         # Count slots that match the current threshold
-        if grid_mode == "from_grid":
+        # When grid_mode is off, default to from_grid perspective (informational)
+        effective_mode = grid_mode if grid_mode != "off" else "from_grid"
+
+        if effective_mode == "from_grid":
             available = [s for s in remaining if s[1] <= self.price_threshold]
-        elif grid_mode == "to_grid":
+        else:  # to_grid
             available = [s for s in remaining if s[1] >= self.price_threshold]
-        else:
-            available = []
 
         self.available_slots_at_threshold = len(available)
         self.available_energy_capacity = round(len(available) * energy_per_slot, 2)
 
+        # Set schedule_status for manual mode (schedule optimizer only runs in auto)
+        if price_mode == "manual":
+            self.schedule_status = "manual"
+
         # Determine charge likelihood
-        if battery_soc is None or grid_mode == "off":
-            self.charge_likelihood = "unknown" if battery_soc is None else "idle"
+        if battery_soc is None:
+            self.charge_likelihood = "unknown"
             return
 
         battery_capacity = opts.get("battery_capacity_kwh", 10)
@@ -560,11 +566,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         consumption_remaining = (self._get_consumption_estimate() / 24.0) * hours_left
         net_pv = max(0.0, pv_remaining - consumption_remaining)
 
-        if grid_mode == "from_grid":
+        if effective_mode == "from_grid":
             target_kwh = (charge_max / 100.0) * battery_capacity
             energy_deficit = max(0.0, target_kwh - current_kwh - net_pv)
 
-            if energy_deficit <= 0:
+            if grid_mode == "off":
+                # Informational only — show what WOULD happen
+                if energy_deficit <= 0:
+                    self.charge_likelihood = "idle (no deficit)"
+                elif self.available_energy_capacity >= energy_deficit:
+                    self.charge_likelihood = "idle (slots available)"
+                else:
+                    self.charge_likelihood = "idle (insufficient slots)"
+            elif energy_deficit <= 0:
                 self.charge_likelihood = "on_track"
             elif self.available_energy_capacity >= energy_deficit * 1.2:
                 self.charge_likelihood = "on_track"
@@ -574,10 +588,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.charge_likelihood = "at_risk"
             else:
                 self.charge_likelihood = "insufficient"
-        elif grid_mode == "to_grid":
+        else:  # to_grid
             min_kwh = (discharge_min / 100.0) * battery_capacity
             sellable = max(0.0, current_kwh - min_kwh)
-            if sellable <= 0:
+            if grid_mode == "off":
+                self.charge_likelihood = "idle (sell mode info)"
+            elif sellable <= 0:
                 self.charge_likelihood = "nothing_to_sell"
             elif self.available_slots_at_threshold > 0:
                 self.charge_likelihood = "selling"
