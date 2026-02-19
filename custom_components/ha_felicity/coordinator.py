@@ -827,8 +827,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_stop_day", date_16bit)
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_voltage", int(voltage_level)) # the index is known and used when at writing
-            # next one is moved to checking safe power levels, should not be done here
-            # await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", int(round(power_level * 1000,0)))
+            # next one was moved to checking safe power level and no longer used.. but for the new inverter we need to write power level when going from idle
+            target_watts = int(round(self.safe_max_power * 1000))
+            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
+
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
