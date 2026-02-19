@@ -61,28 +61,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
             HA_FelicityNordpoolSensor(coordinator, "cheap_slots_remaining", "Cheap Slots Remaining", "slots"),
             HA_FelicityNordpoolSensor(coordinator, "grid_energy_planned", "Grid Energy Planned", "kWh"),
-        ]
-    entities.extend(nordpool_sensors)
-
-    # Schedule / forecast sensors (always added when nordpool is configured)
-    if coordinator.nordpool_entity:
-        entities.append(HA_FelicityScheduleStatusSensor(coordinator, entry))
-        # Always-visible slot & likelihood sensors (work in both manual and auto mode)
-        entities.extend([
             HA_FelicityNordpoolSensor(coordinator, "available_slots_at_threshold", "Available Slots", "slots"),
             HA_FelicityNordpoolSensor(coordinator, "available_energy_capacity", "Available Energy Capacity", "kWh"),
-        ])
-        entities.append(HA_FelicityChargeLikelihoodSensor(coordinator, entry))
-    if coordinator.forecast_entity:
-        entities.extend([
             HA_FelicityNordpoolSensor(coordinator, "pv_forecast_today", "PV Forecast Today", "kWh"),
             HA_FelicityNordpoolSensor(coordinator, "pv_forecast_remaining", "PV Forecast Remaining", "kWh"),
             HA_FelicityNordpoolSensor(coordinator, "pv_forecast_tomorrow", "PV Forecast Tomorrow", "kWh"),
-        ])
-    # Weekly average consumption (always available, uses persistent storage)
-    if coordinator.nordpool_entity:
-        entities.append(HA_FelicityNordpoolSensor(coordinator, "weekly_avg_consumption", "Weekly Avg Consumption", "kWh"))
-        ]    
+            HA_FelicityNordpoolSensor(coordinator, "weekly_avg_consumption", "Weekly Avg Consumption", "kWh")
+        ]
     entities.extend(nordpool_sensors)
     simple_sensors = [
         HA_FelicitySimpleSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
@@ -90,9 +75,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         HA_FelicitySimpleSensor(coordinator,"highest_grid_current_now","Peak Grid Current Now", "A"),
     ]
     entities.extend(simple_sensors)
-    entities.append(
-        HA_FelicityEnergyStateSensor(coordinator, entry)
-    )
+    entities.append(HA_FelicityEnergyStateSensor(coordinator, entry))
+    entities.append(HA_FelicityChargeLikelihoodSensor(coordinator, entry))
     # let's make sure we tie all the sensors to the device:
     for entity in entities:
         entity._attr_device_info = device_info
