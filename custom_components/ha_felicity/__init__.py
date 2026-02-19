@@ -260,6 +260,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Forward platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Auto-reload when options change (so new sensors appear without manual reboot)
+    entry.async_on_unload(entry.add_update_listener(update_listener))
+
     # Services & frontend (once per domain)
     if "services_setup" not in hass.data[DOMAIN]:
         await async_setup_services(hass)
