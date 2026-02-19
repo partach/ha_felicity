@@ -58,23 +58,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             HA_FelicityNordpoolSensor(coordinator, "max_price", "Today Max Price", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "avg_price", "Today Avg Price", "€/kWh"),
             HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
             HA_FelicityNordpoolSensor(coordinator, "cheap_slots_remaining", "Cheap Slots Remaining", "slots"),
             HA_FelicityNordpoolSensor(coordinator, "grid_energy_planned", "Grid Energy Planned", "kWh"),
             HA_FelicityNordpoolSensor(coordinator, "available_slots_at_threshold", "Available Slots", "slots"),
             HA_FelicityNordpoolSensor(coordinator, "available_energy_capacity", "Available Energy Capacity", "kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "pv_forecast_today", "PV Forecast Today", "kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "pv_forecast_remaining", "PV Forecast Remaining", "kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "pv_forecast_tomorrow", "PV Forecast Tomorrow", "kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "weekly_avg_consumption", "Weekly Avg Consumption", "kWh")
         ]
     entities.extend(nordpool_sensors)
     simple_sensors = [
         HA_FelicitySimpleSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
         HA_FelicitySimpleSensor(coordinator,"operational_mode","Operational Mode"),
         HA_FelicitySimpleSensor(coordinator,"highest_grid_current_now","Peak Grid Current Now", "A"),
+        HA_FelicitySimpleSensor(coordinator, "weekly_avg_consumption", "Weekly Avg Consumption", "kWh")
     ]
     entities.extend(simple_sensors)
+    if coordinator.forecast_entity:
+       pv_sensors = [
+           HA_FelicitySimpleSensor(coordinator, "pv_forecast_today", "PV Forecast Today", "kWh"),
+           HA_FelicitySimpleSensor(coordinator, "pv_forecast_remaining", "PV Forecast Remaining", "kWh"),
+           HA_FelicitySimpleSensor(coordinator, "pv_forecast_tomorrow", "PV Forecast Tomorrow", "kWh"),
+       ]
+       entities.extend(pv_sensors)
+        
     entities.append(HA_FelicityEnergyStateSensor(coordinator, entry))
     entities.append(HA_FelicityScheduleStatusSensor(coordinator, entry))
     entities.append(HA_FelicityChargeLikelihoodSensor(coordinator, entry))
