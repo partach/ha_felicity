@@ -706,31 +706,41 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         """Return safe power level, temporarily reduced if current is high.
         Respects external changes (app/manual override) using fresh data.
         No extra reads needed — uses already-fetched new_data."""
-        
+
         opts = self.config_entry.options
         user_level = opts.get("power_level", 5)
         max_amperage = opts.get("max_amperage_per_phase", 16)
-    
+
         # --- 1. Safe base_level init ---
         base_level = getattr(self, "safe_max_power", 0)
         if base_level == 0:
             base_level = user_level
-    
+
         # --- 2. Detect config changes (max_amperage or user_level) ---
         previous_max = getattr(self, "_last_known_max_amperage", None)
         if previous_max is not None and previous_max != max_amperage:
             _LOGGER.info(
-                "Max amperage changed: %.1fA → %.1fA — resetting state to user level",
-                previous_max, max_amperage
+                "Max amperage changed: %.1fA → %.1fA — resetting to user level %d",
+                previous_max, max_amperage, user_level
             )
             base_level = user_level
         self._last_known_max_amperage = max_amperage
-    
+
+        # Detect user power_level change → apply immediately
+        previous_user_level = getattr(self, "_last_user_power_level", None)
+        if previous_user_level is not None and previous_user_level != user_level:
+            _LOGGER.info(
+                "Power level changed by user: %d → %d — applying immediately",
+                previous_user_level, user_level
+            )
+            base_level = user_level
+        self._last_user_power_level = user_level
+
         # --- 3. Early exit if no data ---
         if not new_data:
             _LOGGER.debug("No data yet")
             return base_level
-    
+
         # --- 4. Get fresh currents and currently applied power limit ---
         max_current = self.TypeSpecificHandler.determine_max_amperage(new_data)
         if max_current is not None:
@@ -745,12 +755,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     base_level, detected_level
                 )
                 base_level = detected_level  # adopt the new higher (or lower) value
-    
+
         # --- 5. Compute safe_level based on current grid draw ---
         safe_level = base_level
-    
-        if max_current == 0:
-            _LOGGER.debug("No grid current — keeping current level %d", base_level)
+
+        if max_current is None or max_current == 0:
+            # No grid current — safe to use user's desired level
+            if base_level < user_level:
+                safe_level = user_level
+                _LOGGER.info("No grid current — recovering to user level %d (was %d)", user_level, base_level)
+            else:
+                _LOGGER.debug("No grid current — keeping current level %d", base_level)
         elif max_current > max_amperage * 0.95:
             safe_level = max(1, base_level - 2)
             _LOGGER.warning("High current %.1fA — reducing to level %d", max_current, safe_level)
@@ -766,8 +781,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Low current but already at user max %d", base_level)
         else:
             _LOGGER.debug("Normal current %.1fA — maintaining level %d", max_current, base_level)
-    
-        # --- 6. Write only if safety requires change ---
+
+        # --- 6. Write if level changed ---
         if safe_level != base_level:
             target_watts = int(round(safe_level * 1000))
             _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
@@ -780,7 +795,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.debug("No change needed (level %d)", safe_level)
             self.safe_max_power = safe_level
-    
+
         return safe_level
     
     async def _transition_to_state(self, new_state: str) -> None:
