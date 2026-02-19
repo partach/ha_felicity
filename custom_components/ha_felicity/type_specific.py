@@ -252,9 +252,11 @@ class TypeSpecificHandler:
                 await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
             elif value == 2: # discharging → 
                 await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
+                await self.async_write_register("grid_peak_shaving_power", int(0))  # needs to be switched off when idle or discharging?
             else:            # idle / unknown → disable both
                 await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
-      
+                await self.async_write_register("grid_peak_shaving_power", int(0)) # needs to be switched off when idle or discharging?
+     
             return True
       
         return False
