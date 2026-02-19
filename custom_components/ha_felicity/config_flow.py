@@ -437,10 +437,15 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                         )
                     )
                 ),
-                vol.Optional("nordpool_override", default=nordpool_override): selector.TextSelector(
-                    selector.TextSelectorConfig(
-                        type=selector.TextSelectorType.TEXT,
-                        multiline=False,
+                vol.Optional(
+                    "nordpool_override",
+                    default=nordpool_override or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor",
+                            multiple=False,
+                        )
                     )
                 ),
                 vol.Optional(
