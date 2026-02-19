@@ -254,7 +254,7 @@ _REGISTERS_TREX_FIFTY = {
     "10minovpvalue": {'address': 8709, 'name': '10minOVPValue', 'precision': 0, 'index': 0, 'unit': '%', 'state_class': 'measurement'},
     "10minovptime": {'address': 8710, 'name': '10minOVPTime', 'precision': 0, 'index': 0, 'unit': 's', 'state_class': 'measurement'},
     "eco_timeofuse": {'address': 8711, 'name': 'ECO_TimeOfUse', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
-    "eco_effectiveweek": {'address': 8712, 'name': 'ECO_EffectiveWeek', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']},
+    "eco_effectiveweek": {'address': 8712, 'name': 'ECO_EffectiveWeek', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select_multi', 'options': ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']},
     "econ_rule_1_grid_charge_enable": {'address': 8713, 'name': 'ECO1_grid_charge_enable', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
     "econ_rule_1_gen_charge_enable": {'address': 8714, 'name': 'ECO1_gen_charge_enable', 'precision': 0, 'index': 0, 'state_class': 'measurement', 'type': 'select', 'options': ['Disabled', 'Enabled']},
     "econ_rule_1_start_time": {'address': 8715, 'name': 'ECO1_start_time', 'precision': 0, 'index': 0, 'type': 'time8bit', 'state_class': 'measurement'},
