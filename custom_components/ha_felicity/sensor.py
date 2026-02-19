@@ -50,19 +50,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     else:
         _LOGGER.warning("No model-specific combined registers found for %s", entry.title)
 
-    nordpool_sensors = []
-    if coordinator.nordpool_entity:
-        nordpool_sensors = [
-            HA_FelicityNordpoolSensor(coordinator, "current_price", "Current Price", "€/kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "min_price", "Today Min Price", "€/kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "max_price", "Today Max Price", "€/kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "avg_price", "Today Avg Price", "€/kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "cheap_slots_remaining", "Cheap Slots Remaining", "slots"),
-            HA_FelicityNordpoolSensor(coordinator, "grid_energy_planned", "Grid Energy Planned", "kWh"),
-            HA_FelicityNordpoolSensor(coordinator, "available_slots_at_threshold", "Available Slots", "slots"),
-            HA_FelicityNordpoolSensor(coordinator, "available_energy_capacity", "Available Energy Capacity", "kWh"),
-        ]
+    nordpool_sensors = [
+        HA_FelicityNordpoolSensor(coordinator, "current_price", "Current Price", "€/kWh"),
+        HA_FelicityNordpoolSensor(coordinator, "min_price", "Today Min Price", "€/kWh"),
+        HA_FelicityNordpoolSensor(coordinator, "max_price", "Today Max Price", "€/kWh"),
+        HA_FelicityNordpoolSensor(coordinator, "avg_price", "Today Avg Price", "€/kWh"),
+        HA_FelicityNordpoolSensor(coordinator, "price_threshold", "Price Threshold", "€/kWh"),
+        HA_FelicityNordpoolSensor(coordinator, "cheap_slots_remaining", "Cheap Slots Remaining", "slots"),
+        HA_FelicityNordpoolSensor(coordinator, "grid_energy_planned", "Grid Energy Planned", "kWh"),
+        HA_FelicityNordpoolSensor(coordinator, "available_slots_at_threshold", "Available Slots", "slots"),
+        HA_FelicityNordpoolSensor(coordinator, "available_energy_capacity", "Available Energy Capacity", "kWh"),
+    ]
     entities.extend(nordpool_sensors)
     simple_sensors = [
         HA_FelicitySimpleSensor(coordinator, "safe_max_power", "Safe Max. Power", "W"),
@@ -71,13 +69,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         HA_FelicitySimpleSensor(coordinator, "weekly_avg_consumption", "Weekly Avg Consumption", "kWh")
     ]
     entities.extend(simple_sensors)
-    if coordinator.forecast_entity:
-       pv_sensors = [
-           HA_FelicitySimpleSensor(coordinator, "pv_forecast_today", "PV Forecast Today", "kWh"),
-           HA_FelicitySimpleSensor(coordinator, "pv_forecast_remaining", "PV Forecast Remaining", "kWh"),
-           HA_FelicitySimpleSensor(coordinator, "pv_forecast_tomorrow", "PV Forecast Tomorrow", "kWh"),
-       ]
-       entities.extend(pv_sensors)
+    pv_sensors = [
+       HA_FelicitySimpleSensor(coordinator, "pv_forecast_today", "PV Forecast Today", "kWh"),
+       HA_FelicitySimpleSensor(coordinator, "pv_forecast_remaining", "PV Forecast Remaining", "kWh"),
+       HA_FelicitySimpleSensor(coordinator, "pv_forecast_tomorrow", "PV Forecast Tomorrow", "kWh"),
+    ]
+    entities.extend(pv_sensors)
         
     entities.append(HA_FelicityEnergyStateSensor(coordinator, entry))
     entities.append(HA_FelicityScheduleStatusSensor(coordinator, entry))
