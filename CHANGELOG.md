@@ -1,7 +1,21 @@
 ## Changelog
 
-### [0.8.7] - TREX 25k and 50k small register bugs
+### [0.9.0] - Stable tested release
+- Full rule setting via integration. Date and Time can now be set via integration for rules!
+- NEED TO DELETE YOUR DEVICE AND RE-ADD IT to ensure clean up of all older sensors (in case some sensors report unavailable after a few minutes)
+- Added few extra diagnostics
+- Card updates:
+  -  Added max current bar
+  -  Added battery max / min integration setting visualisation
+  -  Added configuration options to switch of parts of the card
+  -  Status bar at the bottom
+- register tweaks and small bug fixes
+- OPEN: Firmware of TREX25k/50k is not mature. built-in automations do not fully work yet. Needs firmware update
+  
+### [0.8.9] - Inverter type handling, card updpate
+- Card update for adding generator (TREX 25-50k)
 - register tweaks
+- small bug fixes
 
 ### [0.8.4] - Fix inverter selection bug
 - Solving bug in inverter selection

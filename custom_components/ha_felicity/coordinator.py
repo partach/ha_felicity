@@ -116,6 +116,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             elif size == 4 and raw >= 0x8000000000000000:
                 return raw - 0x10000000000000000
             return raw
+        elif index == 4:  # /1000 – only for size=1
+            if size != 1:
+                _LOGGER.warning("Index 4 (/1000) used with size=%d – applying anyway", size)
+            return raw / 1000.0
         elif index == 8: # /10 (and signed possible)
             # First make signed if needed
             if size == 1 and raw >= 0x8000:
@@ -712,15 +716,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return base_level
     
         # --- 4. Get fresh currents and currently applied power limit ---
-        phase_1 = new_data.get("ac_input_current", 0.0)
-        phase_2 = new_data.get("ac_input_current_l2", 0.0)
-        phase_3 = new_data.get("ac_input_current_l3", 0.0)
-        max_current = max(phase_1, phase_2, phase_3)
-    
+        max_current = self.TypeSpecificHandler.determine_max_amperage(new_data)
+        if max_current is not None:
+            new_data["highest_grid_current_now"] = max_current
         # This is the key: use the freshly read register value from new_data!
-        applied_watts = new_data.get("econ_rule_1_power")  # assuming this key exists in new_data
-        if applied_watts is not None:
-            detected_level = max(1, min(user_level, round(applied_watts / 1000)))
+        applied_kwatts = self.TypeSpecificHandler.determine_rule_power(new_data) # works in kW
+        if applied_kwatts is not None:
+            detected_level = max(1, min(user_level, applied_kwatts))
             if abs(detected_level - base_level) >= 1:
                 _LOGGER.info(
                     "External change detected: power limit %d → %d kW (likely via app) — syncing and re-evaluating safety",
@@ -786,9 +788,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.price_threshold or 0,
             soc_limit,
         )
-
         await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
-        await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
+        # This one should be set by user (because we can start stop via rule enable setting?):
+ #       await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
         if new_state != "idle":
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", int(soc_limit))
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
@@ -899,12 +901,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
 
                     new_data[key] = value
-            # dynamically check which battery system we have.
+            # dynamically check which system we have an appropriated settings.
+            operational_mode = self.TypeSpecificHandler.determine_operational_mode(new_data)
+            new_data["operational_mode"] = operational_mode
             raw_system_voltage = self.TypeSpecificHandler.determine_battery_voltage(new_data)
-            if new_data.get("battery_nominal_voltage") != raw_system_voltage:
-                _LOGGER.debug("Battery voltage retrieved: %sV, was: %sV", raw_system_voltage, new_data.get("battery_nominal_voltage"))
-            if raw_system_voltage is not None:
-                new_data["battery_nominal_voltage"] = raw_system_voltage
+            new_data["battery_nominal_voltage"] = raw_system_voltage
+#             _LOGGER.debug("Battery voltage retrieved: %dV", raw_system_voltage)
             safe_power_level = await self._check_safe_power(new_data) # check if current power is safe with settings only when integration is regulating power.
             new_data["safe_max_power"] = int(safe_power_level * 1000) # convert from 1-10 scale to watts
             # === Nordpool price update & dynamic logic ===

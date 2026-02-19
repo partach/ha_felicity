@@ -1,4 +1,5 @@
 """Constants for the Felicity integration."""
+from .trex_twenty_five import _REGISTERS_TREX_TWENTY_FIVE, _COMBINED_REGISTERS_TREX_TWENTY_FIVE, REGISTER_SETS_TREX_TWENTY_FIVE
 from .trex_fifty import _REGISTERS_TREX_FIFTY, _COMBINED_REGISTERS_TREX_FIFTY, REGISTER_SETS_TREX_FIFTY
 from .trex_ten import _REGISTERS_TREX_TEN, _COMBINED_REGISTERS_TREX_TEN, REGISTER_SETS_TREX_TEN 
 from .trex_five import _REGISTERS_TREX_FIVE, _COMBINED_REGISTERS_TREX_FIVE, REGISTER_SETS_TREX_FIVE 
@@ -21,11 +22,13 @@ CONF_INVERTER_MODEL = "inverter_model"
 INVERTER_MODEL_TREX_FIVE = "T-REX-5K-P1G01"
 INVERTER_MODEL_TREX_TEN = "T-REX-10K-P3G01"
 INVERTER_MODEL_TREX_FIFTY = "T-REX-50KHP3G01"
+INVERTER_MODEL_TREX_TWENTY_FIVE = "T-REX-25KHP3G01"
 
 SUPPORTED_MODELS = [
     INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_FIFTY,
+    INVERTER_MODEL_TREX_TWENTY_FIVE,
     # add new ones here
 ]
 
@@ -60,22 +63,13 @@ DEFAULT_FIRST_REG = 4353
 # 1 = /10 → precision 1, index 1;
 # 2 = /100 → precision 2, index 2; 
 # 3 = signed index;
-# 4 = energy high/low index; (obsolete)
-# 5 = faults/warnings/modes/flags index; (doesnt do anything port procesing)
+# 4 = /1000  → precision 2, index 4;
+# 5 = faults/warnings/modes/flags index; (doesnt do anything for processing)
 # 6 = time index; (obsolete)
 # 7 = % index (doesnt really do anything yet)
 # 8 = signed index and /10; 
-# 99 -> dont show as sensor, it is a combined value, see combined registers
-
-
-# Optional: Strict full without duplicates
-# "full": {k: v for k, v in _REGISTERS.items() if "_secondary" not in k and "_alt" not in k},
-# Precision and index based on the "Multiple" column
-# 0 = dont process or packed → precision 0, index 0
-# -1 = /10 → precision 1, index 1 (or 8 if signed)
-# -2 = /100 → precision 2, index 2 (or 3 if signed)
-# 5 = faults/warnings/modes/flags index
-# 99 = combined/time or other special
+# 9 = signed index and /100; 
+# 99 -> dont show as sensor, it is a sub-part of a combined value, see combined registers
 
 # Model-specific data (extend for new models)
 def build_groups(registers):
@@ -129,6 +123,15 @@ MODEL_REGISTRY = {
         "combined":         _COMBINED_REGISTERS_TREX_FIFTY,
         "register_groups":  build_groups(_REGISTERS_TREX_FIFTY),
         "register_sets":    REGISTER_SETS_TREX_FIFTY,
+        "default_first_reg": 4357,   # ← different starting point!
+        "default_slave_id": 1,
+    },
+    
+    INVERTER_MODEL_TREX_TWENTY_FIVE: {
+        "registers":        _REGISTERS_TREX_TWENTY_FIVE,
+        "combined":         _COMBINED_REGISTERS_TREX_TWENTY_FIVE,
+        "register_groups":  build_groups(_REGISTERS_TREX_TWENTY_FIVE),
+        "register_sets":    REGISTER_SETS_TREX_TWENTY_FIVE,
         "default_first_reg": 4357,   # ← different starting point!
         "default_slave_id": 1,
     },

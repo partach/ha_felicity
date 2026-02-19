@@ -13,6 +13,11 @@ class FelicityInverterCard extends LitElement {
       _keyOptions: { type: Array },
       _selectedStatus: { type: String },
       _selectedSection: { type: String },
+      _showOptionBattery: { type: Boolean },
+      _showOptionPrice: { type: Boolean },
+      _showOptionBar: { type: Boolean },
+      _maxPowerVal: { type: Number },
+      _maxCurrentVal: { type: Number },
     };
   }
 
@@ -27,6 +32,11 @@ class FelicityInverterCard extends LitElement {
     this._selectedSection = "energy_flow"; // Default to energy flow
     this._energyCache ??= {};
     this.showEnergyBar = true; // Set to false to hide the bar
+    this._showOptionBattery = true;
+    this._showOptionPrice = true;
+    this._showOptionBar = true;
+    this._maxPowerVal = 15;
+    this._maxCurrentVal = 25;
   }
 
   static getConfigElement() {
@@ -60,7 +70,13 @@ class FelicityInverterCard extends LitElement {
       currency: '\u{20AC}',
       ...config,
     };
+    this.showOptionPrice   = config.show_option_price   ?? true;
+    this.showOptionBattery = config.show_option_battery ?? true;
+    this.showOptionBar     = config.show_option_bar     ?? true;
+    this._maxPowerVal    = config.max_power ?? 15;
+    this._maxCurrentVal    = config.max_current ?? 25;
     this._selectedSection = "energy_flow";
+    this.requestUpdate();
   }
 
   getCardSize() {
@@ -74,7 +90,8 @@ class FelicityInverterCard extends LitElement {
       this._resolveDeviceEntities();
       this._drawEnergyBar();
       this._drawBatteryBar();
-      this._drawPowerBar();     
+      this._drawPowerBar();
+      this._drawCurrentBar();       
     }
   }
 
@@ -172,7 +189,7 @@ class FelicityInverterCard extends LitElement {
     // Draw 3 horizontal dotted lines
     const lines = [
       { price: avgPrice, color: '#4488ff', label: '', width: 1 },
-      { price: thresholdPrice, color: '#137a08ff', label: '', width: 1 },
+      { price: thresholdPrice, color: 'rgb(12, 101, 190)', label: '', width: 1 },
       { price: currentPrice, color: '#ffc800ff', label: '', width: 1 },
     ];
 
@@ -180,6 +197,7 @@ class FelicityInverterCard extends LitElement {
 
     lines.forEach(line => {
       const y = priceToY(line.price);
+      const pos = line.price==thresholdPrice? barWidth + 30 : 0;
 
       ctx.beginPath();
       ctx.moveTo(barX - 5, y);
@@ -193,7 +211,7 @@ class FelicityInverterCard extends LitElement {
       ctx.font = '11px sans-serif';
       ctx.fillStyle = line.color;
       ctx.textAlign = 'right';
-      ctx.fillText(`${line.label} ${line.price.toFixed(2)}`, barX - 5, y + 4);
+      ctx.fillText(`${line.label} ${line.price.toFixed(2)}`, barX - 5 + pos, y + 4);
     });
 
     ctx.setLineDash([]);
@@ -224,6 +242,8 @@ class FelicityInverterCard extends LitElement {
     const batteryCapacity = parseFloat(this._getValue("battery_capacity")); // SOC %
     const dischargeDepth = parseFloat(this._getValue("battery_discharge_depth_on_grid_bms")) || 20;
     const batteryCurrent = parseFloat(this._getValue("battery_current")) || 0;
+    const batterySetMax = parseFloat(this._getValue("battery_charge_max_level")) || 0;
+    const batterySetMin = parseFloat(this._getValue("battery_discharge_min_level")) || 0;
 
     const hasBatteryData = !isNaN(batteryVoltage) && !isNaN(batteryCapacity);
 
@@ -266,11 +286,41 @@ class FelicityInverterCard extends LitElement {
     ctx.fillStyle = '#ffc80088';
     ctx.fillRect(barX - 1 , dischargeY, barWidth - 1, barHeight + barTop - dischargeY);
 
+    const chargeMaxY = socToY(batterySetMax);
+    // Draw dotted line at max set capacity
+    ctx.beginPath();
+    ctx.moveTo(barX - 2, chargeMaxY);
+    ctx.lineTo(barX + barWidth + 2, chargeMaxY);
+    ctx.strokeStyle = '#1d44f4';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Label for max charge
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#0e7fc1';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${batterySetMax.toFixed(0)}%`,  barX +  barWidth + 26, chargeMaxY + 4);
+
+    const chargeMinY = socToY(batterySetMin);
+    // Draw dotted line at max set capacity
+    ctx.beginPath();
+    ctx.moveTo(barX - 2, chargeMinY);
+    ctx.lineTo(barX + barWidth + 2, chargeMinY);
+    ctx.strokeStyle = '#1d44f4';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Label for min charge
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = '#0e7fc1';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${batterySetMin.toFixed(0)}%`, barX + barWidth + 26, chargeMinY + 4);
+
     // Draw dotted line at discharge depth
     ctx.setLineDash([6, 4]);
     ctx.beginPath();
-    ctx.moveTo(barX - 5, dischargeY);
-    ctx.lineTo(barX + barWidth + 10, dischargeY);
+    ctx.moveTo(barX - 2, dischargeY);
+    ctx.lineTo(barX + barWidth + 2, dischargeY);
     ctx.strokeStyle = '#ff9800';
     ctx.lineWidth = 1;
     ctx.stroke();
@@ -283,8 +333,8 @@ class FelicityInverterCard extends LitElement {
 
     // Draw dotted line at current capacity
     ctx.beginPath();
-    ctx.moveTo(barX - 5, currentY);
-    ctx.lineTo(barX + barWidth + 10, currentY);
+    ctx.moveTo(barX - 2, currentY);
+    ctx.lineTo(barX + barWidth + 2, currentY);
     ctx.strokeStyle = '#4caf50';
     ctx.lineWidth = 2;
     ctx.stroke();
@@ -327,7 +377,7 @@ class FelicityInverterCard extends LitElement {
     // Data
     const userLevel = parseFloat(this._getValue("power_level")) || 0;
     const safeLevel = parseFloat(this._getValue("safe_max_power")) / 1000 || 0; // convert W → level (assuming 1 level = 1000W)
-    const maxLevel = 10; // assuming max is 10 levels (adjust if different)
+    const maxLevel = this._maxPowerVal;
 
     const hasData = userLevel > 0 || safeLevel > 0;
 
@@ -351,14 +401,14 @@ class FelicityInverterCard extends LitElement {
     ctx.fillStyle = '#333333aa';
     ctx.fillRect(barMargin, barY, barWidth, barHeight);
 
-    // Yellow: User-set level
+    // User-set level
     const userWidth = (userLevel / maxLevel) * barWidth;
-    ctx.fillStyle = '#4c5fc9cc'; // semi-transparent yellow
+    ctx.fillStyle = '#4c5fc9cc'; // semi-transparent blue
     ctx.fillRect(barMargin, barY, userWidth, barHeight);
 
     // Green overlay: Current safe level (only if lower than user level)
+    const safeWidth = (safeLevel / maxLevel) * barWidth;
     if (safeLevel < userLevel) {
-      const safeWidth = (safeLevel / maxLevel) * barWidth;
       ctx.fillStyle = '#4caf5088'; // semi-transparent green
       ctx.fillRect(barMargin, barY, safeWidth, barHeight);
     }
@@ -369,23 +419,95 @@ class FelicityInverterCard extends LitElement {
     ctx.strokeRect(barMargin, barY, barWidth, barHeight);
 
     // Labels
-    //ctx.font = '10px sans-serif';
-    //ctx.fillStyle = '#9e9999ff';
-    //ctx.textAlign = 'left';
-    //ctx.fillText(`${userLevel}`, width - barMargin - 20, barY + barHeight - 4);
-
-    //ctx.textAlign = 'right';
-    //const safeText = safeLevel < userLevel 
-    //  ? `Safe:${safeLevel}`
-    //  : `${safeLevel}`;
-    //ctx.fillStyle = safeLevel < userLevel ? '#ff9800' : '#4caf50';
-    //ctx.fillText(safeText, width - barMargin-60, barY + barHeight -4);
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = 'rgb(252, 249, 249)';
+    ctx.textAlign = 'right';
+    const safePos = safeLevel<(maxLevel-3)? safeWidth + 35 : safeWidth + 50
+    if (safeLevel!=userLevel){
+      ctx.fillText(`${safeLevel}`, safePos, barY + barHeight -4);
+    }
+    ctx.fillStyle = 'rgb(86, 243, 123)';
+    ctx.fillText(`(${userLevel})`, userWidth + 35, barY + barHeight - 4);
 
     // Title above
     ctx.font = '10px sans-serif';
     ctx.fillStyle = '#c6c2c2dd';
     ctx.textAlign = 'center';
-    ctx.fillText('Active Power (Limit)', width / 2, barY - 8);
+    ctx.fillText('Active Power (Limit)', width / 2, barY -3 );
+  }
+
+  _drawCurrentBar() {
+    if (!this.showEnergyBar) return;
+
+    const canvas = this.shadowRoot.querySelector('.current-bar-canvas');
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Data
+    const currentLevel = parseFloat(this._getValue("peak_grid_current_now")) || 0;
+    const safeLevel = parseFloat(this._getValue("max_amperage_per_phase")) || 0;
+    const maxLevel = this._maxCurrentVal;
+
+    const hasNoData = currentLevel == 0 && safeLevel == 0;
+
+    ctx.clearRect(0, 0, width, height);
+
+    if (hasNoData) {
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.textAlign = 'center';
+      ctx.fillText('No current limit data', width / 2, height / 2);
+      return;
+    }
+
+    // Bar setup
+    const barHeight = height * 0.25;
+    const barY = height / 2 - barHeight / 2;
+    const barMargin = 20;
+    const barWidth = width - 2 * barMargin;
+
+    // Background (dark gray)
+    ctx.fillStyle = '#333333aa';
+    ctx.fillRect(barMargin, barY, barWidth, barHeight);
+
+    // 1. Draw the SAFE MAX bar first (blue background range)
+    const safeWidth = Math.min((safeLevel / maxLevel) * barWidth, barWidth);
+    ctx.fillStyle = '#4c5fc9cc'; // semi-transparent blue
+    ctx.fillRect(barMargin, barY, safeWidth, barHeight);
+
+    // 2. Draw the CURRENT usage ON TOP (green fill)
+    const currentWidth = Math.min((currentLevel / maxLevel) * barWidth, barWidth);
+    ctx.fillStyle = '#4cc988cc'; // semi-transparent green
+    ctx.fillRect(barMargin, barY, currentWidth, barHeight);
+
+
+    // Outline
+    ctx.strokeStyle = '#ffffff88';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(barMargin, barY, barWidth, barHeight);
+
+    // Labels
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = 'rgb(252, 249, 249)';
+    ctx.textAlign = 'right';
+    const safePos = safeLevel<(maxLevel-3)? safeWidth + 35 : safeWidth + 50
+    if (currentLevel < safeLevel - 2){
+      ctx.fillText(`(${safeLevel})`, safePos, barY + barHeight -4);
+    }
+    ctx.fillStyle = 'rgb(86, 243, 123)';
+    ctx.fillText(`${currentLevel}`, currentWidth + 35, barY + barHeight - 4);
+
+    // Title above
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#c6c2c2dd';
+    ctx.textAlign = 'center';
+    ctx.fillText('Grid input current (Limit)', width / 2, barY -3 );
   }
 
   render() {
@@ -441,18 +563,19 @@ class FelicityInverterCard extends LitElement {
                 }              
                 .flow-diagram {
                   position: relative;
-                  height: 340px;
+                  height: 320px;
                   margin: 0px 0;
                   padding: 0px 0;
                 }
                 
                 .flow-item {
                   position: absolute;
+                  font-size: 1.0em;
                   text-align: center;
                   display: flex;
                   flex-direction: column;
                   align-items: center;
-                  gap: 2px;
+                  gap: 1px;
                   z-index: 2;
                 }
 
@@ -486,41 +609,46 @@ class FelicityInverterCard extends LitElement {
                 .labelbold2 {
                   font-size: 1.1em;
                   font-weight: bold;
-                  color: #3753cfff;
+                  color: #03a9f4;
                 }
                 .pv { 
-                  top: 10px; 
+                  top: 8px; 
                   left: 15%; 
                   transform: translateX(-50%);
                   gap: 0px;
                 }
 
                 .grid { 
-                  top: 10px; 
+                  top: 8px; 
                   right: 15%; 
                   transform: translateX(50%);
                   gap: 0px;
                 }
                 
                 .inverter { 
-                  top: 48%; 
+                  top: 39%; 
                   left: 50%; 
                   transform: translate(-50%, -50%);
                   flex-direction: column-reverse;
                   gap: 2px;
                 }
                 .state {
-                  bottom: 8px;
-                  left: 4%;
-                  transform: none;
+                  bottom: 3px;
+                  width: 95%;
+                  left: 50%;
+                  transform: translateX(-50%);
                   flex-direction: row;
-                  gap: 4px;
+                  gap: 2px;
                   align-items: center;
                   z-index: 4;
+                  /* New: background bar */
+                  background-color: rgba(126, 123, 123, 0.65);
+                  padding: 2px 5px;
+                  border-radius: 7px;
                 }
                 
                 .battery {
-                  bottom: 80px;
+                  bottom: 70px;
                   left: 15%; 
                   transform: translateX(-50%);
                   flex-direction: row;
@@ -536,7 +664,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .home {
-                  bottom: 80px;
+                  bottom: 70px;
                   right: 15%; 
                   transform: translateX(50%);
                   flex-direction: row;
@@ -551,7 +679,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .backup {
-                  bottom: 80px;
+                  bottom: 70px;
                   left: 50%; 
                   transform: translateX(-50%);
                   flex-direction: row;
@@ -560,7 +688,7 @@ class FelicityInverterCard extends LitElement {
                 }
                 
                 .generator {
-                  top: 10px;
+                  top: 8px;
                   left: 50%;
                   transform: translateX(-50%);
                   gap: 0px;
@@ -584,7 +712,7 @@ class FelicityInverterCard extends LitElement {
                 .flow-controls {
                   display: grid;
                   grid-template-columns: 1fr 1fr 1fr;
-                  gap: 6px;
+                  gap: 3px;
                   margin-bottom: 4px;
                   padding: 0 4px;
                 }
@@ -595,7 +723,7 @@ class FelicityInverterCard extends LitElement {
                   align-items: stretch;
                 }
                 .control-group .control-label {
-                  font-size: 0.72em;
+                  font-size: 0.82em;
                   color: var(--secondary-text-color);
                   text-align: center;
                 }
@@ -645,7 +773,7 @@ class FelicityInverterCard extends LitElement {
                 .bar-canvas-container {
                   position: absolute;
                   left: 65%;
-                  top: 28%;
+                  top: 25%;
                   width: 39%;
                   height: 32%;
                   pointer-events: none;
@@ -658,7 +786,7 @@ class FelicityInverterCard extends LitElement {
                 .battery-bar-canvas-container {
                   position: absolute;
                   left: -2%;
-                  top: 28%;
+                  top: 25%;
                   width: 39%;
                   height: 32%;
                   pointer-events: none;
@@ -670,9 +798,9 @@ class FelicityInverterCard extends LitElement {
                 }
                 .power-bar-canvas-container {
                   position: absolute;
-                  right: 2%;
-                  bottom: 2px;
-                  width: 48%;
+                  left: 5%;
+                  bottom: 17px;
+                  width: 40%;
                   height: 18%;
                   pointer-events: none;
                   z-index: 4;
@@ -681,12 +809,25 @@ class FelicityInverterCard extends LitElement {
                   width: 100%;
                   height: 100%;
                 }
+                .current-bar-canvas-container {
+                  position: absolute;
+                  right: 5%;
+                  bottom: 17px;
+                  width: 40%;
+                  height: 18%;
+                  pointer-events: none;
+                  z-index: 4;
+                }
+                .current-bar-canvas {
+                  width: 100%;
+                  height: 100%;
+                }
               </style>
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <path 
                   class="flow-path charging ${this._getRawPower('total_pv_power') > 50 ? 'active' : 'inactive'}" 
-                  d="M 25 25 L 47 48" 
+                  d="M 25 15 L 47 38" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Grid to Inverter (bidirectional) -->
@@ -697,7 +838,7 @@ class FelicityInverterCard extends LitElement {
                     if (power > 0) return 'active grid-import';
                     return 'active grid-export reverse';
                   })()} " 
-                  d="M 75 25 L 53 48" 
+                  d="M 75 15 L 53 38" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Inverter to Battery (bidirectional) -->
@@ -710,19 +851,19 @@ class FelicityInverterCard extends LitElement {
                     if (state === 'Discharging') return 'active discharging reverse';
                     return 'inactive';
                   })()} " 
-                  d="M 47 52 L 25 75" 
+                  d="M 47 42 L 25 65" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Home load -->
                 <path 
                   class="flow-path ${this._getRawPower('loadpower_lineside') > 50 ? 'active' : 'inactive'}" 
-                  d="M 53 52 L 75 75" 
+                  d="M 53 42 L 75 65" 
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Backup load -->
                 <path
                   class="flow-path ${this._getRawPower('total_ac_output_active_power') > 50 ? 'active' : 'inactive'}"
-                  d="M 50 54 L 50 74"
+                  d="M 50 45 L 50 63"
                   vector-effect="non-scaling-stroke"
                 />
                 <!-- Generator to Inverter -->
@@ -734,27 +875,27 @@ class FelicityInverterCard extends LitElement {
                     if (power > 0) return 'active charging';
                     return 'active discharging reverse';
                   })()} "
-                  d="M 50 20 L 50 42"
+                  d="M 50 20 L 50 33"
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 47 42 L 53 42" 
+                  d="M 47 33 L 53 33" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 53 42 L 53 55" 
+                  d="M 53 33 L 53 45" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 53 55 L 47 55" 
+                  d="M 53 45 L 47 45" 
                   vector-effect="non-scaling-stroke"
                 />
                 <path 
                   class="flow-path 'inactive'}" 
-                  d="M 47 55 L 47 42" 
+                  d="M 47 45 L 47 33" 
                   vector-effect="non-scaling-stroke"
                 />
               </svg>
@@ -795,18 +936,17 @@ class FelicityInverterCard extends LitElement {
                   icon="${(() => {
                     const val = this._getValue('total_generator_active_power');
                     const power = val != null ? Math.abs(parseFloat(val)) : 0;
-                    return power > 50 ? 'mdi:engine' : 'mdi:engine-off-outline';
+                    return power > 50 ? 'mdi:generator-stationary' : 'mdi:power-plug-off-outline';
                   })()}"
                 ></ha-icon>
                 <div class="power-value">${this._getPower("total_generator_active_power")}</div>
-                <div class="label">Generator</div>
               </div>
 
               <div class="flow-item state">
                 <div class="label">
-                  ${this._getStateLabel("operating_mode")}
-                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency}</span>
-                  --> <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
+                  ${this._getStateLabel("operational_mode")} | now:
+                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency} </span>
+                  | State: <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
                 </div>
               </div>
               
@@ -839,105 +979,26 @@ class FelicityInverterCard extends LitElement {
               </div>
 
               <!-- Bar Canvas -->
-              ${this.showEnergyBar ? html`
+              ${this.showOptionPrice ? html`
                 <div class="bar-canvas-container">
                   <canvas class="bar-canvas"></canvas>
                 </div>
+              ` : ""}
+
+              ${this.showOptionBattery ? html`
                 <div class="battery-bar-canvas-container">
                   <canvas class="battery-bar-canvas"></canvas>
                 </div>
+              ` : ""}
+
+              ${this.showOptionBar ? html`
                 <div class="power-bar-canvas-container">
                   <canvas class="power-bar-canvas"></canvas>
                 </div>
+                <div class="current-bar-canvas-container">
+                  <canvas class="current-bar-canvas"></canvas>
+                </div>
               ` : ""}
-            </div>
-          </div>
-        ` : ""}
-
-        <!-- SECTION 2: Main Sensors -->
-        ${this._selectedSection === "sensors" && this.config.entities?.length > 0 ? html`
-          <div class="section">
-            <div class="section-title">Main Sensors</div>
-            <div class="entities">
-              ${this.config.entities.map(item => {
-                const stateObj = this.hass.states[item.entity_id];
-                const state = stateObj?.state ?? "unavailable";
-                const unit = item.unit || stateObj?.attributes?.unit_of_measurement || "";
-                return html`
-                  <div class="entity">
-                    <span>${item.name || stateObj?.attributes?.friendly_name || item.entity_id}</span>
-                    <span class="${state === "unavailable" ? "unavailable" : ""}">
-                      ${state} ${unit}
-                    </span>
-                  </div>
-                `;
-              })}
-            </div>
-          </div>
-        ` : ""}
-
-        <!-- SECTION 3: Economic Rules -->
-        ${this._selectedSection === "econ_rules" && this.config.econ_rules?.length > 0 ? html`
-          <div class="section">
-            <div class="section-title">Economic Rules</div>
-            <select @change=${e => this._selectedRuleIndex = e.target.selectedIndex}>
-              ${this.config.econ_rules.map((rule, i) => html`
-                <option value="${i}" ?selected=${i === this._selectedRuleIndex}>
-                  ${rule.name || `Rule ${i + 1}`}
-                </option>
-              `)}
-            </select>
-
-            ${ruleStateObj
-              ? html`
-                  <div class="rule">
-                    <div class="rule-title">
-                      ${selectedRule.name || `Rule ${this._selectedRuleIndex + 1}`}: ${ruleStateObj.state}
-                    </div>
-                    <div class="rule-grid">
-                      <div>Enabled:</div><div>${ruleAttrs.enabled ?? "N/A"}</div>
-                      <div>Start Time:</div><div>${ruleAttrs.start_time ?? "N/A"}</div>
-                      <div>Stop Time:</div><div>${ruleAttrs.stop_time ?? "N/A"}</div>
-                      <div>Start Date:</div><div>${ruleAttrs.start_date ?? "N/A"}</div>
-                      <div>Stop Date:</div><div>${ruleAttrs.stop_date ?? "N/A"}</div>
-                      <div>Days:</div><div>${ruleAttrs.days?.join(", ") ?? "N/A"}</div>
-                      <div>Voltage:</div><div>${ruleAttrs.voltage_v !== undefined ? ruleAttrs.voltage_v + " V" : "N/A"}</div>
-                      <div>SOC:</div><div>${ruleAttrs.soc_value !== undefined ? ruleAttrs.soc_value + " %" : "N/A"}</div>
-                      <div>Power:</div><div>${ruleAttrs.power_w !== undefined ? ruleAttrs.power_w + " W" : "N/A"}</div>
-                    </div>
-                  </div>
-                `
-              : html`<div class="rule unavailable">Selected rule unavailable</div>`
-            }
-          </div>
-        ` : ""}
-
-        <!-- SECTION 4: Write Register -->
-        ${this._selectedSection === "write_register" ? html`
-          <div class="section">
-            <div class="section-title">Write Register</div>
-            <div class="write-section">
-              <select @change=${e => this._selectedEntity = e.target.value}>
-                <option value="">Select Inverter Entity</option>
-                ${this._allEntities.map(eid => html`
-                  <option value="${eid}">${eid}</option>
-                `)}
-              </select>
-
-              <input
-                type="text"
-                placeholder="Register Key (e.g., econ_rule_1_enable)"
-                @input=${e => this._selectedKey = e.target.value.trim()}
-              />
-
-              <input
-                type="text"
-                placeholder="Value (number or option text)"
-                @input=${e => this._writeValue = e.target.value}
-              />
-
-              <button @click=${this._sendWrite}>Send</button>
-              <div class="status">${this._selectedStatus || ""}</div>
             </div>
           </div>
         ` : ""}
@@ -983,7 +1044,7 @@ class FelicityInverterCard extends LitElement {
   _getStateLabel(key) {
     const state = this._getState(key);
     const label = state === "—" ? "Unknown" : state;
-    return this._truncateFromSecondSpace(label);
+    return label;
   }
 
   _getState(key) {
@@ -1362,50 +1423,151 @@ class FelicityInverterCardEditor extends LitElement {
     this._config = { ...config };
   }
 
-  get _deviceId() {
-    return this._config.device_id || "";
-  }
-
   render() {
     if (!this.hass) return html``;
 
     return html`
-      <ha-form
-        .hass=${this.hass}
-        .data=${this._config}
-        .schema=${this._schema()}
-        @value-changed=${this._valueChanged}
-      ></ha-form>
+      <style>
+        .config-section {
+          margin-bottom: 16px;
+        }
+
+        .config-row {
+          margin-bottom: 12px;
+        }
+
+        .checkbox-group {
+          border: 1px solid var(--divider-color);
+          border-radius: 4px;
+          padding: 8px 12px;
+          margin-top: 8px;
+        }
+
+        .checkbox-group-title {
+          font-weight: 500;
+          margin-bottom: 8px;
+          font-size: 0.95em;
+        }
+
+        .checkbox-item {
+          display: flex;
+          align-items: center;
+          margin: 2px 0;
+          min-height: 32px;
+        }
+
+        ha-textfield {
+          width: 50%;
+        }
+
+        ha-checkbox {
+          margin-right: 8px;
+        }
+
+        .checkbox-label {
+          flex: 1;
+          font-size: 0.9em;
+          cursor: pointer;
+        }
+      </style>
+
+      <div class="config-section">
+        <div class="config-row">
+          <ha-textfield
+            label="Card Name"
+            .value=${this._config.name || ""}
+            @input=${(e) => this._valueChanged("name", e.target.value)}
+          ></ha-textfield>
+        </div>
+
+        <div class="config-row">
+          <ha-selector
+            .hass=${this.hass}
+            .selector=${{ device: { integration: "ha_felicity" } }}
+            .value=${this._config.device_id || ""}
+            @value-changed=${(e) => this._valueChanged("device_id", e.detail.value)}
+            label="Device"
+          ></ha-selector>
+        </div>
+
+        <div class="config-row">
+          <ha-textfield
+            label="Maximum System Current (A)"
+            type="number"
+            .value=${this._config.max_current || ""}
+            @input=${(e) => this._valueChanged("max_current", Number(e.target.value))}
+            min="16"
+            max="50"
+            step="1"
+          ></ha-textfield>
+          <ha-textfield
+            label="Maximum System Power (X1000 W)"
+            type="number"
+            .value=${this._config.max_power || ""}
+            @input=${(e) => this._valueChanged("max_power", Number(e.target.value))}
+            min="10"
+            max="25"
+            step="1"
+          ></ha-textfield>
+        </div>
+
+        <div class="config-row">
+          <ha-selector
+            .hass=${this.hass}
+            .selector=${{ object: {} }}
+            .value=${this._config.overrides || {}}
+            @value-changed=${(e) => this._valueChanged("overrides", e.detail.value)}
+            label="Sensor Overrides (Advanced)"
+          ></ha-selector>
+        </div>
+      </div>
+
+      <div class="checkbox-group">
+        <div class="checkbox-group-title">Visibility Options</div>
+        
+        <div class="checkbox-item">
+          <ha-checkbox
+            .checked=${this._config.show_option_price !== false}
+            @change=${(e) => this._valueChanged("show_option_price", e.target.checked)}
+          ></ha-checkbox>
+          <label class="checkbox-label" @click=${() => this._toggleCheckbox("show_option_price")}>
+            Show Price Information
+          </label>
+        </div>
+
+        <div class="checkbox-item">
+          <ha-checkbox
+            .checked=${this._config.show_option_battery !== false}
+            @change=${(e) => this._valueChanged("show_option_battery", e.target.checked)}
+          ></ha-checkbox>
+          <label class="checkbox-label" @click=${() => this._toggleCheckbox("show_option_battery")}>
+            Show Battery Information
+          </label>
+        </div>
+
+        <div class="checkbox-item">
+          <ha-checkbox
+            .checked=${this._config.show_option_bar !== false}
+            @change=${(e) => this._valueChanged("show_option_bar", e.target.checked)}
+          ></ha-checkbox>
+          <label class="checkbox-label" @click=${() => this._toggleCheckbox("show_option_bar")}>
+            Show Power & Current Bars
+          </label>
+        </div>
+      </div>
     `;
   }
 
-  _schema() {
-    return [
-      {
-        name: "name",
-        selector: { text: {} },
-      },
-      {
-        name: "device_id",
-        selector: {
-          device: {
-            integration: "ha_felicity",
-          },
-        },
-      },
-      {
-        name: "overrides",
-        selector: {
-          object: {},
-        },
-      },
-    ];
+  _toggleCheckbox(field) {
+    const currentValue = this._config[field] !== false;
+    this._valueChanged(field, !currentValue);
   }
 
-  _valueChanged(ev) {
+  _valueChanged(field, value) {
+    const newConfig = { ...this._config, [field]: value };
     this.dispatchEvent(
       new CustomEvent("config-changed", {
-        detail: { config: ev.detail.value },
+        detail: { config: newConfig },
         bubbles: true,
         composed: true,
       })

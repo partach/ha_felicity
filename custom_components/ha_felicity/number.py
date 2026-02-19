@@ -159,13 +159,17 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
         self._key = key
         self._info = info
         self._attr_unique_id = f"{entry.entry_id}_{key}"
-        self._attr_name = f"{entry.title} {info['name']}"
+        self._attr_name = f"{entry.title} {info.get("name")}"
         self._attr_native_unit_of_measurement = info.get("unit")
         self._attr_device_class = info.get("device_class")
         self._attr_native_min_value = info.get("min", 0)
         self._attr_native_max_value = info.get("max", 100)
-        self._attr_native_step = info.get("step", 1)
-        self._attr_mode = NumberMode.SLIDER
+        if self._info.get("unit") in ("V", "A", "W", "kW") or "voltage" in self._key or "current" in self._key:
+            self._attr_mode = NumberMode.BOX
+            self._attr_native_step = info.get("step", 0.1)
+        else:
+            self._attr_native_step = info.get("step", 1)
+            self._attr_mode = NumberMode.SLIDER
 
     @property
     def native_value(self):
@@ -174,7 +178,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Write the new value to the inverter register."""
         # in the write function we will determine if the register needs special care (index)
-        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, value)
+        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, int(value))
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
 
@@ -263,9 +267,9 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         if battery_voltage is None:
             return
 
-        # Example logic: 48V system vs 400V high-voltage
-        if battery_voltage >= 400:  # High-voltage system (e.g., Felicity HV packs)
-            new_min = 416
+        # Example logic: 48V system vs 300-400V high-voltage
+        if battery_voltage >= 300:  # High-voltage system (e.g., Felicity HV packs)
+            new_min = 300
             new_max = 448
         else:  # Low-voltage (48V typical)
             new_min = 48
