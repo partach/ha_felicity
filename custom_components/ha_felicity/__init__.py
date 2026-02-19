@@ -250,6 +250,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.config = config
     coordinator.hub_key = hub_key
     coordinator._last_register_set = register_set_key
+    coordinator._last_options = dict(entry.options)  # snapshot for update_listener comparison
 
     # First refresh
     await coordinator.async_config_entry_first_refresh()
@@ -332,9 +333,42 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update."""
-    
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Handle options update — only reload when structural options change.
+
+    Structural options (entity references, register set, interval) require a
+    reload to create/remove entities. Runtime options (price level, power level,
+    grid_mode, etc.) are picked up by the coordinator on the next poll cycle.
+    """
+    STRUCTURAL_KEYS = {
+        CONF_REGISTER_SET,
+        "update_interval",
+        "nordpool_entity",
+        "nordpool_override",
+        "forecast_entity",
+        "forecast_entity_tomorrow",
+        "consumption_override_entity",
+    }
+
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is None:
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+
+    old_opts = coordinator._last_options if hasattr(coordinator, "_last_options") else {}
+    new_opts = dict(entry.options)
+
+    structural_changed = any(
+        old_opts.get(k) != new_opts.get(k) for k in STRUCTURAL_KEYS
+    )
+
+    # Save current options for next comparison
+    coordinator._last_options = new_opts
+
+    if structural_changed:
+        _LOGGER.info("Structural option changed — reloading integration")
+        await hass.config_entries.async_reload(entry.entry_id)
+    else:
+        _LOGGER.debug("Runtime option changed — will take effect on next poll cycle")
 
 
 class FelicitySerialHub:
