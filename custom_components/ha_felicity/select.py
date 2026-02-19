@@ -46,7 +46,7 @@ async def async_setup_entry(
         if info.get("type") == "select_multi"
     ])
 
-    # Internal configuration select entity (stored in entry.options)
+    # Internal configuration select entities (stored in entry.options)
     entities.append(
         HA_FelicitySpecialModeSelect(
             coordinator=coordinator,
@@ -55,6 +55,18 @@ async def async_setup_entry(
             select_options=["off", "from_grid", "to_grid"],
             name="Grid Mode",
             icon="mdi:transmission-tower",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="price_mode",
+            select_options=["manual", "auto"],
+            name="Price Mode",
+            icon="mdi:chart-timeline-variant-shimmer",
             entity_category=EntityCategory.CONFIG,
         )
     )

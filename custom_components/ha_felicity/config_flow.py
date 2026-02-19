@@ -80,6 +80,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "nordpool_override": self._user_input.get("nordpool_override"),
             "forecast_entity": self._user_input.get("forecast_entity"),
             "forecast_entity_tomorrow": self._user_input.get("forecast_entity_tomorrow"),
+            "consumption_override_entity": self._user_input.get("consumption_override_entity"),
+            "price_mode": self._user_input.get("price_mode", "manual"),
         }
     
     @staticmethod
@@ -386,6 +388,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
             nordpool_override = my_options.get("nordpool_override")
             current_forecast = my_options.get("forecast_entity")
             current_forecast_tomorrow = my_options.get("forecast_entity_tomorrow")
+            current_consumption_override = my_options.get("consumption_override_entity")
         except Exception:
             _LOGGER.exception("Error with options")
 
@@ -452,6 +455,17 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(
                     "forecast_entity_tomorrow",
                     default=current_forecast_tomorrow or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor",
+                            multiple=False,
+                        )
+                    )
+                ),
+                vol.Optional(
+                    "consumption_override_entity",
+                    default=current_consumption_override or None
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(

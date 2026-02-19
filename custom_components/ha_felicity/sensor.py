@@ -84,12 +84,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Schedule / forecast sensors (always added when nordpool is configured)
     if coordinator.nordpool_entity:
         entities.append(HA_FelicityScheduleStatusSensor(coordinator, entry))
+        # Always-visible slot & likelihood sensors (work in both manual and auto mode)
+        entities.extend([
+            HA_FelicityNordpoolSensor(coordinator, "available_slots_at_threshold", "Available Slots", "slots"),
+            HA_FelicityNordpoolSensor(coordinator, "available_energy_capacity", "Available Energy Capacity", "kWh"),
+        ])
+        entities.append(HA_FelicityChargeLikelihoodSensor(coordinator, entry))
     if coordinator.forecast_entity:
         entities.extend([
             HA_FelicityNordpoolSensor(coordinator, "pv_forecast_today", "PV Forecast Today", "kWh"),
             HA_FelicityNordpoolSensor(coordinator, "pv_forecast_remaining", "PV Forecast Remaining", "kWh"),
             HA_FelicityNordpoolSensor(coordinator, "pv_forecast_tomorrow", "PV Forecast Tomorrow", "kWh"),
         ])
+    # Weekly average consumption (always available, uses persistent storage)
+    if coordinator.nordpool_entity:
+        entities.append(HA_FelicityNordpoolSensor(coordinator, "weekly_avg_consumption", "Weekly Avg Consumption", "kWh"))
     entities.append(
         HA_FelicityEnergyStateSensor(coordinator, entry)
     )
@@ -114,6 +123,8 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
+        slot_prices = self.coordinator.slot_prices_today
+        num_slots = len(slot_prices) if slot_prices else 0
         return {
             "cheap_slots_remaining": self.coordinator.cheap_slots_remaining,
             "grid_energy_planned_kwh": self.coordinator.grid_energy_planned,
@@ -121,8 +132,36 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "pv_forecast_today_kwh": self.coordinator.pv_forecast_today,
             "pv_forecast_remaining_kwh": self.coordinator.pv_forecast_remaining,
             "pv_forecast_tomorrow_kwh": self.coordinator.pv_forecast_tomorrow,
-            "price_slots_today": len(self.coordinator.hourly_prices_today) if self.coordinator.hourly_prices_today else 0,
-            "has_tomorrow_prices": bool(self.coordinator.hourly_prices_tomorrow),
+            "price_slots_today": num_slots,
+            "slot_granularity_min": int((24 * 60) / num_slots) if num_slots > 0 else None,
+            "has_tomorrow_prices": bool(self.coordinator.slot_prices_tomorrow),
+            "yesterday_deficit_kwh": self.coordinator._yesterday_deficit,
+            "price_mode": self.coordinator.config_entry.options.get("price_mode", "manual"),
+        }
+
+
+class HA_FelicityChargeLikelihoodSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing likelihood of meeting battery charge target (always visible)."""
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_name = f"{entry.title} Charge Likelihood"
+        self._attr_unique_id = f"{entry.entry_id}_charge_likelihood"
+        self._attr_icon = "mdi:battery-check"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self):
+        return self.coordinator.charge_likelihood or "unknown"
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "available_slots": self.coordinator.available_slots_at_threshold,
+            "available_energy_kwh": self.coordinator.available_energy_capacity,
+            "weekly_avg_consumption_kwh": self.coordinator.weekly_avg_consumption,
+            "yesterday_deficit_kwh": self.coordinator._yesterday_deficit,
+            "price_threshold": self.coordinator.price_threshold,
         }
 
 
