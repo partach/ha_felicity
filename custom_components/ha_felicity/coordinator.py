@@ -209,9 +209,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if self.slot_prices_today and self.scheduled_slots:
                 slot_idx = self._current_slot_index()
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
-                    if grid_mode == "from_grid" and battery_soc <= charge_max:
+                    if grid_mode == "from_grid" and battery_soc < charge_max:
                         return "charging"
-                    if grid_mode == "to_grid" and battery_soc >= discharge_min:
+                    if grid_mode == "to_grid" and battery_soc > discharge_min:
                         return "discharging"
                 return "idle"
             # Auto mode fallback when no slot data yet
@@ -223,9 +223,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("current price or price threshold is unknown, returning idle")
             return "idle"
 
-        if grid_mode == "from_grid" and self.current_price < self.price_threshold and battery_soc <= charge_max:
+        if grid_mode == "from_grid" and self.current_price < self.price_threshold and battery_soc < charge_max:
             return "charging"
-        if grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc >= discharge_min:
+        if grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc > discharge_min:
             return "discharging"
 
         return "idle"
@@ -407,13 +407,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         if grid_mode == "from_grid":
             target_kwh = (charge_max / 100.0) * battery_capacity
-            energy_deficit = max(0.0, target_kwh - current_kwh - net_pv)
+            battery_headroom = max(0.0, target_kwh - current_kwh)
+            base_deficit = max(0.0, battery_headroom - net_pv)
 
-            # Add yesterday's deficit carryover
-            if self._yesterday_deficit > 0:
-                energy_deficit += self._yesterday_deficit
-                _LOGGER.debug("Adding yesterday deficit: +%.2f kWh → total deficit: %.2f kWh",
-                              self._yesterday_deficit, energy_deficit)
+            # Add yesterday's deficit carryover, but cap by what the battery can physically accept
+            if self._yesterday_deficit > 0 and battery_headroom > base_deficit:
+                carryover = min(self._yesterday_deficit, battery_headroom - base_deficit)
+                energy_deficit = base_deficit + carryover
+                _LOGGER.debug("Deficit: base=%.2f kWh + carryover=%.2f kWh (of %.2f) → total=%.2f kWh (headroom=%.2f kWh)",
+                              base_deficit, carryover, self._yesterday_deficit, energy_deficit, battery_headroom)
+            else:
+                energy_deficit = base_deficit
+                if self._yesterday_deficit > 0:
+                    _LOGGER.debug("Battery headroom %.2f kWh insufficient for carryover — using base deficit %.2f kWh only",
+                                  battery_headroom, base_deficit)
 
             energy_target = energy_deficit
 
