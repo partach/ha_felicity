@@ -197,11 +197,11 @@ _REGISTERS_TREX_FIVE = {
     
     "battery_type": {"address": 8483, "name": "Battery type", "precision": 0, "index": 0, "type": "select", "options": ["User defined", "Lithium battery (default)", "FelicitySolar(LPBF series)", "FelicitySolar(LPBA series)", "No battery"]},
     "battery_pack_series_count": {"address": 8484, "name": "Battery Pack Number in Series", "precision": 0, "index": 0},  # 1~10
-    "battery_charged_voltage": {"address": 8485, "name": "Battery Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1},
-    "battery_floating_charged_voltage": {"address": 8486, "name": "Battery Floating Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1},
-    "battery_cutoff_voltage_ongrid_no_bms": {"address": 8487, "name": "Battery Cut-off Voltage (On-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1},
-    "battery_cutoff_voltage_offgrid_no_bms": {"address": 8488, "name": "Battery Cut-off Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1},
-    "battery_restart_voltage_offgrid_no_bms": {"address": 8489, "name": "Battery Restart Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1},
+    "battery_charged_voltage": {"address": 8485, "name": "Battery Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1, "dynamic_battery": True},
+    "battery_floating_charged_voltage": {"address": 8486, "name": "Battery Floating Charged Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1, "dynamic_battery": True},
+    "battery_cutoff_voltage_ongrid_no_bms": {"address": 8487, "name": "Battery Cut-off Voltage (On-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1, "dynamic_battery": True},
+    "battery_cutoff_voltage_offgrid_no_bms": {"address": 8488, "name": "Battery Cut-off Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1, "dynamic_battery": True},
+    "battery_restart_voltage_offgrid_no_bms": {"address": 8489, "name": "Battery Restart Voltage (Off-grid, no BMS)", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 40, "max": 60, "step": 1, "dynamic_battery": True},
     "battery_discharge_depth_ongrid_bms": {"address": 8490, "name": "Battery Discharge Depth (On-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "battery_discharge_depth_offgrid_bms": {"address": 8491, "name": "Battery Discharge Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "battery_restart_depth_offgrid_bms": {"address": 8492, "name": "Battery Restart Depth (Off-grid, BMS)", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
@@ -221,7 +221,7 @@ _REGISTERS_TREX_FIVE = {
     "econ_rule_1_start_day": {"address": 8571, "name": "Rule 1 Start Date", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_1_stop_day": {"address": 8572, "name": "Rule 1 Stop Date", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_1_effective_week": {"address": 8573, "name": "Rule 1 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
-    "econ_rule_1_voltage": {"address": 8574, "name": "Rule 1 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
+    "econ_rule_1_voltage": {"address": 8574, "name": "Rule 1 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1, "dynamic_battery": True},
     "econ_rule_1_soc": {"address": 8575, "name": "Rule 1 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_1_power": {"address": 8576, "name": "Rule 1 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
     
@@ -231,7 +231,7 @@ _REGISTERS_TREX_FIVE = {
     "econ_rule_2_start_day": {"address": 8580, "name": "Rule 2 Start Day", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_2_stop_day": {"address": 8581, "name": "Rule 2 Stop Day", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_2_effective_week": {"address": 8582, "name": "Rule 2 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
-    "econ_rule_2_voltage": {"address": 8583, "name": "Rule 2 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
+    "econ_rule_2_voltage": {"address": 8583, "name": "Rule 2 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1, "dynamic_battery": True},
     "econ_rule_2_soc": {"address": 8584, "name": "Rule 2 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_2_power": {"address": 8585, "name": "Rule 2 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
     
@@ -241,7 +241,7 @@ _REGISTERS_TREX_FIVE = {
     "econ_rule_3_start_day": {"address": 8589, "name": "Rule 3 Start Day", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_3_stop_day": {"address": 8590, "name": "Rule 3 Stop Day", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_3_effective_week": {"address": 8591, "name": "Rule 3 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
-    "econ_rule_3_voltage": {"address": 8592, "name": "Rule 3 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
+    "econ_rule_3_voltage": {"address": 8592, "name": "Rule 3 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1, "dynamic_battery": True},
     "econ_rule_3_soc": {"address": 8593, "name": "Rule 3 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_3_power": {"address": 8594, "name": "Rule 3 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
     
@@ -251,7 +251,7 @@ _REGISTERS_TREX_FIVE = {
     "econ_rule_4_start_day": {"address": 8598, "name": "Rule 4 Start Day", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_4_stop_day": {"address": 8599, "name": "Rule 4 Stop Day", "precision": 0, "index": 0, "type": "date8bit"},
     "econ_rule_4_effective_week": {"address": 8600, "name": "Rule 4 Effective Week", "precision": 0, "index": 0, "type": "select_multi", "options": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]},
-    "econ_rule_4_voltage": {"address": 8601, "name": "Rule 4 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1},
+    "econ_rule_4_voltage": {"address": 8601, "name": "Rule 4 Voltage", "unit": "V", "device_class": "voltage", "precision": 1, "index": 1, "type": "number", "min": 50.0, "max": 60.0, "step": 1, "dynamic_battery": True},
     "econ_rule_4_soc": {"address": 8602, "name": "Rule 4 SOC", "unit": "%", "device_class": "battery", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 100, "step": 1},
     "econ_rule_4_power": {"address": 8603, "name": "Rule 4 Power", "unit": "W", "device_class": "power", "precision": 0, "index": 0, "type": "number", "min": 0, "max": 10000, "step": 100},
     

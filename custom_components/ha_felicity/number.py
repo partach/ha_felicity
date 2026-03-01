@@ -158,18 +158,46 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
         super().__init__(coordinator)
         self._key = key
         self._info = info
+        self._dynamic_battery = info.get("dynamic_battery", False)
+        self._default_min = info.get("min", 0)
+        self._default_max = info.get("max", 100)
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = f"{entry.title} {info.get("name")}"
         self._attr_native_unit_of_measurement = info.get("unit")
         self._attr_device_class = info.get("device_class")
-        self._attr_native_min_value = info.get("min", 0)
-        self._attr_native_max_value = info.get("max", 100)
+        self._attr_native_min_value = self._default_min
+        self._attr_native_max_value = self._default_max
         if self._info.get("unit") in ("V", "A", "W", "kW") or "voltage" in self._key or "current" in self._key:
             self._attr_mode = NumberMode.BOX
             self._attr_native_step = info.get("step", 0.1)
         else:
             self._attr_native_step = info.get("step", 1)
             self._attr_mode = NumberMode.SLIDER
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        if self._dynamic_battery:
+            self._update_battery_range()
+        super()._handle_coordinator_update()
+
+    def _update_battery_range(self):
+        """Adjust min/max based on detected battery voltage system."""
+        if not self.coordinator.data:
+            return
+        battery_voltage = self.coordinator.data.get("battery_nominal_voltage")
+        if battery_voltage is None:
+            return
+
+        if battery_voltage >= 300:
+            new_min, new_max = 300, 448
+        else:
+            new_min, new_max = self._default_min, self._default_max
+
+        if self._attr_native_min_value != new_min or self._attr_native_max_value != new_max:
+            self._attr_native_min_value = new_min
+            self._attr_native_max_value = new_max
+            self.async_write_ha_state()
 
     @property
     def native_value(self):
