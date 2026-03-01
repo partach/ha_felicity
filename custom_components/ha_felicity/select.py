@@ -71,6 +71,18 @@ async def async_setup_entry(
         )
     )
 
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="safe_power_management",
+            select_options=["auto", "on", "off"],
+            name="Safe Power Management",
+            icon="mdi:shield-lightning-outline",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
     # Tie all entities to the device
     for entity in entities:
         entity._attr_device_info = device_info

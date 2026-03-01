@@ -712,10 +712,27 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def _check_safe_power(self, new_data: dict) -> int:
         """Return safe power level, temporarily reduced if current is high.
         Respects external changes (app/manual override) using fresh data.
-        No extra reads needed — uses already-fetched new_data."""
+        No extra reads needed — uses already-fetched new_data.
+
+        Only active when safe_power_management is enabled (default: on when grid active).
+        """
 
         opts = self.config_entry.options
         user_level = opts.get("power_level", 5)
+        grid_mode = opts.get("grid_mode", "off")
+        safe_power_enabled = opts.get("safe_power_management", "auto")
+
+        # Determine if safe power management should be active
+        # "auto" = active only when grid_mode is from_grid or to_grid
+        # "on" = always active (explicit override)
+        # "off" = never active (external EMS handles everything)
+        if safe_power_enabled == "off":
+            self.safe_max_power = user_level
+            return user_level
+        if safe_power_enabled == "auto" and grid_mode == "off":
+            self.safe_max_power = user_level
+            return user_level
+
         max_amperage = opts.get("max_amperage_per_phase", 16)
 
         # --- 1. Safe base_level init ---
@@ -723,17 +740,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if base_level == 0:
             base_level = user_level
 
-        # --- 2. Detect config changes (max_amperage or user_level) ---
-        previous_max = getattr(self, "_last_known_max_amperage", None)
-        if previous_max is not None and previous_max != max_amperage:
-            _LOGGER.info(
-                "Max amperage changed: %.1fA → %.1fA — resetting to user level %d",
-                previous_max, max_amperage, user_level
-            )
-            base_level = user_level
-        self._last_known_max_amperage = max_amperage
-
-        # Detect user power_level change → apply immediately
+        # --- 2. Detect user power_level change → force write ---
+        user_level_changed = False
         previous_user_level = getattr(self, "_last_user_power_level", None)
         if previous_user_level is not None and previous_user_level != user_level:
             _LOGGER.info(
@@ -741,7 +749,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 previous_user_level, user_level
             )
             base_level = user_level
+            user_level_changed = True
         self._last_user_power_level = user_level
+
+        # Detect max_amperage config change
+        previous_max = getattr(self, "_last_known_max_amperage", None)
+        if previous_max is not None and previous_max != max_amperage:
+            _LOGGER.info(
+                "Max amperage changed: %.1fA → %.1fA — resetting to user level %d",
+                previous_max, max_amperage, user_level
+            )
+            base_level = user_level
+            user_level_changed = True
+        self._last_known_max_amperage = max_amperage
 
         # --- 3. Early exit if no data ---
         if not new_data:
@@ -789,10 +809,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.debug("Normal current %.1fA — maintaining level %d", max_current, base_level)
 
-        # --- 6. Write if level changed ---
-        if safe_level != base_level:
+        # --- 6. Write if level changed OR user explicitly changed power_level ---
+        if safe_level != base_level or user_level_changed:
             target_watts = int(round(safe_level * 1000))
-            _LOGGER.info("Writing safe power limit: %dW (level %d)", target_watts, safe_level)
+            _LOGGER.info("Writing safe power limit: %dW (level %d)%s",
+                         target_watts, safe_level,
+                         " (user change)" if user_level_changed else "")
             try:
                 await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
                 self.safe_max_power = safe_level

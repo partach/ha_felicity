@@ -189,6 +189,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "efficiency_factor": 0.90,
         "daily_consumption_estimate": 10,
         "price_mode": "manual",
+        "safe_power_management": "auto",
         CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
         "update_interval": 10,
     }
