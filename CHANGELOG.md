@@ -1,5 +1,13 @@
 ## Changelog
 
+### [0.9.2] - Stable tested release
+- Extended EMS functionality. See EMS.md document on github
+- Total EMS can now be switched off completely, including Safe Power management. See EMS.md
+- Few small bugs like preventing to write economic power rule
+- Register updates for TREX25k (PV on/off in rules set and Sell on/off in rules set)
+- Basics now seem to work for TREX25k/50k
+- Extra writable register on user request
+
 ### [0.9.0] - Stable tested release
 - Full rule setting via integration. Date and Time can now be set via integration for rules!
 - NEED TO DELETE YOUR DEVICE AND RE-ADD IT to ensure clean up of all older sensors (in case some sensors report unavailable after a few minutes)
