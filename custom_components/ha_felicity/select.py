@@ -134,11 +134,16 @@ class HA_FelicitySelect(CoordinatorEntity, SelectEntity):
 class HA_FelicitySelectMulti(CoordinatorEntity, SelectEntity):
     """
     Representation of a multi-select bitmask register.
-    
-    Note: SelectEntity is typically single-selection in HA. 
-    This implementation mimics toggling logic but UI support 
-    for multi-select via SelectEntity is limited.
+
+    Each option in the list maps to one bit in the register value (LSB-first):
+    options[0] → bit 0, options[1] → bit 1, etc.
+
+    The dropdown shows checkmarks (✓/✗) so the user can see which
+    options are currently active before toggling.
     """
+
+    _CHECK = "✓ "
+    _CROSS = "✗ "
 
     def __init__(self, coordinator, entry, key, info):
         super().__init__(coordinator)
@@ -146,7 +151,17 @@ class HA_FelicitySelectMulti(CoordinatorEntity, SelectEntity):
         self._info = info
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = f"{entry.title} {info['name']}"
-        self._attr_options = info["options"]
+        self._base_options = list(info["options"])
+
+    @property
+    def options(self) -> list[str]:
+        """Build option list with checkmark prefixes reflecting current state."""
+        raw = self.coordinator.data.get(self._key, 0)
+        result = []
+        for i, opt in enumerate(self._base_options):
+            prefix = self._CHECK if raw & (1 << i) else self._CROSS
+            result.append(f"{prefix}{opt}")
+        return result
 
     @property
     def current_option(self):
@@ -155,28 +170,36 @@ class HA_FelicitySelectMulti(CoordinatorEntity, SelectEntity):
 
     @property
     def state(self):
-        """Return a string representation of selected options for display."""
-        days = self.current_options_list
-        if not days:
-            return "None"
-        return ", ".join(days)
-
-    @property
-    def current_options_list(self):
-        """Helper to get list of active options."""
+        """Return a comma-separated string of the selected options."""
         raw = self.coordinator.data.get(self._key, 0)
-        return [day for i, day in enumerate(self._attr_options) if raw & (1 << i)]
+        selected = [opt for i, opt in enumerate(self._base_options) if raw & (1 << i)]
+        if not selected:
+            return "None"
+        return ", ".join(selected)
+
+    def _strip_prefix(self, option: str) -> str:
+        """Remove the checkmark/cross prefix from a dropdown option."""
+        if option.startswith(self._CHECK):
+            return option[len(self._CHECK):]
+        if option.startswith(self._CROSS):
+            return option[len(self._CROSS):]
+        return option
 
     async def async_select_option(self, option: str) -> None:
         """Toggle the selected option in the bitmask."""
-        days = self.current_options_list
-        if option in days:
-            days.remove(option)
-        else:
-            days.append(option)
+        bare = self._strip_prefix(option)
+        if bare not in self._base_options:
+            _LOGGER.warning("Unknown multi-select option '%s' for %s", bare, self._key)
+            return
 
-        value = sum(1 << i for i, day in enumerate(self._attr_options) if day in days)
-        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, value)
+        raw = self.coordinator.data.get(self._key, 0)
+        bit_index = self._base_options.index(bare)
+        # Toggle the bit
+        raw ^= (1 << bit_index)
+
+        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, raw)
+        self.coordinator.data[self._key] = raw
+        self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 
 
