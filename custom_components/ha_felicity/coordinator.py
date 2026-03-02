@@ -81,7 +81,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.pv_forecast_today: float | None = None
         self.pv_forecast_remaining: float | None = None
         self.pv_forecast_tomorrow: float | None = None
-        self.scheduled_slots: set = set()
+        self.scheduled_slots: dict[int, str] = {}  # {slot_idx: "charge" | "discharge"}
         self.cheap_slots_remaining: int = 0
         self.grid_energy_planned: float = 0.0
         self.schedule_status: str = "unknown"
@@ -209,9 +209,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if self.slot_prices_today and self.scheduled_slots:
                 slot_idx = self._current_slot_index()
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
-                    if grid_mode == "from_grid" and battery_soc < charge_max:
+                    slot_action = self.scheduled_slots[slot_idx]
+                    if slot_action == "charge" and battery_soc < charge_max:
                         return "charging"
-                    if grid_mode == "to_grid" and battery_soc > discharge_min:
+                    if slot_action == "discharge" and battery_soc > discharge_min:
                         return "discharging"
                 return "idle"
             # Auto mode fallback when no slot data yet
@@ -223,9 +224,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("current price or price threshold is unknown, returning idle")
             return "idle"
 
-        if grid_mode == "from_grid" and self.current_price < self.price_threshold and battery_soc < charge_max:
+        if grid_mode in ("from_grid", "both") and self.current_price < self.price_threshold and battery_soc < charge_max:
             return "charging"
-        if grid_mode == "to_grid" and self.current_price > self.price_threshold and battery_soc > discharge_min:
+        if grid_mode in ("to_grid", "both") and self.current_price > self.price_threshold and battery_soc > discharge_min:
             return "discharging"
 
         return "idle"
@@ -364,7 +365,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         grid_mode = opts.get("grid_mode", "off")
 
         if grid_mode == "off" or not self.slot_prices_today:
-            self.scheduled_slots = set()
+            self.scheduled_slots = {}
             self.cheap_slots_remaining = 0
             self.grid_energy_planned = 0.0
             self.schedule_status = "off" if grid_mode == "off" else "no_price_data"
@@ -390,7 +391,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         remaining = [(i, prices[i]) for i in range(current_slot, num_slots) if prices[i] is not None]
 
         if not remaining:
-            self.scheduled_slots = set()
+            self.scheduled_slots = {}
             self.cheap_slots_remaining = 0
             self.grid_energy_planned = 0.0
             self.schedule_status = "day_complete"
@@ -425,7 +426,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             energy_target = energy_deficit
 
             if energy_deficit <= 0:
-                self.scheduled_slots = set()
+                self.scheduled_slots = {}
                 self.cheap_slots_remaining = 0
                 self.grid_energy_planned = 0.0
                 self.schedule_status = "no_action_needed"
@@ -448,7 +449,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             selected = negative_slots + selected_positive
 
-            self.scheduled_slots = {s[0] for s in selected}
+            self.scheduled_slots = {s[0]: "charge" for s in selected}
             self.cheap_slots_remaining = len(self.scheduled_slots)
             self.grid_energy_planned = round(min(energy_deficit, len(selected) * effective_per_slot), 2)
 
@@ -462,7 +463,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             energy_target = sellable
 
             if sellable <= 0:
-                self.scheduled_slots = set()
+                self.scheduled_slots = {}
                 self.cheap_slots_remaining = 0
                 self.grid_energy_planned = 0.0
                 self.schedule_status = "no_action_needed"
@@ -474,15 +475,90 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             sorted_slots = sorted(positive_slots, key=lambda x: -x[1])
             selected = sorted_slots[:slots_needed]
 
-            self.scheduled_slots = {s[0] for s in selected}
+            self.scheduled_slots = {s[0]: "discharge" for s in selected}
             self.cheap_slots_remaining = len(self.scheduled_slots)
             self.grid_energy_planned = round(min(sellable, len(selected) * energy_per_slot), 2)
 
             if selected:
                 self.price_threshold = min(s[1] for s in selected)
 
+        elif grid_mode == "both":
+            # --- Arbitrage mode: buy cheap, sell expensive ---
+            effective_per_slot = energy_per_slot * efficiency
+            round_trip_eff = efficiency * efficiency  # charge + discharge losses
+
+            # 1. Charge side — same logic as from_grid
+            target_kwh = (charge_max / 100.0) * battery_capacity
+            battery_headroom = max(0.0, target_kwh - current_kwh)
+            base_deficit = max(0.0, battery_headroom - net_pv)
+
+            if self._yesterday_deficit > 0 and battery_headroom > base_deficit:
+                carryover = min(self._yesterday_deficit, battery_headroom - base_deficit)
+                energy_deficit = base_deficit + carryover
+            else:
+                energy_deficit = base_deficit
+
+            # 2. Discharge side — sellable from current SOC (not counting future charges)
+            min_kwh = (discharge_min / 100.0) * battery_capacity
+            sellable = max(0.0, current_kwh - min_kwh) * efficiency
+
+            # 3. Negative prices: always charge (paid to take energy)
+            negative_slots = [(i, p) for i, p in remaining if p < 0]
+            non_negative_slots = [(i, p) for i, p in remaining if p >= 0]
+
+            # 4. Select charge slots from cheapest non-negative
+            negative_energy = len(negative_slots) * effective_per_slot
+            remaining_deficit = max(0.0, energy_deficit - negative_energy)
+            sorted_cheap = sorted(non_negative_slots, key=lambda x: x[1])
+            charge_needed = math.ceil(remaining_deficit / effective_per_slot) if effective_per_slot > 0 else 0
+            charge_selected = sorted_cheap[:charge_needed]
+            charge_slots = negative_slots + charge_selected
+            charge_slot_indices = {s[0] for s in charge_slots}
+
+            # 5. Select discharge slots from most expensive (excluding charge slots)
+            #    Only sell at positive prices and only if profitable vs cheapest buy price
+            available_for_sell = [(i, p) for i, p in non_negative_slots
+                                 if p > 0 and i not in charge_slot_indices]
+
+            # Profitability filter: only sell if price exceeds round-trip cost
+            if charge_slots:
+                max_buy_price = max(s[1] for s in charge_slots)
+                min_sell_price = max_buy_price / round_trip_eff
+                available_for_sell = [(i, p) for i, p in available_for_sell if p >= min_sell_price]
+
+            sell_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
+            sorted_expensive = sorted(available_for_sell, key=lambda x: -x[1])
+            sell_selected = sorted_expensive[:sell_needed]
+
+            # 6. Merge into scheduled_slots dict
+            self.scheduled_slots = {}
+            for s in charge_slots:
+                self.scheduled_slots[s[0]] = "charge"
+            for s in sell_selected:
+                self.scheduled_slots[s[0]] = "discharge"
+
+            self.cheap_slots_remaining = len(self.scheduled_slots)
+            charge_energy = round(min(energy_deficit, len(charge_slots) * effective_per_slot), 2) if energy_deficit > 0 else 0
+            sell_energy = round(min(sellable, len(sell_selected) * energy_per_slot), 2) if sellable > 0 else 0
+            self.grid_energy_planned = round(charge_energy + sell_energy, 2)
+            energy_target = energy_deficit + sellable
+
+            # Set threshold to the charge boundary (for info display compatibility)
+            if charge_slots:
+                self.price_threshold = max(s[1] for s in charge_slots)
+            elif sell_selected:
+                self.price_threshold = min(s[1] for s in sell_selected)
+
+            _LOGGER.debug(
+                "Both mode: charge=%.1fkWh (%d slots), sell=%.1fkWh (%d slots), "
+                "round_trip_eff=%.0f%%, min_sell_price=%.4f",
+                charge_energy, len(charge_slots), sell_energy, len(sell_selected),
+                round_trip_eff * 100,
+                min_sell_price if charge_slots else 0,
+            )
+
         else:
-            self.scheduled_slots = set()
+            self.scheduled_slots = {}
             self.cheap_slots_remaining = 0
             self.grid_energy_planned = 0.0
 
@@ -544,7 +620,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # Count slots that match the current threshold
         # When grid_mode is off, default to from_grid perspective (informational)
-        effective_mode = grid_mode if grid_mode != "off" else "from_grid"
+        # When grid_mode is both, use from_grid perspective (charge likelihood is primary)
+        effective_mode = grid_mode if grid_mode not in ("off", "both") else "from_grid"
 
         if effective_mode == "from_grid":
             available = [s for s in remaining if s[1] <= self.price_threshold]
@@ -692,7 +769,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         opts = self.config_entry.options
         grid_mode = opts.get("grid_mode", "off")
 
-        if grid_mode != "from_grid":
+        if grid_mode not in ("from_grid", "both"):
             self._yesterday_deficit = 0.0
             return
 
@@ -723,7 +800,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         safe_power_enabled = opts.get("safe_power_management", "auto")
 
         # Determine if safe power management should be active
-        # "auto" = active only when grid_mode is from_grid or to_grid
+        # "auto" = active only when grid_mode is from_grid, to_grid, or both
         # "on" = always active (explicit override)
         # "off" = never active (external EMS handles everything)
         if safe_power_enabled == "off":
@@ -881,6 +958,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "grid_energy_planned": self.grid_energy_planned,
             "schedule_status": self.schedule_status,
             "scheduled_slot_count": len(self.scheduled_slots),
+            "scheduled_charge_slots": sum(1 for v in self.scheduled_slots.values() if v == "charge"),
+            "scheduled_discharge_slots": sum(1 for v in self.scheduled_slots.values() if v == "discharge"),
             "price_slots_today": len(self.slot_prices_today) if self.slot_prices_today else 0,
             "slot_granularity_min": int((24 * 60) / len(self.slot_prices_today)) if self.slot_prices_today else None,
             "available_slots_at_threshold": self.available_slots_at_threshold,

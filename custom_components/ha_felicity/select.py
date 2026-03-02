@@ -52,7 +52,7 @@ async def async_setup_entry(
             coordinator=coordinator,
             entry=entry,
             option_key="grid_mode",
-            select_options=["off", "from_grid", "to_grid"],
+            select_options=["off", "from_grid", "to_grid", "both"],
             name="Grid Mode",
             icon="mdi:transmission-tower",
             entity_category=EntityCategory.CONFIG,
