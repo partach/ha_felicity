@@ -185,6 +185,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "power_level": 5,
         "safe_max_power": 0,
         "voltage_level": 58,
+        "discharge_min_voltage": 50,
         "battery_capacity_kwh": 10,
         "efficiency_factor": 0.90,
         "daily_consumption_estimate": 10,

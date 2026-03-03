@@ -75,6 +75,17 @@ async def async_setup_entry(
         HA_FelicityInternalNumber(
             coordinator,
             entry,
+            option_key="discharge_min_voltage",
+            name="Discharge Min Voltage",
+            min_val=50,
+            max_val=55,
+            step=1,
+            icon="mdi:gauge-low",
+            dynamic_range=True
+        ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
             option_key="battery_charge_max_level",
             name="Battery Charge Max Level",
             min_val=30,
