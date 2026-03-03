@@ -909,7 +909,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         opts = self.config_entry.options
         now = datetime.now()
         date_16bit = (now.month << 8) | now.day
-        voltage_level = opts.get("voltage_level", 58) # safe but how will it go with high voltage systems?
+        voltage_level = (
+            opts.get("voltage_level", 58)
+            if new_state == "charging"
+            else opts.get("discharge_min_voltage", 50)
+        )
         soc_limit = (
             opts.get("battery_charge_max_level", 100)
             if new_state == "charging"
