@@ -225,12 +225,14 @@ class TypeSpecificHandler:
                 if self.register_map.get("eco_timeofuse",0) == 0:
                     _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
                 await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+                await self.async_write_register("econ_rule_1_sell_enable", 0) # we want to charge, not sell
             elif value == 2: # discharge to grid and we want to control
                 if self.register_map.get("eco_timeofuse",0) == 0:
                     _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
                 await self.async_write_register("zero_export_to_ct_sell_enable", 1) # Provide back to grid if needed. (to_grid or from_grid is enabled)
                 await self.async_write_register("system_mode", 0)
                 await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+                await self.async_write_register("econ_rule_1_sell_enable", 1) # we need to enable sell as we want to discharge to sell
             else:    
               _LOGGER.warning("Operating mode unknown for TREX50 series, not changing registers")
             return True
