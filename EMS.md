@@ -309,34 +309,53 @@ be served by the battery, not by buying from the grid.
 
 When hourly PV data is unavailable, the system falls back to the flat model.
 
-### `both` Mode — Arbitrage Logic (Auto)
+### `both` Mode — Self-Sufficiency-First Arbitrage (Auto)
+
+The `both` mode prioritizes self-consumption over grid trading. The algorithm follows this order:
+
+1. **Self-consume solar** — let PV charge the battery naturally (idle state)
+2. **Protect overnight reserve** — never sell below what's needed until tomorrow's sun
+3. **Only buy grid when solar can't cover** — grid charging is last resort
+4. **Only sell true surplus** — energy above both discharge_min AND overnight reserve
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                    BOTH MODE SCHEDULE                          │
+│              BOTH MODE — SELF-SUFFICIENCY FIRST                │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
-│  PHASE 1 — CHARGE SLOTS (same as from_grid)                   │
-│  ├─ Calculate energy deficit                                   │
-│  ├─ Always include negative-price slots                        │
+│  PHASE 0 — SELF-CONSUMPTION RESERVE                            │
+│  ├─ Estimate sunset hour (last hour with PV > 0.1 kWh)        │
+│  ├─ Estimate sunrise tomorrow (first hour with PV today)       │
+│  ├─ overnight_hours = (24 - sunset) + sunrise                  │
+│  └─ reserve = consumption_per_hour × overnight_hours           │
+│                                                                │
+│  PHASE 1 — CHARGE SIDE (grid only if solar can't cover)       │
+│  ├─ Calculate battery headroom (target − current SOC)          │
+│  ├─ Subtract hourly PV surplus (solar covers most/all)         │
+│  ├─ energy_deficit = headroom − net_pv (often 0 on sunny days) │
+│  ├─ Always include negative-price slots (paid to charge)       │
 │  └─ Fill remaining deficit with cheapest non-negative slots    │
 │                                                                │
-│  PHASE 2 — DISCHARGE SLOTS (same as to_grid)                  │
-│  ├─ Calculate sellable energy: (SOC - min) × capacity × eff   │
+│  PHASE 2 — DISCHARGE SIDE (only sell true surplus)             │
+│  ├─ reserve_floor = max(discharge_min, overnight_reserve)      │
+│  ├─ sellable = (current_kwh − reserve_floor) × efficiency      │
 │  └─ Select most expensive positive-price slots                 │
 │                                                                │
 │  PHASE 3 — PROFITABILITY FILTER                                │
 │  ├─ Remove any discharge slot that overlaps a charge slot      │
-│  ├─ Find max_buy_price from charge slots                       │
-│  ├─ Calculate min_sell_price = max_buy_price / (eff × eff)     │
+│  ├─ min_sell_price = max_buy_price / (eff × eff)               │
 │  └─ Only keep discharge slots where price ≥ min_sell_price     │
 │                                                                │
-│  RESULT: schedule = { slot: "charge" | "discharge" }           │
+│  PHASE 4 — ANTI-CONFLICT GUARD (real-time)                     │
+│  ├─ Before activating discharge, check grid power direction    │
+│  └─ If house is importing >200W → suppress discharge (idle)    │
+│     (prevents selling battery while buying from grid)          │
 │                                                                │
-│  Example with efficiency = 0.90 (round-trip = 0.81):           │
-│  ├─ Bought at 0.10 €/kWh                                      │
-│  ├─ Min sell = 0.10 / 0.81 = 0.123 €/kWh                      │
-│  └─ Only sell at slots ≥ 0.123 €/kWh (covers losses)           │
+│  Example: battery=30kWh, reserve=15kWh, discharge_min=6kWh    │
+│  ├─ reserve_floor = max(6, 15) = 15 kWh                       │
+│  ├─ sellable = (30 − 15) × 0.9 = 13.5 kWh                    │
+│  └─ Only sell 13.5 kWh at profitable prices                   │
+│     (remaining 15 kWh reserved for overnight)                  │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
