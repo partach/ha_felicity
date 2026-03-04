@@ -388,6 +388,7 @@ The TREX-25/50 models do not have a single enable register. Instead, charging an
 │      │─ econ_rule_1_enable = 1 ─────▶│                       │
 │      │                               │─▶ reg 8713 = 1        │
 │      │                               │   (grid_charge_enable)│
+│      │                               │peak_shaving_enable = 1│
 │      │                               │                       │
 │      │─ econ_rule_1_soc = 100 ──────▶│                       │
 │      │                               │─▶ reg 8718 = 100      │
@@ -420,6 +421,7 @@ The TREX-25/50 models do not have a single enable register. Instead, charging an
 │      │                               │   (grid_charge_enable)│
 │      │                               │─▶ reg 8521 = 0        │
 │      │                               │   (peak_shaving = 0)  │
+│      │                               │peak_shaving_enable = 0│
 │      │                               │                       │
 │      │─ econ_rule_1_soc = 20 ───────▶│                       │
 │      │                               │─▶ reg 8718 = 20       │
@@ -430,7 +432,8 @@ The TREX-25/50 models do not have a single enable register. Instead, charging an
 │      │                               │                       │
 │      │─ econ_rule_1_power = 3000 ───▶│                       │
 │      │                               │─▶ reg 8719 = 3 (kW)   │
-│      │                               │─▶ reg 8521 = 3        │
+│      │                               │if peak_shaving_enable:│
+│      │                               │    ─▶ reg 8521 = 3    │
 │      │                               │   (peak_shaving power)│
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
