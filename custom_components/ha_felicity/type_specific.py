@@ -15,6 +15,7 @@ class TypeSpecificHandler:
         self.client = client
         self.slave_id = slave_id
         self.register_map = register_map
+        self.peak_shaving_enabled = False
 
     def determine_battery_voltage(self, data: dict) -> int | float | None:
         """
@@ -225,12 +226,14 @@ class TypeSpecificHandler:
                 if self.register_map.get("eco_timeofuse",0) == 0:
                     _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
                 await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+                await self.async_write_register("econ_rule_1_sell_enable", 0) # we want to charge, not sell
             elif value == 2: # discharge to grid and we want to control
                 if self.register_map.get("eco_timeofuse",0) == 0:
                     _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
                 await self.async_write_register("zero_export_to_ct_sell_enable", 1) # Provide back to grid if needed. (to_grid or from_grid is enabled)
                 await self.async_write_register("system_mode", 0)
                 await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+                await self.async_write_register("econ_rule_1_sell_enable", 1) # we need to enable sell as we want to discharge to sell
             else:    
               _LOGGER.warning("Operating mode unknown for TREX50 series, not changing registers")
             return True
@@ -250,10 +253,13 @@ class TypeSpecificHandler:
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
             if value == 1:   # charging → 
                 await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
+                self.peak_shaving_enabled = True
             elif value == 2: # discharging → 
+                self.peak_shaving_enabled = False
                 await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
                 await self.async_write_register("grid_peak_shaving_power", int(0))  # needs to be switched off when idle or discharging?
             else:            # idle / unknown → disable both
+                self.peak_shaving_enabled = False
                 await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
                 await self.async_write_register("grid_peak_shaving_power", int(0)) # needs to be switched off when idle or discharging?
      
@@ -287,7 +293,8 @@ class TypeSpecificHandler:
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
             await self.async_write_register("econ_rule_1_power", int(round(value / 1000.0))) # for trex fifty it is in kW
             # in testing it seemed that this register also needs to be set to the same amount to enable charging at least. Not sure for selling...
-            await self.async_write_register("grid_peak_shaving_power", int(round(value / 1000.0))) # for trex fifty it is in kW
+            if self.peak_shaving_enabled: # only when in charging mode
+               await self.async_write_register("grid_peak_shaving_power", int(round(value / 1000.0))) # for trex fifty it is in kW
             return True
       
         return False   

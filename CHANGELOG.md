@@ -1,12 +1,14 @@
 ## Changelog
 
-### [0.9.2] - Stable tested release
+### [0.9.5] - EMS extension and other bits
 - Extended EMS functionality. See EMS.md document on github
-- Total EMS can now be switched off completely, including Safe Power management. See EMS.md
+- Total EMS can now be switched off completely or run on automatic, including Safe Power management. See EMS.md
+- Added possibility to add PV forecasting entity to help with automatic EMS
 - Few small bugs like preventing to write economic power rule
 - Register updates for TREX25k (PV on/off in rules set and Sell on/off in rules set)
 - Basics now seem to work for TREX25k/50k
-- Extra writable register on user request
+- Extra writable register on user request for TREX5k/10k
+- Extended automatic handling of high-voltage / low-voltage systems
 
 ### [0.9.0] - Stable tested release
 - Full rule setting via integration. Date and Time can now be set via integration for rules!

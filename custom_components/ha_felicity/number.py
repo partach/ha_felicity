@@ -67,7 +67,7 @@ async def async_setup_entry(
             option_key="voltage_level",
             name="Voltage Level",
             min_val=50,
-            max_val=55, # to check of battery checking mechanism works.
+            max_val=58, # to check of battery checking mechanism works.
             step=1,
             icon="mdi:gauge",
             dynamic_range=True
@@ -77,7 +77,7 @@ async def async_setup_entry(
             entry,
             option_key="discharge_min_voltage",
             name="Discharge Min Voltage",
-            min_val=50,
+            min_val=48,
             max_val=55,
             step=1,
             icon="mdi:gauge-low",
