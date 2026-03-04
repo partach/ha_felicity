@@ -270,14 +270,44 @@ Price ────────────────────────�
 Each update cycle:
 
 1. Retrieve all price slots for today (supports 15-min, 30-min, or hourly granularity)
-2. Retrieve PV forecast (if configured)
-3. Calculate energy deficit: `target_kwh - current_kwh - net_pv + yesterday_carryover` (capped by battery headroom)
+2. Retrieve PV forecast (if configured) — including per-hour production breakdown
+3. Calculate energy deficit using **hourly PV surplus model** (see below)
 4. Build the schedule based on grid mode:
    - **`from_grid`**: Select cheapest N slots to fill the deficit. Negative-price slots are always included (you get paid to charge).
    - **`to_grid`**: Select most expensive N slots for sellable energy. Negative-price slots are excluded (never sell at a loss).
    - **`both`**: Build both charge and discharge schedules, then filter discharge slots so they are profitable after round-trip losses: `sell_price >= buy_price / efficiency²`. Charge and discharge never overlap in the same slot.
 5. If the current time slot is in the scheduled set → activate charge/discharge
 6. The price threshold is automatically set to the boundary price of selected slots
+
+### Hourly PV Surplus Model
+
+The deficit calculation uses per-hour solar production data (from Forecast.Solar `wh_hours` or Solcast `detailedHourly`) to accurately determine how much solar surplus is available to charge the battery.
+
+**Why this matters:** A flat calculation like `PV_total - consumption_total` is misleading. If daily PV is 35 kWh and daily consumption is 50 kWh, the flat model says net_pv = 0 (no surplus). But in reality, solar peaks during midday hours and exceeds the load — that surplus charges the battery. The flat model would incorrectly schedule grid charging.
+
+```
+Example day: consumption = 2 kWh/hour (flat), PV varies by hour
+
+Hour:   06  07  08  09  10  11  12  13  14  15  16  17  18  19
+PV:     0   1   2   4   6   7   7   6   4   2   1   0   0   0   = 40 kWh
+Load:   2   2   2   2   2   2   2   2   2   2   2   2   2   2   = 28 kWh (remaining)
+                                                                    (14h × 2)
+
+Flat model:  net_pv = 40 - 28 = 12 kWh surplus
+             (only counts total difference)
+
+Hourly model: surplus per hour (only positive values):
+Hour:   06  07  08  09  10  11  12  13  14  15  16  17  18  19
+Diff:   -2  -1   0  +2  +4  +5  +5  +4  +2   0  -1  -2  -2  -2
+Surplus: 0   0   0   2   4   5   5   4   2   0   0   0   0   0  = 22 kWh
+
+The hourly model yields MORE surplus (22 vs 12) because it correctly
+recognizes that solar peak hours produce enough to charge the battery,
+even though evening hours have no sun. The deficit hours (evening) will
+be served by the battery, not by buying from the grid.
+```
+
+When hourly PV data is unavailable, the system falls back to the flat model.
 
 ### `both` Mode — Arbitrage Logic (Auto)
 

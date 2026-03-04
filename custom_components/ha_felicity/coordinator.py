@@ -81,6 +81,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.pv_forecast_today: float | None = None
         self.pv_forecast_remaining: float | None = None
         self.pv_forecast_tomorrow: float | None = None
+        self.pv_hourly_kwh: dict[int, float] = {}  # {hour: kwh} from forecast entity
         self.scheduled_slots: dict[int, str] = {}  # {slot_idx: "charge" | "discharge"}
         self.cheap_slots_remaining: int = 0
         self.grid_energy_planned: float = 0.0
@@ -296,12 +297,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.pv_forecast_today = None
             self.pv_forecast_remaining = None
             self.pv_forecast_tomorrow = None
+            self.pv_hourly_kwh = {}
             return
 
         state = self.hass.states.get(self.forecast_entity)
         if not state or state.state in ("unknown", "unavailable"):
             self.pv_forecast_today = None
             self.pv_forecast_remaining = None
+            self.pv_hourly_kwh = {}
             return
 
         try:
@@ -309,11 +312,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         except (ValueError, TypeError):
             self.pv_forecast_today = None
             self.pv_forecast_remaining = None
+            self.pv_hourly_kwh = {}
             return
 
         now = datetime.now()
         attrs = state.attributes or {}
         remaining = None
+        hourly_kwh: dict[int, float] = {}
 
         # Try Forecast.Solar (wh_hours) or Solcast (detailedHourly) hourly breakdown
         wh_data = attrs.get("wh_hours") or attrs.get("detailedHourly")
@@ -322,11 +327,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 remaining_wh = 0.0
                 for ts_str, value in wh_data.items():
                     ts = self._parse_forecast_time(ts_str)
-                    if ts and ts >= now:
-                        remaining_wh += float(value)
+                    if ts:
+                        wh_val = float(value)
+                        # Accumulate per-hour production in kWh
+                        hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + wh_val / 1000.0
+                        if ts >= now:
+                            remaining_wh += wh_val
                 remaining = remaining_wh / 1000.0
             except Exception as err:
                 _LOGGER.debug("Could not parse forecast hourly data: %s", err)
+
+        self.pv_hourly_kwh = hourly_kwh
 
         # Fallback: estimate remaining PV using solar bell curve
         if remaining is None and self.pv_forecast_today:
@@ -366,6 +377,48 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         fraction = max(0.0, min(1.0, elapsed / total_minutes))
         produced_fraction = (1 - math.cos(math.pi * fraction)) / 2
         return round(total_kwh * (1 - produced_fraction), 2)
+
+    def _calculate_net_pv_surplus(self, remaining_slots: list[tuple[int, float]],
+                                  num_slots: int, consumption_est: float) -> float:
+        """Calculate net PV surplus using per-hour solar production vs consumption.
+
+        Instead of subtracting total consumption from total PV (which ignores
+        temporal distribution), this sums per-hour surpluses: only hours where
+        PV exceeds consumption contribute to battery charging.
+
+        Falls back to the flat model when hourly PV data is unavailable.
+        """
+        pv_remaining = self.pv_forecast_remaining or 0.0
+
+        if not self.pv_hourly_kwh or not remaining_slots:
+            # Fallback: flat model (original behavior)
+            hours_left = len(remaining_slots) * ((24 * 60) / num_slots) / 60.0
+            consumption_remaining = (consumption_est / 24.0) * hours_left
+            return max(0.0, pv_remaining - consumption_remaining)
+
+        minutes_per_slot = (24 * 60) / num_slots
+        consumption_per_hour = consumption_est / 24.0
+
+        # Sum only the positive surpluses per hour (PV > load = battery charge)
+        surplus_total = 0.0
+        hours_seen = set()
+        for slot_idx, _ in remaining_slots:
+            hour = int((slot_idx * minutes_per_slot) / 60)
+            if hour in hours_seen:
+                continue
+            hours_seen.add(hour)
+
+            pv_kwh = self.pv_hourly_kwh.get(hour, 0.0)
+            surplus = pv_kwh - consumption_per_hour
+            if surplus > 0:
+                surplus_total += surplus
+
+        _LOGGER.debug(
+            "PV surplus model: hourly_surplus=%.2f kWh, pv_remaining=%.2f kWh, "
+            "consumption=%.1f kWh/day, hours_checked=%d",
+            surplus_total, pv_remaining, consumption_est, len(hours_seen),
+        )
+        return surplus_total
 
     def _calculate_schedule(self, battery_soc: float | None) -> None:
         """Calculate optimal charge/discharge schedule based on prices, forecast, and battery.
@@ -412,10 +465,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
 
         current_kwh = (battery_soc / 100.0) * battery_capacity if battery_soc is not None else 0
-        hours_left = len(remaining) * slot_duration_hours
-        pv_remaining = self.pv_forecast_remaining or 0.0
-        consumption_remaining = (consumption_est / 24.0) * hours_left
-        net_pv = max(0.0, pv_remaining - consumption_remaining)
+        # Hourly surplus model: only count PV that exceeds consumption per hour
+        net_pv = self._calculate_net_pv_surplus(remaining, num_slots, consumption_est)
         energy_per_slot = safe_power_kw * slot_duration_hours
 
         energy_target = 0.0  # for logging
@@ -659,10 +710,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         discharge_min = opts.get("battery_discharge_min_level", 20)
         current_kwh = (battery_soc / 100.0) * battery_capacity
 
-        pv_remaining = self.pv_forecast_remaining or 0.0
-        hours_left = len(remaining) * slot_duration_hours
-        consumption_remaining = (self._get_consumption_estimate() / 24.0) * hours_left
-        net_pv = max(0.0, pv_remaining - consumption_remaining)
+        consumption_est = self._get_consumption_estimate()
+        net_pv = self._calculate_net_pv_surplus(remaining, num_slots, consumption_est)
 
         if effective_mode == "from_grid":
             target_kwh = (charge_max / 100.0) * battery_capacity
