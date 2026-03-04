@@ -219,14 +219,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Auto mode: no slot data available, returning idle")
             return "idle"
 
-        # Manual mode: simple price threshold comparison (original behavior)
+        # Manual mode: price threshold comparison with hysteresis band
         if self.current_price is None or self.price_threshold is None:
             _LOGGER.info("current price or price threshold is unknown, returning idle")
             return "idle"
 
-        if grid_mode in ("from_grid", "both") and self.current_price < self.price_threshold and battery_soc < charge_max:
+        # Hysteresis margin: 5% of price spread prevents oscillation near threshold
+        margin = 0.0
+        if self.max_price is not None and self.min_price is not None and self.max_price > self.min_price:
+            margin = (self.max_price - self.min_price) * 0.05
+
+        # If already in a state, favor staying (use raw threshold, no margin)
+        if self._current_energy_state == "charging":
+            if grid_mode in ("from_grid", "both") and self.current_price < self.price_threshold and battery_soc < charge_max:
+                return "charging"
+        elif self._current_energy_state == "discharging":
+            if grid_mode in ("to_grid", "both") and self.current_price > self.price_threshold and battery_soc > discharge_min:
+                return "discharging"
+
+        # To enter a new state, price must cross the wider band (threshold ± margin)
+        if grid_mode in ("from_grid", "both") and self.current_price < (self.price_threshold - margin) and battery_soc < charge_max:
             return "charging"
-        if grid_mode in ("to_grid", "both") and self.current_price > self.price_threshold and battery_soc > discharge_min:
+        if grid_mode in ("to_grid", "both") and self.current_price > (self.price_threshold + margin) and battery_soc > discharge_min:
             return "discharging"
 
         return "idle"
