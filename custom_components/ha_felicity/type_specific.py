@@ -100,15 +100,20 @@ class TypeSpecificHandler:
         return None
 
     def determine_max_amperage(self, data: dict) -> float:
+        """Return highest absolute grid current across all phases.
+
+        Uses abs() to detect overcurrent in both directions:
+        positive (importing from grid) and negative (exporting to grid).
+        """
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
-            phase_1 = data.get("ac_input_current", 0.0)
-            phase_2 = data.get("ac_input_current_l2", 0.0)
-            phase_3 = data.get("ac_input_current_l3", 0.0)
+            phase_1 = abs(data.get("ac_input_current", 0.0))
+            phase_2 = abs(data.get("ac_input_current_l2", 0.0))
+            phase_3 = abs(data.get("ac_input_current_l3", 0.0))
             return max(phase_1, phase_2, phase_3)
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
-            phase_1 = data.get("phase_a_ct_current", 0.0)
-            phase_2 = data.get("phase_b_ct_current", 0.0)
-            phase_3 = data.get("phase_c_ct_current", 0.0)
+            phase_1 = abs(data.get("phase_a_ct_current", 0.0))
+            phase_2 = abs(data.get("phase_b_ct_current", 0.0))
+            phase_3 = abs(data.get("phase_c_ct_current", 0.0))
             return max(phase_1, phase_2, phase_3)
 
         _LOGGER.debug("max current not found / is None")
