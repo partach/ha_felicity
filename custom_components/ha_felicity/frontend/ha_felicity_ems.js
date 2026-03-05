@@ -38,7 +38,17 @@ class FelicityEMSCard extends LitElement {
     if (!this.hass || !this.config.device_id) return;
     const entityReg = this.hass.entities;
     if (!entityReg) return;
-    this._deviceEntities = Object.values(entityReg)
+    const allEntries = Object.values(entityReg);
+    // Debug: log sample entry structure and find felicity entities
+    if (allEntries.length > 0 && !this._debugLogged) {
+      this._debugLogged = true;
+      const sample = allEntries[0];
+      console.log("[EMS] Sample entity entry keys:", Object.keys(sample), "sample:", JSON.stringify(sample));
+      const felicity = allEntries.filter(e => e.entity_id?.includes("felicity") || e.platform === "ha_felicity");
+      console.log("[EMS] Felicity entities:", felicity.length, felicity.slice(0, 3).map(e => ({id: e.entity_id, device_id: e.device_id})));
+      console.log("[EMS] Looking for device_id:", this.config.device_id);
+    }
+    this._deviceEntities = allEntries
       .filter((e) => e.device_id === this.config.device_id)
       .map((e) => e.entity_id)
       .sort();
