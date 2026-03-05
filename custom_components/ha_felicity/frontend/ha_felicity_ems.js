@@ -20,7 +20,7 @@ class FelicityEMSCard extends LitElement {
 
   setConfig(config) {
     this.config = {
-      currency: "€",
+      currency: "\u20AC",
       ...config,
     };
     this.requestUpdate();
@@ -38,17 +38,7 @@ class FelicityEMSCard extends LitElement {
     if (!this.hass || !this.config.device_id) return;
     const entityReg = this.hass.entities;
     if (!entityReg) return;
-    const allEntries = Object.values(entityReg);
-    // Debug: log sample entry structure and find felicity entities
-    if (allEntries.length > 0 && !this._debugLogged) {
-      this._debugLogged = true;
-      const sample = allEntries[0];
-      console.log("[EMS] Sample entity entry keys:", Object.keys(sample), "sample:", JSON.stringify(sample));
-      const felicity = allEntries.filter(e => e.entity_id?.includes("felicity") || e.platform === "ha_felicity");
-      console.log("[EMS] Felicity entities:", felicity.length, felicity.slice(0, 3).map(e => ({id: e.entity_id, device_id: e.device_id})));
-      console.log("[EMS] Looking for device_id:", this.config.device_id);
-    }
-    this._deviceEntities = allEntries
+    this._deviceEntities = Object.values(entityReg)
       .filter((e) => e.device_id === this.config.device_id)
       .map((e) => e.entity_id)
       .sort();
@@ -69,17 +59,23 @@ class FelicityEMSCard extends LitElement {
 
   _getNumericState(key) {
     const val = this._getState(key);
-    if (val === null) return null;
+    if (val == null) return null;
     const num = parseFloat(val);
     return isNaN(num) ? null : num;
   }
 
   _getAttr(key, attr) {
     const eid = this._getEntityId(key);
-    if (!eid) return null;
+    if (!eid) return undefined;
     const entity = this.hass.states[eid];
-    if (!entity) return null;
+    if (!entity) return undefined;
     return entity.attributes?.[attr];
+  }
+
+  // Helper: safely format a number, returns fallback string if value is null/undefined
+  _fmt(val, decimals, fallback = "\u2014") {
+    if (val == null || (typeof val === "number" && isNaN(val))) return fallback;
+    return Number(val).toFixed(decimals);
   }
 
   // ── Slot Timeline (Canvas) ──────────────────────────────────
@@ -122,7 +118,7 @@ class FelicityEMSCard extends LitElement {
     const chartH = h - marginTop - marginBottom;
 
     // Find price range
-    const prices = slotData.map((s) => s.price).filter((p) => p !== null);
+    const prices = slotData.map((s) => s.price).filter((p) => p != null);
     const minPrice = Math.min(...prices, 0);
     const maxPrice = Math.max(...prices, 0.01);
     const range = maxPrice - minPrice || 0.01;
@@ -168,7 +164,7 @@ class FelicityEMSCard extends LitElement {
     }
 
     // Threshold line
-    if (threshold !== null && threshold >= minPrice && threshold <= maxPrice) {
+    if (threshold != null && threshold >= minPrice && threshold <= maxPrice) {
       const thresholdY = marginTop + chartH - ((threshold - minPrice) / range) * chartH;
       ctx.strokeStyle = "#F44336";
       ctx.lineWidth = 1.5;
@@ -268,14 +264,6 @@ class FelicityEMSCard extends LitElement {
       return html`<ha-card><div class="card-content">Loading...</div></ha-card>`;
     }
 
-    // Debug: log entity discovery status
-    const debugEntities = this._deviceEntities || [];
-    console.log("[EMS Card] device_id:", this.config.device_id,
-      "entities found:", debugEntities.length,
-      "list:", debugEntities,
-      "hass.entities keys:", this.hass.entities ? Object.keys(this.hass.entities).length : "N/A",
-      "hass.devices:", this.hass.devices ? Object.keys(this.hass.devices).length : "N/A");
-
     const energyState = this._getState("energy_state") || "unknown";
     const scheduleStatus = this._getState("schedule_status") || "unknown";
     const currentPrice = this._getNumericState("current_price");
@@ -283,16 +271,16 @@ class FelicityEMSCard extends LitElement {
     const gridMode = this._getState("grid_mode") || "off";
     const priceMode = this._getState("price_mode") || "manual";
     const likelihood = this._getState("charge_likelihood") || "unknown";
-    const currency = this.config.currency || "€";
+    const currency = this.config.currency || "\u20AC";
 
-    // Schedule info from attributes
+    // Schedule info from attributes (use _fmt for safe formatting)
     const chargeSlots = this._getAttr("schedule_status", "scheduled_charge_slots") || 0;
     const dischargeSlots = this._getAttr("schedule_status", "scheduled_discharge_slots") || 0;
     const gridPlanned = this._getAttr("schedule_status", "grid_energy_planned_kwh");
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
-    const reserve = this._getAttr("energy_state", "self_consumption_reserve") || 0;
+    const reserve = this._getAttr("energy_state", "self_consumption_reserve");
     const weeklyConsumption = this._getNumericState("weekly_avg_consumption");
     const safeMaxPower = this._getNumericState("safe_max_power");
 
@@ -311,11 +299,11 @@ class FelicityEMSCard extends LitElement {
           <div class="summary-row">
             <div class="summary-item">
               <span class="label">Price</span>
-              <span class="value price">${currentPrice !== null ? currentPrice.toFixed(3) : "—"} ${currency}/kWh</span>
+              <span class="value price">${this._fmt(currentPrice, 3)} ${currency}/kWh</span>
             </div>
             <div class="summary-item">
               <span class="label">Threshold</span>
-              <span class="value">${threshold !== null ? threshold.toFixed(3) : "—"} ${currency}/kWh</span>
+              <span class="value">${this._fmt(threshold, 3)} ${currency}/kWh</span>
             </div>
             <div class="summary-item">
               <span class="label">Likelihood</span>
@@ -341,11 +329,11 @@ class FelicityEMSCard extends LitElement {
             </div>
             <div class="stat">
               <ha-icon icon="mdi:lightning-bolt"></ha-icon>
-              <span>${gridPlanned !== null ? gridPlanned.toFixed(1) : "—"} kWh planned</span>
+              <span>${this._fmt(gridPlanned, 1)} kWh planned</span>
             </div>
             <div class="stat">
               <ha-icon icon="mdi:shield-sun"></ha-icon>
-              <span>${reserve > 0 ? reserve.toFixed(1) : "—"} kWh reserve</span>
+              <span>${this._fmt(reserve, 1)} kWh reserve</span>
             </div>
           </div>
 
@@ -355,21 +343,21 @@ class FelicityEMSCard extends LitElement {
               <ha-icon icon="mdi:solar-power"></ha-icon>
               <div>
                 <span class="pv-label">PV Remaining</span>
-                <span class="pv-value">${pvRemaining !== null ? pvRemaining.toFixed(1) : "—"} kWh</span>
+                <span class="pv-value">${this._fmt(pvRemaining, 1)} kWh</span>
               </div>
             </div>
             <div class="pv-item">
               <ha-icon icon="mdi:weather-sunny"></ha-icon>
               <div>
                 <span class="pv-label">Today Total</span>
-                <span class="pv-value">${pvToday !== null ? pvToday.toFixed(1) : "—"} kWh</span>
+                <span class="pv-value">${this._fmt(pvToday, 1)} kWh</span>
               </div>
             </div>
             <div class="pv-item">
               <ha-icon icon="mdi:weather-sunny-alert"></ha-icon>
               <div>
                 <span class="pv-label">Tomorrow</span>
-                <span class="pv-value">${pvTomorrow !== null ? pvTomorrow.toFixed(1) : "—"} kWh</span>
+                <span class="pv-value">${this._fmt(pvTomorrow, 1)} kWh</span>
               </div>
             </div>
           </div>
@@ -387,19 +375,8 @@ class FelicityEMSCard extends LitElement {
 
           <!-- Info footer -->
           <div class="info-footer">
-            ${weeklyConsumption !== null ? html`<span>Avg consumption: ${weeklyConsumption.toFixed(1)} kWh/day</span>` : ""}
-            ${safeMaxPower !== null ? html`<span>Safe power: ${(safeMaxPower / 1000).toFixed(1)} kW</span>` : ""}
-          </div>
-
-          <!-- Debug (remove after testing) -->
-          <div style="font-size:0.65em;color:#888;padding-top:6px;border-top:1px solid var(--divider-color);word-break:break-all;">
-            DEBUG: device_id=${this.config.device_id || "NONE"} |
-            entities=${debugEntities.length} |
-            sample=${debugEntities.slice(0, 3).join(", ") || "none"} |
-            hass.entities=${this.hass.entities ? Object.keys(this.hass.entities).length : "N/A"} |
-            schedule_status_eid=${this._getEntityId("schedule_status") || "NOT FOUND"} |
-            energy_state_eid=${this._getEntityId("energy_state") || "NOT FOUND"} |
-            grid_mode_eid=${this._getEntityId("grid_mode") || "NOT FOUND"}
+            ${weeklyConsumption != null ? html`<span>Avg consumption: ${this._fmt(weeklyConsumption, 1)} kWh/day</span>` : ""}
+            ${safeMaxPower != null ? html`<span>Safe power: ${this._fmt(safeMaxPower / 1000, 1)} kW</span>` : ""}
           </div>
         </div>
       </ha-card>
@@ -687,7 +664,7 @@ class FelicityEMSCardEditor extends LitElement {
 
         <ha-textfield
           label="Currency Symbol"
-          .value=${this._config.currency || "€"}
+          .value=${this._config.currency || "\u20AC"}
           @change=${(e) => this._valueChanged("currency", e.target.value)}
         ></ha-textfield>
       </div>
@@ -724,6 +701,6 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "felicity-ems-card",
   name: "Felicity EMS Card",
-  description: "Energy Management System — slot timeline, schedule, and controls",
+  description: "Energy Management System \u2014 slot timeline, schedule, and controls",
   preview: true,
 });
