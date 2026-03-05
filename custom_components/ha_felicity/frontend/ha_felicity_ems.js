@@ -84,10 +84,24 @@ class FelicityEMSCard extends LitElement {
     const canvas = this.shadowRoot?.querySelector("#slot-timeline");
     if (!canvas) return;
 
-    const slotData = this._getAttr("schedule_status", "slot_schedule");
+    const todaySlotData = this._getAttr("schedule_status", "slot_schedule");
+    const tomorrowSlotData = this._getAttr("schedule_status", "slot_schedule_tomorrow");
     const threshold = this._getNumericState("price_threshold");
     const currentPrice = this._getNumericState("current_price");
     const granularity = this._getAttr("schedule_status", "slot_granularity_min") || 60;
+
+    // Determine which data to show: today or tomorrow (fallback)
+    const now = new Date();
+    const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
+    const todayHasRemaining = todaySlotData?.length && currentSlotIdx < todaySlotData.length;
+    const showTomorrow = !todayHasRemaining && tomorrowSlotData?.length > 0;
+    const slotData = showTomorrow ? tomorrowSlotData : todaySlotData;
+
+    // Update the timeline label
+    const label = this.shadowRoot?.querySelector(".timeline-label");
+    if (label) {
+      label.textContent = showTomorrow ? "Tomorrow\u2019s Forecast" : "Today\u2019s Schedule";
+    }
 
     if (!slotData || !slotData.length) {
       const ctx = canvas.getContext("2d");
@@ -123,9 +137,8 @@ class FelicityEMSCard extends LitElement {
     const maxPrice = Math.max(...prices, 0.01);
     const range = maxPrice - minPrice || 0.01;
 
-    // Current time marker
-    const now = new Date();
-    const currentSlot = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
+    // Current time marker (only for today view)
+    const currentSlot = showTomorrow ? -1 : currentSlotIdx;
 
     // Draw bars
     for (let i = 0; i < numSlots; i++) {
@@ -135,22 +148,32 @@ class FelicityEMSCard extends LitElement {
       const barH = ((price - minPrice) / range) * chartH;
       const y = marginTop + chartH - barH;
 
-      // Color based on action
-      if (slot.action === "charge") {
-        ctx.fillStyle = "#4CAF50"; // green
-      } else if (slot.action === "discharge") {
-        ctx.fillStyle = "#FF9800"; // orange
-      } else if (price < 0) {
-        ctx.fillStyle = "#2196F3"; // blue for negative
+      if (showTomorrow) {
+        // Tomorrow forecast: softer colors, no actions scheduled yet
+        if (price < 0) {
+          ctx.fillStyle = "rgba(33, 150, 243, 0.6)"; // blue for negative
+        } else {
+          ctx.fillStyle = "rgba(100, 140, 200, 0.5)"; // soft blue-grey
+        }
       } else {
-        ctx.fillStyle = "rgba(150, 150, 150, 0.4)"; // grey idle
-      }
+        // Today: color based on action, dim past slots
+        const isPast = i < currentSlot;
+        if (slot.action === "charge") {
+          ctx.fillStyle = isPast ? "rgba(76, 175, 80, 0.3)" : "#4CAF50";
+        } else if (slot.action === "discharge") {
+          ctx.fillStyle = isPast ? "rgba(255, 152, 0, 0.3)" : "#FF9800";
+        } else if (price < 0) {
+          ctx.fillStyle = isPast ? "rgba(33, 150, 243, 0.3)" : "#2196F3";
+        } else {
+          ctx.fillStyle = isPast ? "rgba(150, 150, 150, 0.2)" : "rgba(150, 150, 150, 0.4)";
+        }
 
-      // Current slot highlight
-      if (i === currentSlot) {
-        ctx.fillStyle = slot.action === "charge" ? "#66BB6A"
-          : slot.action === "discharge" ? "#FFB74D"
-          : "#BBDEFB";
+        // Current slot highlight
+        if (i === currentSlot) {
+          ctx.fillStyle = slot.action === "charge" ? "#66BB6A"
+            : slot.action === "discharge" ? "#FFB74D"
+            : "#BBDEFB";
+        }
       }
 
       ctx.fillRect(x + 0.5, y, Math.max(1, barW - 1), barH);
@@ -218,15 +241,23 @@ class FelicityEMSCard extends LitElement {
     ctx.font = "9px sans-serif";
     ctx.textAlign = "right";
     const legendX = w - 5;
-    ctx.fillStyle = "#4CAF50";
-    ctx.fillRect(legendX - 55, 2, 8, 8);
-    ctx.fillStyle = getComputedStyle(this).getPropertyValue("--primary-text-color") || "#fff";
-    ctx.fillText("charge", legendX - 58 + 55, 9);
-    ctx.fillStyle = "#FF9800";
-    ctx.fillRect(legendX - 115, 2, 8, 8);
-    ctx.fillStyle = getComputedStyle(this).getPropertyValue("--primary-text-color") || "#fff";
-    ctx.textAlign = "right";
-    ctx.fillText("sell", legendX - 118 + 55, 9);
+    const textColor = getComputedStyle(this).getPropertyValue("--primary-text-color") || "#fff";
+    if (showTomorrow) {
+      ctx.fillStyle = "rgba(100, 140, 200, 0.5)";
+      ctx.fillRect(legendX - 65, 2, 8, 8);
+      ctx.fillStyle = textColor;
+      ctx.fillText("forecast", legendX - 68 + 65, 9);
+    } else {
+      ctx.fillStyle = "#4CAF50";
+      ctx.fillRect(legendX - 55, 2, 8, 8);
+      ctx.fillStyle = textColor;
+      ctx.fillText("charge", legendX - 58 + 55, 9);
+      ctx.fillStyle = "#FF9800";
+      ctx.fillRect(legendX - 115, 2, 8, 8);
+      ctx.fillStyle = textColor;
+      ctx.textAlign = "right";
+      ctx.fillText("sell", legendX - 118 + 55, 9);
+    }
   }
 
   // ── Service calls for controls ──────────────────────────────

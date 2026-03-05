@@ -115,6 +115,17 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                     "action": action,
                 })
 
+        # Build tomorrow's slot data (prices only, no schedule yet)
+        tomorrow_slot_data = []
+        tomorrow_prices = self.coordinator.slot_prices_tomorrow
+        if tomorrow_prices:
+            for i, price in enumerate(tomorrow_prices):
+                tomorrow_slot_data.append({
+                    "slot": i,
+                    "price": round(price, 4) if price is not None else None,
+                    "action": None,
+                })
+
         return {
             "cheap_slots_remaining": self.coordinator.cheap_slots_remaining,
             "grid_energy_planned_kwh": self.coordinator.grid_energy_planned,
@@ -126,11 +137,12 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "pv_forecast_tomorrow_kwh": self.coordinator.pv_forecast_tomorrow,
             "price_slots_today": num_slots,
             "slot_granularity_min": int((24 * 60) / num_slots) if num_slots > 0 else None,
-            "has_tomorrow_prices": bool(self.coordinator.slot_prices_tomorrow),
+            "has_tomorrow_prices": bool(tomorrow_prices),
             "yesterday_deficit_kwh": self.coordinator._yesterday_deficit,
             "price_mode": self.coordinator.config_entry.options.get("price_mode", "manual"),
             "self_consumption_reserve": self.coordinator.self_consumption_reserve,
             "slot_schedule": slot_data,
+            "slot_schedule_tomorrow": tomorrow_slot_data,
         }
 
 
