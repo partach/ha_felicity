@@ -93,8 +93,12 @@ class FelicityEMSCard extends LitElement {
     // Determine which data to show: today or tomorrow (fallback)
     const now = new Date();
     const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
-    const todayHasRemaining = todaySlotData?.length && currentSlotIdx < todaySlotData.length;
-    const showTomorrow = !todayHasRemaining && tomorrowSlotData?.length > 0;
+
+    // Switch to tomorrow when no scheduled actions remain after current slot
+    const hasFutureActions = todaySlotData?.some(
+      (s, i) => i >= currentSlotIdx && s.action
+    );
+    const showTomorrow = !hasFutureActions && tomorrowSlotData?.length > 0;
     const slotData = showTomorrow ? tomorrowSlotData : todaySlotData;
 
     // Update the timeline label
