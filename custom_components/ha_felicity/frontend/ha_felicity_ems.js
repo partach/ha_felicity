@@ -258,6 +258,14 @@ class FelicityEMSCard extends LitElement {
       return html`<ha-card><div class="card-content">Loading...</div></ha-card>`;
     }
 
+    // Debug: log entity discovery status
+    const debugEntities = this._deviceEntities || [];
+    console.log("[EMS Card] device_id:", this.config.device_id,
+      "entities found:", debugEntities.length,
+      "list:", debugEntities,
+      "hass.entities keys:", this.hass.entities ? Object.keys(this.hass.entities).length : "N/A",
+      "hass.devices:", this.hass.devices ? Object.keys(this.hass.devices).length : "N/A");
+
     const energyState = this._getState("energy_state") || "unknown";
     const scheduleStatus = this._getState("schedule_status") || "unknown";
     const currentPrice = this._getNumericState("current_price");
@@ -371,6 +379,17 @@ class FelicityEMSCard extends LitElement {
           <div class="info-footer">
             ${weeklyConsumption !== null ? html`<span>Avg consumption: ${weeklyConsumption.toFixed(1)} kWh/day</span>` : ""}
             ${safeMaxPower !== null ? html`<span>Safe power: ${(safeMaxPower / 1000).toFixed(1)} kW</span>` : ""}
+          </div>
+
+          <!-- Debug (remove after testing) -->
+          <div style="font-size:0.65em;color:#888;padding-top:6px;border-top:1px solid var(--divider-color);word-break:break-all;">
+            DEBUG: device_id=${this.config.device_id || "NONE"} |
+            entities=${debugEntities.length} |
+            sample=${debugEntities.slice(0, 3).join(", ") || "none"} |
+            hass.entities=${this.hass.entities ? Object.keys(this.hass.entities).length : "N/A"} |
+            schedule_status_eid=${this._getEntityId("schedule_status") || "NOT FOUND"} |
+            energy_state_eid=${this._getEntityId("energy_state") || "NOT FOUND"} |
+            grid_mode_eid=${this._getEntityId("grid_mode") || "NOT FOUND"}
           </div>
         </div>
       </ha-card>
