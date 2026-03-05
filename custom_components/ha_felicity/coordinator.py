@@ -94,6 +94,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._consumption_store_loaded = False
         self.weekly_avg_consumption: float | None = None
         self._yesterday_deficit: float = 0.0
+        self.self_consumption_reserve: float = 0.0
 
         # Always-visible slot info (regardless of price_mode)
         self.available_slots_at_threshold: int = 0
@@ -420,6 +421,47 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         )
         return surplus_total
 
+    def _calculate_self_consumption_reserve(self, consumption_est: float,
+                                            num_slots: int,
+                                            remaining_slots: list[tuple[int, float]]) -> float:
+        """Calculate battery reserve needed for self-consumption until next solar day.
+
+        Estimates energy needed from sunset today to sunrise tomorrow (overnight),
+        when no solar production is available and the house runs on battery.
+
+        Returns reserve in kWh.
+        """
+        minutes_per_slot = (24 * 60) / num_slots
+        consumption_per_hour = consumption_est / 24.0
+
+        # Determine sunset: last hour with meaningful PV production
+        sunset_hour = 19  # default
+        if self.pv_hourly_kwh:
+            pv_hours = [h for h, kwh in self.pv_hourly_kwh.items() if kwh > 0.1]
+            if pv_hours:
+                sunset_hour = max(pv_hours) + 1  # first hour after last PV
+
+        # Determine sunrise tomorrow: first hour with PV (use today as proxy)
+        sunrise_hour = 7  # default
+        if self.pv_hourly_kwh:
+            pv_hours = [h for h, kwh in self.pv_hourly_kwh.items() if kwh > 0.1]
+            if pv_hours:
+                sunrise_hour = min(pv_hours)
+
+        # Hours from sunset to midnight + midnight to sunrise
+        overnight_hours = (24 - sunset_hour) + sunrise_hour
+
+        # If tomorrow has strong PV forecast, overnight is shorter (solar kicks in early)
+        # If no tomorrow forecast, be conservative
+        reserve = consumption_per_hour * overnight_hours
+
+        _LOGGER.debug(
+            "Self-consumption reserve: %.2f kWh (sunset=%d:00, sunrise=%d:00, "
+            "overnight=%.1fh, consumption=%.1f kWh/day)",
+            reserve, sunset_hour, sunrise_hour, overnight_hours, consumption_est,
+        )
+        return reserve
+
     def _calculate_schedule(self, battery_soc: float | None) -> None:
         """Calculate optimal charge/discharge schedule based on prices, forecast, and battery.
 
@@ -548,11 +590,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.price_threshold = min(s[1] for s in selected)
 
         elif grid_mode == "both":
-            # --- Arbitrage mode: buy cheap, sell expensive ---
+            # --- Self-sufficiency-first arbitrage ---
+            # Priority: 1) self-consume solar  2) keep reserve for overnight
+            #           3) only buy grid when solar can't cover  4) only sell true surplus
             effective_per_slot = energy_per_slot * efficiency
             round_trip_eff = efficiency * efficiency  # charge + discharge losses
 
-            # 1. Charge side — same logic as from_grid
+            # 1. Self-consumption reserve: energy needed from sunset to sunrise
+            reserve_kwh = self._calculate_self_consumption_reserve(
+                consumption_est, num_slots, remaining)
+            self.self_consumption_reserve = round(reserve_kwh, 2)
+
+            # 2. Charge side — only buy from grid what solar surplus can't cover
             target_kwh = (charge_max / 100.0) * battery_capacity
             battery_headroom = max(0.0, target_kwh - current_kwh)
             base_deficit = max(0.0, battery_headroom - net_pv)
@@ -563,15 +612,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             else:
                 energy_deficit = base_deficit
 
-            # 2. Discharge side — sellable from current SOC (not counting future charges)
+            # 3. Discharge side — only sell energy above BOTH discharge_min AND overnight reserve
             min_kwh = (discharge_min / 100.0) * battery_capacity
-            sellable = max(0.0, current_kwh - min_kwh) * efficiency
+            reserve_floor = max(min_kwh, reserve_kwh)  # whichever is higher protects overnight
+            sellable = max(0.0, current_kwh - reserve_floor) * efficiency
 
-            # 3. Negative prices: always charge (paid to take energy)
+            # 4. Negative prices: always charge (paid to take energy)
             negative_slots = [(i, p) for i, p in remaining if p < 0]
             non_negative_slots = [(i, p) for i, p in remaining if p >= 0]
 
-            # 4. Select charge slots from cheapest non-negative
+            # 5. Select charge slots from cheapest non-negative
             negative_energy = len(negative_slots) * effective_per_slot
             remaining_deficit = max(0.0, energy_deficit - negative_energy)
             sorted_cheap = sorted(non_negative_slots, key=lambda x: x[1])
@@ -580,12 +630,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             charge_slots = negative_slots + charge_selected
             charge_slot_indices = {s[0] for s in charge_slots}
 
-            # 5. Select discharge slots from most expensive (excluding charge slots)
-            #    Only sell at positive prices and only if profitable vs cheapest buy price
+            # 6. Select discharge slots — only sell true surplus at profitable prices
             available_for_sell = [(i, p) for i, p in non_negative_slots
                                  if p > 0 and i not in charge_slot_indices]
 
             # Profitability filter: only sell if price exceeds round-trip cost
+            min_sell_price = 0.0
             if charge_slots:
                 max_buy_price = max(s[1] for s in charge_slots)
                 min_sell_price = max_buy_price / round_trip_eff
@@ -595,7 +645,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             sorted_expensive = sorted(available_for_sell, key=lambda x: -x[1])
             sell_selected = sorted_expensive[:sell_needed]
 
-            # 6. Merge into scheduled_slots dict
+            # 7. Merge into scheduled_slots dict
             self.scheduled_slots = {}
             for s in charge_slots:
                 self.scheduled_slots[s[0]] = "charge"
@@ -616,10 +666,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             _LOGGER.debug(
                 "Both mode: charge=%.1fkWh (%d slots), sell=%.1fkWh (%d slots), "
-                "round_trip_eff=%.0f%%, min_sell_price=%.4f",
+                "reserve=%.1fkWh, reserve_floor=%.1fkWh, round_trip_eff=%.0f%%, min_sell=%.4f",
                 charge_energy, len(charge_slots), sell_energy, len(sell_selected),
-                round_trip_eff * 100,
-                min_sell_price if charge_slots else 0,
+                reserve_kwh, reserve_floor, round_trip_eff * 100,
+                min_sell_price,
             )
 
         else:
@@ -1034,6 +1084,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "charge_likelihood": self.charge_likelihood,
             "weekly_avg_consumption": self.weekly_avg_consumption,
             "yesterday_deficit": self._yesterday_deficit,
+            "self_consumption_reserve": self.self_consumption_reserve,
         }
 
         # Add kWh for all Wh registers
@@ -1223,6 +1274,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 new_data["weekly_avg_consumption"] = self.weekly_avg_consumption
 
                                 desired_state = self._determine_energy_state(battery_soc)
+
+                                # Anti-conflict guard: don't export while the house is importing
+                                # (e.g. EV charging pulls from grid while we'd be selling battery — wasteful)
+                                if desired_state == "discharging":
+                                    grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
+                                    if grid_power is not None and grid_power > 200:  # importing >200W from grid
+                                        _LOGGER.info(
+                                            "Anti-conflict: suppressing discharge — grid importing %.0fW "
+                                            "(would sell battery while buying from grid)",
+                                            grid_power,
+                                        )
+                                        desired_state = "idle"
 
                                 if desired_state != self._current_energy_state:
                                     await self._transition_to_state(desired_state)

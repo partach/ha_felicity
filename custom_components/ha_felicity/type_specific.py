@@ -118,7 +118,27 @@ class TypeSpecificHandler:
 
         _LOGGER.debug("max current not found / is None")
         return None
-        
+
+    def determine_grid_power(self, data: dict) -> float | None:
+        """Return total grid power in watts (signed).
+
+        Positive = importing from grid, negative = exporting to grid.
+        Returns None if no data available.
+        """
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+            val = data.get("total_ac_input_power")
+            if val is not None:
+                return float(val)  # Already in watts, signed (index 3)
+        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+            val = data.get("total_grid_power")
+            if val is not None:
+                return float(val) * 1000.0  # Convert kW to watts (index 8 = signed/10)
+            # Fallback: sum individual CT phases
+            powers = [data.get(f"phase_{p}_ct_active_power") for p in ("a", "b", "c")]
+            if any(p is not None for p in powers):
+                return sum((p or 0.0) for p in powers) * 1000.0
+        return None
+
     def determine_battery_soc(self, data: dict) -> int | float | None:
         """
         Determine the representative battery SOC based on model.

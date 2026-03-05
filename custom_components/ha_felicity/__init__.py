@@ -41,27 +41,23 @@ async def async_install_frontend_resource(hass: HomeAssistant):
     """Ensure the frontend JS file is copied to the www/community folder."""
     
     def install():
-        # Source path: custom_components/ha_felicity/frontend/ha_felicity.js
-        source_path = hass.config.path("custom_components", DOMAIN, "frontend", "ha_felicity.js")
-        
         # Target path: www/community/ha_felicity/
         target_dir = hass.config.path("www", "community", DOMAIN)
-        target_path = os.path.join(target_dir, "ha_felicity.js")
 
         try:
-            # 1. Ensure the destination directory exists
             if not os.path.exists(target_dir):
                 _LOGGER.debug("Creating directory: %s", target_dir)
                 os.makedirs(target_dir, exist_ok=True)
 
-            # 2. Check if source exists and copy
-            if os.path.exists(source_path):
-                # Using copy2 to preserve metadata (timestamps)
-                shutil.copy2(source_path, target_path)
-                _LOGGER.info("Updated frontend resource: %s", target_path)
-            else:
-                _LOGGER.warning("Frontend source file missing at %s", source_path)
-                
+            for js_file in ("ha_felicity.js", "ha_felicity_ems.js"):
+                source_path = hass.config.path("custom_components", DOMAIN, "frontend", js_file)
+                target_path = os.path.join(target_dir, js_file)
+                if os.path.exists(source_path):
+                    shutil.copy2(source_path, target_path)
+                    _LOGGER.info("Updated frontend resource: %s", target_path)
+                else:
+                    _LOGGER.warning("Frontend source file missing at %s", source_path)
+
         except Exception as err:
             _LOGGER.error("Failed to install frontend resource: %s", err)
 
@@ -83,20 +79,24 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
     if not resources.loaded:
         await resources.async_load()
 
-    card_url = f"/hacsfiles/{DOMAIN}/{DOMAIN}.js"
-    # Or local: f"/local/custom_cards/{DOMAIN}-card.js"
+    card_urls = [
+        f"/hacsfiles/{DOMAIN}/{DOMAIN}.js",
+        f"/hacsfiles/{DOMAIN}/{DOMAIN}_ems.js",
+    ]
 
-    # Check if already registered
-    for item in resources.async_items():
-        if item["url"] == card_url:
+    for card_url in card_urls:
+        already_registered = any(
+            item["url"] == card_url for item in resources.async_items()
+        )
+        if already_registered:
             _LOGGER.debug("Card already registered: %s", card_url)
-            return  # already there
+            continue
 
-    await resources.async_create_item({
-        "res_type": "module",
-        "url": card_url,
-    })
-    _LOGGER.debug("Card registered: %s", card_url)
+        await resources.async_create_item({
+            "res_type": "module",
+            "url": card_url,
+        })
+        _LOGGER.debug("Card registered: %s", card_url)
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
