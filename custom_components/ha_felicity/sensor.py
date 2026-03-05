@@ -100,6 +100,13 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
+        try:
+            return self._build_attributes()
+        except Exception:
+            _LOGGER.debug("Error building schedule_status attributes", exc_info=True)
+            return {}
+
+    def _build_attributes(self):
         slot_prices = self.coordinator.slot_prices_today
         num_slots = len(slot_prices) if slot_prices else 0
         scheduled = self.coordinator.scheduled_slots
@@ -315,6 +322,15 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
         except Exception:
             _LOGGER.debug("failed to get sensor value %s from coordinator", self._key)
             return None
+
+    @property
+    def extra_state_attributes(self):
+        # Only expose source entity on current_price sensor (used by card as fallback)
+        if self._key != "current_price":
+            return None
+        return {
+            "price_source_entity": self.coordinator.nordpool_entity,
+        }
 
 class HA_FelicitySimpleSensor(CoordinatorEntity, SensorEntity):
     """Sensor for Nordpool price data from coordinator."""

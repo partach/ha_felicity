@@ -80,15 +80,52 @@ class FelicityEMSCard extends LitElement {
 
   // ── Slot Timeline (Canvas) ──────────────────────────────────
 
+  // Build slot data array from raw price list (fallback when schedule_status has no data)
+  _buildSlotDataFromPrices(prices) {
+    if (!Array.isArray(prices) || !prices.length) return null;
+    return prices.map((p, i) => ({
+      slot: i,
+      price: typeof p === "object" ? (p?.value ?? null) : (p != null ? Number(p) : null),
+      action: null,
+    }));
+  }
+
+  // Try to get raw price arrays from the source Nordpool/price entity
+  _getRawPriceSlots(dayKey) {
+    // Auto-discover the Nordpool entity from current_price sensor attribute
+    const sourceEid = this._getAttr("current_price", "price_source_entity");
+    if (!sourceEid) return null;
+    const entity = this.hass?.states?.[sourceEid];
+    if (!entity) return null;
+    const attrs = entity.attributes || {};
+    for (const key of (dayKey === "today"
+      ? ["today", "prices_today", "raw_today"]
+      : ["tomorrow", "prices_tomorrow", "raw_tomorrow"])) {
+      if (Array.isArray(attrs[key]) && attrs[key].length > 0) {
+        return this._buildSlotDataFromPrices(attrs[key]);
+      }
+    }
+    return null;
+  }
+
   _drawSlotTimeline() {
     const canvas = this.shadowRoot?.querySelector("#slot-timeline");
     if (!canvas) return;
 
-    const todaySlotData = this._getAttr("schedule_status", "slot_schedule");
-    const tomorrowSlotData = this._getAttr("schedule_status", "slot_schedule_tomorrow");
+    let todaySlotData = this._getAttr("schedule_status", "slot_schedule");
+    let tomorrowSlotData = this._getAttr("schedule_status", "slot_schedule_tomorrow");
     const threshold = this._getNumericState("price_threshold");
     const currentPrice = this._getNumericState("current_price");
-    const granularity = this._getAttr("schedule_status", "slot_granularity_min") || 60;
+    let granularity = this._getAttr("schedule_status", "slot_granularity_min") || 60;
+
+    // Fallback: read raw prices from source Nordpool entity if schedule_status has no slot data
+    if (!todaySlotData || !todaySlotData.length) {
+      todaySlotData = this._getRawPriceSlots("today");
+      if (todaySlotData) granularity = Math.round((24 * 60) / todaySlotData.length);
+    }
+    if (!tomorrowSlotData || !tomorrowSlotData.length) {
+      tomorrowSlotData = this._getRawPriceSlots("tomorrow");
+    }
 
     // Determine which data to show: today or tomorrow (fallback)
     const now = new Date();
