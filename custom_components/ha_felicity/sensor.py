@@ -102,12 +102,25 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self):
         slot_prices = self.coordinator.slot_prices_today
         num_slots = len(slot_prices) if slot_prices else 0
+        scheduled = self.coordinator.scheduled_slots
+
+        # Build per-slot data array for the EMS card
+        slot_data = []
+        if slot_prices:
+            for i, price in enumerate(slot_prices):
+                action = scheduled.get(i)  # "charge", "discharge", or None
+                slot_data.append({
+                    "slot": i,
+                    "price": round(price, 4) if price is not None else None,
+                    "action": action,
+                })
+
         return {
             "cheap_slots_remaining": self.coordinator.cheap_slots_remaining,
             "grid_energy_planned_kwh": self.coordinator.grid_energy_planned,
-            "scheduled_slot_count": len(self.coordinator.scheduled_slots),
-            "scheduled_charge_slots": sum(1 for v in self.coordinator.scheduled_slots.values() if v == "charge"),
-            "scheduled_discharge_slots": sum(1 for v in self.coordinator.scheduled_slots.values() if v == "discharge"),
+            "scheduled_slot_count": len(scheduled),
+            "scheduled_charge_slots": sum(1 for v in scheduled.values() if v == "charge"),
+            "scheduled_discharge_slots": sum(1 for v in scheduled.values() if v == "discharge"),
             "pv_forecast_today_kwh": self.coordinator.pv_forecast_today,
             "pv_forecast_remaining_kwh": self.coordinator.pv_forecast_remaining,
             "pv_forecast_tomorrow_kwh": self.coordinator.pv_forecast_tomorrow,
@@ -116,6 +129,8 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "has_tomorrow_prices": bool(self.coordinator.slot_prices_tomorrow),
             "yesterday_deficit_kwh": self.coordinator._yesterday_deficit,
             "price_mode": self.coordinator.config_entry.options.get("price_mode", "manual"),
+            "self_consumption_reserve": self.coordinator.self_consumption_reserve,
+            "slot_schedule": slot_data,
         }
 
 
