@@ -495,8 +495,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         discharge_min = opts.get("battery_discharge_min_level", 20)
         consumption_est = self._get_consumption_estimate()
 
-        # Use safe_max_power (watts) for realistic slot energy, fallback to power_level (kW scale)
-        safe_power_kw = max(1, self.safe_max_power / 1000) if self.safe_max_power > 0 else opts.get("power_level", 5)
+        # Use safe_max_power (kW scale 1-10) for realistic slot energy, fallback to power_level
+        safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
 
         remaining = [(i, prices[i]) for i in range(current_slot, num_slots) if prices[i] is not None]
 
@@ -730,8 +730,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         remaining = [(i, prices[i]) for i in range(current_slot, num_slots) if prices[i] is not None]
 
-        # Use safe_max_power for realistic calculation
-        safe_power_kw = max(1, self.safe_max_power / 1000) if self.safe_max_power > 0 else opts.get("power_level", 5)
+        # Use safe_max_power (kW scale 1-10) for realistic calculation
+        safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
         efficiency = opts.get("efficiency_factor", 0.90)
         energy_per_slot = safe_power_kw * slot_duration_hours * efficiency
 
