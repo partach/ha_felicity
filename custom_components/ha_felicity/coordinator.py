@@ -516,21 +516,34 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         energy_target = 0.0  # for logging
 
         if grid_mode == "from_grid":
-            target_kwh = (charge_max / 100.0) * battery_capacity
-            battery_headroom = max(0.0, target_kwh - current_kwh)
-            base_deficit = max(0.0, battery_headroom - net_pv)
+            # --- Solar-first strategy ---
+            # Goal: only buy from grid what's needed to survive overnight above discharge_min.
+            # Tomorrow's solar handles refilling the battery; grid is a last resort.
+            # Priority: a) avoid grid, b) buy minimum at cheapest price, c) let solar do the rest.
+            effective_per_slot = energy_per_slot * efficiency
 
-            # Add yesterday's deficit carryover, but cap by what the battery can physically accept
-            if self._yesterday_deficit > 0 and battery_headroom > base_deficit:
-                carryover = min(self._yesterday_deficit, battery_headroom - base_deficit)
+            # 1. Calculate overnight reserve (sunset → sunrise), same as "both" mode
+            reserve_kwh = self._calculate_self_consumption_reserve(
+                consumption_est, num_slots, remaining)
+            self.self_consumption_reserve = round(reserve_kwh, 2)
+
+            min_kwh = (discharge_min / 100.0) * battery_capacity
+            reserve_target = max(min_kwh, reserve_kwh)  # need at least this by end of day
+
+            # 2. How much are we short of the overnight reserve?
+            battery_shortfall = max(0.0, reserve_target - current_kwh)
+            base_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
+
+            # Add yesterday's deficit carryover, capped by what the battery can physically accept
+            if self._yesterday_deficit > 0 and battery_shortfall > base_deficit:
+                carryover = min(self._yesterday_deficit, battery_shortfall - base_deficit)
                 energy_deficit = base_deficit + carryover
-                _LOGGER.debug("Deficit: base=%.2f kWh + carryover=%.2f kWh (of %.2f) → total=%.2f kWh (headroom=%.2f kWh)",
-                              base_deficit, carryover, self._yesterday_deficit, energy_deficit, battery_headroom)
+                _LOGGER.debug("from_grid deficit: base=%.2f + carryover=%.2f → total=%.2f kWh "
+                              "(reserve_target=%.2f, current=%.2f, net_pv=%.2f)",
+                              base_deficit, carryover, energy_deficit,
+                              reserve_target, current_kwh, net_pv)
             else:
                 energy_deficit = base_deficit
-                if self._yesterday_deficit > 0:
-                    _LOGGER.debug("Battery headroom %.2f kWh insufficient for carryover — using base deficit %.2f kWh only",
-                                  battery_headroom, base_deficit)
 
             energy_target = energy_deficit
 
@@ -540,8 +553,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.grid_energy_planned = 0.0
                 self.schedule_status = "no_action_needed"
                 return
-
-            effective_per_slot = energy_per_slot * efficiency
 
             # Negative prices: always charge (you get paid to take energy!)
             negative_slots = [(i, p) for i, p in remaining if p < 0]
@@ -768,8 +779,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         net_pv = self._calculate_net_pv_surplus(remaining, num_slots, consumption_est)
 
         if effective_mode == "from_grid":
-            target_kwh = (charge_max / 100.0) * battery_capacity
-            energy_deficit = max(0.0, target_kwh - current_kwh - net_pv)
+            # Mirror the solar-first strategy: target is overnight reserve, not charge_max
+            reserve_kwh = self._calculate_self_consumption_reserve(
+                consumption_est, num_slots, remaining)
+            min_kwh = (discharge_min / 100.0) * battery_capacity
+            reserve_target = max(min_kwh, reserve_kwh)
+            shortfall = max(0.0, reserve_target - current_kwh)
+            energy_deficit = max(0.0, shortfall - net_pv)
 
             if grid_mode == "off":
                 # Informational only — show what WOULD happen
@@ -1282,7 +1298,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 # Anti-conflict guard: don't export while the house is importing
                                 # (e.g. EV charging pulls from grid while we'd be selling battery — wasteful)
                                 if desired_state == "discharging":
-                                    grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
+                                    grid_power = None
+                                    if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
+                                        grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
                                     if grid_power is not None and grid_power > 200:  # importing >200W from grid
                                         _LOGGER.info(
                                             "Anti-conflict: suppressing discharge — grid importing %.0fW "

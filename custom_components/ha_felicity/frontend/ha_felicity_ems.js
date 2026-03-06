@@ -8,6 +8,7 @@ class FelicityEMSCard extends LitElement {
       _deviceEntities: { type: Array },
       _simOverrides: { type: Object },  // local slider overrides for live preview
       _simResult: { type: Object },     // latest simulation output
+      _viewTomorrow: { type: Boolean }, // manual today/tomorrow toggle (null = auto)
     };
   }
 
@@ -16,6 +17,8 @@ class FelicityEMSCard extends LitElement {
     this._deviceEntities = [];
     this._simOverrides = {};
     this._simResult = null;
+    this._viewTomorrow = null;  // null = auto, true = tomorrow, false = today
+    this._showingTomorrow = false; // tracks what's actually displayed
   }
 
   static getConfigElement() {
@@ -141,13 +144,12 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      // In "both" mode: target is the overnight reserve, not charge_max
-      // In "from_grid" mode: target is charge_max (fill the battery)
+      // Solar-first: target is overnight reserve for BOTH modes (not charge_max).
+      // Grid is only used to cover what solar can't provide for overnight self-consumption.
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
       const reserveTarget = Math.max(minKwh, reserveKwh);
-      const targetKwh = gridMode === "both" ? reserveTarget : chargeMax * batteryCapacity;
-      const shortfall = Math.max(0, targetKwh - currentKwh);
+      const shortfall = Math.max(0, reserveTarget - currentKwh);
       let deficit = Math.max(0, shortfall - netPv);
       if (yesterdayDeficit > 0 && shortfall > deficit) {
         deficit += Math.min(yesterdayDeficit, shortfall - deficit);
@@ -270,11 +272,18 @@ class FelicityEMSCard extends LitElement {
     const simResult = this._simulateSchedule(todaySlotData, this._simOverrides);
     this._simResult = simResult;
 
-    // Switch to tomorrow when no simulated actions remain after current slot
-    const hasFutureActions = simResult?.slots?.some(
-      (s, i) => i >= currentSlotIdx && s.action
-    );
-    const showTomorrow = !hasFutureActions && tomorrowSlotData?.length > 0;
+    // Manual override or auto-switch to tomorrow when no actions remain
+    let showTomorrow;
+    if (this._viewTomorrow !== null) {
+      // Manual toggle — respect user choice (but only if tomorrow data exists)
+      showTomorrow = this._viewTomorrow && tomorrowSlotData?.length > 0;
+    } else {
+      // Auto: switch to tomorrow when no simulated actions remain after current slot
+      const hasFutureActions = simResult?.slots?.some(
+        (s, i) => i >= currentSlotIdx && s.action
+      );
+      showTomorrow = !hasFutureActions && tomorrowSlotData?.length > 0;
+    }
 
     // For tomorrow, run a forecast simulation too (no current-slot offset)
     let displayData, displayThreshold;
@@ -287,6 +296,9 @@ class FelicityEMSCard extends LitElement {
       displayData = simResult?.slots ?? todaySlotData;
       displayThreshold = simResult?.threshold;
     }
+
+    // Track what's actually displayed for toggle button state
+    this._showingTomorrow = showTomorrow;
 
     // Update the timeline label
     const label = this.shadowRoot?.querySelector(".timeline-label");
@@ -504,10 +516,9 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      // In "both" mode: target overnight reserve; in "from_grid": fill to charge_max
+      // Solar-first: both modes target overnight reserve (not charge_max)
       const reserveTarget = dischargeMin * batteryCapacity; // simplified for tomorrow (no live reserve calc)
-      const targetKwh = gridMode === "both" ? reserveTarget : chargeMax * batteryCapacity;
-      const shortfall = Math.max(0, targetKwh - currentKwh);
+      const shortfall = Math.max(0, reserveTarget - currentKwh);
       const deficit = Math.max(0, shortfall - netPv);
 
       if (deficit > 0) {
@@ -548,6 +559,16 @@ class FelicityEMSCard extends LitElement {
     result.planned = Math.round(result.planned * 100) / 100;
     result.threshold = threshold;
     return result;
+  }
+
+  _toggleDayView() {
+    if (this._viewTomorrow) {
+      this._viewTomorrow = false;
+    } else {
+      this._viewTomorrow = true;
+    }
+    this._drawSlotTimeline();
+    this.requestUpdate();
   }
 
   // ── Service calls for controls ──────────────────────────────
@@ -636,7 +657,13 @@ class FelicityEMSCard extends LitElement {
 
           <!-- Slot Timeline -->
           <div class="timeline-container">
-            <div class="timeline-label">Today's Schedule</div>
+            <div class="timeline-header">
+              <div class="timeline-label">Today's Schedule</div>
+              <div class="timeline-toggle" @click=${this._toggleDayView}>
+                <span class="toggle-btn ${!this._showingTomorrow ? 'active' : ''}">Today</span>
+                <span class="toggle-btn ${this._showingTomorrow ? 'active' : ''}">Tomorrow</span>
+              </div>
+            </div>
             <canvas id="slot-timeline"></canvas>
           </div>
 
@@ -878,10 +905,34 @@ class FelicityEMSCard extends LitElement {
       .timeline-container {
         margin-bottom: 12px;
       }
+      .timeline-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 4px;
+      }
       .timeline-label {
         font-size: 0.8em;
         color: var(--secondary-text-color);
-        margin-bottom: 4px;
+      }
+      .timeline-toggle {
+        display: flex;
+        gap: 0;
+        border: 1px solid var(--divider-color);
+        border-radius: 12px;
+        overflow: hidden;
+        cursor: pointer;
+      }
+      .toggle-btn {
+        font-size: 0.7em;
+        padding: 2px 10px;
+        color: var(--secondary-text-color);
+        transition: all 0.2s;
+      }
+      .toggle-btn.active {
+        background: var(--primary-color);
+        color: #fff;
+        font-weight: 600;
       }
       #slot-timeline {
         width: 100%;

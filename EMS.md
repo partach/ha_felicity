@@ -330,9 +330,11 @@ The `both` mode prioritizes self-consumption over grid trading. The algorithm fo
 │  └─ reserve = consumption_per_hour × overnight_hours           │
 │                                                                │
 │  PHASE 1 — CHARGE SIDE (grid only if solar can't cover)       │
-│  ├─ Calculate battery headroom (target − current SOC)          │
+│  ├─ reserve_target = max(discharge_min, overnight_reserve)     │
+│  ├─ battery_shortfall = reserve_target − current_kwh           │
+│  │  (NOT charge_max — only target the overnight reserve)       │
 │  ├─ Subtract hourly PV surplus (solar covers most/all)         │
-│  ├─ energy_deficit = headroom − net_pv (often 0 on sunny days) │
+│  ├─ energy_deficit = shortfall − net_pv (often 0 on sunny days)│
 │  ├─ Always include negative-price slots (paid to charge)       │
 │  └─ Fill remaining deficit with cheapest non-negative slots    │
 │                                                                │
