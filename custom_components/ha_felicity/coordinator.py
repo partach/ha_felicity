@@ -603,21 +603,23 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 consumption_est, num_slots, remaining)
             self.self_consumption_reserve = round(reserve_kwh, 2)
 
-            # 2. Charge side — only buy from grid what solar surplus can't cover
-            target_kwh = (charge_max / 100.0) * battery_capacity
-            battery_headroom = max(0.0, target_kwh - current_kwh)
-            base_deficit = max(0.0, battery_headroom - net_pv)
+            # 2. Charge side — only buy from grid what's needed to cover overnight reserve
+            #    In "both" mode the goal is NOT to fill the battery to charge_max,
+            #    but to ensure we have enough reserve for overnight self-consumption.
+            #    Solar should handle the rest; grid is only a backstop.
+            min_kwh = (discharge_min / 100.0) * battery_capacity
+            reserve_target = max(min_kwh, reserve_kwh)  # need at least this much by end of day
+            battery_shortfall = max(0.0, reserve_target - current_kwh)  # how much we're short right now
+            base_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
 
-            if self._yesterday_deficit > 0 and battery_headroom > base_deficit:
-                carryover = min(self._yesterday_deficit, battery_headroom - base_deficit)
+            if self._yesterday_deficit > 0 and battery_shortfall > base_deficit:
+                carryover = min(self._yesterday_deficit, battery_shortfall - base_deficit)
                 energy_deficit = base_deficit + carryover
             else:
                 energy_deficit = base_deficit
 
-            # 3. Discharge side — only sell energy above BOTH discharge_min AND overnight reserve
-            min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_floor = max(min_kwh, reserve_kwh)  # whichever is higher protects overnight
-            sellable = max(0.0, current_kwh - reserve_floor) * efficiency
+            # 3. Discharge side — only sell energy above the reserve floor (already computed above)
+            sellable = max(0.0, current_kwh - reserve_target) * efficiency
 
             # 4. Negative prices: always charge (paid to take energy)
             negative_slots = [(i, p) for i, p in remaining if p < 0]
@@ -668,9 +670,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             _LOGGER.debug(
                 "Both mode: charge=%.1fkWh (%d slots), sell=%.1fkWh (%d slots), "
-                "reserve=%.1fkWh, reserve_floor=%.1fkWh, round_trip_eff=%.0f%%, min_sell=%.4f",
+                "reserve=%.1fkWh, reserve_target=%.1fkWh, round_trip_eff=%.0f%%, min_sell=%.4f",
                 charge_energy, len(charge_slots), sell_energy, len(sell_selected),
-                reserve_kwh, reserve_floor, round_trip_eff * 100,
+                reserve_kwh, reserve_target, round_trip_eff * 100,
                 min_sell_price,
             )
 

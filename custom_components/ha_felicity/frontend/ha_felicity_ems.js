@@ -141,11 +141,16 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      const targetKwh = chargeMax * batteryCapacity;
-      const headroom = Math.max(0, targetKwh - currentKwh);
-      let deficit = Math.max(0, headroom - netPv);
-      if (yesterdayDeficit > 0 && headroom > deficit) {
-        deficit += Math.min(yesterdayDeficit, headroom - deficit);
+      // In "both" mode: target is the overnight reserve, not charge_max
+      // In "from_grid" mode: target is charge_max (fill the battery)
+      const minKwh = dischargeMin * batteryCapacity;
+      const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
+      const reserveTarget = Math.max(minKwh, reserveKwh);
+      const targetKwh = gridMode === "both" ? reserveTarget : chargeMax * batteryCapacity;
+      const shortfall = Math.max(0, targetKwh - currentKwh);
+      let deficit = Math.max(0, shortfall - netPv);
+      if (yesterdayDeficit > 0 && shortfall > deficit) {
+        deficit += Math.min(yesterdayDeficit, shortfall - deficit);
       }
 
       if (deficit > 0) {
@@ -171,8 +176,8 @@ class FelicityEMSCard extends LitElement {
     if (gridMode === "to_grid" || gridMode === "both") {
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
-      const floor = Math.max(minKwh, reserveKwh);
-      const sellable = Math.max(0, currentKwh - floor) * efficiency;
+      const reserveTarget = Math.max(minKwh, reserveKwh);
+      const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency;
       const roundTrip = efficiency * efficiency;
 
       if (sellable > 0) {
@@ -499,9 +504,11 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      const targetKwh = chargeMax * batteryCapacity;
-      const headroom = Math.max(0, targetKwh - currentKwh);
-      const deficit = Math.max(0, headroom - netPv);
+      // In "both" mode: target overnight reserve; in "from_grid": fill to charge_max
+      const reserveTarget = dischargeMin * batteryCapacity; // simplified for tomorrow (no live reserve calc)
+      const targetKwh = gridMode === "both" ? reserveTarget : chargeMax * batteryCapacity;
+      const shortfall = Math.max(0, targetKwh - currentKwh);
+      const deficit = Math.max(0, shortfall - netPv);
 
       if (deficit > 0) {
         const neg = remaining.filter(s => s.price < 0);
@@ -517,8 +524,8 @@ class FelicityEMSCard extends LitElement {
     }
 
     if (gridMode === "to_grid" || gridMode === "both") {
-      const floor = dischargeMin * batteryCapacity;
-      const sellable = Math.max(0, currentKwh - floor) * efficiency;
+      const reserveTarget = dischargeMin * batteryCapacity;
+      const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency;
       const roundTrip = efficiency * efficiency;
 
       if (sellable > 0) {
