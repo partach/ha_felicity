@@ -99,8 +99,8 @@ class FelicityEMSCard extends LitElement {
     const powerKw = overrides.powerKw ?? Math.max(1, safeMaxPower / 1000);
 
     const batteryCapacity = sim.battery_capacity_kwh || 10;
-    const chargeMax = (sim.battery_charge_max_pct || 100) / 100;
-    const dischargeMin = (sim.battery_discharge_min_pct || 20) / 100;
+    const chargeMax = (overrides.chargeMax ?? sim.battery_charge_max_pct ?? 100) / 100;
+    const dischargeMin = (overrides.dischargeMin ?? sim.battery_discharge_min_pct ?? 20) / 100;
     const efficiency = sim.efficiency || 0.90;
     const batterySoc = sim.battery_soc_pct;
     const netPv = sim.net_pv_kwh || 0;
@@ -306,6 +306,13 @@ class FelicityEMSCard extends LitElement {
       label.textContent = showTomorrow ? "Tomorrow\u2019s Forecast" : "Today\u2019s Schedule";
     }
 
+    // Update toggle button active states
+    const toggleBtns = this.shadowRoot?.querySelectorAll(".toggle-btn");
+    if (toggleBtns?.length === 2) {
+      toggleBtns[0].classList.toggle("active", !showTomorrow);
+      toggleBtns[1].classList.toggle("active", showTomorrow);
+    }
+
     if (!displayData || !displayData.length) {
       const ctx = canvas.getContext("2d");
       const dpr = window.devicePixelRatio || 1;
@@ -393,8 +400,8 @@ class FelicityEMSCard extends LitElement {
       }
     }
 
-    // Threshold line (use simulated threshold)
-    const threshold = displayThreshold;
+    // Threshold line: use simulated threshold, fall back to entity value
+    const threshold = displayThreshold ?? this._getNumericState("price_threshold");
     if (threshold != null && threshold >= minPrice && threshold <= maxPrice) {
       const thresholdY = marginTop + chartH - ((threshold - minPrice) / range) * chartH;
       ctx.strokeStyle = "#F44336";
@@ -476,8 +483,8 @@ class FelicityEMSCard extends LitElement {
     const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
     const powerKw = overrides.powerKw ?? Math.max(1, safeMaxPower / 1000);
     const batteryCapacity = sim.battery_capacity_kwh || 10;
-    const chargeMax = (sim.battery_charge_max_pct || 100) / 100;
-    const dischargeMin = (sim.battery_discharge_min_pct || 20) / 100;
+    const chargeMax = (overrides.chargeMax ?? sim.battery_charge_max_pct ?? 100) / 100;
+    const dischargeMin = (overrides.dischargeMin ?? sim.battery_discharge_min_pct ?? 20) / 100;
     const efficiency = sim.efficiency || 0.90;
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow") || 0;
     const consumption = sim.consumption_est_kwh || 10;
@@ -489,8 +496,12 @@ class FelicityEMSCard extends LitElement {
     const effectivePerSlot = energyPerSlot * efficiency;
 
     // For tomorrow, assume battery starts at discharge_min (worst case overnight)
-    const currentKwh = dischargeMin * batteryCapacity;
+    const startKwh = dischargeMin * batteryCapacity;
+    // Net PV: solar surplus after consumption that can charge the battery
     const netPv = Math.max(0, pvTomorrow - consumption);
+    // Overnight reserve: estimate hours from sunset to next sunrise using today's pattern
+    const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || (consumption / 24 * 12);
+    const reserveTarget = Math.max(dischargeMin * batteryCapacity, reserveKwh);
 
     // All slots are "future"
     const remaining = slotData
@@ -516,9 +527,8 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      // Solar-first: both modes target overnight reserve (not charge_max)
-      const reserveTarget = dischargeMin * batteryCapacity; // simplified for tomorrow (no live reserve calc)
-      const shortfall = Math.max(0, reserveTarget - currentKwh);
+      // Solar-first: target overnight reserve
+      const shortfall = Math.max(0, reserveTarget - startKwh);
       const deficit = Math.max(0, shortfall - netPv);
 
       if (deficit > 0) {
@@ -535,8 +545,10 @@ class FelicityEMSCard extends LitElement {
     }
 
     if (gridMode === "to_grid" || gridMode === "both") {
-      const reserveTarget = dischargeMin * batteryCapacity;
-      const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency;
+      // For selling tomorrow: estimate available energy after solar charges the battery
+      // Battery fills from startKwh + netPv, capped at charge_max
+      const projectedKwh = Math.min(chargeMax * batteryCapacity, startKwh + netPv);
+      const sellable = Math.max(0, projectedKwh - reserveTarget) * efficiency;
       const roundTrip = efficiency * efficiency;
 
       if (sellable > 0) {
@@ -615,11 +627,18 @@ class FelicityEMSCard extends LitElement {
     const likelihood = this._getState("charge_likelihood") || "unknown";
     const currency = this.config.currency || "\u20AC";
 
+    // Battery info
+    const sim = this._getAttr("schedule_status", "sim_params") || {};
+    const batterySoc = sim.battery_soc_pct;
+    const batteryCapacity = sim.battery_capacity_kwh || 10;
+    const chargeMax = sim.battery_charge_max_pct ?? 100;
+    const dischargeMin = sim.battery_discharge_min_pct ?? 20;
+
     // Schedule info: use simulation result if available, else fall back to entity attributes
-    const sim = this._simResult;
-    const chargeSlots = sim?.chargeCount ?? this._getAttr("schedule_status", "scheduled_charge_slots") ?? 0;
-    const dischargeSlots = sim?.dischargeCount ?? this._getAttr("schedule_status", "scheduled_discharge_slots") ?? 0;
-    const gridPlanned = sim?.planned ?? this._getAttr("schedule_status", "grid_energy_planned_kwh");
+    const simR = this._simResult;
+    const chargeSlots = simR?.chargeCount ?? this._getAttr("schedule_status", "scheduled_charge_slots") ?? 0;
+    const dischargeSlots = simR?.dischargeCount ?? this._getAttr("schedule_status", "scheduled_discharge_slots") ?? 0;
+    const gridPlanned = simR?.planned ?? this._getAttr("schedule_status", "grid_energy_planned_kwh");
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
@@ -627,14 +646,26 @@ class FelicityEMSCard extends LitElement {
       ?? this._getAttr("energy_state", "self_consumption_reserve");
     const weeklyConsumption = this._getNumericState("weekly_avg_consumption");
     const safeMaxPower = this._getNumericState("safe_max_power");
+    const dailyConsumptionEst = this._getNumericState("daily_consumption_estimate");
+
+    // Battery SOC bars (10 segments)
+    const socPct = batterySoc ?? 0;
+    const filledBars = Math.round(socPct / 10);
 
     return html`
       <ha-card>
         <div class="card-header">
-          <div class="name">${this.config.name || "Energy Management"}</div>
+          <div class="battery-indicator">
+            <div class="battery-bars">
+              ${[...Array(10)].map((_, i) => html`
+                <div class="bar ${i < filledBars ? 'filled' : ''} ${i < filledBars && socPct <= 20 ? 'low' : ''} ${i < filledBars && socPct > 20 && socPct <= 50 ? 'mid' : ''}"></div>
+              `)}
+            </div>
+            <span class="battery-text">${this._fmt(socPct, 0)}% / ${batteryCapacity} kWh</span>
+          </div>
           <div class="status-badges">
             <span class="badge ${energyState}">${energyState}</span>
-            <span class="badge schedule-${scheduleStatus}">${scheduleStatus}</span>
+            <span class="badge schedule-${scheduleStatus}">${scheduleStatus.replace(/_/g, ' ')}</span>
           </div>
         </div>
 
@@ -718,6 +749,8 @@ class FelicityEMSCard extends LitElement {
             <div class="controls-grid">
               ${this._renderGridModeControl(gridMode)}
               ${this._renderPriceModeControl(priceMode)}
+              ${this._renderChargeMaxControl(chargeMax)}
+              ${this._renderDischargeMinControl(dischargeMin)}
               ${this._renderPowerLevelControl()}
               ${this._renderPriceThresholdControl()}
             </div>
@@ -725,8 +758,9 @@ class FelicityEMSCard extends LitElement {
 
           <!-- Info footer -->
           <div class="info-footer">
-            ${weeklyConsumption != null ? html`<span>Avg consumption: ${this._fmt(weeklyConsumption, 1)} kWh/day</span>` : ""}
-            ${safeMaxPower != null ? html`<span>Safe power: ${this._fmt(safeMaxPower / 1000, 1)} kW</span>` : ""}
+            ${safeMaxPower != null ? html`<span>Safe: ${this._fmt(safeMaxPower / 1000, 1)} kW</span>` : ""}
+            ${dailyConsumptionEst != null ? html`<span>Est: ${this._fmt(dailyConsumptionEst, 1)} kWh/d</span>` : ""}
+            ${weeklyConsumption != null ? html`<span>Avg: ${this._fmt(weeklyConsumption, 1)} kWh/d</span>` : ""}
           </div>
         </div>
       </ha-card>
@@ -757,6 +791,44 @@ class FelicityEMSCard extends LitElement {
         <span class="control-label">Price Mode</span>
         <select @change=${(e) => this._setSelect("price_mode", e.target.value)}>
           ${options.map((o) => html`<option value="${o}" ?selected=${o === current}>${o}</option>`)}
+        </select>
+      </div>
+    `;
+  }
+
+  _renderChargeMaxControl(current) {
+    const options = [];
+    for (let v = 100; v >= 30; v -= 5) options.push(v);
+    return html`
+      <div class="control-item">
+        <span class="control-label">Max SOC ${current}%</span>
+        <select @change=${(e) => {
+          const val = parseInt(e.target.value);
+          this._simOverrides = { ...this._simOverrides, chargeMax: val };
+          this._setNumber("battery_charge_max_level", val);
+          this._drawSlotTimeline();
+          this.requestUpdate();
+        }}>
+          ${options.map((v) => html`<option value="${v}" ?selected=${v === current}>${v}%</option>`)}
+        </select>
+      </div>
+    `;
+  }
+
+  _renderDischargeMinControl(current) {
+    const options = [];
+    for (let v = 10; v <= 70; v += 5) options.push(v);
+    return html`
+      <div class="control-item">
+        <span class="control-label">Min SOC ${current}%</span>
+        <select @change=${(e) => {
+          const val = parseInt(e.target.value);
+          this._simOverrides = { ...this._simOverrides, dischargeMin: val };
+          this._setNumber("battery_discharge_min_level", val);
+          this._drawSlotTimeline();
+          this.requestUpdate();
+        }}>
+          ${options.map((v) => html`<option value="${v}" ?selected=${v === current}>${v}%</option>`)}
         </select>
       </div>
     `;
@@ -843,24 +915,55 @@ class FelicityEMSCard extends LitElement {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 12px 16px 8px;
+        padding: 10px 16px 8px;
         border-bottom: 1px solid var(--divider-color);
       }
-      .card-header .name {
-        font-size: 1.2em;
-        font-weight: 500;
+
+      /* Battery SOC indicator */
+      .battery-indicator {
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
+      .battery-bars {
+        display: flex;
+        gap: 2px;
+        align-items: center;
+      }
+      .battery-bars .bar {
+        width: 8px;
+        height: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        border-radius: 1px;
+        background: transparent;
+      }
+      .battery-bars .bar.filled {
+        background: #4CAF50;
+      }
+      .battery-bars .bar.filled.low {
+        background: #F44336;
+      }
+      .battery-bars .bar.filled.mid {
+        background: #FF9800;
+      }
+      .battery-text {
+        font-size: 0.75em;
+        color: var(--secondary-text-color);
+        white-space: nowrap;
+      }
+
       .status-badges {
         display: flex;
-        gap: 6px;
+        gap: 4px;
       }
       .badge {
-        font-size: 0.75em;
-        padding: 2px 8px;
-        border-radius: 10px;
+        font-size: 0.6em;
+        padding: 2px 6px;
+        border-radius: 8px;
         text-transform: uppercase;
         font-weight: 600;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.3px;
+        white-space: nowrap;
       }
       .badge.charging { background: #4CAF50; color: #fff; }
       .badge.discharging { background: #FF9800; color: #fff; }
@@ -870,6 +973,8 @@ class FelicityEMSCard extends LitElement {
       .badge.schedule-waiting { background: #607D8B; color: #fff; }
       .badge.schedule-manual { background: #9C27B0; color: #fff; }
       .badge.schedule-off { background: var(--secondary-background-color); color: var(--secondary-text-color); }
+      .badge.schedule-no_action_needed,
+      .badge.schedule-no\\ action\\ needed { background: var(--secondary-background-color); color: var(--secondary-text-color); }
 
       .card-content {
         padding: 12px 16px 16px;
@@ -1036,6 +1141,8 @@ class FelicityEMSCard extends LitElement {
       .info-footer {
         display: flex;
         justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 4px;
         font-size: 0.7em;
         color: var(--secondary-text-color);
         padding-top: 6px;
