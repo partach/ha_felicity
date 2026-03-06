@@ -1282,7 +1282,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 # Anti-conflict guard: don't export while the house is importing
                                 # (e.g. EV charging pulls from grid while we'd be selling battery — wasteful)
                                 if desired_state == "discharging":
-                                    grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
+                                    grid_power = None
+                                    if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
+                                        grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
                                     if grid_power is not None and grid_power > 200:  # importing >200W from grid
                                         _LOGGER.info(
                                             "Anti-conflict: suppressing discharge — grid importing %.0fW "
