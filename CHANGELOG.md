@@ -1,6 +1,7 @@
 ## Changelog
 
-### [0.9.7] - EMS improvements
+### [0.9.7] - EMS card and EMS improvements
+- NEW! extra card showing EMS status and predications
 - Improved EMS functionality and documentation. See EMS.md document on github
 
 ### [0.9.5] - EMS extension and other bits
