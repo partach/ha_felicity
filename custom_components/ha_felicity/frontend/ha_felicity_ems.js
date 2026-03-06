@@ -642,6 +642,7 @@ class FelicityEMSCard extends LitElement {
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
+    const pvActualToday = this._getAttr("schedule_status", "pv_actual_today_kwh");
     const reserve = this._getAttr("schedule_status", "self_consumption_reserve")
       ?? this._getAttr("energy_state", "self_consumption_reserve");
     const weeklyConsumption = this._getNumericState("weekly_avg_consumption");
@@ -718,19 +719,26 @@ class FelicityEMSCard extends LitElement {
             </div>
           </div>
 
-          <!-- PV Forecast -->
+          <!-- PV Actual & Forecast -->
           <div class="pv-row">
             <div class="pv-item">
               <ha-icon icon="mdi:solar-power"></ha-icon>
               <div>
-                <span class="pv-label">PV Remaining</span>
+                <span class="pv-label">PV Today</span>
+                <span class="pv-value">${this._fmt(pvActualToday, 1)} kWh</span>
+              </div>
+            </div>
+            <div class="pv-item">
+              <ha-icon icon="mdi:sun-clock"></ha-icon>
+              <div>
+                <span class="pv-label">Forecast Remaining</span>
                 <span class="pv-value">${this._fmt(pvRemaining, 1)} kWh</span>
               </div>
             </div>
             <div class="pv-item">
               <ha-icon icon="mdi:weather-sunny"></ha-icon>
               <div>
-                <span class="pv-label">Today Total</span>
+                <span class="pv-label">Forecast Today</span>
                 <span class="pv-value">${this._fmt(pvToday, 1)} kWh</span>
               </div>
             </div>
@@ -1069,7 +1077,9 @@ class FelicityEMSCard extends LitElement {
       /* PV row */
       .pv-row {
         display: flex;
+        flex-wrap: wrap;
         justify-content: space-around;
+        gap: 8px 0;
         margin-bottom: 14px;
         padding: 8px;
         border-radius: 8px;
