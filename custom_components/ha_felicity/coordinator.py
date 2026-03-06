@@ -73,6 +73,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.price_threshold: float | None = None
         self.safe_max_power = 0 # used in setting rule 1 power checks toward max amperage
         self._last_known_max_amperage: float | None = None
+        self.battery_soc: float | None = None  # resolved SOC (type-specific)
 
         # Forecast & schedule
         self.forecast_entity = forecast_entity
@@ -1258,6 +1259,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             if self._current_day != now.day:
                                 _LOGGER.info("New day detected — resetting energy state")
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
+                                self.battery_soc = battery_soc
                                 # Record deficit before resetting (for next-day compensation)
                                 self._calculate_yesterday_deficit(battery_soc)
                                 # Record daily consumption for rolling average
@@ -1271,6 +1273,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 self._retrieve_pv_forecast()
 
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
+                                self.battery_soc = battery_soc
 
                                 # In auto mode, run the schedule optimizer
                                 if price_mode == "auto":
