@@ -100,9 +100,17 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
+        try:
+            return self._build_attributes()
+        except Exception:
+            _LOGGER.debug("Error building schedule_status attributes", exc_info=True)
+            return {}
+
+    def _build_attributes(self):
         slot_prices = self.coordinator.slot_prices_today
         num_slots = len(slot_prices) if slot_prices else 0
         scheduled = self.coordinator.scheduled_slots
+        opts = self.coordinator.config_entry.options
 
         # Build per-slot data array for the EMS card
         slot_data = []
@@ -139,10 +147,20 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "slot_granularity_min": int((24 * 60) / num_slots) if num_slots > 0 else None,
             "has_tomorrow_prices": bool(tomorrow_prices),
             "yesterday_deficit_kwh": self.coordinator._yesterday_deficit,
-            "price_mode": self.coordinator.config_entry.options.get("price_mode", "manual"),
+            "price_mode": opts.get("price_mode", "manual"),
             "self_consumption_reserve": self.coordinator.self_consumption_reserve,
             "slot_schedule": slot_data,
             "slot_schedule_tomorrow": tomorrow_slot_data,
+            # Simulation parameters for client-side schedule preview
+            "sim_params": {
+                "battery_capacity_kwh": opts.get("battery_capacity_kwh", 10),
+                "battery_charge_max_pct": opts.get("battery_charge_max_level", 100),
+                "battery_discharge_min_pct": opts.get("battery_discharge_min_level", 20),
+                "efficiency": opts.get("efficiency_factor", 0.90),
+                "battery_soc_pct": self.coordinator.data.get("battery_capacity"),
+                "net_pv_kwh": getattr(self.coordinator, '_last_net_pv', 0),
+                "consumption_est_kwh": self.coordinator._get_consumption_estimate(),
+            },
         }
 
 
@@ -315,6 +333,15 @@ class HA_FelicityNordpoolSensor(CoordinatorEntity, SensorEntity):
         except Exception:
             _LOGGER.debug("failed to get sensor value %s from coordinator", self._key)
             return None
+
+    @property
+    def extra_state_attributes(self):
+        # Only expose source entity on current_price sensor (used by card as fallback)
+        if self._key != "current_price":
+            return None
+        return {
+            "price_source_entity": self.coordinator.nordpool_entity,
+        }
 
 class HA_FelicitySimpleSensor(CoordinatorEntity, SensorEntity):
     """Sensor for Nordpool price data from coordinator."""
