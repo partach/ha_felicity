@@ -6,12 +6,16 @@ class FelicityEMSCard extends LitElement {
       hass: { type: Object },
       config: { type: Object },
       _deviceEntities: { type: Array },
+      _simOverrides: { type: Object },  // local slider overrides for live preview
+      _simResult: { type: Object },     // latest simulation output
     };
   }
 
   constructor() {
     super();
     this._deviceEntities = [];
+    this._simOverrides = {};
+    this._simResult = null;
   }
 
   static getConfigElement() {
@@ -78,6 +82,134 @@ class FelicityEMSCard extends LitElement {
     return Number(val).toFixed(decimals);
   }
 
+  // ── Client-side schedule simulation ──────────────────────────
+  // Mirrors coordinator._calculate_schedule logic for live preview
+
+  _simulateSchedule(slotData, overrides = {}) {
+    if (!slotData || !slotData.length) return null;
+
+    const sim = this._getAttr("schedule_status", "sim_params") || {};
+    const gridMode = overrides.gridMode ?? this._getState("grid_mode") ?? "off";
+    const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
+
+    // Use override power if slider is being dragged, else safe_max_power
+    const powerKw = overrides.powerKw ?? Math.max(1, safeMaxPower / 1000);
+
+    const batteryCapacity = sim.battery_capacity_kwh || 10;
+    const chargeMax = (sim.battery_charge_max_pct || 100) / 100;
+    const dischargeMin = (sim.battery_discharge_min_pct || 20) / 100;
+    const efficiency = sim.efficiency || 0.90;
+    const batterySoc = sim.battery_soc_pct;
+    const netPv = sim.net_pv_kwh || 0;
+    const yesterdayDeficit = this._getAttr("schedule_status", "yesterday_deficit_kwh") || 0;
+
+    const numSlots = slotData.length;
+    const granularity = this._getAttr("schedule_status", "slot_granularity_min") || Math.round((24 * 60) / numSlots);
+    const slotDuration = granularity / 60;
+
+    const now = new Date();
+    const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
+
+    // Remaining future slots with prices
+    const remaining = slotData
+      .filter((s, i) => i >= currentSlotIdx && s.price != null)
+      .map(s => ({ idx: s.slot, price: s.price }));
+
+    if (gridMode === "off" || !remaining.length) {
+      return { slots: this._markAll(slotData, null), chargeCount: 0, dischargeCount: 0, planned: 0, threshold: null };
+    }
+
+    const currentKwh = batterySoc != null ? (batterySoc / 100) * batteryCapacity : 0;
+    const energyPerSlot = powerKw * slotDuration;
+    const effectivePerSlot = energyPerSlot * efficiency;
+
+    // Calculate threshold from price level override
+    let threshold = null;
+    if (overrides.priceLevel != null) {
+      const prices = slotData.map(s => s.price).filter(p => p != null);
+      const minP = Math.min(...prices);
+      const maxP = Math.max(...prices);
+      const avgP = prices.reduce((a, b) => a + b, 0) / prices.length;
+      const level = overrides.priceLevel;
+      if (level <= 5) {
+        threshold = minP + ((avgP - minP) * (level - 1) / 4);
+      } else {
+        threshold = avgP + ((maxP - avgP) * (level - 5) / 5);
+      }
+    }
+
+    const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
+
+    if (gridMode === "from_grid" || gridMode === "both") {
+      const targetKwh = chargeMax * batteryCapacity;
+      const headroom = Math.max(0, targetKwh - currentKwh);
+      let deficit = Math.max(0, headroom - netPv);
+      if (yesterdayDeficit > 0 && headroom > deficit) {
+        deficit += Math.min(yesterdayDeficit, headroom - deficit);
+      }
+
+      if (deficit > 0) {
+        const neg = remaining.filter(s => s.price < 0);
+        const nonNeg = remaining.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
+        const negEnergy = neg.length * effectivePerSlot;
+        const remDeficit = Math.max(0, deficit - negEnergy);
+        const needed = effectivePerSlot > 0 ? Math.ceil(remDeficit / effectivePerSlot) : 0;
+        const chargeSlots = [...neg, ...nonNeg.slice(0, needed)];
+
+        for (const s of chargeSlots) {
+          result.slots[s.idx].action = "charge";
+        }
+        result.chargeCount = chargeSlots.length;
+        result.planned += Math.min(deficit, chargeSlots.length * effectivePerSlot);
+
+        if (chargeSlots.length && threshold == null) {
+          threshold = Math.max(...chargeSlots.map(s => s.price));
+        }
+      }
+    }
+
+    if (gridMode === "to_grid" || gridMode === "both") {
+      const minKwh = dischargeMin * batteryCapacity;
+      const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
+      const floor = Math.max(minKwh, reserveKwh);
+      const sellable = Math.max(0, currentKwh - floor) * efficiency;
+      const roundTrip = efficiency * efficiency;
+
+      if (sellable > 0) {
+        const chargeIdxSet = new Set(result.slots.filter(s => s.action === "charge").map(s => s.slot));
+        let available = remaining.filter(s => s.price > 0 && !chargeIdxSet.has(s.idx));
+
+        if (gridMode === "both" && result.chargeCount > 0) {
+          const maxBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
+          const minSell = maxBuy / roundTrip;
+          available = available.filter(s => s.price >= minSell);
+        }
+
+        available.sort((a, b) => b.price - a.price);
+        const needed = energyPerSlot > 0 ? Math.ceil(sellable / energyPerSlot) : 0;
+        const sellSlots = available.slice(0, needed);
+
+        for (const s of sellSlots) {
+          result.slots[s.idx].action = "discharge";
+        }
+        result.dischargeCount = sellSlots.length;
+        result.planned += Math.min(sellable, sellSlots.length * energyPerSlot);
+
+        if (sellSlots.length && threshold == null) {
+          threshold = Math.min(...sellSlots.map(s => s.price));
+        }
+      }
+    }
+
+    result.planned = Math.round(result.planned * 100) / 100;
+    result.threshold = threshold;
+    return result;
+  }
+
+  _markAll(slotData, action) {
+    return slotData.map(s => ({ ...s, action }));
+  }
+
   // ── Slot Timeline (Canvas) ──────────────────────────────────
 
   // Build slot data array from raw price list (fallback when schedule_status has no data)
@@ -114,8 +246,6 @@ class FelicityEMSCard extends LitElement {
 
     let todaySlotData = this._getAttr("schedule_status", "slot_schedule");
     let tomorrowSlotData = this._getAttr("schedule_status", "slot_schedule_tomorrow");
-    const threshold = this._getNumericState("price_threshold");
-    const currentPrice = this._getNumericState("current_price");
     let granularity = this._getAttr("schedule_status", "slot_granularity_min") || 60;
 
     // Fallback: read raw prices from source Nordpool entity if schedule_status has no slot data
@@ -131,12 +261,27 @@ class FelicityEMSCard extends LitElement {
     const now = new Date();
     const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
 
-    // Switch to tomorrow when no scheduled actions remain after current slot
-    const hasFutureActions = todaySlotData?.some(
+    // Run client-side simulation on today's data
+    const simResult = this._simulateSchedule(todaySlotData, this._simOverrides);
+    this._simResult = simResult;
+
+    // Switch to tomorrow when no simulated actions remain after current slot
+    const hasFutureActions = simResult?.slots?.some(
       (s, i) => i >= currentSlotIdx && s.action
     );
     const showTomorrow = !hasFutureActions && tomorrowSlotData?.length > 0;
-    const slotData = showTomorrow ? tomorrowSlotData : todaySlotData;
+
+    // For tomorrow, run a forecast simulation too (no current-slot offset)
+    let displayData, displayThreshold;
+    if (showTomorrow) {
+      const tmrSim = this._simulateScheduleTomorrow(tomorrowSlotData, this._simOverrides);
+      displayData = tmrSim?.slots ?? tomorrowSlotData;
+      displayThreshold = tmrSim?.threshold;
+      this._simResult = tmrSim;  // stats reflect tomorrow preview
+    } else {
+      displayData = simResult?.slots ?? todaySlotData;
+      displayThreshold = simResult?.threshold;
+    }
 
     // Update the timeline label
     const label = this.shadowRoot?.querySelector(".timeline-label");
@@ -144,7 +289,7 @@ class FelicityEMSCard extends LitElement {
       label.textContent = showTomorrow ? "Tomorrow\u2019s Forecast" : "Today\u2019s Schedule";
     }
 
-    if (!slotData || !slotData.length) {
+    if (!displayData || !displayData.length) {
       const ctx = canvas.getContext("2d");
       const dpr = window.devicePixelRatio || 1;
       canvas.width = canvas.offsetWidth * dpr;
@@ -165,15 +310,15 @@ class FelicityEMSCard extends LitElement {
     canvas.height = h * dpr;
     ctx.scale(dpr, dpr);
 
-    const numSlots = slotData.length;
-    const barW = Math.max(1, (w - 40) / numSlots); // left margin 30, right 10
+    const numSlots = displayData.length;
+    const barW = Math.max(1, (w - 40) / numSlots);
     const marginLeft = 30;
     const marginTop = 15;
     const marginBottom = 20;
     const chartH = h - marginTop - marginBottom;
 
     // Find price range
-    const prices = slotData.map((s) => s.price).filter((p) => p != null);
+    const prices = displayData.map((s) => s.price).filter((p) => p != null);
     const minPrice = Math.min(...prices, 0);
     const maxPrice = Math.max(...prices, 0.01);
     const range = maxPrice - minPrice || 0.01;
@@ -183,21 +328,25 @@ class FelicityEMSCard extends LitElement {
 
     // Draw bars
     for (let i = 0; i < numSlots; i++) {
-      const slot = slotData[i];
+      const slot = displayData[i];
       const x = marginLeft + i * barW;
       const price = slot.price ?? 0;
       const barH = ((price - minPrice) / range) * chartH;
       const y = marginTop + chartH - barH;
 
       if (showTomorrow) {
-        // Tomorrow forecast: softer colors, no actions scheduled yet
-        if (price < 0) {
-          ctx.fillStyle = "rgba(33, 150, 243, 0.6)"; // blue for negative
+        // Tomorrow: color by simulated action
+        if (slot.action === "charge") {
+          ctx.fillStyle = "rgba(76, 175, 80, 0.6)"; // green, slightly softer
+        } else if (slot.action === "discharge") {
+          ctx.fillStyle = "rgba(255, 152, 0, 0.6)"; // orange, slightly softer
+        } else if (price < 0) {
+          ctx.fillStyle = "rgba(33, 150, 243, 0.6)";
         } else {
-          ctx.fillStyle = "rgba(100, 140, 200, 0.5)"; // soft blue-grey
+          ctx.fillStyle = "rgba(100, 140, 200, 0.35)";
         }
       } else {
-        // Today: color based on action, dim past slots
+        // Today: color based on simulated action, dim past slots
         const isPast = i < currentSlot;
         if (slot.action === "charge") {
           ctx.fillStyle = isPast ? "rgba(76, 175, 80, 0.3)" : "#4CAF50";
@@ -227,7 +376,8 @@ class FelicityEMSCard extends LitElement {
       }
     }
 
-    // Threshold line
+    // Threshold line (use simulated threshold)
+    const threshold = displayThreshold;
     if (threshold != null && threshold >= minPrice && threshold <= maxPrice) {
       const thresholdY = marginTop + chartH - ((threshold - minPrice) / range) * chartH;
       ctx.strokeStyle = "#F44336";
@@ -239,7 +389,6 @@ class FelicityEMSCard extends LitElement {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Label
       ctx.fillStyle = "#F44336";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "right";
@@ -268,7 +417,7 @@ class FelicityEMSCard extends LitElement {
     ctx.textAlign = "center";
     ctx.fillStyle = getComputedStyle(this).getPropertyValue("--secondary-text-color") || "#aaa";
     const slotsPerHour = 60 / granularity;
-    const labelInterval = granularity <= 15 ? 4 : granularity <= 30 ? 2 : 1; // every 2-4 hours for dense slots
+    const labelInterval = granularity <= 15 ? 4 : granularity <= 30 ? 2 : 1;
     const hourLabelEvery = Math.max(1, Math.ceil(3 / (slotsPerHour * labelInterval)));
     for (let hour = 0; hour < 24; hour += hourLabelEvery) {
       const slotIdx = hour * slotsPerHour;
@@ -283,22 +432,115 @@ class FelicityEMSCard extends LitElement {
     ctx.textAlign = "right";
     const legendX = w - 5;
     const textColor = getComputedStyle(this).getPropertyValue("--primary-text-color") || "#fff";
+    ctx.fillStyle = "#4CAF50";
+    ctx.fillRect(legendX - 55, 2, 8, 8);
+    ctx.fillStyle = textColor;
+    ctx.fillText("charge", legendX - 58 + 55, 9);
+    ctx.fillStyle = "#FF9800";
+    ctx.fillRect(legendX - 115, 2, 8, 8);
+    ctx.fillStyle = textColor;
+    ctx.textAlign = "right";
+    ctx.fillText("sell", legendX - 118 + 55, 9);
     if (showTomorrow) {
-      ctx.fillStyle = "rgba(100, 140, 200, 0.5)";
-      ctx.fillRect(legendX - 65, 2, 8, 8);
-      ctx.fillStyle = textColor;
-      ctx.fillText("forecast", legendX - 68 + 65, 9);
-    } else {
-      ctx.fillStyle = "#4CAF50";
-      ctx.fillRect(legendX - 55, 2, 8, 8);
-      ctx.fillStyle = textColor;
-      ctx.fillText("charge", legendX - 58 + 55, 9);
-      ctx.fillStyle = "#FF9800";
-      ctx.fillRect(legendX - 115, 2, 8, 8);
+      ctx.fillStyle = "rgba(100, 140, 200, 0.35)";
+      ctx.fillRect(legendX - 168, 2, 8, 8);
       ctx.fillStyle = textColor;
       ctx.textAlign = "right";
-      ctx.fillText("sell", legendX - 118 + 55, 9);
+      ctx.fillText("idle", legendX - 171 + 55, 9);
     }
+  }
+
+  // Simulate schedule for tomorrow (all slots are "future")
+  _simulateScheduleTomorrow(slotData, overrides = {}) {
+    if (!slotData || !slotData.length) return null;
+
+    const sim = this._getAttr("schedule_status", "sim_params") || {};
+    const gridMode = overrides.gridMode ?? this._getState("grid_mode") ?? "off";
+    const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
+    const powerKw = overrides.powerKw ?? Math.max(1, safeMaxPower / 1000);
+    const batteryCapacity = sim.battery_capacity_kwh || 10;
+    const chargeMax = (sim.battery_charge_max_pct || 100) / 100;
+    const dischargeMin = (sim.battery_discharge_min_pct || 20) / 100;
+    const efficiency = sim.efficiency || 0.90;
+    const pvTomorrow = this._getNumericState("pv_forecast_tomorrow") || 0;
+    const consumption = sim.consumption_est_kwh || 10;
+
+    const numSlots = slotData.length;
+    const granularity = Math.round((24 * 60) / numSlots);
+    const slotDuration = granularity / 60;
+    const energyPerSlot = powerKw * slotDuration;
+    const effectivePerSlot = energyPerSlot * efficiency;
+
+    // For tomorrow, assume battery starts at discharge_min (worst case overnight)
+    const currentKwh = dischargeMin * batteryCapacity;
+    const netPv = Math.max(0, pvTomorrow - consumption);
+
+    // All slots are "future"
+    const remaining = slotData
+      .filter(s => s.price != null)
+      .map(s => ({ idx: s.slot, price: s.price }));
+
+    if (gridMode === "off" || !remaining.length) {
+      return { slots: this._markAll(slotData, null), chargeCount: 0, dischargeCount: 0, planned: 0, threshold: null };
+    }
+
+    let threshold = null;
+    if (overrides.priceLevel != null) {
+      const prices = slotData.map(s => s.price).filter(p => p != null);
+      const minP = Math.min(...prices);
+      const maxP = Math.max(...prices);
+      const avgP = prices.reduce((a, b) => a + b, 0) / prices.length;
+      const level = overrides.priceLevel;
+      threshold = level <= 5
+        ? minP + ((avgP - minP) * (level - 1) / 4)
+        : avgP + ((maxP - avgP) * (level - 5) / 5);
+    }
+
+    const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
+
+    if (gridMode === "from_grid" || gridMode === "both") {
+      const targetKwh = chargeMax * batteryCapacity;
+      const headroom = Math.max(0, targetKwh - currentKwh);
+      const deficit = Math.max(0, headroom - netPv);
+
+      if (deficit > 0) {
+        const neg = remaining.filter(s => s.price < 0);
+        const nonNeg = remaining.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
+        const negEnergy = neg.length * effectivePerSlot;
+        const needed = effectivePerSlot > 0 ? Math.ceil(Math.max(0, deficit - negEnergy) / effectivePerSlot) : 0;
+        const chargeSlots = [...neg, ...nonNeg.slice(0, needed)];
+        for (const s of chargeSlots) result.slots[s.idx].action = "charge";
+        result.chargeCount = chargeSlots.length;
+        result.planned += Math.min(deficit, chargeSlots.length * effectivePerSlot);
+        if (chargeSlots.length && threshold == null) threshold = Math.max(...chargeSlots.map(s => s.price));
+      }
+    }
+
+    if (gridMode === "to_grid" || gridMode === "both") {
+      const floor = dischargeMin * batteryCapacity;
+      const sellable = Math.max(0, currentKwh - floor) * efficiency;
+      const roundTrip = efficiency * efficiency;
+
+      if (sellable > 0) {
+        const chargeIdxSet = new Set(result.slots.filter(s => s.action === "charge").map(s => s.slot));
+        let available = remaining.filter(s => s.price > 0 && !chargeIdxSet.has(s.idx));
+        if (gridMode === "both" && result.chargeCount > 0) {
+          const maxBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
+          available = available.filter(s => s.price >= maxBuy / roundTrip);
+        }
+        available.sort((a, b) => b.price - a.price);
+        const needed = energyPerSlot > 0 ? Math.ceil(sellable / energyPerSlot) : 0;
+        const sellSlots = available.slice(0, needed);
+        for (const s of sellSlots) result.slots[s.idx].action = "discharge";
+        result.dischargeCount = sellSlots.length;
+        result.planned += Math.min(sellable, sellSlots.length * energyPerSlot);
+        if (sellSlots.length && threshold == null) threshold = Math.min(...sellSlots.map(s => s.price));
+      }
+    }
+
+    result.planned = Math.round(result.planned * 100) / 100;
+    result.threshold = threshold;
+    return result;
   }
 
   // ── Service calls for controls ──────────────────────────────
@@ -339,20 +581,22 @@ class FelicityEMSCard extends LitElement {
     const energyState = this._getState("energy_state") || "unknown";
     const scheduleStatus = this._getState("schedule_status") || "unknown";
     const currentPrice = this._getNumericState("current_price");
-    const threshold = this._getNumericState("price_threshold");
+    const threshold = this._simResult?.threshold ?? this._getNumericState("price_threshold");
     const gridMode = this._getState("grid_mode") || "off";
     const priceMode = this._getState("price_mode") || "manual";
     const likelihood = this._getState("charge_likelihood") || "unknown";
     const currency = this.config.currency || "\u20AC";
 
-    // Schedule info from attributes (use _fmt for safe formatting)
-    const chargeSlots = this._getAttr("schedule_status", "scheduled_charge_slots") || 0;
-    const dischargeSlots = this._getAttr("schedule_status", "scheduled_discharge_slots") || 0;
-    const gridPlanned = this._getAttr("schedule_status", "grid_energy_planned_kwh");
+    // Schedule info: use simulation result if available, else fall back to entity attributes
+    const sim = this._simResult;
+    const chargeSlots = sim?.chargeCount ?? this._getAttr("schedule_status", "scheduled_charge_slots") ?? 0;
+    const dischargeSlots = sim?.dischargeCount ?? this._getAttr("schedule_status", "scheduled_discharge_slots") ?? 0;
+    const gridPlanned = sim?.planned ?? this._getAttr("schedule_status", "grid_energy_planned_kwh");
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
-    const reserve = this._getAttr("energy_state", "self_consumption_reserve");
+    const reserve = this._getAttr("schedule_status", "self_consumption_reserve")
+      ?? this._getAttr("energy_state", "self_consumption_reserve");
     const weeklyConsumption = this._getNumericState("weekly_avg_consumption");
     const safeMaxPower = this._getNumericState("safe_max_power");
 
@@ -460,7 +704,12 @@ class FelicityEMSCard extends LitElement {
     return html`
       <div class="control-item">
         <span class="control-label">Grid Mode</span>
-        <select @change=${(e) => this._setSelect("grid_mode", e.target.value)}>
+        <select @change=${(e) => {
+          this._simOverrides = { ...this._simOverrides, gridMode: e.target.value };
+          this._setSelect("grid_mode", e.target.value);
+          this._drawSlotTimeline();
+          this.requestUpdate();
+        }}>
           ${options.map((o) => html`<option value="${o}" ?selected=${o === current}>${o}</option>`)}
         </select>
       </div>
@@ -484,13 +733,14 @@ class FelicityEMSCard extends LitElement {
     if (!eid) return html``;
     const entity = this.hass.states[eid];
     if (!entity) return html``;
-    const current = parseFloat(entity.state) || 5;
+    const display = this._simOverrides.powerKw ?? parseFloat(entity.state) ?? 5;
 
     return html`
       <div class="control-item">
-        <span class="control-label">Power ${current} kW</span>
-        <input type="range" min="1" max="10" step="0.5" .value=${current}
-          @change=${(e) => this._setNumber("power_level", e.target.value)} />
+        <span class="control-label">Power ${display} kW</span>
+        <input type="range" min="1" max="10" step="0.5" .value=${display}
+          @input=${(e) => this._previewPower(parseFloat(e.target.value))}
+          @change=${(e) => this._commitPower(parseFloat(e.target.value))} />
       </div>
     `;
   }
@@ -500,15 +750,51 @@ class FelicityEMSCard extends LitElement {
     if (!eid) return html``;
     const entity = this.hass.states[eid];
     if (!entity) return html``;
-    const current = parseInt(entity.state) || 5;
+    const display = this._simOverrides.priceLevel ?? parseInt(entity.state) ?? 5;
 
     return html`
       <div class="control-item">
-        <span class="control-label">Price Level ${current}/10</span>
-        <input type="range" min="1" max="10" step="1" .value=${current}
-          @change=${(e) => this._setNumber("price_threshold_level", e.target.value)} />
+        <span class="control-label">Price Level ${display}/10</span>
+        <input type="range" min="1" max="10" step="1" .value=${display}
+          @input=${(e) => this._previewPriceLevel(parseInt(e.target.value))}
+          @change=${(e) => this._commitPriceLevel(parseInt(e.target.value))} />
       </div>
     `;
+  }
+
+  // Live preview: update local override and redraw immediately
+  _previewPower(kw) {
+    this._simOverrides = { ...this._simOverrides, powerKw: kw };
+    this._drawSlotTimeline();
+    this.requestUpdate();
+  }
+
+  _previewPriceLevel(level) {
+    this._simOverrides = { ...this._simOverrides, priceLevel: level };
+    this._drawSlotTimeline();
+    this.requestUpdate();
+  }
+
+  // Commit: send to HA and clear local override
+  _commitPower(kw) {
+    this._setNumber("power_level", kw);
+    // Keep override until HA state catches up
+    setTimeout(() => {
+      this._simOverrides = { ...this._simOverrides };
+      delete this._simOverrides.powerKw;
+      this._drawSlotTimeline();
+      this.requestUpdate();
+    }, 2000);
+  }
+
+  _commitPriceLevel(level) {
+    this._setNumber("price_threshold_level", level);
+    setTimeout(() => {
+      this._simOverrides = { ...this._simOverrides };
+      delete this._simOverrides.priceLevel;
+      this._drawSlotTimeline();
+      this.requestUpdate();
+    }, 2000);
   }
 
   // ── Styles ──────────────────────────────────────────────────

@@ -95,6 +95,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.weekly_avg_consumption: float | None = None
         self._yesterday_deficit: float = 0.0
         self.self_consumption_reserve: float = 0.0
+        self._last_net_pv: float = 0.0
 
         # Always-visible slot info (regardless of price_mode)
         self.available_slots_at_threshold: int = 0
@@ -509,6 +510,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         current_kwh = (battery_soc / 100.0) * battery_capacity if battery_soc is not None else 0
         # Hourly surplus model: only count PV that exceeds consumption per hour
         net_pv = self._calculate_net_pv_surplus(remaining, num_slots, consumption_est)
+        self._last_net_pv = net_pv  # expose for card simulation
         energy_per_slot = safe_power_kw * slot_duration_hours
 
         energy_target = 0.0  # for logging
