@@ -520,6 +520,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             battery_headroom = max(0.0, target_kwh - current_kwh)
             base_deficit = max(0.0, battery_headroom - net_pv)
 
+            # Skip charging when battery is nearly full — headroom too small to justify a grid slot.
+            # Threshold: less than 5% of capacity remaining (e.g. <1.2 kWh on a 24 kWh battery).
+            min_useful_headroom = battery_capacity * 0.05
+            if battery_headroom < min_useful_headroom and battery_headroom > 0:
+                _LOGGER.debug(
+                    "Skipping charge schedule — battery nearly full: SOC=%.1f%%, "
+                    "headroom=%.2f kWh < threshold %.2f kWh (5%% of %.1f kWh capacity)",
+                    battery_soc, battery_headroom, min_useful_headroom, battery_capacity,
+                )
+                self.scheduled_slots = {}
+                self.cheap_slots_remaining = 0
+                self.grid_energy_planned = 0.0
+                self.schedule_status = "no_action_needed"
+                return
+
             # Add yesterday's deficit carryover, but cap by what the battery can physically accept
             if self._yesterday_deficit > 0 and battery_headroom > base_deficit:
                 carryover = min(self._yesterday_deficit, battery_headroom - base_deficit)
@@ -769,7 +784,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         if effective_mode == "from_grid":
             target_kwh = (charge_max / 100.0) * battery_capacity
-            energy_deficit = max(0.0, target_kwh - current_kwh - net_pv)
+            headroom = max(0.0, target_kwh - current_kwh)
+            # Battery nearly full — no meaningful deficit
+            if headroom < battery_capacity * 0.05:
+                energy_deficit = 0.0
+            else:
+                energy_deficit = max(0.0, headroom - net_pv)
 
             if grid_mode == "off":
                 # Informational only — show what WOULD happen

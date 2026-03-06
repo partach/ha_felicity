@@ -147,7 +147,10 @@ class FelicityEMSCard extends LitElement {
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
       const reserveTarget = Math.max(minKwh, reserveKwh);
       const targetKwh = gridMode === "both" ? reserveTarget : chargeMax * batteryCapacity;
-      const shortfall = Math.max(0, targetKwh - currentKwh);
+      const headroom = Math.max(0, targetKwh - currentKwh);
+      // Skip charging when battery nearly full (headroom < 5% of capacity)
+      const minUsefulHeadroom = batteryCapacity * 0.05;
+      const shortfall = (gridMode === "from_grid" && headroom < minUsefulHeadroom) ? 0 : headroom;
       let deficit = Math.max(0, shortfall - netPv);
       if (yesterdayDeficit > 0 && shortfall > deficit) {
         deficit += Math.min(yesterdayDeficit, shortfall - deficit);
