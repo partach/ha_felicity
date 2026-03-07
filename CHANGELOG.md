@@ -1,5 +1,9 @@
 ## Changelog
 
+### [0.9.7] - EMS card and EMS improvements
+- NEW! extra card showing EMS status and predications
+- Improved EMS functionality and documentation. See EMS.md document on github
+
 ### [0.9.5] - EMS extension and other bits
 - Extended EMS functionality. See EMS.md document on github
 - Total EMS can now be switched off completely or run on automatic, including Safe Power management. See EMS.md
