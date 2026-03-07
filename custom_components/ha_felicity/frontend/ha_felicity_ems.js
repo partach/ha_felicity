@@ -642,7 +642,20 @@ class FelicityEMSCard extends LitElement {
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
-    const pvActualToday = this._getAttr("schedule_status", "pv_actual_today_kwh");
+    // Actual PV today: prefer schedule_status attr, fall back to dedicated sensor entity
+    let pvActualToday = this._getAttr("schedule_status", "pv_actual_today_kwh");
+    if (pvActualToday == null) {
+      // TREX-5/10: entity key is pv_generated_energy_day (value in Wh, attr kWh available)
+      const whVal = this._getNumericState("pv_generated_energy_day");
+      if (whVal != null) {
+        pvActualToday = whVal / 1000;
+      } else {
+        // TREX-25/50: sum per-string day energy entities (already in kWh)
+        const strings = ["pv1_day_energy", "pv2_day_energy", "pv3_day_energy", "pv4_day_energy"];
+        const vals = strings.map(k => this._getNumericState(k)).filter(v => v != null);
+        if (vals.length) pvActualToday = vals.reduce((a, b) => a + b, 0);
+      }
+    }
     const reserve = this._getAttr("schedule_status", "self_consumption_reserve")
       ?? this._getAttr("energy_state", "self_consumption_reserve");
     const weeklyConsumption = this._getNumericState("weekly_avg_consumption");
