@@ -9,6 +9,7 @@ class FelicityEMSCard extends LitElement {
       _simOverrides: { type: Object },  // local slider overrides for live preview
       _simResult: { type: Object },     // latest simulation output
       _viewTomorrow: { type: Boolean }, // manual today/tomorrow toggle (null = auto)
+      _pastSlotActions: { type: Object }, // past slot actions from HA history
     };
   }
 
@@ -20,6 +21,8 @@ class FelicityEMSCard extends LitElement {
     this._viewTomorrow = null;  // null = auto, true = tomorrow, false = today
     this._showingTomorrow = false; // tracks what's actually displayed
     this._hasTomorrowData = false; // tracks if tomorrow price data is available
+    this._pastSlotActions = {};    // slot index → "charging"/"discharging" from HA history
+    this._lastHistoryFetch = 0;   // timestamp of last history fetch
   }
 
   static getConfigElement() {
@@ -38,6 +41,7 @@ class FelicityEMSCard extends LitElement {
     super.updated(changedProps);
     if (changedProps.has("hass")) {
       this._resolveDeviceEntities();
+      this._fetchEnergyHistory();
       this._drawSlotTimeline();
     }
   }
@@ -50,6 +54,65 @@ class FelicityEMSCard extends LitElement {
       .filter((e) => e.device_id === this.config.device_id)
       .map((e) => e.entity_id)
       .sort();
+  }
+
+  async _fetchEnergyHistory() {
+    // Throttle: fetch at most once per 60 seconds
+    const now = Date.now();
+    if (now - this._lastHistoryFetch < 60000) return;
+    this._lastHistoryFetch = now;
+
+    const entityId = this._getEntityId("energy_state");
+    if (!entityId || !this.hass) return;
+
+    const granularity = this._getAttr("schedule_status", "slot_granularity_min") || 60;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startTime = today.toISOString();
+
+    try {
+      const history = await this.hass.callApi(
+        "GET",
+        `history/period/${startTime}?filter_entity_id=${entityId}&minimal_response&no_attributes`
+      );
+      if (!history?.[0]?.length) return;
+
+      const states = history[0];
+      const slotActions = {};
+      const nowDate = new Date();
+      const currentSlot = Math.floor((nowDate.getHours() * 60 + nowDate.getMinutes()) / granularity);
+
+      // For each past slot, find the dominant state
+      for (let slot = 0; slot < currentSlot; slot++) {
+        const slotStartMin = slot * granularity;
+        const slotEndMin = slotStartMin + granularity;
+        const slotStart = new Date(today.getTime() + slotStartMin * 60000);
+        const slotEnd = new Date(today.getTime() + slotEndMin * 60000);
+
+        // Find state changes that overlap this slot
+        let chargingMs = 0, dischargingMs = 0;
+        for (let j = 0; j < states.length; j++) {
+          const stateStart = new Date(states[j].last_changed);
+          const stateEnd = j + 1 < states.length ? new Date(states[j + 1].last_changed) : nowDate;
+          const overlapStart = Math.max(stateStart.getTime(), slotStart.getTime());
+          const overlapEnd = Math.min(stateEnd.getTime(), slotEnd.getTime());
+          if (overlapStart >= overlapEnd) continue;
+          const duration = overlapEnd - overlapStart;
+          const state = states[j].state;
+          if (state === "charging") chargingMs += duration;
+          else if (state === "discharging") dischargingMs += duration;
+        }
+
+        // Only mark if meaningful activity (>10% of slot duration)
+        const threshold = granularity * 60000 * 0.1;
+        if (chargingMs > threshold) slotActions[slot] = "charging";
+        else if (dischargingMs > threshold) slotActions[slot] = "discharging";
+      }
+
+      this._pastSlotActions = slotActions;
+    } catch (e) {
+      // History API not available or failed — no past coloring
+    }
   }
 
   _getEntityId(key) {
@@ -379,10 +442,15 @@ class FelicityEMSCard extends LitElement {
       } else {
         // Today: color based on simulated action, dim past slots
         const isPast = i < currentSlot;
-        if (slot.action === "charge") {
-          ctx.fillStyle = isPast ? "rgba(76, 175, 80, 0.3)" : "#4CAF50";
+        const pastAction = isPast ? this._pastSlotActions?.[i] : null;
+        if (isPast && pastAction === "charging") {
+          ctx.fillStyle = "rgba(76, 175, 80, 0.3)";  // dim green — actually charged
+        } else if (isPast && pastAction === "discharging") {
+          ctx.fillStyle = "rgba(255, 152, 0, 0.3)";  // dim orange — actually discharged
+        } else if (slot.action === "charge") {
+          ctx.fillStyle = isPast ? "rgba(150, 150, 150, 0.2)" : "#4CAF50";
         } else if (slot.action === "discharge") {
-          ctx.fillStyle = isPast ? "rgba(255, 152, 0, 0.3)" : "#FF9800";
+          ctx.fillStyle = isPast ? "rgba(150, 150, 150, 0.2)" : "#FF9800";
         } else if (price < 0) {
           ctx.fillStyle = isPast ? "rgba(33, 150, 243, 0.3)" : "#2196F3";
         } else {
