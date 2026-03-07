@@ -731,7 +731,7 @@ class FelicityEMSCard extends LitElement {
             <div class="pv-item">
               <ha-icon icon="mdi:sun-clock"></ha-icon>
               <div>
-                <span class="pv-label">Forecast Remaining</span>
+                <span class="pv-label">Remaining</span>
                 <span class="pv-value">${this._fmt(pvRemaining, 1)} kWh</span>
               </div>
             </div>
@@ -753,12 +753,15 @@ class FelicityEMSCard extends LitElement {
 
           <!-- Controls -->
           <div class="controls-section">
-            <div class="controls-label">Controls</div>
             <div class="controls-grid">
               ${this._renderGridModeControl(gridMode)}
               ${this._renderPriceModeControl(priceMode)}
               ${this._renderChargeMaxControl(chargeMax)}
               ${this._renderDischargeMinControl(dischargeMin)}
+            </div>
+          </div>
+          <div class="controls-section">
+            <div class="controls-grid-slider">
               ${this._renderPowerLevelControl()}
               ${this._renderPriceThresholdControl()}
             </div>
@@ -939,7 +942,7 @@ class FelicityEMSCard extends LitElement {
         align-items: center;
       }
       .battery-bars .bar {
-        width: 8px;
+        width: 4px;
         height: 14px;
         border: 1px solid rgba(255, 255, 255, 0.5);
         border-radius: 1px;
@@ -955,7 +958,7 @@ class FelicityEMSCard extends LitElement {
         background: #FF9800;
       }
       .battery-text {
-        font-size: 0.75em;
+        font-size: 0.5em;
         color: var(--secondary-text-color);
         white-space: nowrap;
       }
@@ -965,7 +968,7 @@ class FelicityEMSCard extends LitElement {
         gap: 4px;
       }
       .badge {
-        font-size: 0.6em;
+        font-size: 0.4em;
         padding: 2px 6px;
         border-radius: 8px;
         text-transform: uppercase;
@@ -1119,6 +1122,11 @@ class FelicityEMSCard extends LitElement {
       }
       .controls-grid {
         display: grid;
+        grid-template-columns: 1fr 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .controls-grid-slider {
+        display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 8px;
       }
@@ -1128,7 +1136,7 @@ class FelicityEMSCard extends LitElement {
         gap: 4px;
       }
       .control-label {
-        font-size: 0.75em;
+        font-size: 0.70em;
         color: var(--secondary-text-color);
       }
       .control-item select,
@@ -1139,7 +1147,7 @@ class FelicityEMSCard extends LitElement {
         border-radius: 4px;
         background: var(--secondary-background-color);
         color: var(--primary-text-color);
-        font-size: 0.85em;
+        font-size: 0.75em;
       }
       .control-item input[type="range"] {
         padding: 0;
