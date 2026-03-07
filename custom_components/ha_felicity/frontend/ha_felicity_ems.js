@@ -19,6 +19,7 @@ class FelicityEMSCard extends LitElement {
     this._simResult = null;
     this._viewTomorrow = null;  // null = auto, true = tomorrow, false = today
     this._showingTomorrow = false; // tracks what's actually displayed
+    this._hasTomorrowData = false; // tracks if tomorrow price data is available
   }
 
   static getConfigElement() {
@@ -280,16 +281,14 @@ class FelicityEMSCard extends LitElement {
     this._simResult = simResult;
 
     // Manual override or auto-switch to tomorrow when no actions remain
+    const hasTomorrow = tomorrowSlotData?.length > 0;
     let showTomorrow;
     if (this._viewTomorrow !== null) {
       // Manual toggle — respect user choice (but only if tomorrow data exists)
-      showTomorrow = this._viewTomorrow && tomorrowSlotData?.length > 0;
+      showTomorrow = this._viewTomorrow && hasTomorrow;
     } else {
-      // Auto: switch to tomorrow when no simulated actions remain after current slot
-      const hasFutureActions = simResult?.slots?.some(
-        (s, i) => i >= currentSlotIdx && s.action
-      );
-      showTomorrow = !hasFutureActions && tomorrowSlotData?.length > 0;
+      // Auto: always default to today
+      showTomorrow = false;
     }
 
     // For tomorrow, run a forecast simulation too (no current-slot offset)
@@ -306,6 +305,7 @@ class FelicityEMSCard extends LitElement {
 
     // Track what's actually displayed for toggle button state
     this._showingTomorrow = showTomorrow;
+    this._hasTomorrowData = hasTomorrow;
 
     // Update the timeline label
     const label = this.shadowRoot?.querySelector(".timeline-label");
@@ -580,7 +580,9 @@ class FelicityEMSCard extends LitElement {
     return result;
   }
 
-  _toggleDayView() {
+  _toggleDayView(e) {
+    // Ignore clicks on the disabled tomorrow button
+    if (e?.target?.classList?.contains("disabled")) return;
     if (this._viewTomorrow) {
       this._viewTomorrow = false;
     } else {
@@ -713,7 +715,7 @@ class FelicityEMSCard extends LitElement {
               <div class="timeline-label">Today's Schedule</div>
               <div class="timeline-toggle" @click=${this._toggleDayView}>
                 <span class="toggle-btn ${!this._showingTomorrow ? 'active' : ''}">Today</span>
-                <span class="toggle-btn ${this._showingTomorrow ? 'active' : ''}">Tomorrow</span>
+                <span class="toggle-btn ${this._showingTomorrow ? 'active' : ''} ${!this._hasTomorrowData ? 'disabled' : ''}">Tomorrow</span>
               </div>
             </div>
             <canvas id="slot-timeline"></canvas>
@@ -1069,6 +1071,11 @@ class FelicityEMSCard extends LitElement {
         background: var(--primary-color);
         color: #fff;
         font-weight: 600;
+      }
+      .toggle-btn.disabled {
+        opacity: 0.35;
+        cursor: default;
+        pointer-events: none;
       }
       #slot-timeline {
         width: 100%;
