@@ -103,7 +103,30 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.available_energy_capacity: float = 0.0
         self.charge_likelihood: str = "unknown"
 
-        
+    @property
+    def pv_actual_today_kwh(self) -> float | None:
+        """Return actual PV energy generated today in kWh from inverter registers.
+
+        TREX-5/10: single register 'pv_generated_energy_day' in Wh.
+        TREX-25/50: per-string registers 'pv{1-4}_day_energy' in kWh.
+        """
+        if not self.data:
+            return None
+
+        # TREX-5 / TREX-10: single combined register in Wh
+        wh_val = self.data.get("pv_generated_energy_day")
+        if wh_val is not None:
+            return round(wh_val / 1000.0, 2)
+
+        # TREX-25 / TREX-50: sum per-string registers (already in kWh)
+        string_keys = ["pv1_day_energy", "pv2_day_energy", "pv3_day_energy", "pv4_day_energy"]
+        values = [self.data.get(k) for k in string_keys]
+        valid = [v for v in values if v is not None]
+        if valid:
+            return round(sum(valid), 2)
+
+        return None
+
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
         if index == 1:  # /10 – only for size=1
