@@ -53,7 +53,14 @@ class FelicityEMSCard extends LitElement {
 
   _getEntityId(key) {
     if (!this._deviceEntities?.length) return null;
-    return this._deviceEntities.find((eid) => eid.endsWith(`_${key}`));
+    // Exact suffix match (most common)
+    const exact = this._deviceEntities.find((eid) => eid.endsWith(`_${key}`));
+    if (exact) return exact;
+    // Fallback: key parts appear in order in entity ID (handles name-based IDs
+    // where extra words like "inquiry" are inserted, e.g. key "pv_generated_energy_day"
+    // matches "sensor.xxx_pv_generated_energy_inquiry_day")
+    const re = new RegExp(key.split("_").join("_(?:\\w+_)*"));
+    return this._deviceEntities.find((eid) => re.test(eid));
   }
 
   _getState(key) {
