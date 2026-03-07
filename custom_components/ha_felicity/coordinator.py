@@ -456,7 +456,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         Returns reserve in kWh.
         """
-        minutes_per_slot = (24 * 60) / num_slots
         consumption_per_hour = consumption_est / 24.0
 
         # Determine sunset: last hour with meaningful PV production
@@ -515,7 +514,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         battery_capacity = opts.get("battery_capacity_kwh", 10)
         efficiency = opts.get("efficiency_factor", 0.90)
-        charge_max = opts.get("battery_charge_max_level", 100)
         discharge_min = opts.get("battery_discharge_min_level", 20)
         consumption_est = self._get_consumption_estimate()
 
@@ -795,7 +793,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
 
         battery_capacity = opts.get("battery_capacity_kwh", 10)
-        charge_max = opts.get("battery_charge_max_level", 100)
         discharge_min = opts.get("battery_discharge_min_level", 20)
         current_kwh = (battery_soc / 100.0) * battery_capacity
 
