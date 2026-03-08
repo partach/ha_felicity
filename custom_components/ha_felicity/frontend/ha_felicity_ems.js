@@ -32,6 +32,7 @@ class FelicityEMSCard extends LitElement {
   setConfig(config) {
     this.config = {
       currency: "\u20AC",
+      generator_as_pv: true,
       ...config,
     };
     this.requestUpdate();
@@ -737,7 +738,7 @@ class FelicityEMSCard extends LitElement {
 
       if (pvSum > 0.1) {
         pvActualToday = pvSum;
-      } else {
+      } else if (this.config.generator_as_pv) {
         // Generator-port solar: PV registers read ~0 but solar enters via gen port
         const genEnergy = this._getNumericState("generator_day_cost_energy");
         if (genEnergy != null && genEnergy > 0) {
@@ -745,6 +746,15 @@ class FelicityEMSCard extends LitElement {
         } else {
           pvActualToday = pvSum;
         }
+      } else {
+        pvActualToday = pvSum;
+      }
+    }
+    // Generator-port solar: if backend attr returned near-zero but generator has energy
+    if (this.config.generator_as_pv && (pvActualToday == null || pvActualToday < 0.1)) {
+      const genEnergy = this._getNumericState("generator_day_cost_energy");
+      if (genEnergy != null && genEnergy > 0) {
+        pvActualToday = genEnergy;
       }
     }
     const reserve = this._getAttr("schedule_status", "self_consumption_reserve")
@@ -1317,6 +1327,19 @@ class FelicityEMSCardEditor extends LitElement {
           .value=${this._config.currency || "\u20AC"}
           @change=${(e) => this._valueChanged("currency", e.target.value)}
         ></ha-textfield>
+
+        <div style="display:flex;align-items:center;margin-top:12px;">
+          <ha-checkbox
+            .checked=${this._config.generator_as_pv !== false}
+            @change=${(e) => this._valueChanged("generator_as_pv", e.target.checked)}
+          ></ha-checkbox>
+          <label style="font-size:0.9em;cursor:pointer;"
+            @click=${() => {
+              const cur = this._config.generator_as_pv !== false;
+              this._valueChanged("generator_as_pv", !cur);
+            }}
+          >Treat generator port as PV (micro-inverter solar)</label>
+        </div>
       </div>
     `;
   }
