@@ -412,6 +412,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         temporal distribution), this sums per-hour surpluses: only hours where
         PV exceeds consumption contribute to battery charging.
 
+        Scales the forecast down when actual PV production is significantly
+        below forecast (e.g. cloudy day), using a confidence factor.
+
         Falls back to the flat model when hourly PV data is unavailable.
         """
         pv_remaining = self.pv_forecast_remaining or 0.0
@@ -425,6 +428,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         minutes_per_slot = (24 * 60) / num_slots
         consumption_per_hour = consumption_est / 24.0
 
+        # Calculate confidence factor: how well is actual PV tracking forecast?
+        # If actual << expected-by-now, scale down the surplus estimate.
+        pv_confidence = 1.0
+        pv_actual = self.pv_actual_today_kwh
+        if pv_actual is not None and self.pv_forecast_today:
+            now = datetime.now()
+            # Sum forecast for hours that have already passed
+            expected_so_far = 0.0
+            current_hour = now.hour
+            for hour, kwh in self.pv_hourly_kwh.items():
+                if hour < current_hour:
+                    expected_so_far += kwh
+                elif hour == current_hour:
+                    # Partial hour: fraction of the hour that has elapsed
+                    expected_so_far += kwh * (now.minute / 60.0)
+            if expected_so_far > 1.0:  # only adjust when meaningful production expected
+                pv_confidence = min(1.0, pv_actual / expected_so_far)
+                # Floor at 0.1 to avoid completely ignoring forecast
+                pv_confidence = max(0.1, pv_confidence)
+
         # Sum only the positive surpluses per hour (PV > load = battery charge)
         surplus_total = 0.0
         hours_seen = set()
@@ -434,15 +457,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 continue
             hours_seen.add(hour)
 
-            pv_kwh = self.pv_hourly_kwh.get(hour, 0.0)
+            pv_kwh = self.pv_hourly_kwh.get(hour, 0.0) * pv_confidence
             surplus = pv_kwh - consumption_per_hour
             if surplus > 0:
                 surplus_total += surplus
 
         _LOGGER.debug(
             "PV surplus model: hourly_surplus=%.2f kWh, pv_remaining=%.2f kWh, "
-            "consumption=%.1f kWh/day, hours_checked=%d",
+            "consumption=%.1f kWh/day, hours_checked=%d, pv_confidence=%.0f%%",
             surplus_total, pv_remaining, consumption_est, len(hours_seen),
+            pv_confidence * 100,
         )
         return surplus_total
 
