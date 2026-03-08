@@ -119,32 +119,38 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if not self.data:
             return None
 
+        pv_kwh = 0.0
+        has_pv_data = False
+
         # TREX-5 / TREX-10: single combined register in Wh
         wh_val = self.data.get("pv_generated_energy_day")
         if wh_val is not None:
-            return round(wh_val / 1000.0, 2)
-
-        # TREX-25 / TREX-50: sum per-string registers (already in kWh)
-        string_keys = ["pv1_day_energy", "pv2_day_energy", "pv3_day_energy", "pv4_day_energy"]
-        values = [self.data.get(k) for k in string_keys]
-        valid = [v for v in values if v is not None]
-        pv_from_registers = round(sum(valid), 2) if valid else 0.0
+            pv_kwh = wh_val / 1000.0
+            has_pv_data = True
+        else:
+            # TREX-25 / TREX-50: sum per-string registers (already in kWh)
+            string_keys = ["pv1_day_energy", "pv2_day_energy", "pv3_day_energy", "pv4_day_energy"]
+            values = [self.data.get(k) for k in string_keys]
+            valid = [v for v in values if v is not None]
+            if valid:
+                pv_kwh = sum(valid)
+                has_pv_data = True
 
         # Generator-port solar detection:
-        # If PV registers read 0 (or near-zero) but energy is flowing through the
+        # If PV registers read near-zero but energy is flowing through the
         # generator port, solar is likely connected via micro-inverter on gen port.
-        # Use generator_day_cost_energy as PV actual in that case.
-        if pv_from_registers < 0.1:
+        # Applies to all inverter types.
+        if pv_kwh < 0.1:
             gen_energy = self.data.get("generator_day_cost_energy")
             if gen_energy is not None and gen_energy > 0:
                 _LOGGER.debug(
                     "PV registers near zero (%.2f) but generator port has %.2f kWh "
                     "— using generator energy as PV actual (solar via gen port)",
-                    pv_from_registers, gen_energy,
+                    pv_kwh, gen_energy,
                 )
                 return round(gen_energy, 2)
 
-        return round(pv_from_registers, 2) if valid else None
+        return round(pv_kwh, 2) if has_pv_data else None
 
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""

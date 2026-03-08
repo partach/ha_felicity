@@ -73,6 +73,7 @@ class FelicityInverterCard extends LitElement {
     this.showOptionPrice   = config.show_option_price   ?? true;
     this.showOptionBattery = config.show_option_battery ?? true;
     this.showOptionBar     = config.show_option_bar     ?? true;
+    this.generatorAsPv     = config.generator_as_pv     ?? true;
     this._maxPowerVal    = config.max_power ?? 15;
     this._maxCurrentVal    = config.max_current ?? 25;
     this._selectedSection = "energy_flow";
@@ -1102,9 +1103,9 @@ class FelicityInverterCard extends LitElement {
     // TREX-5/10 fallback
     if (pvPower == null) pvPower = this._getValue('pv_total_power');
 
-    // Generator-port solar detection:
+    // Generator-port solar detection (when enabled):
     // PV reads near-zero but generator port has meaningful power
-    if (pvPower == null || Math.abs(pvPower) < 50) {
+    if (this.generatorAsPv && (pvPower == null || Math.abs(pvPower) < 50)) {
       const genPower = this._getValue('total_generator_active_power');
       if (genPower != null && Math.abs(genPower) > 50) {
         return Math.abs(genPower);
@@ -1122,13 +1123,15 @@ class FelicityInverterCard extends LitElement {
     const genPower = this._getValue('total_generator_active_power');
     if (genPower == null) return 0;
 
-    // Check if generator port is acting as PV source
-    let pvPower = this._getValue('total_pv_power');
-    if (pvPower == null) pvPower = this._getValue('pv_total_power');
+    if (this.generatorAsPv) {
+      // Check if generator port is acting as PV source
+      let pvPower = this._getValue('total_pv_power');
+      if (pvPower == null) pvPower = this._getValue('pv_total_power');
 
-    // If PV is near-zero and generator has power, it's solar not a generator
-    if ((pvPower == null || Math.abs(pvPower) < 50) && Math.abs(genPower) > 50) {
-      return 0;
+      // If PV is near-zero and generator has power, it's solar not a generator
+      if ((pvPower == null || Math.abs(pvPower) < 50) && Math.abs(genPower) > 50) {
+        return 0;
+      }
     }
 
     return Math.abs(genPower);
@@ -1570,8 +1573,22 @@ class FelicityInverterCardEditor extends LitElement {
       </div>
 
       <div class="checkbox-group">
+        <div class="checkbox-group-title">Solar / Generator</div>
+
+        <div class="checkbox-item">
+          <ha-checkbox
+            .checked=${this._config.generator_as_pv !== false}
+            @change=${(e) => this._valueChanged("generator_as_pv", e.target.checked)}
+          ></ha-checkbox>
+          <label class="checkbox-label" @click=${() => this._toggleCheckbox("generator_as_pv")}>
+            Treat generator port as PV (micro-inverter solar)
+          </label>
+        </div>
+      </div>
+
+      <div class="checkbox-group">
         <div class="checkbox-group-title">Visibility Options</div>
-        
+
         <div class="checkbox-item">
           <ha-checkbox
             .checked=${this._config.show_option_price !== false}
