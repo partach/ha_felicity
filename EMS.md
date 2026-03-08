@@ -444,6 +444,38 @@ Rules:
 
 This is critical for reliable operation. Without it, a single cloudy day can leave the battery dangerously low.
 
+### Generator-Port Solar (PV via Micro-Inverter / Gen Port)
+
+**Problem:** Some TREX-25/50 installations have solar panels connected via the generator/micro-inverter port instead of the dedicated PV inputs. In these setups:
+
+- PV registers (`pv1-4_day_energy`) always read **0 kWh**
+- The inverter doesn't know the generator-port power is solar
+- The confidence factor permanently drops to **0.1** (floor), because `actual / expected = 0 / X = 0`
+- The scheduler over-estimates the energy deficit and over-schedules grid charging
+- Likelihood shows "tight" or "at_risk" when solar is actually producing fine
+
+**Detection:** The inverter has a `genmode` register (address 8759) with options: `Generator`, `Smart Load`, `Micro Inv`. When set to `Micro Inv`, the generator port is being used for solar micro-inverters. Additionally, if PV registers read ~0 but `generator_day_cost_energy` > 0, solar is clearly flowing through the generator port.
+
+**Solution:** The `pv_actual_today_kwh` property now falls back to `generator_day_cost_energy` when:
+1. PV string registers read near-zero (< 0.1 kWh), AND
+2. `generator_day_cost_energy` > 0
+
+This ensures the PV confidence factor works correctly even when solar enters via the generator port. The generator energy register (address 4586, 0.1 kWh precision) tracks daily energy just like PV day energy would.
+
+**Available generator registers (TREX-25/50):**
+
+| Register | Address | Description |
+|---|---|---|
+| `generator_day_cost_energy` | 4586 | Daily energy through gen port (kWh) — **used as PV actual fallback** |
+| `total_generator_power` | 4498 | Current total power through gen port (kW) |
+| `phase_a/b/c_generator_active_power` | 4464-4466 | Per-phase gen power (kW) |
+| `genmode` | 8759 | Port mode: Generator / Smart Load / Micro Inv |
+
+**For ha_ems:** This is an important edge case. Any generic EMS must handle the scenario where the inverter's PV measurement point doesn't cover all solar sources. Consider:
+- A config option to specify alternative PV actual entities (e.g., a separate energy meter on the solar array)
+- Auto-detection when PV reads 0 but other power sources show solar-like patterns (daytime-only, follows irradiance curve)
+- A flag to disable the confidence factor entirely if no reliable PV actual measurement exists
+
 ---
 
 ## Manual Mode (`price_mode = manual`)
