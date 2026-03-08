@@ -722,22 +722,28 @@ class FelicityEMSCard extends LitElement {
     // Actual PV today: prefer schedule_status attr, fall back to dedicated sensor entity
     let pvActualToday = this._getAttr("schedule_status", "pv_actual_today_kwh");
     if (pvActualToday == null) {
-      // TREX-5/10: entity key is pv_generated_energy_day (value in Wh, attr kWh available)
+      let pvSum = 0;
+
+      // TREX-5/10: entity key is pv_generated_energy_day (value in Wh)
       const whVal = this._getNumericState("pv_generated_energy_day");
       if (whVal != null) {
-        pvActualToday = whVal / 1000;
+        pvSum = whVal / 1000;
       } else {
         // TREX-25/50: sum per-string day energy entities (already in kWh)
         const strings = ["pv1_day_energy", "pv2_day_energy", "pv3_day_energy", "pv4_day_energy"];
         const vals = strings.map(k => this._getNumericState(k)).filter(v => v != null);
-        const pvSum = vals.length ? vals.reduce((a, b) => a + b, 0) : 0;
-        if (pvSum > 0.1) {
-          pvActualToday = pvSum;
+        if (vals.length) pvSum = vals.reduce((a, b) => a + b, 0);
+      }
+
+      if (pvSum > 0.1) {
+        pvActualToday = pvSum;
+      } else {
+        // Generator-port solar: PV registers read ~0 but solar enters via gen port
+        const genEnergy = this._getNumericState("generator_day_cost_energy");
+        if (genEnergy != null && genEnergy > 0) {
+          pvActualToday = genEnergy;
         } else {
-          // Generator-port solar: PV registers read 0 but solar enters via gen port
-          const genEnergy = this._getNumericState("generator_day_cost_energy");
-          if (genEnergy != null && genEnergy > 0) pvActualToday = genEnergy;
-          else if (vals.length) pvActualToday = pvSum;
+          pvActualToday = pvSum;
         }
       }
     }
