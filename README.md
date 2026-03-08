@@ -19,8 +19,8 @@ Letters are in the type indication like  T-REX-**10**K**H**P**3**G01
 <p align="center">
 <img src="https://github.com/partach/ha_felicity/blob/main/pictures/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
 <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card.gif" width="400" style="vertical-align: middle; margin: 0 10px;"/>
-<img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-ems-card.png" width="400" style="vertical-align: middle; margin: 0 10px;"/>
-<br><em>Felicity invert and cards included</em>
+<img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-ems-card.png" width="290" style="vertical-align: middle; margin: 0 10px;"/>
+<br><em>Felicity inverter and lovelace cards included</em>
 </p>
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20hub.png" width="600"/>
