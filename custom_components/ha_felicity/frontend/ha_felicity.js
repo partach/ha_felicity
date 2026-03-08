@@ -826,7 +826,7 @@ class FelicityInverterCard extends LitElement {
 
               <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <path 
-                  class="flow-path charging ${this._getRawPower('total_pv_power') > 50 ? 'active' : 'inactive'}" 
+                  class="flow-path charging ${this._getEffectivePvPower() > 50 ? 'active' : 'inactive'}"
                   d="M 25 15 L 47 38" 
                   vector-effect="non-scaling-stroke"
                 />
@@ -869,11 +869,9 @@ class FelicityInverterCard extends LitElement {
                 <!-- Generator to Inverter -->
                 <path
                   class="flow-path ${(() => {
-                    const val = this._getValue('total_generator_active_power');
-                    const power = val != null ? parseFloat(val) : 0;
-                    if (Math.abs(power) <= 50) return 'inactive';
-                    if (power > 0) return 'active charging';
-                    return 'active discharging reverse';
+                    const power = this._getEffectiveGeneratorPower();
+                    if (power <= 50) return 'inactive';
+                    return 'active charging';
                   })()} "
                   d="M 50 20 L 50 33"
                   vector-effect="non-scaling-stroke"
@@ -901,15 +899,13 @@ class FelicityInverterCard extends LitElement {
               </svg>
 
               <div class="flow-item pv">
-                <ha-icon 
+                <ha-icon
                   .hass=${this.hass} icon="${(() => {
-                    const power = parseFloat(this._getValue('total_pv_power')) || 0;
-                    if (power > 0) return 'mdi:solar-power-variant';
-                    if (power <= 0) return 'mdi:solar-panel';
-                    return 'mdi:solar-panel';
+                    const power = this._getEffectivePvPower();
+                    return power > 0 ? 'mdi:solar-power-variant' : 'mdi:solar-panel';
                   })()}"
                 ></ha-icon>
-                <div class="power-value">${this._getPower("total_pv_power")}</div>
+                <div class="power-value">${this._formatPower(this._getEffectivePvPower())}</div>
                 <div class="label"></div>
               </div>
 
@@ -934,12 +930,11 @@ class FelicityInverterCard extends LitElement {
                 <ha-icon
                   .hass=${this.hass}
                   icon="${(() => {
-                    const val = this._getValue('total_generator_active_power');
-                    const power = val != null ? Math.abs(parseFloat(val)) : 0;
+                    const power = this._getEffectiveGeneratorPower();
                     return power > 50 ? 'mdi:generator-stationary' : 'mdi:power-plug-off-outline';
                   })()}"
                 ></ha-icon>
-                <div class="power-value">${this._getPower("total_generator_active_power")}</div>
+                <div class="power-value">${this._formatPower(this._getEffectiveGeneratorPower())}</div>
               </div>
 
               <div class="flow-item state">
@@ -1078,6 +1073,10 @@ class FelicityInverterCard extends LitElement {
 
   _getPower(key) {
     const val = this._getValue(key);
+    return this._formatPower(val);
+  }
+
+  _formatPower(val) {
     if (val == null) return "0 W";
 
     const absVal = Math.abs(val);
@@ -1085,6 +1084,54 @@ class FelicityInverterCard extends LitElement {
       return (absVal / 1000).toFixed(2) + " kW";
     }
     return absVal.toFixed(0) + " W";
+  }
+
+  /**
+   * Effective PV power handling all inverter types and generator-port solar.
+   *
+   * TREX-25/50: total_pv_power (sum of 4 PV strings, W)
+   * TREX-5/10:  pv_total_power (sum of PV inputs, W)
+   *
+   * Generator-port solar: When PV registers read near-zero but the generator
+   * port has power, solar panels are connected via micro-inverter on the
+   * generator input. In this case, use generator power as PV power.
+   */
+  _getEffectivePvPower() {
+    // TREX-25/50
+    let pvPower = this._getValue('total_pv_power');
+    // TREX-5/10 fallback
+    if (pvPower == null) pvPower = this._getValue('pv_total_power');
+
+    // Generator-port solar detection:
+    // PV reads near-zero but generator port has meaningful power
+    if (pvPower == null || Math.abs(pvPower) < 50) {
+      const genPower = this._getValue('total_generator_active_power');
+      if (genPower != null && Math.abs(genPower) > 50) {
+        return Math.abs(genPower);
+      }
+    }
+
+    return pvPower != null ? Math.abs(pvPower) : 0;
+  }
+
+  /**
+   * Effective generator power — returns 0 when generator port is providing
+   * solar (micro-inverter mode) so the power isn't double-counted.
+   */
+  _getEffectiveGeneratorPower() {
+    const genPower = this._getValue('total_generator_active_power');
+    if (genPower == null) return 0;
+
+    // Check if generator port is acting as PV source
+    let pvPower = this._getValue('total_pv_power');
+    if (pvPower == null) pvPower = this._getValue('pv_total_power');
+
+    // If PV is near-zero and generator has power, it's solar not a generator
+    if ((pvPower == null || Math.abs(pvPower) < 50) && Math.abs(genPower) > 50) {
+      return 0;
+    }
+
+    return Math.abs(genPower);
   }
 
   _getBatteryIcon() {
