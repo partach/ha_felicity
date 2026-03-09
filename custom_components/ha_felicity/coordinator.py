@@ -574,7 +574,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             consumption_est, num_slots_tomorrow, all_tomorrow_slots)
 
         min_kwh = (discharge_min / 100.0) * battery_capacity
-        tomorrow_reserve_target = max(min_kwh, tomorrow_reserve)
+        tomorrow_reserve_target = min(battery_capacity, min_kwh + tomorrow_reserve)
 
         # Tomorrow's net PV: flat model (surplus = PV - consumption, clamped to 0)
         tomorrow_net_pv = max(0.0, tomorrow_pv - tomorrow_consumption)
@@ -724,7 +724,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.self_consumption_reserve = round(reserve_kwh, 2)
 
             min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_target = max(min_kwh, reserve_kwh)  # need at least this by end of day
+            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)  # overnight drain + min floor
 
             # 2. How much are we short of the overnight reserve?
             battery_shortfall = max(0.0, reserve_target - current_kwh)
@@ -831,7 +831,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             #    but to ensure we have enough reserve for overnight self-consumption.
             #    Solar should handle the rest; grid is only a backstop.
             min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_target = max(min_kwh, reserve_kwh)  # need at least this much by end of day
+            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)  # overnight drain + min floor
             battery_shortfall = max(0.0, reserve_target - current_kwh)  # how much we're short right now
             base_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
 
@@ -1010,7 +1010,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             reserve_kwh = self._calculate_self_consumption_reserve(
                 consumption_est, num_slots, remaining)
             min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_target = max(min_kwh, reserve_kwh)
+            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)
             shortfall = max(0.0, reserve_target - current_kwh)
             energy_deficit = max(0.0, shortfall - net_pv)
 
