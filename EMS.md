@@ -311,6 +311,13 @@ The schedule optimizer runs every update cycle and determines which time slots s
    b. Sort remaining by price ascending
    c. Pick cheapest N slots to cover remaining deficit
    d. threshold = highest price among selected slots
+
+7. Cross-day lookahead (when tomorrow's prices available):
+   a. Estimate tomorrow's deficit (using tomorrow's prices, PV forecast)
+   b. Find tomorrow's "would-pay" price (highest price it would select)
+   c. If today has remaining slots cheaper than tomorrow's would-pay price,
+      pre-charge today to avoid more expensive charging tomorrow
+   d. Capped by battery headroom (don't exceed charge_max)
 ```
 
 ### Step-by-Step: `to_grid` Mode
@@ -460,7 +467,18 @@ This is critical for reliable operation. Without it, a single cloudy day can lea
 1. PV string registers read near-zero (< 0.1 kWh), AND
 2. `generator_day_cost_energy` > 0
 
+This applies to **all inverter types** (TREX-5/10 and TREX-25/50). The backend collects PV energy from whichever register type exists, then checks the generator fallback if the total is near-zero — regardless of model.
+
 This ensures the PV confidence factor works correctly even when solar enters via the generator port. The generator energy register (address 4586, 0.1 kWh precision) tracks daily energy just like PV day energy would.
+
+**Card `generator_as_pv` setting (default: true):**
+
+Both the inverter card and EMS card expose a `generator_as_pv` config option (checkbox in the card editor: *"Treat generator port as PV (micro-inverter solar)"*). When enabled:
+
+- **Inverter card**: Real-time PV power display uses `total_generator_active_power` when PV registers read near-zero. Generator display shows 0 W to avoid double-counting. SVG flow animations follow accordingly.
+- **EMS card**: PV Today display falls back to `generator_day_cost_energy` even when the backend `pv_actual_today_kwh` attribute returns 0 (the frontend applies its own secondary check).
+
+When disabled (for users with actual diesel generators), both cards show raw PV and generator values without merging.
 
 **Available generator registers (TREX-25/50):**
 
@@ -472,9 +490,10 @@ This ensures the PV confidence factor works correctly even when solar enters via
 | `genmode` | 8759 | Port mode: Generator / Smart Load / Micro Inv |
 
 **For ha_ems:** This is an important edge case. Any generic EMS must handle the scenario where the inverter's PV measurement point doesn't cover all solar sources. Consider:
-- A config option to specify alternative PV actual entities (e.g., a separate energy meter on the solar array)
+- A config option to specify alternative PV actual entities (e.g., a separate energy meter on the solar array) — **implemented** as `generator_as_pv` card setting
 - Auto-detection when PV reads 0 but other power sources show solar-like patterns (daytime-only, follows irradiance curve)
 - A flag to disable the confidence factor entirely if no reliable PV actual measurement exists
+- Both real-time power (inverter card) and daily energy (EMS card) must handle the fallback independently
 
 ---
 
@@ -691,6 +710,15 @@ Shows four PV values:
 
 When `pv_actual_today_kwh` is not available as a schedule_status attribute, the card falls back to reading the entity directly.
 
+**Generator-port solar fallback (PV Today):**
+
+The PV Today value uses a multi-level fallback:
+1. `pv_actual_today_kwh` attribute from `schedule_status` sensor (backend)
+2. If null: direct entity read (`pv_generated_energy_day` for TREX-5/10, or sum of `pv1-4_day_energy` for TREX-25/50)
+3. If near-zero AND `generator_as_pv` enabled: `generator_day_cost_energy` entity
+
+Step 3 also applies as a secondary check when step 1 returns 0 (not null) — ensuring generator-port solar is always captured when the backend attribute hasn't been updated yet.
+
 ---
 
 ## Inverter Control
@@ -889,6 +917,34 @@ The average works with as few as 1 day of data (divides by actual number of entr
 ### 9. Yesterday's Deficit Carryover
 
 **Design:** If the battery didn't reach its target yesterday, the deficit carries forward to today's energy target (capped by physical battery headroom). This prevents persistent under-charging across days.
+
+### 10. Cross-Day Price Lookahead (Tomorrow Pre-Charge)
+
+**Problem:** Tomorrow's prices often become available around 13:00. If tomorrow's cheapest slots are more expensive than today's remaining cheap slots, it's wasteful to wait — we should pre-charge today.
+
+**Example scenario:**
+- Today at 14:00: some cheap slots remaining at 0.15 €/kWh
+- Tomorrow's cheapest available: 0.25 €/kWh
+- Battery has headroom (not full)
+- → Pre-charge today at 0.15 instead of paying 0.25 tomorrow
+
+**Algorithm (`_calculate_tomorrow_precharge`):**
+1. Estimate tomorrow's deficit using tomorrow's prices, PV forecast, and consumption estimate
+2. Simulate tomorrow's schedule: find what price tomorrow would have to pay (highest price among selected slots)
+3. Look at today's remaining slots that are cheaper than tomorrow's would-pay price
+4. Exclude slots already selected for today's deficit
+5. Pre-charge the lesser of: tomorrow's deficit, battery headroom, or available cheap slots
+6. Log estimated savings: `energy × (tomorrow_price - today_price)`
+
+**Constraints:**
+- Only activates when tomorrow's prices are available (typically after ~13:00)
+- Only one day of lookahead (no data beyond tomorrow)
+- Uses flat PV model for tomorrow (no hourly breakdown)
+- Assumes battery starts tomorrow at discharge_min (conservative — overnight drain)
+- Capped by battery charge_max to prevent overcharging
+- Exposed as `tomorrow_precharge_kwh` in schedule_status attributes
+
+**For ha_ems:** This is a natural fit for any multi-day optimizer. The key insight is that tomorrow's prices arriving at ~13:00 means most of today's cheapest morning slots are already gone — so the benefit window is limited to today's afternoon cheap slots vs tomorrow's cheapest. Future work: consider 2+ day lookahead if data becomes available, and weight the confidence of precharge decisions by how much cheaper today actually is (small savings may not be worth the risk).
 
 ---
 
