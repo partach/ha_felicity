@@ -97,6 +97,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._yesterday_deficit: float = 0.0
         self.self_consumption_reserve: float = 0.0
         self._last_net_pv: float = 0.0
+        self.tomorrow_precharge: float = 0.0
 
         # Always-visible slot info (regardless of price_mode)
         self.available_slots_at_threshold: int = 0
@@ -535,6 +536,130 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         )
         return reserve
 
+    def _calculate_tomorrow_precharge(self, consumption_est: float,
+                                       battery_capacity: float,
+                                       discharge_min: float,
+                                       efficiency: float,
+                                       energy_per_slot: float,
+                                       today_remaining: list[tuple[int, float]],
+                                       today_deficit_slots: list[tuple[int, float]],
+                                       ) -> tuple[float, float]:
+        """Calculate extra energy to pre-charge today for tomorrow's needs.
+
+        When tomorrow's prices are available (typically after ~13:00), estimates
+        tomorrow's grid energy deficit and checks if today has cheaper remaining
+        slots. If so, returns extra energy to charge today and the max price
+        to pay (tomorrow's would-pay price).
+
+        Returns (precharge_kwh, max_price) or (0, 0) if no benefit.
+        """
+        if not self.slot_prices_tomorrow:
+            return 0.0, 0.0
+
+        tomorrow_prices = self.slot_prices_tomorrow
+        num_slots_tomorrow = len(tomorrow_prices)
+        if num_slots_tomorrow == 0:
+            return 0.0, 0.0
+
+        # Tomorrow's PV forecast (flat model — no hourly breakdown available)
+        tomorrow_pv = self.pv_forecast_tomorrow or 0.0
+        tomorrow_consumption = consumption_est
+
+        # Estimate tomorrow's overnight reserve (same logic, using today's
+        # sunset/sunrise as proxy since we don't have tomorrow's hourly PV)
+        slot_duration_hours = (24 * 60 / num_slots_tomorrow) / 60.0
+        all_tomorrow_slots = [(i, tomorrow_prices[i]) for i in range(num_slots_tomorrow)
+                              if tomorrow_prices[i] is not None]
+        tomorrow_reserve = self._calculate_self_consumption_reserve(
+            consumption_est, num_slots_tomorrow, all_tomorrow_slots)
+
+        min_kwh = (discharge_min / 100.0) * battery_capacity
+        tomorrow_reserve_target = max(min_kwh, tomorrow_reserve)
+
+        # Tomorrow's net PV: flat model (surplus = PV - consumption, clamped to 0)
+        tomorrow_net_pv = max(0.0, tomorrow_pv - tomorrow_consumption)
+
+        # Tomorrow's battery start: estimate what we'll have after tonight's drain
+        # = current reserve target (what we aim for by end of today)
+        # The overnight consumption drains reserve_target down to ~discharge_min
+        # So tomorrow starts at roughly discharge_min level
+        tomorrow_start_kwh = min_kwh
+
+        # Tomorrow's deficit: how much grid energy would tomorrow need?
+        tomorrow_shortfall = max(0.0, tomorrow_reserve_target - tomorrow_start_kwh)
+        tomorrow_deficit = max(0.0, tomorrow_shortfall - tomorrow_net_pv)
+
+        if tomorrow_deficit <= 0:
+            return 0.0, 0.0
+
+        # What price would tomorrow have to pay?
+        # Sort tomorrow's slots by price, pick cheapest to cover deficit
+        effective_per_slot = energy_per_slot * efficiency
+        if effective_per_slot <= 0:
+            return 0.0, 0.0
+
+        tomorrow_non_negative = sorted(
+            [(i, p) for i, p in all_tomorrow_slots if p >= 0],
+            key=lambda x: x[1]
+        )
+        tomorrow_slots_needed = math.ceil(tomorrow_deficit / effective_per_slot)
+        tomorrow_selected = tomorrow_non_negative[:tomorrow_slots_needed]
+
+        if not tomorrow_selected:
+            return 0.0, 0.0
+
+        # Tomorrow's highest price it would pay
+        tomorrow_max_price = max(s[1] for s in tomorrow_selected)
+
+        # Today's remaining slots that are cheaper than tomorrow's max price
+        # Exclude slots already selected for today's deficit
+        today_deficit_indices = {s[0] for s in today_deficit_slots}
+        today_cheaper = [
+            (i, p) for i, p in today_remaining
+            if p >= 0 and p < tomorrow_max_price and i not in today_deficit_indices
+        ]
+
+        if not today_cheaper:
+            return 0.0, 0.0
+
+        # How much can we pre-charge? Limited by:
+        # 1. Tomorrow's deficit
+        # 2. Battery headroom (don't exceed charge_max capacity)
+        # 3. Available cheap slots today
+        charge_max_pct = self.config_entry.options.get("battery_charge_max_level", 100)
+        max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
+        # Battery headroom accounts for today's planned charge too
+        today_planned = len(today_deficit_slots) * effective_per_slot
+        # We're targeting reserve, so the battery at end of today should be ~reserve_target
+        # Pre-charging extra goes on top of that
+        available_headroom = max(0.0, max_battery_kwh - (self.self_consumption_reserve + today_planned))
+
+        precharge_energy = min(tomorrow_deficit, available_headroom)
+        precharge_slots_needed = math.ceil(precharge_energy / effective_per_slot) if precharge_energy > 0 else 0
+        today_cheaper_sorted = sorted(today_cheaper, key=lambda x: x[1])
+        precharge_slots = today_cheaper_sorted[:precharge_slots_needed]
+
+        if not precharge_slots:
+            return 0.0, 0.0
+
+        actual_precharge = len(precharge_slots) * effective_per_slot
+        actual_precharge = min(actual_precharge, precharge_energy)
+        max_price_today = max(s[1] for s in precharge_slots)
+
+        # Calculate savings: energy × (tomorrow_price - today_price)
+        avg_today_price = sum(s[1] for s in precharge_slots) / len(precharge_slots)
+        savings = actual_precharge * (tomorrow_max_price - avg_today_price)
+
+        _LOGGER.info(
+            "Tomorrow pre-charge: %.2f kWh across %d slots (today avg=%.4f, "
+            "tomorrow would-pay=%.4f, est savings=%.2f %s)",
+            actual_precharge, len(precharge_slots), avg_today_price,
+            tomorrow_max_price, savings,
+            self.config_entry.options.get("currency", "€"),
+        )
+
+        return actual_precharge, max_price_today
+
     def _calculate_schedule(self, battery_soc: float | None) -> None:
         """Calculate optimal charge/discharge schedule based on prices, forecast, and battery.
 
@@ -618,13 +743,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             energy_target = energy_deficit
 
-            if energy_deficit <= 0:
-                self.scheduled_slots = {}
-                self.cheap_slots_remaining = 0
-                self.grid_energy_planned = 0.0
-                self.schedule_status = "no_action_needed"
-                return
-
             # Negative prices: always charge (you get paid to take energy!)
             negative_slots = [(i, p) for i, p in remaining if p < 0]
             non_negative_slots = [(i, p) for i, p in remaining if p >= 0]
@@ -640,9 +758,32 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             selected = negative_slots + selected_positive
 
+            # Cross-day lookahead: pre-charge for tomorrow if today has cheaper slots
+            precharge_kwh, _ = self._calculate_tomorrow_precharge(
+                consumption_est, battery_capacity, discharge_min, efficiency,
+                energy_per_slot, remaining, selected)
+            self.tomorrow_precharge = round(precharge_kwh, 2)
+            if precharge_kwh > 0:
+                precharge_slots_needed = math.ceil(precharge_kwh / effective_per_slot)
+                today_selected_indices = {s[0] for s in selected}
+                precharge_candidates = [
+                    (i, p) for i, p in sorted_non_negative
+                    if i not in today_selected_indices
+                ][:precharge_slots_needed]
+                selected = selected + precharge_candidates
+                energy_target += precharge_kwh
+
+            if not selected:
+                self.scheduled_slots = {}
+                self.cheap_slots_remaining = 0
+                self.grid_energy_planned = 0.0
+                self.schedule_status = "no_action_needed"
+                return
+
             self.scheduled_slots = {s[0]: "charge" for s in selected}
             self.cheap_slots_remaining = len(self.scheduled_slots)
-            self.grid_energy_planned = round(min(energy_deficit, len(selected) * effective_per_slot), 2)
+            total_planned = energy_deficit + precharge_kwh
+            self.grid_energy_planned = round(min(total_planned, len(selected) * effective_per_slot), 2)
 
             if selected:
                 # Threshold is the highest price in our selected set (boundary price)
@@ -714,6 +855,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             charge_needed = math.ceil(remaining_deficit / effective_per_slot) if effective_per_slot > 0 else 0
             charge_selected = sorted_cheap[:charge_needed]
             charge_slots = negative_slots + charge_selected
+
+            # 5b. Cross-day lookahead: pre-charge for tomorrow if today has cheaper slots
+            precharge_kwh, _ = self._calculate_tomorrow_precharge(
+                consumption_est, battery_capacity, discharge_min, efficiency,
+                energy_per_slot, remaining, charge_slots)
+            self.tomorrow_precharge = round(precharge_kwh, 2)
+            if precharge_kwh > 0:
+                precharge_slots_needed = math.ceil(precharge_kwh / effective_per_slot)
+                charge_indices = {s[0] for s in charge_slots}
+                precharge_candidates = [
+                    (i, p) for i, p in sorted_cheap
+                    if i not in charge_indices
+                ][:precharge_slots_needed]
+                charge_slots = charge_slots + precharge_candidates
+
             charge_slot_indices = {s[0] for s in charge_slots}
 
             # 6. Select discharge slots — only sell true surplus at profitable prices
@@ -739,10 +895,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.scheduled_slots[s[0]] = "discharge"
 
             self.cheap_slots_remaining = len(self.scheduled_slots)
-            charge_energy = round(min(energy_deficit, len(charge_slots) * effective_per_slot), 2) if energy_deficit > 0 else 0
+            total_charge_target = energy_deficit + precharge_kwh
+            charge_energy = round(min(total_charge_target, len(charge_slots) * effective_per_slot), 2) if total_charge_target > 0 else 0
             sell_energy = round(min(sellable, len(sell_selected) * energy_per_slot), 2) if sellable > 0 else 0
             self.grid_energy_planned = round(charge_energy + sell_energy, 2)
-            energy_target = energy_deficit + sellable
+            energy_target = total_charge_target + sellable
 
             # Set threshold to the charge boundary (for info display compatibility)
             if charge_slots:

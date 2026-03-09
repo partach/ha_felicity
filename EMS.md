@@ -311,6 +311,13 @@ The schedule optimizer runs every update cycle and determines which time slots s
    b. Sort remaining by price ascending
    c. Pick cheapest N slots to cover remaining deficit
    d. threshold = highest price among selected slots
+
+7. Cross-day lookahead (when tomorrow's prices available):
+   a. Estimate tomorrow's deficit (using tomorrow's prices, PV forecast)
+   b. Find tomorrow's "would-pay" price (highest price it would select)
+   c. If today has remaining slots cheaper than tomorrow's would-pay price,
+      pre-charge today to avoid more expensive charging tomorrow
+   d. Capped by battery headroom (don't exceed charge_max)
 ```
 
 ### Step-by-Step: `to_grid` Mode
@@ -910,6 +917,34 @@ The average works with as few as 1 day of data (divides by actual number of entr
 ### 9. Yesterday's Deficit Carryover
 
 **Design:** If the battery didn't reach its target yesterday, the deficit carries forward to today's energy target (capped by physical battery headroom). This prevents persistent under-charging across days.
+
+### 10. Cross-Day Price Lookahead (Tomorrow Pre-Charge)
+
+**Problem:** Tomorrow's prices often become available around 13:00. If tomorrow's cheapest slots are more expensive than today's remaining cheap slots, it's wasteful to wait — we should pre-charge today.
+
+**Example scenario:**
+- Today at 14:00: some cheap slots remaining at 0.15 €/kWh
+- Tomorrow's cheapest available: 0.25 €/kWh
+- Battery has headroom (not full)
+- → Pre-charge today at 0.15 instead of paying 0.25 tomorrow
+
+**Algorithm (`_calculate_tomorrow_precharge`):**
+1. Estimate tomorrow's deficit using tomorrow's prices, PV forecast, and consumption estimate
+2. Simulate tomorrow's schedule: find what price tomorrow would have to pay (highest price among selected slots)
+3. Look at today's remaining slots that are cheaper than tomorrow's would-pay price
+4. Exclude slots already selected for today's deficit
+5. Pre-charge the lesser of: tomorrow's deficit, battery headroom, or available cheap slots
+6. Log estimated savings: `energy × (tomorrow_price - today_price)`
+
+**Constraints:**
+- Only activates when tomorrow's prices are available (typically after ~13:00)
+- Only one day of lookahead (no data beyond tomorrow)
+- Uses flat PV model for tomorrow (no hourly breakdown)
+- Assumes battery starts tomorrow at discharge_min (conservative — overnight drain)
+- Capped by battery charge_max to prevent overcharging
+- Exposed as `tomorrow_precharge_kwh` in schedule_status attributes
+
+**For ha_ems:** This is a natural fit for any multi-day optimizer. The key insight is that tomorrow's prices arriving at ~13:00 means most of today's cheapest morning slots are already gone — so the benefit window is limited to today's afternoon cheap slots vs tomorrow's cheapest. Future work: consider 2+ day lookahead if data becomes available, and weight the confidence of precharge decisions by how much cheaper today actually is (small savings may not be worth the risk).
 
 ---
 
