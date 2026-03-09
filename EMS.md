@@ -291,9 +291,10 @@ The schedule optimizer runs every update cycle and determines which time slots s
 
 2. Calculate reserve target:
    - min_kwh = discharge_min% × battery_capacity
-   - reserve_target = max(min_kwh, reserve_kwh)
-   NOTE: target is reserve, NOT charge_max. We don't try to fill
-   the battery to 100% — only enough to survive overnight.
+   - reserve_target = min(battery_capacity, min_kwh + reserve_kwh)
+   The target ensures that AFTER overnight drain the battery still
+   sits at min_kwh. It is NOT charge_max — only enough to survive
+   overnight while respecting the minimum SOC floor.
 
 3. Calculate battery shortfall:
    - battery_shortfall = max(0, reserve_target - current_kwh)
@@ -325,12 +326,11 @@ The schedule optimizer runs every update cycle and determines which time slots s
 ```
 1. Calculate reserve floor:
    - min_kwh = discharge_min% × battery_capacity
-   - reserve_kwh = self-consumption reserve
-   - reserve_floor = max(min_kwh, reserve_kwh)
 
 2. Calculate sellable energy:
-   - sellable = max(0, current_kwh - reserve_floor) × efficiency
-   NOTE: never sell below the reserve floor
+   - sellable = max(0, current_kwh - min_kwh) × efficiency
+   NOTE: to_grid mode uses discharge_min as floor (no overnight reserve
+   since user is actively selling, not self-consuming)
 
 3. Select discharge slots:
    a. Exclude negative-price slots (never sell at a loss)
@@ -352,16 +352,17 @@ The schedule optimizer runs every update cycle and determines which time slots s
 │  └─ reserve = consumption_per_hour × overnight_hours           │
 │                                                                │
 │  PHASE 1 — CHARGE SIDE (grid only if solar can't cover)       │
-│  ├─ reserve_target = max(discharge_min, overnight_reserve)     │
+│  ├─ reserve_target = discharge_min + overnight_reserve         │
+│  │  (capped at battery_capacity)                               │
 │  ├─ battery_shortfall = reserve_target − current_kwh           │
-│  │  (NOT charge_max — only target the overnight reserve)       │
+│  │  Ensures battery is ABOVE min SOC after overnight drain     │
 │  ├─ Subtract hourly PV surplus (solar covers most/all)         │
 │  ├─ energy_deficit = shortfall − net_pv (often 0 on sunny days)│
 │  ├─ Always include negative-price slots (paid to charge)       │
 │  └─ Fill remaining deficit with cheapest non-negative slots    │
 │                                                                │
 │  PHASE 2 — DISCHARGE SIDE (only sell true surplus)             │
-│  ├─ reserve_floor = max(discharge_min, overnight_reserve)      │
+│  ├─ reserve_floor = discharge_min + overnight_reserve          │
 │  ├─ sellable = (current_kwh − reserve_floor) × efficiency      │
 │  └─ Select most expensive positive-price slots                 │
 │                                                                │
@@ -376,10 +377,10 @@ The schedule optimizer runs every update cycle and determines which time slots s
 │     (prevents selling battery while buying from grid)          │
 │                                                                │
 │  Example: battery=30kWh, reserve=15kWh, discharge_min=6kWh    │
-│  ├─ reserve_floor = max(6, 15) = 15 kWh                       │
-│  ├─ sellable = (30 − 15) × 0.9 = 13.5 kWh                    │
-│  └─ Only sell 13.5 kWh at profitable prices                   │
-│     (remaining 15 kWh reserved for overnight)                  │
+│  ├─ reserve_floor = 6 + 15 = 21 kWh                           │
+│  ├─ sellable = (30 − 21) × 0.9 = 8.1 kWh                     │
+│  └─ Only sell 8.1 kWh at profitable prices                    │
+│     (remaining 21 kWh = overnight drain + min SOC floor)       │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```

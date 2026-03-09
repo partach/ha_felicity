@@ -216,11 +216,11 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      // Solar-first: target is overnight reserve for BOTH modes (not charge_max).
-      // Grid is only used to cover what solar can't provide for overnight self-consumption.
+      // Solar-first: target = min SOC floor + overnight reserve.
+      // After overnight drain the battery should still be at min SOC.
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
-      const reserveTarget = Math.max(minKwh, reserveKwh);
+      const reserveTarget = Math.min(batteryCapacity, minKwh + reserveKwh);
       const shortfall = Math.max(0, reserveTarget - currentKwh);
       let deficit = Math.max(0, shortfall - netPv);
       if (yesterdayDeficit > 0 && shortfall > deficit) {
@@ -250,7 +250,7 @@ class FelicityEMSCard extends LitElement {
     if (gridMode === "to_grid" || gridMode === "both") {
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
-      const reserveTarget = Math.max(minKwh, reserveKwh);
+      const reserveTarget = Math.min(batteryCapacity, minKwh + reserveKwh);
       const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency;
       const roundTrip = efficiency * efficiency;
 
@@ -577,7 +577,7 @@ class FelicityEMSCard extends LitElement {
     const netPv = Math.max(0, pvTomorrow - consumption);
     // Overnight reserve: estimate hours from sunset to next sunrise using today's pattern
     const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || (consumption / 24 * 12);
-    const reserveTarget = Math.max(dischargeMin * batteryCapacity, reserveKwh);
+    const reserveTarget = Math.min(batteryCapacity, dischargeMin * batteryCapacity + reserveKwh);
 
     // All slots are "future"
     const remaining = slotData
