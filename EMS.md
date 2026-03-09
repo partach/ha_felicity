@@ -460,7 +460,18 @@ This is critical for reliable operation. Without it, a single cloudy day can lea
 1. PV string registers read near-zero (< 0.1 kWh), AND
 2. `generator_day_cost_energy` > 0
 
+This applies to **all inverter types** (TREX-5/10 and TREX-25/50). The backend collects PV energy from whichever register type exists, then checks the generator fallback if the total is near-zero — regardless of model.
+
 This ensures the PV confidence factor works correctly even when solar enters via the generator port. The generator energy register (address 4586, 0.1 kWh precision) tracks daily energy just like PV day energy would.
+
+**Card `generator_as_pv` setting (default: true):**
+
+Both the inverter card and EMS card expose a `generator_as_pv` config option (checkbox in the card editor: *"Treat generator port as PV (micro-inverter solar)"*). When enabled:
+
+- **Inverter card**: Real-time PV power display uses `total_generator_active_power` when PV registers read near-zero. Generator display shows 0 W to avoid double-counting. SVG flow animations follow accordingly.
+- **EMS card**: PV Today display falls back to `generator_day_cost_energy` even when the backend `pv_actual_today_kwh` attribute returns 0 (the frontend applies its own secondary check).
+
+When disabled (for users with actual diesel generators), both cards show raw PV and generator values without merging.
 
 **Available generator registers (TREX-25/50):**
 
@@ -472,9 +483,10 @@ This ensures the PV confidence factor works correctly even when solar enters via
 | `genmode` | 8759 | Port mode: Generator / Smart Load / Micro Inv |
 
 **For ha_ems:** This is an important edge case. Any generic EMS must handle the scenario where the inverter's PV measurement point doesn't cover all solar sources. Consider:
-- A config option to specify alternative PV actual entities (e.g., a separate energy meter on the solar array)
+- A config option to specify alternative PV actual entities (e.g., a separate energy meter on the solar array) — **implemented** as `generator_as_pv` card setting
 - Auto-detection when PV reads 0 but other power sources show solar-like patterns (daytime-only, follows irradiance curve)
 - A flag to disable the confidence factor entirely if no reliable PV actual measurement exists
+- Both real-time power (inverter card) and daily energy (EMS card) must handle the fallback independently
 
 ---
 
@@ -690,6 +702,15 @@ Shows four PV values:
 - **Tomorrow**: Forecast for tomorrow
 
 When `pv_actual_today_kwh` is not available as a schedule_status attribute, the card falls back to reading the entity directly.
+
+**Generator-port solar fallback (PV Today):**
+
+The PV Today value uses a multi-level fallback:
+1. `pv_actual_today_kwh` attribute from `schedule_status` sensor (backend)
+2. If null: direct entity read (`pv_generated_energy_day` for TREX-5/10, or sum of `pv1-4_day_energy` for TREX-25/50)
+3. If near-zero AND `generator_as_pv` enabled: `generator_day_cost_energy` entity
+
+Step 3 also applies as a secondary check when step 1 returns 0 (not null) — ensuring generator-port solar is always captured when the backend attribute hasn't been updated yet.
 
 ---
 
