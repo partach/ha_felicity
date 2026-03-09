@@ -1362,6 +1362,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as err:
                     _LOGGER.error("Read error at address %d, count: %d error:%s", start_addr, count, err)
+                    continue
 
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
