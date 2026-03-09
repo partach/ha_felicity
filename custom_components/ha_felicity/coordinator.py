@@ -829,7 +829,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             self.scheduled_slots = {s[0]: "charge" for s in selected}
             self.cheap_slots_remaining = len(self.scheduled_slots)
-            total_planned = energy_deficit + precharge_kwh
+            total_planned = energy_deficit + max(0, adjustment_kwh)
             self.grid_energy_planned = round(min(total_planned, len(selected) * effective_per_slot), 2)
 
             if selected:
@@ -953,7 +953,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.scheduled_slots[s[0]] = "discharge"
 
             self.cheap_slots_remaining = len(self.scheduled_slots)
-            total_charge_target = energy_deficit + precharge_kwh
+            total_charge_target = energy_deficit + max(0, adjustment_kwh)
             charge_energy = round(min(total_charge_target, len(charge_slots) * effective_per_slot), 2) if total_charge_target > 0 else 0
             sell_energy = round(min(sellable, len(sell_selected) * energy_per_slot), 2) if sellable > 0 else 0
             self.grid_energy_planned = round(charge_energy + sell_energy, 2)
