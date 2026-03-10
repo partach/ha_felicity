@@ -928,24 +928,25 @@ The average works with as few as 1 day of data (divides by actual number of entr
 
 **A) DEFER — tomorrow is cheaper:**
 When tomorrow's cheapest slots cost less than today's most expensive selected slots:
-1. Find when tomorrow's first cheap slot starts (e.g., hour 4)
-2. Calculate bridge consumption: energy consumed from now until that hour
+1. Find the **earliest** cheap slot tomorrow (any slot cheaper than today's max price) —
+   this minimizes bridge time. Uses ALL tomorrow slots, not just ones for tomorrow's deficit.
+2. Calculate bridge consumption: energy consumed from now until that earliest slot
 3. Minimum today charge = `max(0, min_kwh + bridge_consumption - current_kwh - net_pv)`
-4. Deferrable = `today_planned_energy - min_today_charge`, capped by tomorrow's deficit
-   and by today's expensive slots (only slots pricier than tomorrow's max are removed)
+4. Deferrable = `today_planned_energy - min_today_charge`, capped by available cheap
+   tomorrow capacity and by today's expensive slots (only slots pricier than tomorrow's max)
 5. Remove the most expensive deferred slots from today's schedule
 6. Tomorrow's scheduler will handle the deferred energy at lower prices
 
 **Example:**
 - Today 17:00, battery 51% (30.6 kWh) of 60 kWh, min SOC 40% (24 kWh)
 - Today: 7 charge slots planned = 12.7 kWh at ~0.30 €/kWh
-- Tomorrow: cheap slots at 0.19 €/kWh starting at hour 4
-- Bridge: (24-17) + 4 = 11 hours × 1.6 kWh/h = 17.6 kWh consumption
-- Min today charge = max(0, 24 + 17.6 - 30.6 - 0) = **11.0 kWh**
-- Deferrable = 12.7 - 11.0 = **1.7 kWh** → remove 1 expensive slot
-- If tomorrow's cheap slots start at hour 0 (midnight): bridge = 7h × 1.6 = 11.2 kWh
-  → min today charge = max(0, 24 + 11.2 - 30.6 - 0) = 4.6 kWh
-  → deferrable = 12.7 - 4.6 = **8.1 kWh** → remove 4-5 expensive slots to tomorrow
+- Tomorrow: cheap slots at 0.19 €/kWh — earliest at hour 0 (midnight)
+- Bridge: (24-17) + 0 = 7 hours × 1.6 kWh/h = 11.2 kWh consumption
+- Min today charge = max(0, 24 + 11.2 - 30.6 - 0) = **4.6 kWh**
+- Deferrable = 12.7 - 4.6 = **8.1 kWh** → remove 4-5 expensive slots to tomorrow
+- If earliest cheap slot is hour 4: bridge = 11h × 1.6 = 17.6 kWh
+  → min today charge = max(0, 24 + 17.6 - 30.6 - 0) = 11.0 kWh
+  → deferrable = 12.7 - 11.0 = **1.7 kWh** → remove 1 expensive slot
 
 **B) PRE-CHARGE — today is cheaper:**
 When today has remaining slots cheaper than what tomorrow would have to pay:
