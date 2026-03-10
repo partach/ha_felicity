@@ -141,6 +141,8 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "scheduled_charge_slots": sum(1 for v in scheduled.values() if v == "charge"),
             "scheduled_discharge_slots": sum(1 for v in scheduled.values() if v == "discharge"),
             "tomorrow_precharge_kwh": self.coordinator.tomorrow_precharge,
+            "tomorrow_planned_slots": self.coordinator.tomorrow_planned_slots,
+            "tomorrow_planned_kwh": self.coordinator.tomorrow_planned_kwh,
             "pv_actual_today_kwh": self.coordinator.pv_actual_today_kwh,
             "pv_forecast_today_kwh": self.coordinator.pv_forecast_today,
             "pv_forecast_remaining_kwh": self.coordinator.pv_forecast_remaining,
