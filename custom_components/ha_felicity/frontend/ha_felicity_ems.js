@@ -233,7 +233,28 @@ class FelicityEMSCard extends LitElement {
         const negEnergy = neg.length * effectivePerSlot;
         const remDeficit = Math.max(0, deficit - negEnergy);
         const needed = effectivePerSlot > 0 ? Math.ceil(remDeficit / effectivePerSlot) : 0;
-        const chargeSlots = [...neg, ...nonNeg.slice(0, needed)];
+        let chargeSlots = [...neg, ...nonNeg.slice(0, needed)];
+
+        // Cross-day defer: if backend says defer energy to tomorrow, remove expensive slots
+        const tomorrowPrecharge = parseFloat(this._getAttr("schedule_status", "tomorrow_precharge_kwh")) || 0;
+        if (tomorrowPrecharge < -0.5 && chargeSlots.length > 0) {
+          const deferKwh = Math.abs(tomorrowPrecharge);
+          const deferSlots = Math.ceil(deferKwh / effectivePerSlot);
+          // Sort positive-price slots by price descending, remove most expensive
+          const positiveSlots = chargeSlots.filter(s => s.price >= 0);
+          const negativeSlots = chargeSlots.filter(s => s.price < 0);
+          positiveSlots.sort((a, b) => b.price - a.price);
+          const toRemove = new Set(positiveSlots.slice(0, deferSlots).map(s => s.idx));
+          chargeSlots = [...negativeSlots, ...positiveSlots.filter(s => !toRemove.has(s.idx))];
+        }
+        // Cross-day pre-charge: if backend says pre-charge extra, add cheap slots
+        else if (tomorrowPrecharge > 0.5 && chargeSlots.length > 0) {
+          const prechargeKwh = tomorrowPrecharge;
+          const extraNeeded = Math.ceil(prechargeKwh / effectivePerSlot);
+          const alreadySelected = new Set(chargeSlots.map(s => s.idx));
+          const extras = nonNeg.filter(s => !alreadySelected.has(s.idx)).slice(0, extraNeeded);
+          chargeSlots = [...chargeSlots, ...extras];
+        }
 
         for (const s of chargeSlots) {
           result.slots[s.idx].action = "charge";
