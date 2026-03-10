@@ -213,7 +213,7 @@ class FelicityEMSCard extends LitElement {
       }
     }
 
-    const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
+    const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, tomorrowChargeCount: 0, tomorrowPlanned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
       // Solar-first: target = min SOC floor + overnight reserve.
@@ -227,43 +227,82 @@ class FelicityEMSCard extends LitElement {
         deficit += Math.min(yesterdayDeficit, shortfall - deficit);
       }
 
-      if (deficit > 0) {
-        const neg = remaining.filter(s => s.price < 0);
-        const nonNeg = remaining.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
+      // Unified slot selection: combine today + tomorrow into one pool
+      // and pick the cheapest slots from both days together.
+      let tomorrowDeficit = 0;
+      const tomorrowSlotData = this._tomorrowSlotData;
+      const hasTomorrow = tomorrowSlotData && tomorrowSlotData.length > 0;
+      if (hasTomorrow) {
+        const consumption = sim.consumption_est_kwh || 10;
+        const pvTmr = this._getNumericState("pv_forecast_tomorrow") || 0;
+        const tmrNetPv = Math.max(0, pvTmr - consumption);
+        const tmrReserve = reserveKwh;  // similar overnight pattern
+        const tmrReserveTarget = Math.min(batteryCapacity, minKwh + tmrReserve);
+        const tmrShortfall = Math.max(0, tmrReserveTarget - minKwh);
+        tomorrowDeficit = Math.max(0, tmrShortfall - tmrNetPv);
+      }
+      const totalDeficit = deficit + tomorrowDeficit;
+
+      if (totalDeficit > 0) {
+        // Build combined pool: today remaining + tomorrow all
+        const todayPool = remaining.map(s => ({ price: s.price, day: 0, idx: s.idx }));
+        let tomorrowPool = [];
+        if (hasTomorrow) {
+          tomorrowPool = tomorrowSlotData
+            .filter(s => s.price != null)
+            .map(s => ({ price: s.price, day: 1, idx: s.slot }));
+        }
+        const combined = [...todayPool, ...tomorrowPool];
+        const neg = combined.filter(s => s.price < 0);
+        const nonNeg = combined.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
         const negEnergy = neg.length * effectivePerSlot;
-        const remDeficit = Math.max(0, deficit - negEnergy);
+        const remDeficit = Math.max(0, totalDeficit - negEnergy);
         const needed = effectivePerSlot > 0 ? Math.ceil(remDeficit / effectivePerSlot) : 0;
-        let chargeSlots = [...neg, ...nonNeg.slice(0, needed)];
+        const allSelected = [...neg, ...nonNeg.slice(0, needed)];
 
-        // Cross-day defer: if backend says defer energy to tomorrow, remove expensive slots
-        const tomorrowPrecharge = parseFloat(this._getAttr("schedule_status", "tomorrow_precharge_kwh")) || 0;
-        if (tomorrowPrecharge < -0.5 && chargeSlots.length > 0) {
-          const deferKwh = Math.abs(tomorrowPrecharge);
-          const deferSlots = Math.ceil(deferKwh / effectivePerSlot);
-          // Sort positive-price slots by price descending, remove most expensive
-          const positiveSlots = chargeSlots.filter(s => s.price >= 0);
-          const negativeSlots = chargeSlots.filter(s => s.price < 0);
-          positiveSlots.sort((a, b) => b.price - a.price);
-          const toRemove = new Set(positiveSlots.slice(0, deferSlots).map(s => s.idx));
-          chargeSlots = [...negativeSlots, ...positiveSlots.filter(s => !toRemove.has(s.idx))];
-        }
-        // Cross-day pre-charge: if backend says pre-charge extra, add cheap slots
-        else if (tomorrowPrecharge > 0.5 && chargeSlots.length > 0) {
-          const prechargeKwh = tomorrowPrecharge;
-          const extraNeeded = Math.ceil(prechargeKwh / effectivePerSlot);
-          const alreadySelected = new Set(chargeSlots.map(s => s.idx));
-          const extras = nonNeg.filter(s => !alreadySelected.has(s.idx)).slice(0, extraNeeded);
-          chargeSlots = [...chargeSlots, ...extras];
+        // Split into today and tomorrow
+        let todayCharge = allSelected.filter(s => s.day === 0);
+        let tomorrowCharge = allSelected.filter(s => s.day === 1);
+
+        // Safety: ensure battery survives until tomorrow's first charge slot
+        if (tomorrowCharge.length > 0 && hasTomorrow) {
+          const consumption = sim.consumption_est_kwh || 10;
+          const tmrGranularity = Math.round((24 * 60) / tomorrowSlotData.length);
+          const earliestTmrSlot = Math.min(...tomorrowCharge.map(s => s.idx));
+          const earliestTmrHour = Math.floor((earliestTmrSlot * tmrGranularity) / 60);
+          const hoursUntilTmrCharge = Math.max(1, (24 - now.getHours()) + earliestTmrHour);
+          const bridgeConsumption = (consumption / 24) * hoursUntilTmrCharge;
+          const todayChargeEnergy = todayCharge.length * effectivePerSlot;
+          const projected = currentKwh + netPv + todayChargeEnergy - bridgeConsumption;
+
+          if (projected < minKwh) {
+            // Swap: replace most expensive tomorrow slots with cheapest available today slots
+            const shortfallKwh = minKwh - projected;
+            const extraNeeded = Math.ceil(shortfallKwh / effectivePerSlot);
+            const todaySelectedIdx = new Set(todayCharge.map(s => s.idx));
+            const availableToday = todayPool
+              .filter(s => s.price >= 0 && !todaySelectedIdx.has(s.idx))
+              .sort((a, b) => a.price - b.price);
+            const tmrByPrice = [...tomorrowCharge].sort((a, b) => b.price - a.price);
+            const swaps = Math.min(extraNeeded, availableToday.length, tmrByPrice.length);
+            for (let j = 0; j < swaps; j++) {
+              todayCharge.push(availableToday[j]);
+              tomorrowCharge = tomorrowCharge.filter(s => s.idx !== tmrByPrice[j].idx);
+            }
+          }
         }
 
-        for (const s of chargeSlots) {
+        for (const s of todayCharge) {
           result.slots[s.idx].action = "charge";
         }
-        result.chargeCount = chargeSlots.length;
-        result.planned += Math.min(deficit, chargeSlots.length * effectivePerSlot);
+        result.chargeCount = todayCharge.length;
+        result.planned += todayCharge.length * effectivePerSlot;
+        result.tomorrowChargeCount = tomorrowCharge.length;
+        result.tomorrowPlanned = tomorrowCharge.length * effectivePerSlot;
+        result.tomorrowChargeIndices = new Set(tomorrowCharge.map(s => s.idx));
 
-        if (chargeSlots.length && threshold == null) {
-          threshold = Math.max(...chargeSlots.map(s => s.price));
+        if (todayCharge.length && threshold == null) {
+          threshold = Math.max(...todayCharge.map(s => s.price));
         }
       }
     }
@@ -361,7 +400,10 @@ class FelicityEMSCard extends LitElement {
     const now = new Date();
     const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
 
-    // Run client-side simulation on today's data
+    // Store tomorrow data for unified simulation access
+    this._tomorrowSlotData = tomorrowSlotData;
+
+    // Run client-side simulation on today's data (uses _tomorrowSlotData internally)
     const simResult = this._simulateSchedule(todaySlotData, this._simOverrides);
     this._simResult = simResult;
 
@@ -377,6 +419,8 @@ class FelicityEMSCard extends LitElement {
     }
 
     // For tomorrow, run a forecast simulation too (no current-slot offset)
+    // Keep today's sim for unified stats (tomorrowChargeCount, tomorrowPlanned)
+    this._todaySimResult = simResult;
     let displayData, displayThreshold;
     if (showTomorrow) {
       const tmrSim = this._simulateScheduleTomorrow(tomorrowSlotData, this._simOverrides);
@@ -635,20 +679,38 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      // Solar-first: target overnight reserve
-      const shortfall = Math.max(0, reserveTarget - startKwh);
-      const deficit = Math.max(0, shortfall - netPv);
-
-      if (deficit > 0) {
-        const neg = remaining.filter(s => s.price < 0);
-        const nonNeg = remaining.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
-        const negEnergy = neg.length * effectivePerSlot;
-        const needed = effectivePerSlot > 0 ? Math.ceil(Math.max(0, deficit - negEnergy) / effectivePerSlot) : 0;
-        const chargeSlots = [...neg, ...nonNeg.slice(0, needed)];
-        for (const s of chargeSlots) result.slots[s.idx].action = "charge";
-        result.chargeCount = chargeSlots.length;
-        result.planned += Math.min(deficit, chargeSlots.length * effectivePerSlot);
-        if (chargeSlots.length && threshold == null) threshold = Math.max(...chargeSlots.map(s => s.price));
+      // If today's unified simulation already assigned slots to tomorrow, use those.
+      // Otherwise fall back to standalone calculation.
+      const unifiedTomorrowIndices = this._simResult?.tomorrowChargeIndices;
+      if (unifiedTomorrowIndices && unifiedTomorrowIndices.size > 0) {
+        // Use the unified assignment from today's simulation
+        for (const s of remaining) {
+          if (unifiedTomorrowIndices.has(s.idx)) {
+            result.slots[s.idx].action = "charge";
+            result.chargeCount++;
+            result.planned += effectivePerSlot;
+          }
+        }
+        if (result.chargeCount && threshold == null) {
+          threshold = Math.max(
+            ...remaining.filter(s => unifiedTomorrowIndices.has(s.idx)).map(s => s.price)
+          );
+        }
+      } else {
+        // Standalone tomorrow calculation (no unified data available)
+        const shortfall = Math.max(0, reserveTarget - startKwh);
+        const deficit = Math.max(0, shortfall - netPv);
+        if (deficit > 0) {
+          const neg = remaining.filter(s => s.price < 0);
+          const nonNeg = remaining.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
+          const negEnergy = neg.length * effectivePerSlot;
+          const needed = effectivePerSlot > 0 ? Math.ceil(Math.max(0, deficit - negEnergy) / effectivePerSlot) : 0;
+          const chargeSlots = [...neg, ...nonNeg.slice(0, needed)];
+          for (const s of chargeSlots) result.slots[s.idx].action = "charge";
+          result.chargeCount = chargeSlots.length;
+          result.planned += Math.min(deficit, chargeSlots.length * effectivePerSlot);
+          if (chargeSlots.length && threshold == null) threshold = Math.max(...chargeSlots.map(s => s.price));
+        }
       }
     }
 
@@ -746,9 +808,13 @@ class FelicityEMSCard extends LitElement {
 
     // Schedule info: use simulation result if available, else fall back to entity attributes
     const simR = this._simResult;
+    const todaySimR = this._todaySimResult;
     const chargeSlots = simR?.chargeCount ?? this._getAttr("schedule_status", "scheduled_charge_slots") ?? 0;
+    const tomorrowChargeSlots = todaySimR?.tomorrowChargeCount ?? this._getAttr("schedule_status", "tomorrow_planned_slots") ?? 0;
     const dischargeSlots = simR?.dischargeCount ?? this._getAttr("schedule_status", "scheduled_discharge_slots") ?? 0;
-    const gridPlanned = simR?.planned ?? this._getAttr("schedule_status", "grid_energy_planned_kwh");
+    const todayPlanned = (todaySimR?.planned ?? this._getAttr("schedule_status", "grid_energy_planned_kwh")) || 0;
+    const tomorrowPlannedKwh = (todaySimR?.tomorrowPlanned ?? this._getAttr("schedule_status", "tomorrow_planned_kwh")) || 0;
+    const gridPlanned = todayPlanned + tomorrowPlannedKwh;
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
@@ -849,7 +915,7 @@ class FelicityEMSCard extends LitElement {
           <div class="stats-row">
             <div class="stat">
               <ha-icon icon="mdi:battery-charging"></ha-icon>
-              <span>${chargeSlots} charge</span>
+              <span>${chargeSlots}${tomorrowChargeSlots > 0 ? `+${tomorrowChargeSlots}` : ''} charge</span>
             </div>
             <div class="stat">
               <ha-icon icon="mdi:transmission-tower-export"></ha-icon>
