@@ -598,7 +598,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         tomorrow_slots_needed = math.ceil(tomorrow_deficit / effective_per_slot) if tomorrow_deficit > 0 else 0
         tomorrow_selected = tomorrow_non_negative[:tomorrow_slots_needed]
         tomorrow_max_price = max(s[1] for s in tomorrow_selected) if tomorrow_selected else 0.0
-        tomorrow_min_price = min(s[1] for s in tomorrow_selected) if tomorrow_selected else 0.0
+        # tomorrow_min_price not needed currently; tomorrow_max_price used for comparison
 
         # Today's most expensive selected slot price
         today_max_price = max(s[1] for s in today_deficit_slots) if today_deficit_slots else 0.0
@@ -624,15 +624,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # But we don't have current_kwh here, so we return the deferrable amount
             # = total deficit - bridge deficit
             # The caller will use today's total deficit; we tell them how much can be deferred
-            bridge_deficit = min_kwh + bridge_energy  # what battery needs to be at now
-            # The full reserve_target includes overnight AFTER tomorrow too, but if we defer,
-            # tomorrow handles the rest. So today only needs to target bridge_deficit.
-            # Deferrable = reserve_target - bridge_deficit (but bridge_deficit uses the same min_kwh)
-            # Simplified: deferrable = overnight_reserve - bridge_energy consumption that's already
-            # covered by bridge_deficit
-            # Actually: today's target is reserve_target = min_kwh + overnight_reserve
-            # If we defer: today's target becomes bridge_deficit = min_kwh + bridge_energy
-            # deferrable = reserve_target - bridge_deficit = overnight_reserve - bridge_energy
+            # today's target is reserve_target = min_kwh + overnight_reserve
+            # If we defer: today's target becomes min_kwh + bridge_energy
+            # deferrable = reserve_target - (min_kwh + bridge_energy) = overnight_reserve - bridge_energy
             # But only defer if bridge_energy < overnight_reserve (otherwise bridge is longer than overnight)
             overnight_reserve = self.self_consumption_reserve
             deferrable = max(0.0, overnight_reserve - bridge_energy)
