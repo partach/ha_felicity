@@ -805,7 +805,7 @@ These sensors update regardless of EMS state:
 | **Price Threshold** | Calculated threshold (manual: from level, auto: from optimizer) |
 | **Available Slots** | Number of remaining time slots at or below the current price threshold |
 | **Available Energy Capacity** | How much energy (kWh) those slots could provide |
-| **Charge Likelihood** | Whether the battery target will likely be met: `on_track` / `tight` / `at_risk` / `insufficient` / `nothing_to_sell` |
+| **Charge Likelihood** | Whether the battery target will likely be met (uses scheduled energy, not just threshold slots): `on_track` (≥120%) / `tight` (100-120%) / `at_risk` (50-100%) / `insufficient` (<50%) / `nothing_to_sell` |
 | **Schedule Status** | Current optimizer state: `manual` / `active` / `waiting` / `off` / `no_action_needed` |
 | **Energy State** | Current inverter state: `charging` / `discharging` / `idle` / `unknown` |
 | **PV Forecast Today** | Today's solar production forecast (kWh) |
@@ -928,19 +928,24 @@ The average works with as few as 1 day of data (divides by actual number of entr
 
 **A) DEFER — tomorrow is cheaper:**
 When tomorrow's cheapest slots cost less than today's most expensive selected slots:
-1. Find when tomorrow's first cheap slot starts (e.g., hour 14)
-2. Calculate bridge energy: consumption from now until that hour
-3. Minimum charge today = just enough to stay above min SOC until tomorrow's charging starts
-4. Remove the most expensive slots from today's schedule (saves money)
-5. Tomorrow's scheduler will handle the deferred energy at lower prices
+1. Find when tomorrow's first cheap slot starts (e.g., hour 4)
+2. Calculate bridge consumption: energy consumed from now until that hour
+3. Minimum today charge = `max(0, min_kwh + bridge_consumption - current_kwh - net_pv)`
+4. Deferrable = `today_planned_energy - min_today_charge`, capped by tomorrow's deficit
+   and by today's expensive slots (only slots pricier than tomorrow's max are removed)
+5. Remove the most expensive deferred slots from today's schedule
+6. Tomorrow's scheduler will handle the deferred energy at lower prices
 
 **Example:**
-- Today 19:00: 11 charge slots at threshold 0.300 €/kWh
-- Tomorrow: slots available at 0.260 €/kWh starting at hour 14
-- Hours to bridge: (24-19) + 14 = 19 hours × 1.6 kWh/h = 30.4 kWh bridge
-- Overnight reserve = 19.3 kWh. Bridge > reserve → deferrable = 0 (can't defer)
-- But if tomorrow's cheap slots start at hour 6: bridge = 11h × 1.6 = 17.6 kWh
-  → deferrable = 19.3 - 17.6 = 1.7 kWh → remove 1-2 expensive slots from today
+- Today 17:00, battery 51% (30.6 kWh) of 60 kWh, min SOC 40% (24 kWh)
+- Today: 7 charge slots planned = 12.7 kWh at ~0.30 €/kWh
+- Tomorrow: cheap slots at 0.19 €/kWh starting at hour 4
+- Bridge: (24-17) + 4 = 11 hours × 1.6 kWh/h = 17.6 kWh consumption
+- Min today charge = max(0, 24 + 17.6 - 30.6 - 0) = **11.0 kWh**
+- Deferrable = 12.7 - 11.0 = **1.7 kWh** → remove 1 expensive slot
+- If tomorrow's cheap slots start at hour 0 (midnight): bridge = 7h × 1.6 = 11.2 kWh
+  → min today charge = max(0, 24 + 11.2 - 30.6 - 0) = 4.6 kWh
+  → deferrable = 12.7 - 4.6 = **8.1 kWh** → remove 4-5 expensive slots to tomorrow
 
 **B) PRE-CHARGE — today is cheaper:**
 When today has remaining slots cheaper than what tomorrow would have to pay:
@@ -958,7 +963,8 @@ When today has remaining slots cheaper than what tomorrow would have to pay:
 - Only activates when tomorrow's prices are available (typically after ~13:00)
 - Only one day of lookahead (no data beyond tomorrow)
 - Minimum 0.5 kWh to be worth deferring (avoids noise)
-- NEVER defers below the bridge energy needed to reach tomorrow's cheap slots
+- Defer uses actual battery state: `min_today_charge = max(0, min_kwh + bridge_consumption - current_kwh - net_pv)`
+- Only defers slots whose price exceeds tomorrow's max selected price
 - Battery always stays above min SOC at all times
 
 **For ha_ems:** The key challenge is that tomorrow's prices arrive at ~13:00, meaning most of today's cheap morning slots are gone. Deferring is most valuable when today's evening prices are high but tomorrow's morning/afternoon prices are low. Pre-charging is most valuable when today's afternoon is cheap but tomorrow is uniformly expensive.
