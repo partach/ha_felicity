@@ -1,5 +1,11 @@
 ## Changelog
 
+### [0.9.8] - EMS hardening and improvements
+- EMS card improvements
+- EMS looks now at cheapest slot for multiple days (if available)
+- EMS history shown in EMS card (when did we charge or sell)
+- EMS shows plans for tomorrow (if price data for tomorrow is available)
+  
 ### [0.9.7] - EMS card and EMS improvements
 - NEW! extra card showing EMS status and predications
 - Improved EMS functionality and documentation. See EMS.md document on github
