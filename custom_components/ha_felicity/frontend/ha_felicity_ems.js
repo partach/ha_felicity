@@ -592,8 +592,19 @@ class FelicityEMSCard extends LitElement {
     const energyPerSlot = powerKw * slotDuration;
     const effectivePerSlot = energyPerSlot * efficiency;
 
-    // For tomorrow, assume battery starts at discharge_min (worst case overnight)
-    const startKwh = dischargeMin * batteryCapacity;
+    // For tomorrow, estimate battery at midnight based on actual state.
+    // If today deferred charging, battery will be higher than min_kwh;
+    // if today charged fully, overnight drain brings it to ~min_kwh.
+    const batterySoc = sim.battery_soc_pct;
+    const currentKwh = batterySoc != null ? (batterySoc / 100) * batteryCapacity : dischargeMin * batteryCapacity;
+    const todayPlanned = this._simResult?.planned || 0;
+    const hoursToMidnight = Math.max(1, 24 - new Date().getHours());
+    const drainToMidnight = (consumption / 24) * hoursToMidnight;
+    // Battery at midnight = current + today's planned charging - drain to midnight
+    // Clamp between min_kwh and max battery
+    const minKwh = dischargeMin * batteryCapacity;
+    const projectedMidnight = Math.max(minKwh, Math.min(batteryCapacity, currentKwh + todayPlanned - drainToMidnight));
+    const startKwh = projectedMidnight;
     // Net PV: solar surplus after consumption that can charge the battery
     const netPv = Math.max(0, pvTomorrow - consumption);
     // Overnight reserve: estimate hours from sunset to next sunrise using today's pattern
