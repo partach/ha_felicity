@@ -543,6 +543,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                        energy_per_slot: float,
                                        today_remaining: list[tuple[int, float]],
                                        today_deficit_slots: list[tuple[int, float]],
+                                       current_kwh: float = 0.0,
+                                       net_pv: float = 0.0,
                                        ) -> tuple[float, float]:
         """Cross-day price optimization: pre-charge or defer based on tomorrow's prices.
 
@@ -614,44 +616,44 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # Hours from now until tomorrow's first cheap slot
             hours_until_tomorrow_charge = (24 - now.hour) + tomorrow_first_hour
 
-            # Energy needed to bridge until tomorrow's charging: just stay above min_kwh
+            # Energy consumed during the bridge period (now → tomorrow's first cheap slot)
             consumption_per_hour = consumption_est / 24.0
-            bridge_energy = consumption_per_hour * hours_until_tomorrow_charge
+            bridge_consumption = consumption_per_hour * hours_until_tomorrow_charge
 
-            # Minimum battery level we need right now to survive the bridge
-            # We need: current_kwh - bridge_energy >= min_kwh
-            # So minimum charge today = max(0, min_kwh + bridge_energy - current_kwh - remaining_pv)
-            # But we don't have current_kwh here, so we return the deferrable amount
-            # = total deficit - bridge deficit
-            # The caller will use today's total deficit; we tell them how much can be deferred
-            # today's target is reserve_target = min_kwh + overnight_reserve
-            # If we defer: today's target becomes min_kwh + bridge_energy
-            # deferrable = reserve_target - (min_kwh + bridge_energy) = overnight_reserve - bridge_energy
-            # But only defer if bridge_energy < overnight_reserve (otherwise bridge is longer than overnight)
-            overnight_reserve = self.self_consumption_reserve
-            deferrable = max(0.0, overnight_reserve - bridge_energy)
+            # What today's schedule plans to charge (total planned energy)
+            today_planned_energy = len(today_deficit_slots) * effective_per_slot
 
-            if deferrable <= 0:
-                # Bridge is longer than overnight — can't defer, tomorrow's slots are too late
-                pass
-            else:
-                # Only defer up to what tomorrow can absorb at cheaper prices
-                deferrable = min(deferrable, tomorrow_deficit)
+            # Battery state after today's charging + remaining PV - bridge consumption:
+            # projected_at_charge_start = current_kwh + net_pv + today_planned - bridge_consumption
+            # We need: projected_at_charge_start >= min_kwh
+            # So minimum today charge = max(0, min_kwh + bridge_consumption - current_kwh - net_pv)
+            min_today_charge = max(0.0, min_kwh + bridge_consumption - current_kwh - net_pv)
 
-                # Only defer slots that are more expensive than tomorrow's max price
-                expensive_today = [s for s in today_deficit_slots if s[1] > tomorrow_max_price]
-                expensive_energy = len(expensive_today) * effective_per_slot
-                deferrable = min(deferrable, expensive_energy)
+            # Deferrable = what we planned today minus the minimum we must charge today
+            deferrable = max(0.0, today_planned_energy - min_today_charge)
 
-                if deferrable > 0.5:  # minimum 0.5 kWh to be worth deferring
-                    _LOGGER.info(
-                        "Cross-day DEFER: %.2f kWh deferred to tomorrow "
-                        "(today max=%.4f, tomorrow max=%.4f, bridge=%dh, "
-                        "overnight_reserve=%.1f, bridge_energy=%.1f)",
-                        deferrable, today_max_price, tomorrow_max_price,
-                        hours_until_tomorrow_charge, overnight_reserve, bridge_energy,
-                    )
-                    return -deferrable, 0.0
+            # Cap by what tomorrow can actually absorb at cheaper prices
+            deferrable = min(deferrable, tomorrow_deficit)
+
+            # Only defer slots that are more expensive than tomorrow's max price
+            expensive_today = sorted(
+                [s for s in today_deficit_slots if s[1] > tomorrow_max_price],
+                key=lambda x: -x[1],  # most expensive first
+            )
+            expensive_energy = len(expensive_today) * effective_per_slot
+            deferrable = min(deferrable, expensive_energy)
+
+            if deferrable > 0.5:  # minimum 0.5 kWh to be worth deferring
+                _LOGGER.info(
+                    "Cross-day DEFER: %.2f kWh deferred to tomorrow "
+                    "(today max=%.4f, tomorrow max=%.4f, bridge=%dh, "
+                    "min_today_charge=%.1f, today_planned=%.1f, "
+                    "current_kwh=%.1f, net_pv=%.1f)",
+                    deferrable, today_max_price, tomorrow_max_price,
+                    hours_until_tomorrow_charge, min_today_charge,
+                    today_planned_energy, current_kwh, net_pv,
+                )
+                return -deferrable, 0.0
 
         # --- PRE-CHARGE: today has cheaper slots than tomorrow would need ---
         if tomorrow_deficit > 0 and tomorrow_selected:
@@ -789,7 +791,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # Cross-day optimization: pre-charge or defer based on tomorrow's prices
             adjustment_kwh, _ = self._calculate_tomorrow_precharge(
                 consumption_est, battery_capacity, discharge_min, efficiency,
-                energy_per_slot, remaining, selected)
+                energy_per_slot, remaining, selected,
+                current_kwh=current_kwh, net_pv=net_pv)
             self.tomorrow_precharge = round(adjustment_kwh, 2)
 
             if adjustment_kwh < 0:
@@ -900,7 +903,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # 5b. Cross-day optimization: pre-charge or defer based on tomorrow's prices
             adjustment_kwh, _ = self._calculate_tomorrow_precharge(
                 consumption_est, battery_capacity, discharge_min, efficiency,
-                energy_per_slot, remaining, charge_slots)
+                energy_per_slot, remaining, charge_slots,
+                current_kwh=current_kwh, net_pv=net_pv)
             self.tomorrow_precharge = round(adjustment_kwh, 2)
 
             if adjustment_kwh < 0:
@@ -1076,14 +1080,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     self.charge_likelihood = "idle (insufficient slots)"
             elif energy_deficit <= 0:
                 self.charge_likelihood = "on_track"
-            elif self.available_energy_capacity >= energy_deficit * 1.2:
-                self.charge_likelihood = "on_track"
-            elif self.available_energy_capacity >= energy_deficit:
-                self.charge_likelihood = "tight"
-            elif self.available_energy_capacity >= energy_deficit * 0.5:
-                self.charge_likelihood = "at_risk"
             else:
-                self.charge_likelihood = "insufficient"
+                # Use scheduled energy (actual plan) if available, else threshold-based estimate
+                planned = self.grid_energy_planned or 0.0
+                capacity = max(planned, self.available_energy_capacity)
+                if capacity >= energy_deficit * 1.2:
+                    self.charge_likelihood = "on_track"
+                elif capacity >= energy_deficit:
+                    self.charge_likelihood = "tight"
+                elif capacity >= energy_deficit * 0.5:
+                    self.charge_likelihood = "at_risk"
+                else:
+                    self.charge_likelihood = "insufficient"
         else:  # to_grid
             min_kwh = (discharge_min / 100.0) * battery_capacity
             sellable = max(0.0, current_kwh - min_kwh)
