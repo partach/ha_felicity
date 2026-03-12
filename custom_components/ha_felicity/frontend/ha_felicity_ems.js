@@ -236,9 +236,18 @@ class FelicityEMSCard extends LitElement {
         const consumption = sim.consumption_est_kwh || 10;
         const pvTmr = this._getNumericState("pv_forecast_tomorrow") || 0;
         const tmrNetPv = Math.max(0, pvTmr - consumption);
-        const tmrReserve = reserveKwh;  // similar overnight pattern
+        const tmrReserve = reserveKwh;
+
+        // Estimate battery at midnight based on actual state
+        const hoursToMidnight = Math.max(1, 24 - now.getHours());
+        const drainToMidnight = (consumption / 24) * hoursToMidnight;
+        const projectedMidnight = Math.max(minKwh, Math.min(
+          batteryCapacity,
+          currentKwh + netPv + deficit - drainToMidnight
+        ));
+
         const tmrReserveTarget = Math.min(batteryCapacity, minKwh + tmrReserve);
-        const tmrShortfall = Math.max(0, tmrReserveTarget - minKwh);
+        const tmrShortfall = Math.max(0, tmrReserveTarget - projectedMidnight);
         tomorrowDeficit = Math.max(0, tmrShortfall - tmrNetPv);
       }
       const totalDeficit = deficit + tomorrowDeficit;
@@ -263,6 +272,24 @@ class FelicityEMSCard extends LitElement {
         // Split into today and tomorrow
         let todayCharge = allSelected.filter(s => s.day === 0);
         let tomorrowCharge = allSelected.filter(s => s.day === 1);
+
+        // Battery headroom cap: today can only charge what the battery can absorb
+        const headroom = Math.max(0, chargeMax * batteryCapacity - currentKwh);
+        const maxTodaySlots = Math.max(
+          effectivePerSlot > 0 ? Math.floor(headroom / effectivePerSlot) : 0,
+          effectivePerSlot > 0 && deficit > 0 ? Math.ceil(deficit / effectivePerSlot) : 0
+        );
+        if (todayCharge.length > maxTodaySlots) {
+          todayCharge.sort((a, b) => a.price - b.price);  // cheapest first
+          const excess = todayCharge.slice(maxTodaySlots);
+          todayCharge = todayCharge.slice(0, maxTodaySlots);
+          // Replace with next cheapest tomorrow slots
+          const tmrSelectedIdx = new Set(tomorrowCharge.map(s => s.idx));
+          const availTmr = tomorrowPool
+            .filter(s => s.price >= 0 && !tmrSelectedIdx.has(s.idx))
+            .sort((a, b) => a.price - b.price);
+          tomorrowCharge = [...tomorrowCharge, ...availTmr.slice(0, excess.length)];
+        }
 
         // Safety: ensure battery survives until tomorrow's first charge slot
         if (tomorrowCharge.length > 0 && hasTomorrow) {
