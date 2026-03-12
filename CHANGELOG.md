@@ -1,5 +1,9 @@
 ## Changelog
 
+### [1.0.0] - EMS stable
+- Finally we arrived to a point we call it the 1.0 release!
+- EMS tested and stable
+  
 ### [0.9.8] - EMS hardening and improvements
 - EMS card improvements
 - EMS looks now at cheapest slot for multiple days (if available)
