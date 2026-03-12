@@ -944,16 +944,24 @@ When tomorrow's prices are available (typically after ~13:00), the algorithm mer
 - **Pre-charge**: when today is cheaper, the cheapest slots naturally come from today's pool
 - No special-case logic needed — it's just "pick the cheapest from both days"
 
-**Example (your setup):**
+**Example A — battery low, tomorrow cheaper:**
 - Battery: 50% of 60 kWh = 30 kWh, min SOC 40% = 24 kWh
 - Today's deficit: reserve 43.25 - battery 30 = **13.25 kWh**
-- Tomorrow's deficit: reserve 43.25 - min 24 = **19.25 kWh**
-- Total: **32.5 kWh** → 18 slots needed at 1.9 kWh/slot
-- Today prices: 0.27-0.39 €/kWh (12 remaining slots)
-- Tomorrow prices: 0.10-0.32 €/kWh (96 slots)
-- Algorithm picks cheapest 18 from 108 total → mostly tomorrow's cheap slots
-- Safety check: if battery can't survive until tomorrow's first slot,
-  some tomorrow slots are swapped back to today
+- Projected midnight: 30 + 13.25 - drain ≈ 35 kWh
+- Tomorrow's deficit: reserve 43.25 - projected 35 = **8.25 kWh**
+- Total: **21.5 kWh** → 12 slots needed
+- Today prices: 0.27-0.39, tomorrow: 0.10-0.19
+- Most slots from tomorrow's cheap pool; safety swap adds today
+  slots if battery can't survive until tomorrow's first slot
+
+**Example B — battery full, cheap price now:**
+- Battery: 99% of 60 kWh = 59.4 kWh
+- Today's deficit: reserve 43.25 - 59.4 = **0 kWh**
+- Projected midnight: 59.4 - drain ≈ 50+ kWh
+- Tomorrow's deficit: reserve 43.25 - projected 50 = **0 kWh**
+- Total: **0 kWh** → no charging needed
+- Headroom: 60 - 59.4 = 0.6 kWh → can't even fit one slot
+- Result: no slots selected despite cheap current price (correct)
 
 **Sensor attributes:**
 - `tomorrow_planned_slots`: number of slots assigned to tomorrow from unified selection
@@ -968,6 +976,11 @@ When tomorrow's prices are available (typically after ~13:00), the algorithm mer
 **Constraints:**
 - Only activates when tomorrow's prices are available
 - One day of lookahead only (no data beyond tomorrow)
+- **Battery headroom cap**: today's slots limited by `max_battery - current_kwh`.
+  If battery is 99%, no today pre-charge slots are selected regardless of price.
+  Excess today slots are replaced with next-cheapest tomorrow slots.
+- **Realistic tomorrow start**: projects midnight battery from actual state
+  (`current_kwh + net_pv + today_charge - drain_to_midnight`), not worst-case min_kwh
 - Safety swap ensures battery never drops below min SOC during bridge period
 - Without tomorrow data, falls back to today-only optimization
 

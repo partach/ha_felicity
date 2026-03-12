@@ -599,10 +599,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             tomorrow_pv = self.pv_forecast_tomorrow or 0.0
             tomorrow_net_pv = max(0.0, tomorrow_pv - consumption_est)
 
-            # Tomorrow needs: reserve_target - start_kwh - net_pv
-            # Conservative: assume tomorrow starts at min_kwh (after tonight's drain)
+            # Estimate battery at midnight based on actual state
+            now = datetime.now()
+            hours_to_midnight = max(1, 24 - now.hour)
+            drain_to_midnight = (consumption_est / 24.0) * hours_to_midnight
+            today_charge = len([s for s in today_pool if s[0] <= 0]) * effective_per_slot  # neg price slots
+            today_charge += energy_deficit  # planned charge covers today's deficit
+            projected_midnight = max(min_kwh, min(
+                battery_capacity,
+                current_kwh + net_pv + today_charge - drain_to_midnight
+            ))
+
+            # Tomorrow needs: reserve_target - projected start - net_pv
             tomorrow_reserve_target = min(battery_capacity, min_kwh + tomorrow_reserve)
-            tomorrow_shortfall = max(0.0, tomorrow_reserve_target - min_kwh)
+            tomorrow_shortfall = max(0.0, tomorrow_reserve_target - projected_midnight)
             tomorrow_deficit = max(0.0, tomorrow_shortfall - tomorrow_net_pv)
 
         total_deficit = energy_deficit + tomorrow_deficit
@@ -623,6 +633,39 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Split back into today and tomorrow
         today_selected = [s for s in selected if s[1] == 0]
         tomorrow_selected = [s for s in selected if s[1] == 1]
+
+        # --- Battery headroom constraint ---
+        # Today's slots can only charge what the battery can physically absorb.
+        # If battery is nearly full, most today slots are useless.
+        charge_max_pct = self.config_entry.options.get("battery_charge_max_level", 100)
+        max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
+        headroom = max(0.0, max_battery_kwh - current_kwh)
+        # How many today slots can the battery actually absorb?
+        max_today_slots = math.floor(headroom / effective_per_slot) if effective_per_slot > 0 else 0
+        # Also need today's deficit slots (those are mandatory, not pre-charge)
+        today_deficit_slots = math.ceil(energy_deficit / effective_per_slot) if effective_per_slot > 0 and energy_deficit > 0 else 0
+        max_today_slots = max(max_today_slots, today_deficit_slots)
+
+        if len(today_selected) > max_today_slots:
+            # Too many today slots — trim the most expensive ones (those were for tomorrow)
+            today_selected.sort(key=lambda x: x[0])  # cheapest first
+            excess = today_selected[max_today_slots:]
+            today_selected = today_selected[:max_today_slots]
+            # Replace with next-cheapest tomorrow slots if available
+            tomorrow_selected_indices = {s[2] for s in tomorrow_selected}
+            available_tmr = sorted(
+                [s for s in tomorrow_pool if s[0] >= 0 and s[2] not in tomorrow_selected_indices],
+                key=lambda x: x[0],
+            )
+            replacements = available_tmr[:len(excess)]
+            tomorrow_selected.extend(replacements)
+            if excess:
+                _LOGGER.info(
+                    "Headroom cap: removed %d today slots (headroom=%.1f kWh, "
+                    "battery=%.1f/%.1f), replaced with %d tomorrow slots",
+                    len(excess), headroom, current_kwh, max_battery_kwh,
+                    len(replacements),
+                )
 
         # --- Safety constraint: ensure battery survives until tomorrow's charging ---
         # If tomorrow slots were selected, check that the battery + today's planned
