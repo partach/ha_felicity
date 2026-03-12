@@ -235,7 +235,6 @@ class FelicityEMSCard extends LitElement {
       if (hasTomorrow) {
         const consumption = sim.consumption_est_kwh || 10;
         const pvTmr = this._getNumericState("pv_forecast_tomorrow") || 0;
-        const tmrNetPv = Math.max(0, pvTmr - consumption);
         const tmrReserve = reserveKwh;
 
         // Estimate battery at midnight based on actual state
@@ -247,8 +246,11 @@ class FelicityEMSCard extends LitElement {
         ));
 
         const tmrReserveTarget = Math.min(batteryCapacity, minKwh + tmrReserve);
-        const tmrShortfall = Math.max(0, tmrReserveTarget - projectedMidnight);
-        tomorrowDeficit = Math.max(0, tmrShortfall - tmrNetPv);
+        // Daytime gap: on low-PV days battery drains during the day too
+        const daytimeGap = Math.max(0, consumption - pvTmr);
+        // grid_charge >= reserve_target + daytime_gap - projected_midnight
+        const tmrShortfall = Math.max(0, tmrReserveTarget + daytimeGap - projectedMidnight);
+        tomorrowDeficit = tmrShortfall;
       }
       const totalDeficit = deficit + tomorrowDeficit;
 
@@ -676,11 +678,11 @@ class FelicityEMSCard extends LitElement {
     const minKwh = dischargeMin * batteryCapacity;
     const projectedMidnight = Math.max(minKwh, Math.min(batteryCapacity, currentKwh + todayPlanned - drainToMidnight));
     const startKwh = projectedMidnight;
-    // Net PV: solar surplus after consumption that can charge the battery
-    const netPv = Math.max(0, pvTomorrow - consumption);
     // Overnight reserve: estimate hours from sunset to next sunrise using today's pattern
     const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || (consumption / 24 * 12);
     const reserveTarget = Math.min(batteryCapacity, dischargeMin * batteryCapacity + reserveKwh);
+    // Daytime gap: on low-PV days battery drains during the day too
+    const daytimeGap = Math.max(0, consumption - pvTomorrow);
 
     // All slots are "future"
     const remaining = slotData
@@ -725,8 +727,8 @@ class FelicityEMSCard extends LitElement {
         }
       } else {
         // Standalone tomorrow calculation (no unified data available)
-        const shortfall = Math.max(0, reserveTarget - startKwh);
-        const deficit = Math.max(0, shortfall - netPv);
+        const shortfall = Math.max(0, reserveTarget + daytimeGap - startKwh);
+        const deficit = shortfall;
         if (deficit > 0) {
           const neg = remaining.filter(s => s.price < 0);
           const nonNeg = remaining.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
@@ -743,8 +745,8 @@ class FelicityEMSCard extends LitElement {
 
     if (gridMode === "to_grid" || gridMode === "both") {
       // For selling tomorrow: estimate available energy after solar charges the battery
-      // Battery fills from startKwh + netPv, capped at charge_max
-      const projectedKwh = Math.min(chargeMax * batteryCapacity, startKwh + netPv);
+      // Battery fills from startKwh + pvTomorrow, capped at charge_max
+      const projectedKwh = Math.min(chargeMax * batteryCapacity, startKwh + pvTomorrow);
       const sellable = Math.max(0, projectedKwh - reserveTarget) * efficiency;
       const roundTrip = efficiency * efficiency;
 

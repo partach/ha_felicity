@@ -595,9 +595,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 consumption_est, num_slots_tomorrow, all_tomorrow_slots)
             min_kwh = (discharge_min / 100.0) * battery_capacity
 
-            # Tomorrow's PV surplus
             tomorrow_pv = self.pv_forecast_tomorrow or 0.0
-            tomorrow_net_pv = max(0.0, tomorrow_pv - consumption_est)
 
             # Estimate battery at midnight based on actual state
             now = datetime.now()
@@ -610,10 +608,41 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 current_kwh + net_pv + today_charge - drain_to_midnight
             ))
 
-            # Tomorrow needs: reserve_target - projected start - net_pv
+            # Tomorrow's deficit: energy the grid must provide so battery
+            # stays above min_kwh through the full day AND reaches reserve
+            # target by sunset.
+            #
+            # On a normal sunny day (PV > consumption): net_pv covers daytime,
+            # grid only needs to cover the overnight reserve shortfall.
+            #
+            # On a low-PV day (PV < consumption): the battery drains DURING
+            # the day too. We must account for the full-day consumption gap.
+            # Battery trajectory: midnight → drain all day → must still be
+            # at reserve_target by sunset.
+            #
+            # projected_midnight + grid_charge + PV - consumption >= reserve_target
+            # grid_charge >= reserve_target - projected_midnight - PV + consumption
+            # But consumption already happens; PV offsets some of it.
+            # Simplified: grid must cover (reserve_target - projected_midnight)
+            #   plus the daytime consumption gap (consumption - PV) if PV < consumption
             tomorrow_reserve_target = min(battery_capacity, min_kwh + tomorrow_reserve)
-            tomorrow_shortfall = max(0.0, tomorrow_reserve_target - projected_midnight)
-            tomorrow_deficit = max(0.0, tomorrow_shortfall - tomorrow_net_pv)
+
+            # Daytime gap: how much more the battery drains due to insufficient PV
+            daytime_gap = max(0.0, consumption_est - tomorrow_pv)
+
+            # Battery at sunset = projected_midnight + grid_charge - daytime_gap
+            # We need: battery_at_sunset >= reserve_target
+            # So: grid_charge >= reserve_target + daytime_gap - projected_midnight
+            tomorrow_shortfall = max(0.0,
+                                     tomorrow_reserve_target + daytime_gap - projected_midnight)
+            tomorrow_deficit = tomorrow_shortfall
+
+            _LOGGER.debug(
+                "Tomorrow deficit: reserve_target=%.1f, projected_midnight=%.1f, "
+                "daytime_gap=%.1f (pv=%.1f, consumption=%.1f), shortfall=%.1f",
+                tomorrow_reserve_target, projected_midnight, daytime_gap,
+                tomorrow_pv, consumption_est, tomorrow_shortfall,
+            )
 
         total_deficit = energy_deficit + tomorrow_deficit
 
