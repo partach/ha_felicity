@@ -314,11 +314,14 @@ The schedule optimizer runs every update cycle and determines which time slots s
    d. threshold = highest price among selected slots
 
 7. Unified two-day optimization (when tomorrow's prices available):
-   a. Calculate tomorrow's deficit (reserve_target - min_kwh - net_pv)
-   b. Total deficit = today's + tomorrow's
-   c. Merge today remaining + tomorrow all slots → sort by price
-   d. Pick cheapest N slots from combined pool to cover total deficit
-   e. Safety: if battery drops below min_kwh before tomorrow's first
+   a. Project midnight battery from actual state + today's charge - drain
+   b. Calculate tomorrow's deficit:
+      reserve_target + daytime_gap - projected_midnight
+      where daytime_gap = max(0, consumption - pv_tomorrow)
+   c. Total deficit = today's + tomorrow's
+   d. Merge today remaining + tomorrow all slots → sort by price
+   e. Pick cheapest N slots from combined pool to cover total deficit
+   f. Safety: if battery drops below min_kwh before tomorrow's first
       selected slot, swap expensive tomorrow → cheap today slots
 ```
 
@@ -930,12 +933,16 @@ When tomorrow's prices are available (typically after ~13:00), the algorithm mer
 
 **How it works:**
 1. Calculate today's deficit: `reserve_target - current_kwh - net_pv`
-2. Calculate tomorrow's deficit: `tomorrow_reserve_target - min_kwh - tomorrow_net_pv`
-3. Total deficit = today's + tomorrow's
-4. Combine today remaining + tomorrow all into one pool
-5. Sort by price, pick cheapest N slots to cover total deficit
-6. Split result into today_selected and tomorrow_selected
-7. **Safety check**: if battery would drop below min_kwh before tomorrow's
+2. Project midnight battery: `current_kwh + net_pv + today_charge - drain_to_midnight` (clamped to [min_kwh, battery_capacity])
+3. Calculate tomorrow's deficit:
+   - `tomorrow_reserve_target = min(battery_capacity, min_kwh + reserve_kwh)`
+   - `daytime_gap = max(0, consumption_est - pv_forecast_tomorrow)` — extra drain on low-PV days
+   - `tomorrow_deficit = max(0, tomorrow_reserve_target + daytime_gap - projected_midnight)`
+4. Total deficit = today's + tomorrow's
+5. Combine today remaining + tomorrow all into one pool
+6. Sort by price, pick cheapest N slots to cover total deficit
+7. Split result into today_selected and tomorrow_selected
+8. **Safety check**: if battery would drop below min_kwh before tomorrow's
    first selected slot, swap the most expensive tomorrow slots for the
    cheapest available today slots until the battery survives the bridge
 
@@ -981,6 +988,11 @@ When tomorrow's prices are available (typically after ~13:00), the algorithm mer
   Excess today slots are replaced with next-cheapest tomorrow slots.
 - **Realistic tomorrow start**: projects midnight battery from actual state
   (`current_kwh + net_pv + today_charge - drain_to_midnight`), not worst-case min_kwh
+- **Low-PV day proactive charging**: `daytime_gap = max(0, consumption - pv_tomorrow)`.
+  On days when solar is insufficient to cover consumption, the battery drains during
+  daytime hours. The daytime gap is added to tomorrow's deficit so the algorithm
+  proactively schedules more cheap grid slots. Example: 38 kWh consumption, 4 kWh PV
+  → daytime gap 34 kWh → much more grid charging scheduled in cheap morning slots.
 - Safety swap ensures battery never drops below min SOC during bridge period
 - Without tomorrow data, falls back to today-only optimization
 

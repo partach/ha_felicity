@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from pymodbus.exceptions import ModbusException, ConnectionException
 from .const import DOMAIN, INVERTER_MODEL_TREX_TEN # only for determining default
 from .type_specific import TypeSpecificHandler
+from . import ems as ems_module
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -434,109 +435,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
     def _calculate_net_pv_surplus(self, remaining_slots: list[tuple[int, float]],
                                   num_slots: int, consumption_est: float) -> float:
-        """Calculate net PV surplus using per-hour solar production vs consumption.
-
-        Instead of subtracting total consumption from total PV (which ignores
-        temporal distribution), this sums per-hour surpluses: only hours where
-        PV exceeds consumption contribute to battery charging.
-
-        Scales the forecast down when actual PV production is significantly
-        below forecast (e.g. cloudy day), using a confidence factor.
-
-        Falls back to the flat model when hourly PV data is unavailable.
-        """
-        pv_remaining = self.pv_forecast_remaining or 0.0
-
-        if not self.pv_hourly_kwh or not remaining_slots:
-            # Fallback: flat model (original behavior)
-            hours_left = len(remaining_slots) * ((24 * 60) / num_slots) / 60.0
-            consumption_remaining = (consumption_est / 24.0) * hours_left
-            return max(0.0, pv_remaining - consumption_remaining)
-
-        minutes_per_slot = (24 * 60) / num_slots
-        consumption_per_hour = consumption_est / 24.0
-
-        # Calculate confidence factor: how well is actual PV tracking forecast?
-        # If actual << expected-by-now, scale down the surplus estimate.
-        pv_confidence = 1.0
-        pv_actual = self.pv_actual_today_kwh
-        if pv_actual is not None and self.pv_forecast_today:
-            now = datetime.now()
-            # Sum forecast for hours that have already passed
-            expected_so_far = 0.0
-            current_hour = now.hour
-            for hour, kwh in self.pv_hourly_kwh.items():
-                if hour < current_hour:
-                    expected_so_far += kwh
-                elif hour == current_hour:
-                    # Partial hour: fraction of the hour that has elapsed
-                    expected_so_far += kwh * (now.minute / 60.0)
-            if expected_so_far > 1.0:  # only adjust when meaningful production expected
-                pv_confidence = min(1.0, pv_actual / expected_so_far)
-                # Floor at 0.1 to avoid completely ignoring forecast
-                pv_confidence = max(0.1, pv_confidence)
-
-        # Sum only the positive surpluses per hour (PV > load = battery charge)
-        surplus_total = 0.0
-        hours_seen = set()
-        for slot_idx, _ in remaining_slots:
-            hour = int((slot_idx * minutes_per_slot) / 60)
-            if hour in hours_seen:
-                continue
-            hours_seen.add(hour)
-
-            pv_kwh = self.pv_hourly_kwh.get(hour, 0.0) * pv_confidence
-            surplus = pv_kwh - consumption_per_hour
-            if surplus > 0:
-                surplus_total += surplus
-
-        _LOGGER.debug(
-            "PV surplus model: hourly_surplus=%.2f kWh, pv_remaining=%.2f kWh, "
-            "consumption=%.1f kWh/day, hours_checked=%d, pv_confidence=%.0f%%",
-            surplus_total, pv_remaining, consumption_est, len(hours_seen),
-            pv_confidence * 100,
+        """Calculate net PV surplus. Delegates to ems module."""
+        now = datetime.now()
+        return ems_module.calculate_net_pv_surplus(
+            remaining_slots, num_slots, consumption_est,
+            self.pv_hourly_kwh, self.pv_forecast_remaining,
+            self.pv_actual_today_kwh, self.pv_forecast_today,
+            now.hour, now.minute,
         )
-        return surplus_total
 
     def _calculate_self_consumption_reserve(self, consumption_est: float,
                                             num_slots: int,
                                             remaining_slots: list[tuple[int, float]]) -> float:
-        """Calculate battery reserve needed for self-consumption until next solar day.
-
-        Estimates energy needed from sunset today to sunrise tomorrow (overnight),
-        when no solar production is available and the house runs on battery.
-
-        Returns reserve in kWh.
-        """
-        consumption_per_hour = consumption_est / 24.0
-
-        # Determine sunset: last hour with meaningful PV production
-        sunset_hour = 19  # default
-        if self.pv_hourly_kwh:
-            pv_hours = [h for h, kwh in self.pv_hourly_kwh.items() if kwh > 0.1]
-            if pv_hours:
-                sunset_hour = max(pv_hours) + 1  # first hour after last PV
-
-        # Determine sunrise tomorrow: first hour with PV (use today as proxy)
-        sunrise_hour = 7  # default
-        if self.pv_hourly_kwh:
-            pv_hours = [h for h, kwh in self.pv_hourly_kwh.items() if kwh > 0.1]
-            if pv_hours:
-                sunrise_hour = min(pv_hours)
-
-        # Hours from sunset to midnight + midnight to sunrise
-        overnight_hours = (24 - sunset_hour) + sunrise_hour
-
-        # If tomorrow has strong PV forecast, overnight is shorter (solar kicks in early)
-        # If no tomorrow forecast, be conservative
-        reserve = consumption_per_hour * overnight_hours
-
-        _LOGGER.debug(
-            "Self-consumption reserve: %.2f kWh (sunset=%d:00, sunrise=%d:00, "
-            "overnight=%.1fh, consumption=%.1f kWh/day)",
-            reserve, sunset_hour, sunrise_hour, overnight_hours, consumption_est,
-        )
-        return reserve
+        """Calculate battery reserve needed for self-consumption overnight. Delegates to ems module."""
+        return ems_module.calculate_self_consumption_reserve(
+            consumption_est, self.pv_hourly_kwh)
 
     def _select_unified_charge_slots(
         self,
@@ -551,186 +464,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         current_kwh: float = 0.0,
         net_pv: float = 0.0,
     ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], float]:
-        """Select charge slots from a unified today+tomorrow pool.
-
-        When tomorrow's prices are available, merges today's remaining slots
-        with all of tomorrow's slots into one pool sorted by price. Picks the
-        cheapest slots from the combined pool to cover the energy deficit.
-
-        This naturally handles defer (tomorrow slots are cheaper) and
-        pre-charge (today slots are cheaper) without special-case logic.
-
-        After initial selection, applies a safety constraint: ensures the
-        battery won't drop below min_kwh before tomorrow's charging starts
-        by swapping tomorrow slots for today slots if needed.
-
-        Returns:
-            (today_selected, tomorrow_selected, tomorrow_charge_kwh)
-        """
-        # Build combined slot pool: (price, day, slot_index)
-        today_pool = [(p, 0, i) for i, p in remaining_today]
-
-        tomorrow_pool = []
-        tomorrow_charge_kwh = 0.0
-        if self.slot_prices_tomorrow:
-            tomorrow_prices = self.slot_prices_tomorrow
-            tomorrow_pool = [
-                (tomorrow_prices[i], 1, i)
-                for i in range(len(tomorrow_prices))
-                if tomorrow_prices[i] is not None
-            ]
-
-        # If we have tomorrow data, we need to cover BOTH tonight's and
-        # tomorrow night's reserve. Without tomorrow data, just cover tonight.
-        tomorrow_deficit = 0.0
-        if tomorrow_pool:
-            # Tomorrow's reserve calculation
-            num_slots_tomorrow = len(self.slot_prices_tomorrow)
-            all_tomorrow_slots = [
-                (i, self.slot_prices_tomorrow[i])
-                for i in range(num_slots_tomorrow)
-                if self.slot_prices_tomorrow[i] is not None
-            ]
-            tomorrow_reserve = self._calculate_self_consumption_reserve(
-                consumption_est, num_slots_tomorrow, all_tomorrow_slots)
-            min_kwh = (discharge_min / 100.0) * battery_capacity
-
-            # Tomorrow's PV surplus
-            tomorrow_pv = self.pv_forecast_tomorrow or 0.0
-            tomorrow_net_pv = max(0.0, tomorrow_pv - consumption_est)
-
-            # Estimate battery at midnight based on actual state
-            now = datetime.now()
-            hours_to_midnight = max(1, 24 - now.hour)
-            drain_to_midnight = (consumption_est / 24.0) * hours_to_midnight
-            today_charge = len([s for s in today_pool if s[0] <= 0]) * effective_per_slot  # neg price slots
-            today_charge += energy_deficit  # planned charge covers today's deficit
-            projected_midnight = max(min_kwh, min(
-                battery_capacity,
-                current_kwh + net_pv + today_charge - drain_to_midnight
-            ))
-
-            # Tomorrow needs: reserve_target - projected start - net_pv
-            tomorrow_reserve_target = min(battery_capacity, min_kwh + tomorrow_reserve)
-            tomorrow_shortfall = max(0.0, tomorrow_reserve_target - projected_midnight)
-            tomorrow_deficit = max(0.0, tomorrow_shortfall - tomorrow_net_pv)
-
-        total_deficit = energy_deficit + tomorrow_deficit
-
-        # Combine and sort by price
-        combined = today_pool + tomorrow_pool
-
-        # Separate negative (always charge) and non-negative (pick cheapest)
-        negative = [s for s in combined if s[0] < 0]
-        non_negative = sorted([s for s in combined if s[0] >= 0], key=lambda x: x[0])
-
-        negative_energy = len(negative) * effective_per_slot
-        remaining_deficit = max(0.0, total_deficit - negative_energy)
-        needed = math.ceil(remaining_deficit / effective_per_slot) if effective_per_slot > 0 else 0
-
-        selected = negative + non_negative[:needed]
-
-        # Split back into today and tomorrow
-        today_selected = [s for s in selected if s[1] == 0]
-        tomorrow_selected = [s for s in selected if s[1] == 1]
-
-        # --- Battery headroom constraint ---
-        # Today's slots can only charge what the battery can physically absorb.
-        # If battery is nearly full, most today slots are useless.
+        """Select charge slots from unified today+tomorrow pool. Delegates to ems module."""
         charge_max_pct = self.config_entry.options.get("battery_charge_max_level", 100)
-        max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
-        headroom = max(0.0, max_battery_kwh - current_kwh)
-        # How many today slots can the battery actually absorb?
-        max_today_slots = math.floor(headroom / effective_per_slot) if effective_per_slot > 0 else 0
-        # Also need today's deficit slots (those are mandatory, not pre-charge)
-        today_deficit_slots = math.ceil(energy_deficit / effective_per_slot) if effective_per_slot > 0 and energy_deficit > 0 else 0
-        max_today_slots = max(max_today_slots, today_deficit_slots)
-
-        if len(today_selected) > max_today_slots:
-            # Too many today slots — trim the most expensive ones (those were for tomorrow)
-            today_selected.sort(key=lambda x: x[0])  # cheapest first
-            excess = today_selected[max_today_slots:]
-            today_selected = today_selected[:max_today_slots]
-            # Replace with next-cheapest tomorrow slots if available
-            tomorrow_selected_indices = {s[2] for s in tomorrow_selected}
-            available_tmr = sorted(
-                [s for s in tomorrow_pool if s[0] >= 0 and s[2] not in tomorrow_selected_indices],
-                key=lambda x: x[0],
-            )
-            replacements = available_tmr[:len(excess)]
-            tomorrow_selected.extend(replacements)
-            if excess:
-                _LOGGER.info(
-                    "Headroom cap: removed %d today slots (headroom=%.1f kWh, "
-                    "battery=%.1f/%.1f), replaced with %d tomorrow slots",
-                    len(excess), headroom, current_kwh, max_battery_kwh,
-                    len(replacements),
-                )
-
-        # --- Safety constraint: ensure battery survives until tomorrow's charging ---
-        # If tomorrow slots were selected, check that the battery + today's planned
-        # charging won't drop below min_kwh before tomorrow's first selected slot.
-        if tomorrow_selected and tomorrow_pool:
-            min_kwh = (discharge_min / 100.0) * battery_capacity
-            now = datetime.now()
-            num_slots_tmr = len(self.slot_prices_tomorrow)
-            minutes_per_slot = (24 * 60) / num_slots_tmr
-
-            # Earliest tomorrow slot we selected
-            earliest_tmr_slot = min(s[2] for s in tomorrow_selected)
-            earliest_tmr_hour = int((earliest_tmr_slot * minutes_per_slot) / 60)
-            hours_until_tmr_charge = max(1, (24 - now.hour) + earliest_tmr_hour)
-
-            # Energy consumed during bridge (now → first tomorrow charge slot)
-            consumption_per_hour = consumption_est / 24.0
-            bridge_consumption = consumption_per_hour * hours_until_tmr_charge
-
-            # What today must provide so battery stays above min_kwh during bridge
-            today_charge_energy = len(today_selected) * effective_per_slot
-            projected = current_kwh + net_pv + today_charge_energy - bridge_consumption
-
-            if projected < min_kwh:
-                # Need more today slots — swap cheapest tomorrow slots for today slots
-                shortfall_kwh = min_kwh - projected
-                extra_today_needed = math.ceil(shortfall_kwh / effective_per_slot)
-
-                # Available today slots not yet selected, sorted by price
-                today_selected_indices = {s[2] for s in today_selected}
-                available_today = sorted(
-                    [s for s in today_pool if s[0] >= 0 and s[2] not in today_selected_indices],
-                    key=lambda x: x[0],
-                )
-
-                # Most expensive tomorrow slots to swap out
-                tomorrow_by_price = sorted(tomorrow_selected, key=lambda x: -x[0])
-
-                swaps = min(extra_today_needed, len(available_today), len(tomorrow_by_price))
-                for j in range(swaps):
-                    today_selected.append(available_today[j])
-                    tomorrow_selected.remove(tomorrow_by_price[j])
-
-                _LOGGER.info(
-                    "Unified safety: swapped %d slots today↔tomorrow "
-                    "(bridge=%dh, projected=%.1f→%.1f, min=%.1f)",
-                    swaps, hours_until_tmr_charge, projected,
-                    projected + swaps * effective_per_slot, min_kwh,
-                )
-
-        # Convert to (slot_index, price) tuples
-        today_result = [(s[2], s[0]) for s in today_selected]
-        tomorrow_result = [(s[2], s[0]) for s in tomorrow_selected]
-        tomorrow_charge_kwh = round(len(tomorrow_result) * effective_per_slot, 2)
-
-        _LOGGER.info(
-            "Unified slot selection: deficit_today=%.2f, deficit_tomorrow=%.2f, "
-            "total=%.2f, today_slots=%d, tomorrow_slots=%d (%.1f kWh), "
-            "pool_size=%d+%d",
-            energy_deficit, tomorrow_deficit, total_deficit,
-            len(today_result), len(tomorrow_result), tomorrow_charge_kwh,
-            len(today_pool), len(tomorrow_pool),
+        now = datetime.now()
+        return ems_module.select_unified_charge_slots(
+            remaining_today, energy_deficit, effective_per_slot,
+            battery_capacity, discharge_min, consumption_est,
+            efficiency, energy_per_slot,
+            current_kwh=current_kwh, net_pv=net_pv,
+            charge_max_pct=charge_max_pct,
+            slot_prices_tomorrow=self.slot_prices_tomorrow,
+            pv_forecast_tomorrow=self.pv_forecast_tomorrow,
+            pv_hourly_kwh=self.pv_hourly_kwh,
+            current_hour=now.hour,
         )
-
-        return today_result, tomorrow_result, tomorrow_charge_kwh
 
     def _calculate_schedule(self, battery_soc: float | None) -> None:
         """Calculate optimal charge/discharge schedule based on prices, forecast, and battery.
