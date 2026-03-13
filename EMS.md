@@ -280,6 +280,52 @@ Every ~10 seconds the coordinator runs an update cycle:
 
 The schedule optimizer runs every update cycle and determines which time slots should be used for charging or discharging. The key concept is **solar-first**: grid energy is only purchased when solar cannot cover the overnight reserve.
 
+### Predictive SOC Trajectory
+
+All three scheduling modes use a **forward-looking SOC projection** to make smarter decisions. Instead of only looking at the current battery level (snapshot), the algorithm simulates the battery trajectory through all remaining time slots, accounting for consumption drain and PV production (scaled by the confidence factor).
+
+**Helper functions** (`ems.py`):
+
+| Function | Purpose |
+|---|---|
+| `_calculate_pv_confidence()` | Compares actual PV produced so far vs forecast expected by now. Returns 0.1–1.0 confidence factor. |
+| `_project_soc_trajectory()` | Simulates battery kWh slot-by-slot: subtracts consumption, adds PV (× confidence), clamps at battery capacity. Returns per-slot projection, min SOC, and max SOC. |
+
+**How it improves each mode:**
+
+- **from_grid / both (charge side)**: Uses `min_projected_soc` to detect future shortfalls. If the battery is currently above reserve but will dip below it later (e.g., evening consumption after PV stops), the predictive deficit catches this and schedules cheap grid charging proactively.
+  ```
+  snapshot_deficit = max(0, reserve_target - current_kwh - net_pv)
+  predictive_deficit = max(0, reserve_target - min_projected_soc)
+  energy_deficit = max(snapshot_deficit, predictive_deficit)
+  ```
+
+- **to_grid / both (sell side)**: Uses `max_projected_soc` to account for PV that will boost the battery later. If PV will push the battery well above reserve, more energy can be safely sold.
+  ```
+  snapshot_sellable = max(0, current_kwh - reserve_target) × efficiency
+  predictive_sellable = max(0, max_projected_soc - reserve_target) × efficiency
+  sellable = max(snapshot_sellable, predictive_sellable)
+  ```
+
+**Key scenario this solves:** Battery at 72% SOC on a cloudy day with cheap night prices. The snapshot sees 72% > reserve and schedules no charging. The trajectory projects that evening consumption will drain the battery below reserve — and schedules cheap night slots to prevent this.
+
+### PV-Aware Battery Headroom
+
+The unified charge slot selection (`select_unified_charge_slots`) applies a **PV-aware headroom constraint**: the remaining battery capacity available for grid charging is reduced by the expected net PV surplus, since that PV energy will also fill the battery.
+
+```
+raw_headroom = charge_max_kwh - current_kwh
+pv_fill = max(0, net_pv_surplus)
+effective_headroom = max(0, raw_headroom - pv_fill)
+max_today_slots = floor(effective_headroom / kwh_per_slot)
+```
+
+**Exceptions:**
+- **Negative-price slots** are exempt from headroom cap — charging during negative prices is always profitable
+- **Deficit slots** are exempt — if the battery needs energy to reach reserve, those slots are always allowed
+
+This prevents paying for grid energy that can't be stored because PV will fill the remaining battery capacity during the day.
+
 ### Step-by-Step: `from_grid` Mode
 
 ```
@@ -304,8 +350,10 @@ The schedule optimizer runs every update cycle and determines which time slots s
    - Scaled by PV confidence factor (actual vs forecast)
 
 5. Calculate grid energy deficit:
-   - base_deficit = max(0, battery_shortfall - net_pv)
-   - Add yesterday's deficit carryover (if any)
+   - snapshot_deficit = max(0, battery_shortfall - net_pv)
+   - Project SOC trajectory through remaining slots (PV × confidence − consumption)
+   - predictive_deficit = max(0, reserve_target - min_projected_soc)
+   - energy_deficit = max(snapshot, predictive) + yesterday's deficit carryover
 
 6. Select charge slots:
    a. Always include negative-price slots (paid to charge)
@@ -330,11 +378,15 @@ The schedule optimizer runs every update cycle and determines which time slots s
 ```
 1. Calculate reserve floor:
    - min_kwh = discharge_min% × battery_capacity
+   - reserve_target = min(battery_capacity, min_kwh + self_consumption_reserve)
+     (includes overnight reserve to protect self-sufficiency)
 
-2. Calculate sellable energy:
-   - sellable = max(0, current_kwh - min_kwh) × efficiency
-   NOTE: to_grid mode uses discharge_min as floor (no overnight reserve
-   since user is actively selling, not self-consuming)
+2. Calculate sellable energy (predictive):
+   - snapshot_sellable = max(0, current_kwh - reserve_target) × efficiency
+   - Project SOC trajectory through remaining slots (PV × confidence − consumption)
+   - predictive_sellable = max(0, max_projected_soc - reserve_target) × efficiency
+   - sellable = max(snapshot_sellable, predictive_sellable)
+   NOTE: PV that will boost battery later makes more energy safely sellable
 
 3. Select discharge slots:
    a. Exclude negative-price slots (never sell at a loss)
@@ -358,16 +410,21 @@ The schedule optimizer runs every update cycle and determines which time slots s
 │  PHASE 1 — CHARGE SIDE (grid only if solar can't cover)       │
 │  ├─ reserve_target = discharge_min + overnight_reserve         │
 │  │  (capped at battery_capacity)                               │
-│  ├─ battery_shortfall = reserve_target − current_kwh           │
-│  │  Ensures battery is ABOVE min SOC after overnight drain     │
-│  ├─ Subtract hourly PV surplus (solar covers most/all)         │
-│  ├─ energy_deficit = shortfall − net_pv (often 0 on sunny days)│
+│  ├─ snapshot_deficit = reserve_target − current_kwh − net_pv   │
+│  ├─ Project SOC trajectory (PV × confidence − consumption)     │
+│  ├─ predictive_deficit = reserve_target − min_projected_soc    │
+│  ├─ energy_deficit = max(snapshot, predictive)                 │
+│  │  Catches future shortfalls even if battery is OK right now  │
 │  ├─ Always include negative-price slots (paid to charge)       │
 │  └─ Fill remaining deficit with cheapest non-negative slots    │
 │                                                                │
 │  PHASE 2 — DISCHARGE SIDE (only sell true surplus)             │
 │  ├─ reserve_floor = discharge_min + overnight_reserve          │
-│  ├─ sellable = (current_kwh − reserve_floor) × efficiency      │
+│  ├─ snapshot_sellable = (current_kwh − reserve_floor) × eff    │
+│  ├─ Project SOC trajectory → max_projected_soc                 │
+│  ├─ predictive_sellable = (max_projected − reserve_floor) × eff│
+│  ├─ sellable = max(snapshot, predictive)                       │
+│  │  PV boost later → more safely sellable now                  │
 │  └─ Select most expensive positive-price slots                 │
 │                                                                │
 │  PHASE 3 — PROFITABILITY FILTER                                │
@@ -923,7 +980,19 @@ The average works with as few as 1 day of data (divides by actual number of entr
 
 **Design:** If the battery didn't reach its target yesterday, the deficit carries forward to today's energy target (capped by physical battery headroom). This prevents persistent under-charging across days.
 
-### 10. Unified Two-Day Slot Selection
+### 10. Snapshot vs Predictive Deficit
+
+**Issue:** On cloudy days with cheap night prices, battery at 72% SOC (above reserve), the scheduler saw no deficit and skipped cheap grid slots. By evening, consumption drained the battery below reserve — but the cheap slots were already past.
+
+**Fix:** Added SOC trajectory projection that simulates battery level through remaining slots. The predictive deficit catches future shortfalls before they happen, using `max(snapshot_deficit, predictive_deficit)`. Both `ems.py` (standalone) and `coordinator.py` (runtime) implement this identically.
+
+### 11. PV-Aware Headroom Prevents Over-Charging
+
+**Issue:** On sunny days, the headroom calculation (`charge_max - current_kwh`) allowed grid charging for the full gap, but PV production would also fill the same space. Result: grid energy paid for but nowhere to store it.
+
+**Fix:** Subtract net PV surplus from headroom: `effective_headroom = raw_headroom - pv_fill`. Negative-price slots are exempt (always profitable to charge). Deficit slots are also exempt (reserve protection takes priority).
+
+### 12. Unified Two-Day Slot Selection
 
 **Problem:** The original algorithm optimized each day independently, then tried to patch with defer/precharge logic. This was fragile: it didn't properly shift slots between days, and the card's client-side simulation diverged from the backend.
 
@@ -983,9 +1052,10 @@ When tomorrow's prices are available (typically after ~13:00), the algorithm mer
 **Constraints:**
 - Only activates when tomorrow's prices are available
 - One day of lookahead only (no data beyond tomorrow)
-- **Battery headroom cap**: today's slots limited by `max_battery - current_kwh`.
-  If battery is 99%, no today pre-charge slots are selected regardless of price.
-  Excess today slots are replaced with next-cheapest tomorrow slots.
+- **PV-aware battery headroom cap**: today's slots limited by `max_battery - current_kwh - net_pv`.
+  Accounts for PV that will also fill the battery. If battery is 99%, no today
+  pre-charge slots are selected regardless of price. Negative-price and deficit
+  slots are exempt. Excess today slots are replaced with next-cheapest tomorrow slots.
 - **Realistic tomorrow start**: projects midnight battery from actual state
   (`current_kwh + net_pv + today_charge - drain_to_midnight`), not worst-case min_kwh
 - **Low-PV day proactive charging**: `daytime_gap = max(0, consumption - pv_tomorrow)`.
