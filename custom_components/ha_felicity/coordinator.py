@@ -547,16 +547,34 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             # 2. How much are we short of the overnight reserve?
             battery_shortfall = max(0.0, reserve_target - current_kwh)
-            base_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
+            snapshot_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
+
+            # Predictive: simulate SOC trajectory to catch future shortfalls
+            consumption_per_slot = consumption_est / num_slots
+            pv_confidence = ems_module._calculate_pv_confidence(
+                self.pv_hourly_kwh, self.pv_actual_today_kwh,
+                now.hour, now.minute,
+            )
+            _, min_projected, _ = ems_module._project_soc_trajectory(
+                remaining, current_kwh, consumption_per_slot,
+                self.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+                battery_capacity,
+            )
+            predictive_deficit = max(0.0, reserve_target - min_projected)
+            base_deficit = max(snapshot_deficit, predictive_deficit)
+
+            _LOGGER.debug(
+                "from_grid deficit: snapshot=%.2f, predictive=%.2f "
+                "(min_projected=%.1f, reserve_target=%.1f)",
+                snapshot_deficit, predictive_deficit, min_projected, reserve_target,
+            )
 
             # Add yesterday's deficit carryover, capped by what the battery can physically accept
             if self._yesterday_deficit > 0 and battery_shortfall > base_deficit:
                 carryover = min(self._yesterday_deficit, battery_shortfall - base_deficit)
                 energy_deficit = base_deficit + carryover
-                _LOGGER.debug("from_grid deficit: base=%.2f + carryover=%.2f → total=%.2f kWh "
-                              "(reserve_target=%.2f, current=%.2f, net_pv=%.2f)",
-                              base_deficit, carryover, energy_deficit,
-                              reserve_target, current_kwh, net_pv)
+                _LOGGER.debug("from_grid carryover: base=%.2f + carryover=%.2f → total=%.2f kWh",
+                              base_deficit, carryover, energy_deficit)
             else:
                 energy_deficit = base_deficit
 
@@ -591,8 +609,32 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         elif grid_mode == "to_grid":
             min_kwh = (discharge_min / 100.0) * battery_capacity
-            sellable = max(0.0, current_kwh - min_kwh) * efficiency
+
+            # Reserve-aware: protect self-consumption reserve
+            reserve_kwh = self._calculate_self_consumption_reserve(
+                consumption_est, num_slots, remaining)
+            self.self_consumption_reserve = round(reserve_kwh, 2)
+            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)
+
+            # Predictive: project peak SOC to determine total sellable energy
+            consumption_per_slot = consumption_est / num_slots
+            pv_confidence = ems_module._calculate_pv_confidence(
+                self.pv_hourly_kwh, self.pv_actual_today_kwh,
+                now.hour, now.minute,
+            )
+            _, _, max_projected = ems_module._project_soc_trajectory(
+                remaining, current_kwh, consumption_per_slot,
+                self.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+                battery_capacity,
+            )
+            sellable = max(0.0, max_projected - reserve_target) * efficiency
             energy_target = sellable
+
+            _LOGGER.debug(
+                "to_grid predictive: max_projected=%.1f, reserve_target=%.1f, "
+                "sellable=%.1f kWh",
+                max_projected, reserve_target, sellable,
+            )
 
             if sellable <= 0:
                 self.scheduled_slots = {}
@@ -633,7 +675,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             min_kwh = (discharge_min / 100.0) * battery_capacity
             reserve_target = min(battery_capacity, min_kwh + reserve_kwh)  # overnight drain + min floor
             battery_shortfall = max(0.0, reserve_target - current_kwh)  # how much we're short right now
-            base_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
+            snapshot_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
+
+            # Predictive: simulate SOC trajectory for both charge and sell decisions
+            consumption_per_slot = consumption_est / num_slots
+            pv_confidence = ems_module._calculate_pv_confidence(
+                self.pv_hourly_kwh, self.pv_actual_today_kwh,
+                now.hour, now.minute,
+            )
+            _, min_projected, max_projected = ems_module._project_soc_trajectory(
+                remaining, current_kwh, consumption_per_slot,
+                self.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+                battery_capacity,
+            )
+            predictive_deficit = max(0.0, reserve_target - min_projected)
+            base_deficit = max(snapshot_deficit, predictive_deficit)
+
+            _LOGGER.debug(
+                "both deficit: snapshot=%.2f, predictive=%.2f "
+                "(min=%.1f, max=%.1f, reserve=%.1f)",
+                snapshot_deficit, predictive_deficit,
+                min_projected, max_projected, reserve_target,
+            )
 
             if self._yesterday_deficit > 0 and battery_shortfall > base_deficit:
                 carryover = min(self._yesterday_deficit, battery_shortfall - base_deficit)
@@ -641,8 +704,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             else:
                 energy_deficit = base_deficit
 
-            # 3. Discharge side — only sell energy above the reserve floor (already computed above)
-            sellable = max(0.0, current_kwh - reserve_target) * efficiency
+            # 3. Discharge side — sell energy based on peak projected SOC above reserve
+            sellable = max(0.0, max_projected - reserve_target) * efficiency
 
             # 4-5. Unified slot selection: pick cheapest from today+tomorrow combined pool
             charge_slots, tomorrow_slots, tomorrow_charge_kwh = self._select_unified_charge_slots(
