@@ -296,11 +296,16 @@ def select_unified_charge_slots(
     tomorrow_selected = [s for s in selected if s[1] == 1]
 
     # --- Battery headroom constraint ---
+    # Subtract net PV surplus: that energy will also fill the battery,
+    # so real headroom for grid charging is smaller than raw capacity gap.
     max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
-    headroom = max(0.0, max_battery_kwh - current_kwh)
+    pv_fill = max(0.0, net_pv)
+    headroom = max(0.0, max_battery_kwh - current_kwh - pv_fill)
     max_today_slots = math.floor(headroom / effective_per_slot) if effective_per_slot > 0 else 0
     today_deficit_slots = math.ceil(energy_deficit / effective_per_slot) if effective_per_slot > 0 and energy_deficit > 0 else 0
-    max_today_slots = max(max_today_slots, today_deficit_slots)
+    # Negative-price slots are always profitable — exempt from headroom cap
+    neg_today_count = sum(1 for s in today_selected if s[0] < 0)
+    max_today_slots = max(max_today_slots, today_deficit_slots, neg_today_count)
 
     if len(today_selected) > max_today_slots:
         today_selected.sort(key=lambda x: x[0])
