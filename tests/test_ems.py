@@ -41,6 +41,8 @@ calculate_net_pv_surplus = ems.calculate_net_pv_surplus
 select_unified_charge_slots = ems.select_unified_charge_slots
 calculate_schedule = ems.calculate_schedule
 calculate_available_info = ems.calculate_available_info
+_calculate_pv_confidence = ems._calculate_pv_confidence
+_project_soc_trajectory = ems._project_soc_trajectory
 
 
 # ---------------------------------------------------------------------------
@@ -873,3 +875,339 @@ class TestScenarios:
         # Negative price slots should be included
         neg_slots = [s for s in charge_slots if prices[s] < 0]
         assert len(neg_slots) >= 1  # at least some negative slots selected
+
+
+# ---------------------------------------------------------------------------
+# Test: Predictive helper functions
+# ---------------------------------------------------------------------------
+
+class TestPVConfidence:
+    def test_no_data(self):
+        """No PV data → confidence 1.0."""
+        assert _calculate_pv_confidence(None, None, 12) == 1.0
+
+    def test_early_morning_no_expected(self):
+        """Before sunrise, expected is 0 → confidence 1.0."""
+        pv = make_pv_hourly(30.0)
+        assert _calculate_pv_confidence(pv, 0.0, 3) == 1.0
+
+    def test_tracking_forecast(self):
+        """Actual matches expected → confidence 1.0."""
+        pv = make_pv_hourly(30.0)
+        # Sum expected before hour 14
+        expected = sum(kwh for h, kwh in pv.items() if h < 14)
+        conf = _calculate_pv_confidence(pv, expected, 14)
+        assert conf == pytest.approx(1.0, abs=0.05)
+
+    def test_cloudy_day(self):
+        """Actual much less than expected → low confidence."""
+        pv = make_pv_hourly(30.0)
+        expected = sum(kwh for h, kwh in pv.items() if h < 14)
+        conf = _calculate_pv_confidence(pv, expected * 0.3, 14)
+        assert conf == pytest.approx(0.3, abs=0.05)
+
+    def test_clamp_minimum(self):
+        """Confidence never goes below 0.1."""
+        pv = make_pv_hourly(30.0)
+        conf = _calculate_pv_confidence(pv, 0.0, 14)
+        assert conf == 0.1
+
+
+class TestSOCTrajectory:
+    def test_flat_consumption_no_pv(self):
+        """Pure consumption drain, no PV."""
+        remaining = [(i, 0.20) for i in range(24)]
+        proj, min_soc, max_soc = _project_soc_trajectory(
+            remaining, 50.0, 1.0, None, 60.0, 1.0, 100.0,
+        )
+        assert max_soc == 50.0  # starts at 50, only drains
+        assert min_soc == pytest.approx(50.0 - 24 * 1.0, abs=0.1)
+        assert len(proj) == 24
+
+    def test_pv_boost_midday(self):
+        """PV boosts battery during day."""
+        pv = {h: 4.0 for h in range(10, 16)}  # 6h × 4kWh = 24 kWh
+        remaining = [(i, 0.20) for i in range(24)]
+        proj, min_soc, max_soc = _project_soc_trajectory(
+            remaining, 30.0, 1.0, pv, 60.0, 1.0, 100.0,
+        )
+        # Should peak during PV hours
+        assert max_soc > 30.0
+        # min is before PV kicks in
+        assert min_soc < 30.0
+
+    def test_battery_cap(self):
+        """SOC projection capped at battery capacity."""
+        pv = {h: 10.0 for h in range(6, 18)}  # huge PV
+        remaining = [(i, 0.20) for i in range(24)]
+        proj, _, max_soc = _project_soc_trajectory(
+            remaining, 90.0, 0.5, pv, 60.0, 1.0, 100.0,
+        )
+        assert max_soc <= 100.0
+
+
+# ---------------------------------------------------------------------------
+# Test: Predictive scheduling — from_grid
+# ---------------------------------------------------------------------------
+
+class TestPredictiveFromGrid:
+    def test_night_precharge_cheap_slots(self):
+        """Battery above reserve at 2 AM, but trajectory shows afternoon dip.
+        Should preemptively charge at cheap night prices."""
+        config = default_config(
+            consumption_est_kwh=38.5,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=40.0,
+        )
+        # Cheap night (0-7), expensive day (8-23)
+        prices = [0.05] * 8 + [0.30] * 16
+        state = default_state(
+            battery_soc_pct=80.0,  # 48 kWh — above reserve NOW
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=2,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+
+        # Must charge (predictive deficit)
+        assert len(charge_slots) > 0
+        # Most charges should be in cheap night period (slots 2-7)
+        cheap_charges = [s for s in charge_slots if s < 8]
+        assert len(cheap_charges) >= len(charge_slots) - 1, \
+            f"Expected most charges in cheap night slots, got {charge_slots}"
+        # Night slots should be filled first (all 6 cheap slots used)
+        assert len(cheap_charges) == 6
+
+    def test_no_precharge_when_pv_covers(self):
+        """Battery dips during night but strong PV recovers it.
+        Should NOT charge at night."""
+        config = default_config(
+            consumption_est_kwh=20.0,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+        )
+        prices = [0.05] * 8 + [0.30] * 16
+        state = default_state(
+            battery_soc_pct=70.0,  # 42 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(40.0),
+            pv_forecast_remaining=35.0,
+            pv_forecast_today=40.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=2,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        # PV covers consumption → no grid charging needed
+        assert len(charge_slots) == 0
+
+    def test_predictive_more_than_snapshot(self):
+        """Predictive deficit should be >= snapshot deficit."""
+        config = default_config(
+            consumption_est_kwh=30.0,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+        )
+        # Battery right at reserve target → snapshot deficit = 0
+        # But consumption will drain it below → predictive deficit > 0
+        min_kwh = 0.20 * 60  # 12
+        reserve_kwh = calculate_self_consumption_reserve(30.0)
+        reserve_target = min(60, min_kwh + reserve_kwh)
+
+        prices = [0.10] * 24
+        state = default_state(
+            battery_soc_pct=reserve_target / 60.0 * 100,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        # Snapshot deficit = 0 (at target), but predictive > 0 (will drain)
+        assert result.grid_energy_planned > 0
+
+    def test_predictive_matches_user_scenario(self):
+        """Reproduces the reported issue: 72% battery, 60 kWh, 40% min,
+        cloudy day, cheap night slots ignored."""
+        config = default_config(
+            consumption_est_kwh=38.5,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=40.0,
+            safe_power_kw=8.0,
+        )
+        # Realistic price curve: cheap at night, expensive during day
+        prices = (
+            [0.08, 0.07, 0.06, 0.05, 0.05, 0.06, 0.07, 0.09]  # 0-7
+            + [0.15, 0.20, 0.25, 0.28, 0.30, 0.32, 0.19, 0.22]  # 8-15
+            + [0.25, 0.28, 0.30, 0.28, 0.25, 0.22, 0.18, 0.12]  # 16-23
+        )
+        state = default_state(
+            battery_soc_pct=72.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={h: 0.3 for h in range(9, 16)},  # very cloudy
+            pv_forecast_remaining=1.5,
+            pv_forecast_today=3.4,
+            pv_actual_today_kwh=0.1,
+            current_hour=9,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = sorted(result.scheduled_slots.keys())
+
+        # Should pick cheaper slots, not the most expensive afternoon ones
+        assert len(charge_slots) > 0
+        selected_prices = [prices[s] for s in charge_slots]
+        # The cheapest available slots (9+) should be preferred over expensive ones
+        # Slot 14 at 0.19 should be preferred over slot 13 at 0.32
+        assert max(selected_prices) < 0.30, \
+            f"Selected expensive slots: {list(zip(charge_slots, selected_prices))}"
+
+
+# ---------------------------------------------------------------------------
+# Test: Predictive scheduling — to_grid
+# ---------------------------------------------------------------------------
+
+class TestPredictiveToGrid:
+    def test_pv_boost_increases_sellable(self):
+        """With PV incoming, to_grid should account for higher peak SOC."""
+        config = default_config(
+            grid_mode="to_grid",
+            consumption_est_kwh=20.0,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+        )
+        prices = [0.30] * 24
+        pv = make_pv_hourly(40.0)
+
+        # With PV
+        state_pv = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=30.0,
+            pv_forecast_today=40.0,
+            pv_actual_today_kwh=10.0,
+            current_hour=8,
+        )
+        result_pv = calculate_schedule(config, state_pv)
+
+        # Without PV
+        state_no_pv = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            current_hour=8,
+        )
+        result_no_pv = calculate_schedule(config, state_no_pv)
+
+        # PV version should sell more (higher peak SOC)
+        assert result_pv.grid_energy_planned > result_no_pv.grid_energy_planned
+
+    def test_reserve_protection(self):
+        """to_grid should not sell into self-consumption reserve."""
+        config = default_config(
+            grid_mode="to_grid",
+            consumption_est_kwh=38.5,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=40.0,
+        )
+        prices = [0.50] * 24
+        state = default_state(
+            battery_soc_pct=55.0,  # 33 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=18,
+        )
+        result = calculate_schedule(config, state)
+        # reserve_target = min(60, 24 + overnight_reserve) ≈ 43+ kWh
+        # max_projected = 33 (no PV, only drains) < reserve_target
+        assert result.status == "no_action_needed"
+
+    def test_has_self_consumption_reserve(self):
+        """to_grid should now report self_consumption_reserve."""
+        config = default_config(
+            grid_mode="to_grid",
+            consumption_est_kwh=24.0,
+        )
+        state = default_state(
+            battery_soc_pct=90.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.self_consumption_reserve > 0
+
+
+# ---------------------------------------------------------------------------
+# Test: Predictive scheduling — both mode
+# ---------------------------------------------------------------------------
+
+class TestPredictiveBoth:
+    def test_predictive_charge_and_sell(self):
+        """Both mode: predictive charge at cheap + sell at expensive."""
+        config = default_config(
+            grid_mode="both",
+            consumption_est_kwh=20.0,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+        )
+        prices = [0.05] * 8 + [0.40] * 8 + [0.10] * 8
+        state = default_state(
+            battery_soc_pct=60.0,  # 36 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(30.0),
+            pv_forecast_remaining=25.0,
+            pv_forecast_today=30.0,
+            pv_actual_today_kwh=5.0,
+            current_hour=4,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        discharge_slots = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+
+        if charge_slots:
+            assert max(prices[s] for s in charge_slots) < 0.20
+        if discharge_slots:
+            assert min(prices[s] for s in discharge_slots) > 0.20
+
+    def test_predictive_sellable_with_pv(self):
+        """Both mode sell side: PV boost should increase sellable vs no PV."""
+        config = default_config(
+            grid_mode="both",
+            consumption_est_kwh=20.0,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+        )
+        # Wide spread for profitable selling
+        prices = [0.05] * 6 + [0.50] * 12 + [0.05] * 6
+
+        state_pv = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(40.0),
+            pv_forecast_remaining=30.0,
+            pv_forecast_today=40.0,
+            pv_actual_today_kwh=10.0,
+            current_hour=6,
+        )
+        result_pv = calculate_schedule(config, state_pv)
+
+        state_no_pv = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=6,
+        )
+        result_no_pv = calculate_schedule(config, state_no_pv)
+
+        sell_pv = len([k for k, v in result_pv.scheduled_slots.items() if v == "discharge"])
+        sell_no_pv = len([k for k, v in result_no_pv.scheduled_slots.items() if v == "discharge"])
+        assert sell_pv >= sell_no_pv

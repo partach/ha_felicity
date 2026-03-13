@@ -158,6 +158,63 @@ def calculate_net_pv_surplus(
     return surplus_total
 
 
+def _calculate_pv_confidence(
+    pv_hourly_kwh: dict[int, float] | None,
+    pv_actual_today_kwh: float | None,
+    current_hour: int,
+    current_minute: int = 0,
+) -> float:
+    """Calculate PV production confidence based on actual vs expected output.
+
+    Returns a factor between 0.1 and 1.0.  A value of 1.0 means production
+    tracks the forecast; lower values indicate a cloudier day than forecast.
+    """
+    if not pv_hourly_kwh or pv_actual_today_kwh is None:
+        return 1.0
+    expected_so_far = 0.0
+    for hour, kwh in pv_hourly_kwh.items():
+        if hour < current_hour:
+            expected_so_far += kwh
+        elif hour == current_hour:
+            expected_so_far += kwh * (current_minute / 60.0)
+    if expected_so_far <= 1.0:
+        return 1.0
+    confidence = pv_actual_today_kwh / expected_so_far
+    return max(0.1, min(1.0, confidence))
+
+
+def _project_soc_trajectory(
+    remaining: list[tuple[int, float]],
+    current_kwh: float,
+    consumption_per_slot: float,
+    pv_hourly_kwh: dict[int, float] | None,
+    minutes_per_slot: float,
+    pv_confidence: float = 1.0,
+    battery_capacity: float = 100.0,
+) -> tuple[dict[int, float], float, float]:
+    """Project battery SOC through remaining slots (no charge/sell actions).
+
+    Returns:
+        (per_slot_projection, min_kwh, max_kwh)
+    """
+    projection: dict[int, float] = {}
+    projected = current_kwh
+    min_soc = current_kwh
+    max_soc = current_kwh
+
+    for slot_idx, _ in remaining:
+        hour = int((slot_idx * minutes_per_slot) / 60)
+        pv_kwh = (pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+        pv_per_slot = pv_kwh * (minutes_per_slot / 60.0)
+
+        projected = min(battery_capacity, projected + pv_per_slot - consumption_per_slot)
+        projection[slot_idx] = projected
+        min_soc = min(min_soc, projected)
+        max_soc = max(max_soc, projected)
+
+    return projection, min_soc, max_soc
+
+
 def select_unified_charge_slots(
     remaining_today: list[tuple[int, float]],
     energy_deficit: float,
@@ -362,7 +419,8 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         )
     elif config.grid_mode == "to_grid":
         result = _schedule_to_grid(
-            config, remaining, current_kwh, energy_per_slot, current_slot,
+            config, state, remaining, current_kwh, net_pv,
+            energy_per_slot, num_slots, current_slot,
         )
     elif config.grid_mode == "both":
         result = _schedule_both(
@@ -404,7 +462,28 @@ def _schedule_from_grid(
     reserve_target = min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
 
     battery_shortfall = max(0.0, reserve_target - current_kwh)
-    base_deficit = max(0.0, battery_shortfall - net_pv)
+    snapshot_deficit = max(0.0, battery_shortfall - net_pv)
+
+    # Predictive: simulate SOC trajectory to catch future shortfalls
+    minutes_per_slot = (24 * 60) / num_slots
+    consumption_per_slot = config.consumption_est_kwh / num_slots
+    pv_confidence = _calculate_pv_confidence(
+        state.pv_hourly_kwh, state.pv_actual_today_kwh,
+        state.current_hour, state.current_minute,
+    )
+    _, min_projected, _ = _project_soc_trajectory(
+        remaining, current_kwh, consumption_per_slot,
+        state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+        config.battery_capacity_kwh,
+    )
+    predictive_deficit = max(0.0, reserve_target - min_projected)
+    base_deficit = max(snapshot_deficit, predictive_deficit)
+
+    _LOGGER.debug(
+        "from_grid deficit: snapshot=%.2f, predictive=%.2f "
+        "(min_projected=%.1f, reserve_target=%.1f)",
+        snapshot_deficit, predictive_deficit, min_projected, reserve_target,
+    )
 
     if config.yesterday_deficit_kwh > 0 and battery_shortfall > base_deficit:
         carryover = min(config.yesterday_deficit_kwh, battery_shortfall - base_deficit)
@@ -444,15 +523,43 @@ def _schedule_from_grid(
 
 def _schedule_to_grid(
     config: EMSConfig,
+    state: EMSState,
     remaining: list[tuple[int, float]],
     current_kwh: float,
+    net_pv: float,
     energy_per_slot: float,
+    num_slots: int,
     current_slot: int,
 ) -> ScheduleResult:
-    """Schedule to_grid mode: sell at best prices."""
+    """Schedule to_grid mode: sell at best prices with predictive awareness."""
     result = ScheduleResult()
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
-    sellable = max(0.0, current_kwh - min_kwh) * config.efficiency
+
+    # Reserve-aware: protect self-consumption reserve
+    reserve_kwh = calculate_self_consumption_reserve(
+        config.consumption_est_kwh, state.pv_hourly_kwh)
+    result.self_consumption_reserve = round(reserve_kwh, 2)
+    reserve_target = min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
+
+    # Predictive: project peak SOC to determine total sellable energy
+    pv_confidence = _calculate_pv_confidence(
+        state.pv_hourly_kwh, state.pv_actual_today_kwh,
+        state.current_hour, state.current_minute,
+    )
+    minutes_per_slot = (24 * 60) / num_slots
+    consumption_per_slot = config.consumption_est_kwh / num_slots
+    _, _, max_projected = _project_soc_trajectory(
+        remaining, current_kwh, consumption_per_slot,
+        state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+        config.battery_capacity_kwh,
+    )
+    sellable = max(0.0, max_projected - reserve_target) * config.efficiency
+
+    _LOGGER.debug(
+        "to_grid predictive: max_projected=%.1f, reserve_target=%.1f, "
+        "sellable=%.1f kWh",
+        max_projected, reserve_target, sellable,
+    )
 
     if sellable <= 0:
         result.status = "no_action_needed"
@@ -495,7 +602,29 @@ def _schedule_both(
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
     reserve_target = min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
     battery_shortfall = max(0.0, reserve_target - current_kwh)
-    base_deficit = max(0.0, battery_shortfall - net_pv)
+    snapshot_deficit = max(0.0, battery_shortfall - net_pv)
+
+    # Predictive: simulate SOC trajectory for both charge and sell decisions
+    minutes_per_slot = (24 * 60) / num_slots
+    consumption_per_slot = config.consumption_est_kwh / num_slots
+    pv_confidence = _calculate_pv_confidence(
+        state.pv_hourly_kwh, state.pv_actual_today_kwh,
+        state.current_hour, state.current_minute,
+    )
+    _, min_projected, max_projected = _project_soc_trajectory(
+        remaining, current_kwh, consumption_per_slot,
+        state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+        config.battery_capacity_kwh,
+    )
+    predictive_deficit = max(0.0, reserve_target - min_projected)
+    base_deficit = max(snapshot_deficit, predictive_deficit)
+
+    _LOGGER.debug(
+        "both deficit: snapshot=%.2f, predictive=%.2f "
+        "(min=%.1f, max=%.1f, reserve=%.1f)",
+        snapshot_deficit, predictive_deficit,
+        min_projected, max_projected, reserve_target,
+    )
 
     if config.yesterday_deficit_kwh > 0 and battery_shortfall > base_deficit:
         carryover = min(config.yesterday_deficit_kwh, battery_shortfall - base_deficit)
@@ -503,7 +632,8 @@ def _schedule_both(
     else:
         energy_deficit = base_deficit
 
-    sellable = max(0.0, current_kwh - reserve_target) * config.efficiency
+    # Predictive sellable: use peak projected SOC above reserve
+    sellable = max(0.0, max_projected - reserve_target) * config.efficiency
 
     charge_slots, tomorrow_slots, tomorrow_charge_kwh = select_unified_charge_slots(
         remaining, energy_deficit, effective_per_slot,
