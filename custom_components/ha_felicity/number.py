@@ -153,6 +153,17 @@ async def async_setup_entry(
             icon="mdi:home-lightning-bolt",
             device_class="energy"
         ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="reserve_target_pct",
+            name="Reserve Target",
+            min_val=0,
+            max_val=100,
+            step=5,
+            unit="%",
+            icon="mdi:battery-lock",
+        ),
     ])
 
     # Tie all entities to the device
