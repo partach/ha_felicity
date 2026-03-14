@@ -43,6 +43,7 @@ calculate_schedule = ems.calculate_schedule
 calculate_available_info = ems.calculate_available_info
 _calculate_pv_confidence = ems._calculate_pv_confidence
 _project_soc_trajectory = ems._project_soc_trajectory
+_validate_schedule_soc = ems._validate_schedule_soc
 
 
 # ---------------------------------------------------------------------------
@@ -976,12 +977,14 @@ class TestPredictiveFromGrid:
 
         # Must charge (predictive deficit)
         assert len(charge_slots) > 0
-        # Most charges should be in cheap night period (slots 2-7)
+        # All charges should be in cheap night period (slots 2-7)
         cheap_charges = [s for s in charge_slots if s < 8]
         assert len(cheap_charges) >= len(charge_slots) - 1, \
             f"Expected most charges in cheap night slots, got {charge_slots}"
-        # Night slots should be filled first (all 6 cheap slots used)
-        assert len(cheap_charges) == 6
+        # SOC validation limits charges: 48 kWh + 4.5/slot = overflow after ~4
+        # Battery can't hold all 6 night slots, so expect 3-5 based on headroom
+        assert 3 <= len(cheap_charges) <= 5, \
+            f"Expected 3-5 charges (headroom limited), got {len(cheap_charges)}"
 
     def test_no_precharge_when_pv_covers(self):
         """Battery dips during night but strong PV recovers it.
@@ -1211,3 +1214,401 @@ class TestPredictiveBoth:
         sell_pv = len([k for k, v in result_pv.scheduled_slots.items() if v == "discharge"])
         sell_no_pv = len([k for k, v in result_no_pv.scheduled_slots.items() if v == "discharge"])
         assert sell_pv >= sell_no_pv
+
+
+# ---------------------------------------------------------------------------
+# Test: Per-slot SOC validation (_validate_schedule_soc)
+# ---------------------------------------------------------------------------
+
+class TestValidateScheduleSOC:
+    """Direct tests of the _validate_schedule_soc helper."""
+
+    def test_valid_schedule_unchanged(self):
+        """A schedule that stays within bounds is returned unchanged."""
+        # 24 slots, battery at 30 kWh, capacity 60, min 12 (20%)
+        remaining = [(i, 0.25) for i in range(24)]
+        charge = {2, 3}     # charge at slots 2 and 3
+        discharge = {20, 21}  # discharge at slots 20 and 21
+
+        vc, vd = _validate_schedule_soc(
+            remaining, charge, discharge,
+            current_kwh=30.0,
+            consumption_per_slot=38.5 / 24,
+            pv_hourly_kwh=make_pv_hourly(30.0),
+            minutes_per_slot=60.0,
+            pv_confidence=1.0,
+            battery_capacity=60.0,
+            min_kwh=12.0,
+            energy_per_slot=5.0,
+            efficiency=0.90,
+        )
+        assert vc == charge
+        assert vd == discharge
+
+    def test_discharge_dropped_when_soc_too_low(self):
+        """Discharge slots removed when they would cause SOC below min."""
+        # Low battery, no PV, heavy discharge in early slots
+        remaining = [(i, 0.20 + i * 0.01) for i in range(24)]
+        charge = set()
+        discharge = {1, 2, 3, 4, 5}  # 5 discharge slots, 5 kWh each = 25 kWh
+
+        vc, vd = _validate_schedule_soc(
+            remaining, charge, discharge,
+            current_kwh=20.0,   # just above min
+            consumption_per_slot=1.0,
+            pv_hourly_kwh={},
+            minutes_per_slot=60.0,
+            pv_confidence=1.0,
+            battery_capacity=60.0,
+            min_kwh=12.0,
+            energy_per_slot=5.0,
+            efficiency=0.90,
+        )
+        # Some discharge slots should be dropped
+        assert len(vd) < 5
+        # Least valuable (lowest price) should be dropped first
+        if vd:
+            dropped = discharge - vd
+            surviving_min_price = min(0.20 + s * 0.01 for s in vd)
+            for d in dropped:
+                assert 0.20 + d * 0.01 <= surviving_min_price
+
+    def test_charge_dropped_when_soc_too_high(self):
+        """Charge slots removed when they would push SOC above capacity."""
+        # Battery nearly full, lots of charge slots
+        remaining = [(i, 0.10) for i in range(24)]
+        charge = {0, 1, 2, 3, 4}  # 5 charge slots, 5*0.9=4.5 kWh each = 22.5 kWh
+        discharge = set()
+
+        vc, vd = _validate_schedule_soc(
+            remaining, charge, discharge,
+            current_kwh=55.0,   # near capacity of 60
+            consumption_per_slot=0.5,
+            pv_hourly_kwh={},
+            minutes_per_slot=60.0,
+            pv_confidence=1.0,
+            battery_capacity=60.0,
+            min_kwh=12.0,
+            energy_per_slot=5.0,
+            efficiency=0.90,
+        )
+        # Some charge slots should be dropped since battery is nearly full
+        assert len(vc) < 5
+
+    def test_mixed_charge_discharge_validation(self):
+        """Combined charge+discharge schedule validated together."""
+        # Charge early (cheap) then discharge late (expensive)
+        # But make discharge aggressive enough to hit min
+        remaining = [(i, 0.05 if i < 6 else 0.40) for i in range(24)]
+        charge = {0, 1}
+        discharge = {18, 19, 20, 21, 22, 23}
+
+        vc, vd = _validate_schedule_soc(
+            remaining, charge, discharge,
+            current_kwh=20.0,
+            consumption_per_slot=1.5,
+            pv_hourly_kwh=make_pv_hourly(10.0),  # modest PV
+            minutes_per_slot=60.0,
+            pv_confidence=1.0,
+            battery_capacity=60.0,
+            min_kwh=12.0,
+            energy_per_slot=5.0,
+            efficiency=0.90,
+        )
+        # Charge slots should survive (they help)
+        assert vc == charge
+        # Some discharge may be dropped if SOC would dip too low
+        assert len(vd) <= len(discharge)
+
+    def test_empty_schedule_is_noop(self):
+        """Empty charge/discharge sets return empty."""
+        remaining = [(i, 0.25) for i in range(24)]
+        vc, vd = _validate_schedule_soc(
+            remaining, set(), set(),
+            current_kwh=30.0,
+            consumption_per_slot=1.0,
+            pv_hourly_kwh={},
+            minutes_per_slot=60.0,
+            pv_confidence=1.0,
+            battery_capacity=60.0,
+            min_kwh=12.0,
+            energy_per_slot=5.0,
+            efficiency=0.90,
+        )
+        assert vc == set()
+        assert vd == set()
+
+
+# ---------------------------------------------------------------------------
+# Test: SOC validation integrated into from_grid
+# ---------------------------------------------------------------------------
+
+class TestSOCValidationFromGrid:
+    """Test that from_grid respects per-slot SOC bounds."""
+
+    def test_overcharge_prevented(self):
+        """from_grid doesn't schedule more charge than battery can hold."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=10.0,
+            consumption_est_kwh=5.0,
+            safe_power_kw=5.0,
+        )
+        # Very cheap prices encourage charging, but battery is nearly full
+        prices = [0.01] * 24
+        state = default_state(
+            battery_soc_pct=90.0,  # 18 kWh of 20 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+
+        # Simulate: confirm SOC never exceeds capacity
+        soc = 18.0
+        for slot in range(24):
+            soc -= 5.0 / 24  # consumption
+            if slot in charge_slots:
+                soc += 5.0 * 0.90  # charge
+            assert soc <= 20.0 + 0.5, f"SOC exceeded capacity at slot {slot}: {soc:.1f}"
+
+    def test_charge_schedule_respects_trajectory(self):
+        """from_grid scheduled slots don't cause SOC overflow mid-day."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=30.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+        )
+        # Cheap morning, battery starts high, PV incoming midday
+        prices = [0.05] * 8 + [0.30] * 16
+        state = default_state(
+            battery_soc_pct=80.0,  # 24 kWh of 30
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(20.0),
+            pv_forecast_remaining=18.0,
+            pv_forecast_today=20.0,
+            pv_actual_today_kwh=2.0,
+            current_hour=2,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        # With battery at 80% and PV incoming, should not schedule many charges
+        # The SOC validation should prevent overcharging
+        assert len(charge_slots) <= 4, f"Too many charges for nearly-full battery: {charge_slots}"
+
+
+# ---------------------------------------------------------------------------
+# Test: SOC validation integrated into to_grid
+# ---------------------------------------------------------------------------
+
+class TestSOCValidationToGrid:
+    """Test that to_grid respects per-slot SOC bounds."""
+
+    def test_early_discharge_prevented_before_pv(self):
+        """to_grid shouldn't sell at 7am when PV doesn't peak until noon."""
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=30.0,
+            safe_power_kw=5.0,
+        )
+        # Expensive morning, cheap afternoon — naive scheduler would sell morning
+        prices = [0.50] * 8 + [0.10] * 8 + [0.30] * 8
+        state = default_state(
+            battery_soc_pct=40.0,  # 24 kWh, min is 12 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(40.0),  # big PV midday
+            pv_forecast_remaining=35.0,
+            pv_forecast_today=40.0,
+            pv_actual_today_kwh=5.0,
+            current_hour=4,
+        )
+        result = calculate_schedule(config, state)
+        discharge_slots = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+
+        # Verify SOC never dips below reserve_target through the schedule
+        min_kwh = 0.20 * 60.0  # 12 kWh
+        soc = 24.0
+        for slot in range(4, 24):
+            hour = slot
+            pv_kwh = state.pv_hourly_kwh.get(hour, 0.0)
+            soc += pv_kwh - (30.0 / 24)
+            if slot in discharge_slots:
+                soc -= 5.0
+            soc = max(0, min(60.0, soc))
+            # Should stay above discharge minimum
+            assert soc >= min_kwh - 1.0, (
+                f"SOC dropped to {soc:.1f} at slot {slot}, min is {min_kwh:.1f}"
+            )
+
+    def test_sell_limited_by_available_energy(self):
+        """to_grid sells are limited by what battery can actually provide."""
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+        )
+        # All expensive prices, but battery only has ~12 kWh above min
+        prices = [0.40] * 24
+        state = default_state(
+            battery_soc_pct=80.0,  # 16 kWh, min 4 kWh, sellable ~12 kWh max
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        discharge_slots = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+
+        # Should not schedule more discharge than battery can support
+        # each discharge = 5 kWh, available ~12 kWh minus consumption drain
+        assert len(discharge_slots) <= 3, f"Too many discharges: {len(discharge_slots)}"
+
+    def test_no_sell_with_low_battery(self):
+        """to_grid doesn't sell when battery is at or below reserve."""
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=30.0,
+            safe_power_kw=5.0,
+        )
+        prices = [0.50] * 24
+        state = default_state(
+            battery_soc_pct=25.0,  # 15 kWh, close to min 12 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        discharge_slots = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+        assert len(discharge_slots) == 0, "Should not sell with low battery"
+
+
+# ---------------------------------------------------------------------------
+# Test: SOC validation integrated into both mode
+# ---------------------------------------------------------------------------
+
+class TestSOCValidationBoth:
+    """Test that both mode respects per-slot SOC bounds for charge and discharge."""
+
+    def test_charge_and_discharge_respect_bounds(self):
+        """Both mode schedule never violates SOC bounds at any slot."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=40.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=15.0,
+            safe_power_kw=5.0,
+        )
+        # Cheap morning, expensive midday, cheap evening
+        prices = [0.05] * 6 + [0.50] * 6 + [0.05] * 6 + [0.30] * 6
+        pv = make_pv_hourly(25.0)
+        state = default_state(
+            battery_soc_pct=50.0,  # 20 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=20.0,
+            pv_forecast_today=25.0,
+            pv_actual_today_kwh=5.0,
+            current_hour=3,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        discharge_slots = {k for k, v in result.scheduled_slots.items() if v == "discharge"}
+
+        # Simulate SOC trajectory with the schedule
+        min_kwh = 0.20 * 40.0  # 8 kWh
+        soc = 20.0
+        for slot in range(3, 24):
+            hour = slot
+            pv_kwh = pv.get(hour, 0.0)
+            soc += pv_kwh - (15.0 / 24)
+            if slot in charge_slots:
+                soc += 5.0 * 0.90
+            if slot in discharge_slots:
+                soc -= 5.0
+            soc = max(0, min(40.0, soc))
+            assert soc >= min_kwh - 1.0, (
+                f"SOC {soc:.1f} below min {min_kwh:.1f} at slot {slot}"
+            )
+            assert soc <= 40.0 + 0.5, (
+                f"SOC {soc:.1f} above capacity at slot {slot}"
+            )
+
+    def test_discharge_pruned_in_both_mode(self):
+        """Both mode: discharge slots pruned when they'd breach min SOC."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=30.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=20.0,
+            safe_power_kw=5.0,
+        )
+        # Cheap slot 0, expensive slots 1-23 — tempts heavy selling
+        prices = [0.02] + [0.60] * 23
+        state = default_state(
+            battery_soc_pct=50.0,  # 15 kWh, min is 6 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        discharge_slots = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+
+        # With 15 kWh, min 6 kWh, consumption 20/24 per slot, selling 5 kWh/slot
+        # Can't sell more than a couple of slots without hitting min
+        assert len(discharge_slots) <= 3, (
+            f"Too many discharges ({len(discharge_slots)}) for limited battery"
+        )
+
+    def test_arbitrage_spread_respected(self):
+        """Both mode: charge cheap and sell expensive with valid spread."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            efficiency=0.90,
+        )
+        # Clear arbitrage: cheap 0-5, expensive 12-17
+        prices = [0.05] * 6 + [0.20] * 6 + [0.50] * 6 + [0.15] * 6
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(15.0),
+            pv_forecast_remaining=12.0,
+            pv_forecast_today=15.0,
+            pv_actual_today_kwh=3.0,
+            current_hour=2,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        discharge_slots = {k for k, v in result.scheduled_slots.items() if v == "discharge"}
+
+        # No slot should be both charge and discharge
+        assert charge_slots.isdisjoint(discharge_slots)
+
+        # If there are sell slots, they should be in the expensive range
+        if discharge_slots:
+            for s in discharge_slots:
+                assert prices[s] >= 0.30, f"Selling at cheap price {prices[s]} in slot {s}"

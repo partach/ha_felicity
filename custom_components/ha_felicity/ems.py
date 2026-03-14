@@ -215,6 +215,118 @@ def _project_soc_trajectory(
     return projection, min_soc, max_soc
 
 
+def _validate_schedule_soc(
+    remaining: list[tuple[int, float]],
+    charge_slots: set[int],
+    discharge_slots: set[int],
+    current_kwh: float,
+    consumption_per_slot: float,
+    pv_hourly_kwh: dict[int, float] | None,
+    minutes_per_slot: float,
+    pv_confidence: float,
+    battery_capacity: float,
+    min_kwh: float,
+    energy_per_slot: float,
+    efficiency: float,
+) -> tuple[set[int], set[int]]:
+    """Validate schedule by simulating SOC at every slot, pruning violations.
+
+    Like the VB Sell macro, this checks that SOC stays within [min_kwh,
+    battery_capacity] at every time slot.  If a discharge would cause SOC to
+    dip below min, it is removed (least valuable first).  If a charge would
+    push SOC above capacity, it is removed (most expensive first).
+
+    Returns pruned (charge_slots, discharge_slots).
+    """
+    charge_slots = set(charge_slots)
+    discharge_slots = set(discharge_slots)
+
+    # Build price lookup from remaining
+    price_of: dict[int, float] = {idx: price for idx, price in remaining}
+
+    max_iterations = len(charge_slots) + len(discharge_slots) + 1
+
+    for _ in range(max_iterations):
+        violation_slot: int | None = None
+        violation_type: str | None = None  # "low" or "high"
+
+        soc = current_kwh
+        for slot_idx, _ in remaining:
+            hour = int((slot_idx * minutes_per_slot) / 60)
+            pv_kwh = (pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+            pv_per_slot = pv_kwh * (minutes_per_slot / 60.0)
+
+            delta = pv_per_slot - consumption_per_slot
+            if slot_idx in charge_slots:
+                delta += energy_per_slot * efficiency
+            if slot_idx in discharge_slots:
+                delta -= energy_per_slot
+
+            soc = soc + delta
+
+            # Check bounds BEFORE clamping — charging a full battery wastes
+            # energy, discharging an empty one is impossible.
+            if soc < min_kwh - 0.01:
+                violation_slot = slot_idx
+                violation_type = "low"
+                break
+            if soc > battery_capacity + 0.01:
+                violation_slot = slot_idx
+                violation_type = "high"
+                break
+
+            # Clamp to physical limits for subsequent slot calculations
+            soc = max(0.0, min(battery_capacity, soc))
+
+        if violation_slot is None:
+            break  # Schedule is valid
+
+        if violation_type == "low":
+            # Remove the least valuable discharge at or before violation
+            candidates = [
+                s for s in discharge_slots
+                if s <= violation_slot
+            ]
+            if not candidates:
+                # Remove any discharge slot (least valuable)
+                candidates = list(discharge_slots)
+            if not candidates:
+                break
+            # Remove the one with lowest price (least profitable to sell)
+            drop = min(candidates, key=lambda s: price_of.get(s, 0.0))
+            discharge_slots.discard(drop)
+            _LOGGER.debug(
+                "SOC validation: dropped discharge slot %d (price=%.3f) "
+                "due to low SOC at slot %d",
+                drop, price_of.get(drop, 0.0), violation_slot,
+            )
+        else:
+            # Remove the most expensive non-negative charge at or before violation.
+            # Negative-price slots are always profitable — exempt from overflow.
+            candidates = [
+                s for s in charge_slots
+                if s <= violation_slot and price_of.get(s, 0.0) >= 0
+            ]
+            if not candidates:
+                candidates = [
+                    s for s in charge_slots
+                    if price_of.get(s, 0.0) >= 0
+                ]
+            if not candidates:
+                # Only negative-price charge slots remain — keep them all
+                break
+            # Remove the most expensive charge slot
+            drop = max(candidates, key=lambda s: price_of.get(s, 0.0))
+            charge_slots.discard(drop)
+            _LOGGER.debug(
+                "SOC validation: dropped charge slot %d (price=%.3f) "
+                "due to high SOC at slot %d",
+                drop, price_of.get(drop, 0.0), violation_slot,
+            )
+
+    return charge_slots, discharge_slots
+
+
 def select_unified_charge_slots(
     remaining_today: list[tuple[int, float]],
     energy_deficit: float,
@@ -516,6 +628,21 @@ def _schedule_from_grid(
         result.status = "no_action_needed"
         return result
 
+    # Per-slot SOC validation: ensure charge doesn't push SOC above capacity
+    charge_set = {s[0] for s in selected}
+    validated_charge, _ = _validate_schedule_soc(
+        remaining, charge_set, set(),
+        current_kwh, consumption_per_slot,
+        state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+        config.battery_capacity_kwh, min_kwh,
+        energy_per_slot, config.efficiency,
+    )
+    selected = [(idx, p) for idx, p in selected if idx in validated_charge]
+
+    if not selected:
+        result.status = "no_action_needed"
+        return result
+
     result.scheduled_slots = {s[0]: "charge" for s in selected}
     result.cheap_slots_remaining = len(result.scheduled_slots)
     result.grid_energy_planned = round(len(selected) * effective_per_slot, 2)
@@ -574,6 +701,21 @@ def _schedule_to_grid(
     slots_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
     sorted_slots = sorted(positive_slots, key=lambda x: -x[1])
     selected = sorted_slots[:slots_needed]
+
+    # Per-slot SOC validation: ensure discharge doesn't drop SOC below min
+    discharge_set = {s[0] for s in selected}
+    _, validated_discharge = _validate_schedule_soc(
+        remaining, set(), discharge_set,
+        current_kwh, consumption_per_slot,
+        state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+        config.battery_capacity_kwh, reserve_target,
+        energy_per_slot, config.efficiency,
+    )
+    selected = [(idx, p) for idx, p in selected if idx in validated_discharge]
+
+    if not selected:
+        result.status = "no_action_needed"
+        return result
 
     result.scheduled_slots = {s[0]: "discharge" for s in selected}
     result.cheap_slots_remaining = len(result.scheduled_slots)
@@ -672,6 +814,19 @@ def _schedule_both(
     sell_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
     sorted_expensive = sorted(available_for_sell, key=lambda x: -x[1])
     sell_selected = sorted_expensive[:sell_needed]
+
+    # Per-slot SOC validation: ensure combined schedule respects battery bounds
+    charge_set = {s[0] for s in charge_slots}
+    discharge_set = {s[0] for s in sell_selected}
+    validated_charge, validated_discharge = _validate_schedule_soc(
+        remaining, charge_set, discharge_set,
+        current_kwh, consumption_per_slot,
+        state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
+        config.battery_capacity_kwh, reserve_target,
+        energy_per_slot, config.efficiency,
+    )
+    charge_slots = [(idx, p) for idx, p in charge_slots if idx in validated_charge]
+    sell_selected = [(idx, p) for idx, p in sell_selected if idx in validated_discharge]
 
     result.scheduled_slots = {}
     for s in charge_slots:
