@@ -25,6 +25,7 @@ class EMSConfig:
     safe_power_kw: float = 5.0
     consumption_est_kwh: float = 10.0
     yesterday_deficit_kwh: float = 0.0
+    reserve_target_pct: float = 0.0  # 0 = dynamic (min + overnight), >0 = fixed floor %
 
 
 @dataclass
@@ -94,6 +95,25 @@ def calculate_self_consumption_reserve(
         reserve, sunset_hour, sunrise_hour, overnight_hours, consumption_est,
     )
     return reserve
+
+
+def _compute_reserve_target(
+    config: EMSConfig,
+    reserve_kwh: float,
+) -> float:
+    """Compute the battery reserve target in kWh.
+
+    When reserve_target_pct > 0, uses that as a fixed floor percentage.
+    Otherwise falls back to the dynamic calculation: discharge_min + overnight reserve.
+    """
+    min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
+
+    if config.reserve_target_pct > 0:
+        fixed_floor = (config.reserve_target_pct / 100.0) * config.battery_capacity_kwh
+        # Use the higher of fixed floor and discharge minimum
+        return min(config.battery_capacity_kwh, max(fixed_floor, min_kwh))
+
+    return min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
 
 
 def calculate_net_pv_surplus(
@@ -576,7 +596,7 @@ def _schedule_from_grid(
     result.self_consumption_reserve = round(reserve_kwh, 2)
 
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
-    reserve_target = min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
+    reserve_target = _compute_reserve_target(config, reserve_kwh)
 
     battery_shortfall = max(0.0, reserve_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)
@@ -671,7 +691,7 @@ def _schedule_to_grid(
     reserve_kwh = calculate_self_consumption_reserve(
         config.consumption_est_kwh, state.pv_hourly_kwh)
     result.self_consumption_reserve = round(reserve_kwh, 2)
-    reserve_target = min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
+    reserve_target = _compute_reserve_target(config, reserve_kwh)
 
     # Predictive: project peak SOC to determine total sellable energy
     pv_confidence = _calculate_pv_confidence(
@@ -747,7 +767,7 @@ def _schedule_both(
     result.self_consumption_reserve = round(reserve_kwh, 2)
 
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
-    reserve_target = min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
+    reserve_target = _compute_reserve_target(config, reserve_kwh)
     battery_shortfall = max(0.0, reserve_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)
 
@@ -894,8 +914,7 @@ def calculate_available_info(
     if effective_mode == "from_grid":
         reserve_kwh = calculate_self_consumption_reserve(
             config.consumption_est_kwh, state.pv_hourly_kwh)
-        min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
-        reserve_target = min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
+        reserve_target = _compute_reserve_target(config, reserve_kwh)
         shortfall = max(0.0, reserve_target - current_kwh)
         energy_deficit = max(0.0, shortfall - net_pv)
 

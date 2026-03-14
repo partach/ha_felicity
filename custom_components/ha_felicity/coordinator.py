@@ -508,6 +508,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         battery_capacity = opts.get("battery_capacity_kwh", 10)
         efficiency = opts.get("efficiency_factor", 0.90)
         discharge_min = opts.get("battery_discharge_min_level", 20)
+        reserve_target_pct = opts.get("reserve_target_pct", 0)
         consumption_est = self._get_consumption_estimate()
 
         # Use safe_max_power (kW scale 1-10) for realistic slot energy, fallback to power_level
@@ -543,7 +544,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.self_consumption_reserve = round(reserve_kwh, 2)
 
             min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)  # overnight drain + min floor
+            reserve_target = self._compute_reserve_target(
+                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
 
             # 2. How much are we short of the overnight reserve?
             battery_shortfall = max(0.0, reserve_target - current_kwh)
@@ -614,7 +616,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             reserve_kwh = self._calculate_self_consumption_reserve(
                 consumption_est, num_slots, remaining)
             self.self_consumption_reserve = round(reserve_kwh, 2)
-            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)
+            reserve_target = self._compute_reserve_target(
+                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
 
             # Predictive: project peak SOC to determine total sellable energy
             consumption_per_slot = consumption_est / num_slots
@@ -673,7 +676,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             #    but to ensure we have enough reserve for overnight self-consumption.
             #    Solar should handle the rest; grid is only a backstop.
             min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)  # overnight drain + min floor
+            reserve_target = self._compute_reserve_target(
+                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
             battery_shortfall = max(0.0, reserve_target - current_kwh)  # how much we're short right now
             snapshot_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
 
@@ -793,6 +797,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return self.weekly_avg_consumption
         return self.config_entry.options.get("daily_consumption_estimate", 10)
 
+    @staticmethod
+    def _compute_reserve_target(
+        battery_capacity: float,
+        discharge_min: float,
+        reserve_kwh: float,
+        reserve_target_pct: float = 0,
+    ) -> float:
+        """Compute reserve target: fixed floor if reserve_target_pct > 0, else dynamic."""
+        min_kwh = (discharge_min / 100.0) * battery_capacity
+        if reserve_target_pct > 0:
+            fixed_floor = (reserve_target_pct / 100.0) * battery_capacity
+            return min(battery_capacity, max(fixed_floor, min_kwh))
+        return min(battery_capacity, min_kwh + reserve_kwh)
+
     def _calculate_available_info(self, battery_soc: float | None) -> None:
         """Calculate available slots and charge likelihood (always visible, regardless of price_mode).
 
@@ -848,6 +866,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         battery_capacity = opts.get("battery_capacity_kwh", 10)
         discharge_min = opts.get("battery_discharge_min_level", 20)
+        reserve_target_pct_info = opts.get("reserve_target_pct", 0)
         current_kwh = (battery_soc / 100.0) * battery_capacity
 
         consumption_est = self._get_consumption_estimate()
@@ -857,8 +876,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # Mirror the solar-first strategy: target is overnight reserve, not charge_max
             reserve_kwh = self._calculate_self_consumption_reserve(
                 consumption_est, num_slots, remaining)
-            min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_target = min(battery_capacity, min_kwh + reserve_kwh)
+            reserve_target = self._compute_reserve_target(
+                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct_info)
             shortfall = max(0.0, reserve_target - current_kwh)
             energy_deficit = max(0.0, shortfall - net_pv)
 

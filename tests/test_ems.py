@@ -44,6 +44,7 @@ calculate_available_info = ems.calculate_available_info
 _calculate_pv_confidence = ems._calculate_pv_confidence
 _project_soc_trajectory = ems._project_soc_trajectory
 _validate_schedule_soc = ems._validate_schedule_soc
+_compute_reserve_target = ems._compute_reserve_target
 
 
 # ---------------------------------------------------------------------------
@@ -1612,3 +1613,172 @@ class TestSOCValidationBoth:
         if discharge_slots:
             for s in discharge_slots:
                 assert prices[s] >= 0.30, f"Selling at cheap price {prices[s]} in slot {s}"
+
+
+# ---------------------------------------------------------------------------
+# Test: _compute_reserve_target
+# ---------------------------------------------------------------------------
+
+class TestComputeReserveTarget:
+    """Test the _compute_reserve_target helper."""
+
+    def test_dynamic_default(self):
+        """With reserve_target_pct=0, uses min + overnight reserve."""
+        config = default_config(
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+        )
+        # min_kwh=12, reserve=10 → target=22
+        target = _compute_reserve_target(config, reserve_kwh=10.0)
+        assert target == 22.0
+
+    def test_fixed_floor_overrides(self):
+        """With reserve_target_pct=80, uses 80% of capacity."""
+        config = default_config(
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            reserve_target_pct=80.0,
+        )
+        target = _compute_reserve_target(config, reserve_kwh=10.0)
+        assert target == 48.0  # 80% of 60
+
+    def test_fixed_floor_below_discharge_min(self):
+        """reserve_target_pct below discharge_min uses discharge_min instead."""
+        config = default_config(
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=40.0,
+            reserve_target_pct=10.0,  # 10% = 6 kWh, but min is 40% = 24 kWh
+        )
+        target = _compute_reserve_target(config, reserve_kwh=5.0)
+        assert target == 24.0  # discharge_min wins
+
+    def test_fixed_floor_capped_at_capacity(self):
+        """reserve_target_pct=100 returns battery capacity."""
+        config = default_config(
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            reserve_target_pct=100.0,
+        )
+        target = _compute_reserve_target(config, reserve_kwh=10.0)
+        assert target == 60.0
+
+    def test_zero_means_dynamic(self):
+        """Explicitly confirm 0 means dynamic mode."""
+        config = default_config(
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            reserve_target_pct=0.0,
+        )
+        target = _compute_reserve_target(config, reserve_kwh=15.0)
+        assert target == 27.0  # 12 + 15
+
+
+# ---------------------------------------------------------------------------
+# Test: reserve_target_pct integrated into schedule
+# ---------------------------------------------------------------------------
+
+class TestReserveTargetPctIntegration:
+    """Test that reserve_target_pct affects scheduling behavior."""
+
+    def test_high_reserve_charges_more(self):
+        """With reserve_target_pct=80, EMS charges more than default."""
+        prices = [0.10] * 8 + [0.30] * 16  # cheap morning
+
+        config_default = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=20.0,
+        )
+        config_high_reserve = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=20.0,
+            reserve_target_pct=80.0,
+        )
+
+        state = default_state(
+            battery_soc_pct=50.0,  # 30 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(10.0),  # modest PV
+            pv_forecast_remaining=8.0,
+            pv_forecast_today=10.0,
+            pv_actual_today_kwh=2.0,
+            current_hour=2,
+        )
+        result_default = calculate_schedule(config_default, state)
+        result_high = calculate_schedule(config_high_reserve, state)
+
+        charge_default = len([k for k, v in result_default.scheduled_slots.items() if v == "charge"])
+        charge_high = len([k for k, v in result_high.scheduled_slots.items() if v == "charge"])
+
+        # Higher reserve target → more charge slots
+        assert charge_high > charge_default, (
+            f"High reserve ({charge_high}) should charge more than default ({charge_default})"
+        )
+
+    def test_high_reserve_reduces_selling(self):
+        """With reserve_target_pct=80, EMS sells less in to_grid mode."""
+        prices = [0.40] * 24  # all expensive
+
+        config_default = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=15.0,
+        )
+        config_high_reserve = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=15.0,
+            reserve_target_pct=80.0,
+        )
+
+        state = default_state(
+            battery_soc_pct=90.0,  # 54 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result_default = calculate_schedule(config_default, state)
+        result_high = calculate_schedule(config_high_reserve, state)
+
+        sell_default = len([k for k, v in result_default.scheduled_slots.items() if v == "discharge"])
+        sell_high = len([k for k, v in result_high.scheduled_slots.items() if v == "discharge"])
+
+        # Higher reserve → less selling (more energy kept)
+        assert sell_high <= sell_default, (
+            f"High reserve ({sell_high}) should sell ≤ default ({sell_default})"
+        )
+
+    def test_zero_reserve_pct_matches_original(self):
+        """reserve_target_pct=0 produces identical results to no setting."""
+        prices = [0.10] * 8 + [0.30] * 16
+
+        config_none = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            consumption_est_kwh=30.0,
+        )
+        config_zero = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            consumption_est_kwh=30.0,
+            reserve_target_pct=0.0,
+        )
+
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            current_hour=2,
+        )
+        result_none = calculate_schedule(config_none, state)
+        result_zero = calculate_schedule(config_zero, state)
+
+        assert result_none.scheduled_slots == result_zero.scheduled_slots
+        assert result_none.grid_energy_planned == result_zero.grid_energy_planned
