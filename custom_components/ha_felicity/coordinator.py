@@ -543,7 +543,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 consumption_est, num_slots, remaining)
             self.self_consumption_reserve = round(reserve_kwh, 2)
 
-            min_kwh = (discharge_min / 100.0) * battery_capacity
+        #    min_kwh = (discharge_min / 100.0) * battery_capacity
             reserve_target = self._compute_reserve_target(
                 battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
 
