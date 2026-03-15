@@ -685,7 +685,6 @@ def _schedule_to_grid(
 ) -> ScheduleResult:
     """Schedule to_grid mode: sell at best prices with predictive awareness."""
     result = ScheduleResult()
-    min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
 
     # Reserve-aware: protect self-consumption reserve
     reserve_kwh = calculate_self_consumption_reserve(
@@ -766,7 +765,6 @@ def _schedule_both(
         config.consumption_est_kwh, state.pv_hourly_kwh)
     result.self_consumption_reserve = round(reserve_kwh, 2)
 
-    min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
     reserve_target = _compute_reserve_target(config, reserve_kwh)
     battery_shortfall = max(0.0, reserve_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)

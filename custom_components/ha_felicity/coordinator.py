@@ -675,7 +675,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             #    In "both" mode the goal is NOT to fill the battery to charge_max,
             #    but to ensure we have enough reserve for overnight self-consumption.
             #    Solar should handle the rest; grid is only a backstop.
-            min_kwh = (discharge_min / 100.0) * battery_capacity
             reserve_target = self._compute_reserve_target(
                 battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
             battery_shortfall = max(0.0, reserve_target - current_kwh)  # how much we're short right now
