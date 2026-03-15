@@ -610,7 +610,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.price_threshold = max(s[1] for s in selected)
 
         elif grid_mode == "to_grid":
-            min_kwh = (discharge_min / 100.0) * battery_capacity
+         #   min_kwh = (discharge_min / 100.0) * battery_capacity
 
             # Reserve-aware: protect self-consumption reserve
             reserve_kwh = self._calculate_self_consumption_reserve(
