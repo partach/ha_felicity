@@ -629,18 +629,18 @@ class FelicityEMSCard extends LitElement {
     ctx.fillStyle = "#4CAF50";
     ctx.fillRect(legendX - 55, 2, 8, 8);
     ctx.fillStyle = textColor;
-    ctx.fillText("charge", legendX - 58 + 55, 9);
+    ctx.fillText("charge", legendX - 58 + 40, 9);
     ctx.fillStyle = "#FF9800";
     ctx.fillRect(legendX - 115, 2, 8, 8);
     ctx.fillStyle = textColor;
     ctx.textAlign = "right";
-    ctx.fillText("sell", legendX - 118 + 55, 9);
+    ctx.fillText("sell", legendX - 118 + 30, 9);
     if (showTomorrow) {
       ctx.fillStyle = "rgba(100, 140, 200, 0.35)";
       ctx.fillRect(legendX - 168, 2, 8, 8);
       ctx.fillStyle = textColor;
       ctx.textAlign = "right";
-      ctx.fillText("idle", legendX - 171 + 55, 9);
+      ctx.fillText("idle", legendX - 171 + 30, 9);
     }
   }
 
