@@ -952,34 +952,44 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # 2. Try inverter daily energy registers
         if today_consumption is None and self.data:
             for key in ["daily_energy_consumed", "daily_load_energy", "total_load_energy_today",
-                        "daily_consumption", "daily_energy_used"]:
+                        "daily_consumption", "daily_energy_used",
+                        "total_load_consumption_energy_day",
+                        "load_consumption_energy_day",
+                        "homeload_day_cost_energy",
+                        "load_day_cost_energy"]:
                 val = self.data.get(key)
                 if val is not None and val > 0:
                     # Convert Wh to kWh if value seems to be in Wh (>100)
                     today_consumption = val / 1000.0 if val > 100 else val
                     break
 
-        if today_consumption is not None and today_consumption > 0:
-            # Remove existing entry for today (if any), then append
-            self._daily_consumption_history = [
-                entry for entry in self._daily_consumption_history
-                if entry["date"] != today_str
-            ]
-            self._daily_consumption_history.append({
-                "date": today_str,
-                "kwh": round(today_consumption, 2)
+        if today_consumption is None or today_consumption <= 0:
+            _LOGGER.warning(
+                "No daily consumption data found — weekly average will remain unknown. "
+                "Configure a consumption_override_entity or check inverter registers."
+            )
+            return
+
+        # Remove existing entry for today (if any), then append
+        self._daily_consumption_history = [
+            entry for entry in self._daily_consumption_history
+            if entry["date"] != today_str
+        ]
+        self._daily_consumption_history.append({
+            "date": today_str,
+            "kwh": round(today_consumption, 2)
+        })
+        # Keep last 7 days
+        self._daily_consumption_history = self._daily_consumption_history[-7:]
+
+        # Persist
+        if self._consumption_store:
+            await self._consumption_store.async_save({
+                "daily_history": self._daily_consumption_history
             })
-            # Keep last 7 days
-            self._daily_consumption_history = self._daily_consumption_history[-7:]
 
-            # Persist
-            if self._consumption_store:
-                await self._consumption_store.async_save({
-                    "daily_history": self._daily_consumption_history
-                })
-
-            self._calculate_weekly_avg()
-            _LOGGER.info("Recorded daily consumption: %.2f kWh (7-day avg: %.2f kWh)",
+        self._calculate_weekly_avg()
+        _LOGGER.info("Recorded daily consumption: %.2f kWh (7-day avg: %.2f kWh)",
                          today_consumption, self.weekly_avg_consumption or 0)
 
     def _calculate_weekly_avg(self) -> None:
