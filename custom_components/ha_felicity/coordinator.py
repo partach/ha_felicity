@@ -144,15 +144,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # If PV registers read near-zero but energy is flowing through the
         # generator port, solar is likely connected via micro-inverter on gen port.
         # Applies to all inverter types.
+        # Check both generator and microinverter registers — TREX-25/50 uses
+        # microinverter_day_cost_energy when genmode is 'Micro Inv'.
         if pv_kwh < 0.1:
-            gen_energy = self.data.get("generator_day_cost_energy")
-            if gen_energy is not None and gen_energy > 0:
+            gen_energy = self.data.get("generator_day_cost_energy") or 0.0
+            micro_energy = self.data.get("microinverter_day_cost_energy") or 0.0
+            alt_energy = max(gen_energy, micro_energy)
+            if alt_energy > 0:
                 _LOGGER.debug(
-                    "PV registers near zero (%.2f) but generator port has %.2f kWh "
-                    "— using generator energy as PV actual (solar via gen port)",
-                    pv_kwh, gen_energy,
+                    "PV registers near zero (%.2f) but gen/micro port has %.2f kWh "
+                    "— using as PV actual (solar via gen port)",
+                    pv_kwh, alt_energy,
                 )
-                return round(gen_energy, 2)
+                return round(alt_energy, 2)
 
         return round(pv_kwh, 2) if has_pv_data else None
 

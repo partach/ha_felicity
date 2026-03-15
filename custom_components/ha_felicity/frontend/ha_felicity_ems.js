@@ -867,9 +867,12 @@ class FelicityEMSCard extends LitElement {
         pvActualToday = pvSum;
       } else if (this.config.generator_as_pv) {
         // Generator-port solar: PV registers read ~0 but solar enters via gen port
-        const genEnergy = this._getNumericState("generator_day_cost_energy");
-        if (genEnergy != null && genEnergy > 0) {
-          pvActualToday = genEnergy;
+        // Check both generator and microinverter registers (genmode Micro Inv uses the latter)
+        const genEnergy = this._getNumericState("generator_day_cost_energy") || 0;
+        const microEnergy = this._getNumericState("microinverter_day_cost_energy") || 0;
+        const altEnergy = Math.max(genEnergy, microEnergy);
+        if (altEnergy > 0) {
+          pvActualToday = altEnergy;
         } else {
           pvActualToday = pvSum;
         }
@@ -879,9 +882,11 @@ class FelicityEMSCard extends LitElement {
     }
     // Generator-port solar: if backend attr returned near-zero but generator has energy
     if (this.config.generator_as_pv && (pvActualToday == null || pvActualToday < 0.1)) {
-      const genEnergy = this._getNumericState("generator_day_cost_energy");
-      if (genEnergy != null && genEnergy > 0) {
-        pvActualToday = genEnergy;
+      const genEnergy = this._getNumericState("generator_day_cost_energy") || 0;
+      const microEnergy = this._getNumericState("microinverter_day_cost_energy") || 0;
+      const altEnergy = Math.max(genEnergy, microEnergy);
+      if (altEnergy > 0) {
+        pvActualToday = altEnergy;
       }
     }
     const reserve = this._getAttr("schedule_status", "self_consumption_reserve")
