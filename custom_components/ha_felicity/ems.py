@@ -399,15 +399,21 @@ def select_unified_charge_slots(
 
         tomorrow_reserve_target = min(battery_capacity, min_kwh + tomorrow_reserve)
         daytime_gap = max(0.0, consumption_est - tomorrow_pv)
+        # PV surplus beyond consumption will charge the battery during the day,
+        # reducing the need for grid charging overnight.
+        tomorrow_pv_surplus = max(0.0, tomorrow_pv - consumption_est)
         tomorrow_shortfall = max(0.0,
-                                 tomorrow_reserve_target + daytime_gap - projected_midnight)
+                                 tomorrow_reserve_target + daytime_gap
+                                 - projected_midnight - tomorrow_pv_surplus)
         tomorrow_deficit = tomorrow_shortfall
 
         _LOGGER.debug(
             "Tomorrow deficit: reserve_target=%.1f, projected_midnight=%.1f, "
-            "daytime_gap=%.1f (pv=%.1f, consumption=%.1f), shortfall=%.1f",
+            "daytime_gap=%.1f, pv_surplus=%.1f (pv=%.1f, consumption=%.1f), "
+            "shortfall=%.1f",
             tomorrow_reserve_target, projected_midnight, daytime_gap,
-            tomorrow_pv, consumption_est, tomorrow_shortfall,
+            tomorrow_pv_surplus, tomorrow_pv, consumption_est,
+            tomorrow_shortfall,
         )
 
     total_deficit = energy_deficit + tomorrow_deficit
