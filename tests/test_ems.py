@@ -418,6 +418,87 @@ class TestUnifiedSlotSelection:
         # because battery needs to survive the bridge
         assert len(today) > 0
 
+    def test_high_pv_tomorrow_reduces_grid_charging(self):
+        """When tomorrow PV surplus exceeds consumption, grid charging is reduced.
+
+        Scenario: battery at 50%, tomorrow PV forecast 45 kWh vs consumption 38.5 kWh.
+        The 6.5 kWh PV surplus will charge the battery during the day, so the system
+        should schedule fewer grid slots than it would without accounting for surplus.
+        """
+        remaining_today = [(i, 0.15) for i in range(20, 24)]
+        tomorrow_prices = [0.10] * 24
+
+        # With high PV tomorrow (surplus will charge battery)
+        _, tmr_high_pv, kwh_high_pv = select_unified_charge_slots(
+            remaining_today=remaining_today,
+            energy_deficit=0.0,
+            effective_per_slot=4.5,
+            battery_capacity=60.0,
+            discharge_min_pct=20.0,
+            consumption_est=38.5,
+            efficiency=0.90,
+            energy_per_slot=5.0,
+            current_kwh=30.0,  # 50%
+            net_pv=0.0,
+            charge_max_pct=100.0,
+            slot_prices_tomorrow=tomorrow_prices,
+            pv_forecast_tomorrow=45.0,  # 6.5 kWh surplus over consumption
+            current_hour=20,
+        )
+
+        # With low PV tomorrow (no surplus)
+        _, tmr_low_pv, kwh_low_pv = select_unified_charge_slots(
+            remaining_today=remaining_today,
+            energy_deficit=0.0,
+            effective_per_slot=4.5,
+            battery_capacity=60.0,
+            discharge_min_pct=20.0,
+            consumption_est=38.5,
+            efficiency=0.90,
+            energy_per_slot=5.0,
+            current_kwh=30.0,  # 50%
+            net_pv=0.0,
+            charge_max_pct=100.0,
+            slot_prices_tomorrow=tomorrow_prices,
+            pv_forecast_tomorrow=20.0,  # 18.5 kWh deficit
+            current_hour=20,
+        )
+
+        # High PV tomorrow should schedule fewer grid slots
+        assert len(tmr_high_pv) < len(tmr_low_pv)
+        assert kwh_high_pv < kwh_low_pv
+
+    def test_pv_surplus_prevents_unnecessary_grid_charge(self):
+        """When PV surplus alone can fill battery to reserve target, no grid charge needed.
+
+        Scenario: battery projected at midnight = 25 kWh, reserve target ~30 kWh,
+        tomorrow PV surplus = 10 kWh. The surplus covers the 5 kWh gap, so no
+        grid charging should be scheduled for tomorrow.
+        """
+        remaining_today = [(i, 0.15) for i in range(20, 24)]
+        tomorrow_prices = [0.10] * 24
+
+        today, tomorrow, tmr_kwh = select_unified_charge_slots(
+            remaining_today=remaining_today,
+            energy_deficit=0.0,
+            effective_per_slot=4.5,
+            battery_capacity=60.0,
+            discharge_min_pct=20.0,
+            consumption_est=20.0,  # low consumption
+            efficiency=0.90,
+            energy_per_slot=5.0,
+            current_kwh=30.0,
+            net_pv=0.0,
+            charge_max_pct=100.0,
+            slot_prices_tomorrow=tomorrow_prices,
+            pv_forecast_tomorrow=40.0,  # 20 kWh surplus (40 - 20)
+            current_hour=20,
+        )
+
+        # PV surplus of 20 kWh should cover any shortfall for a 60 kWh battery
+        # with projected midnight around 28-30 kWh and low reserve target
+        assert tmr_kwh == 0.0 or len(tomorrow) == 0
+
 
 # ---------------------------------------------------------------------------
 # Test: Full schedule calculation
