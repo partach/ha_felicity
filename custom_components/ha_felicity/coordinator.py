@@ -31,7 +31,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         groups: list,
         model_combined: dict,
         inverter_model: str,
-        config_entry=ConfigEntry,
+        config_entry: ConfigEntry,
         nordpool_entity: str | None = None,
         nordpool_override: str | None = None,
         forecast_entity: str | None = None,
