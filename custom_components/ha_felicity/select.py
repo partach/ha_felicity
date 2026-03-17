@@ -124,11 +124,11 @@ class HA_FelicitySelect(CoordinatorEntity, SelectEntity):
             return
         value = self._attr_options.index(option)
         success = await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, value)
-        if success:
-            # Optimistic update
+        if success is True:
+            # Optimistic update only on explicit True (not None / truthy)
             self.coordinator.data[self._key] = value
             self.async_write_ha_state()
-            await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_refresh()
 
 
 class HA_FelicitySelectMulti(CoordinatorEntity, SelectEntity):
@@ -195,11 +195,13 @@ class HA_FelicitySelectMulti(CoordinatorEntity, SelectEntity):
         raw = self.coordinator.data.get(self._key, 0)
         bit_index = self._base_options.index(bare)
         # Toggle the bit
-        raw ^= (1 << bit_index)
+        new_raw = raw ^ (1 << bit_index)
 
-        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, raw)
-        self.coordinator.data[self._key] = raw
-        self.async_write_ha_state()
+        success = await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, new_raw)
+        if success is True:
+            # Optimistic update only on explicit True (not None / truthy)
+            self.coordinator.data[self._key] = new_raw
+            self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 
 

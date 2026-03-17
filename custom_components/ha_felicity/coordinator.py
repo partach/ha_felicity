@@ -1,5 +1,6 @@
 """Data update coordinator for Felicity with proper async handling."""
 
+import asyncio
 import logging
 import math
 from datetime import timedelta, datetime
@@ -94,6 +95,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._daily_consumption_history: list = []
         self._consumption_store = None
         self._consumption_store_loaded = False
+        self._consumption_store_lock = asyncio.Lock()
         self.weekly_avg_consumption: float | None = None
         self._yesterday_deficit: float = 0.0
         self.self_consumption_reserve: float = 0.0
@@ -922,17 +924,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         """Initialize persistent storage for 7-day consumption history."""
         if self._consumption_store_loaded:
             return
-        from homeassistant.helpers.storage import Store
-        self._consumption_store = Store(
-            self.hass,
-            version=1,
-            key=f"{DOMAIN}_{self.config_entry.entry_id}_consumption",
-        )
-        data = await self._consumption_store.async_load()
-        if data and "daily_history" in data:
-            self._daily_consumption_history = data["daily_history"][-7:]
-            self._calculate_weekly_avg()
-        self._consumption_store_loaded = True
+        async with self._consumption_store_lock:
+            # Double-check after acquiring lock (another caller may have finished)
+            if self._consumption_store_loaded:
+                return
+            from homeassistant.helpers.storage import Store
+            self._consumption_store = Store(
+                self.hass,
+                version=1,
+                key=f"{DOMAIN}_{self.config_entry.entry_id}_consumption",
+            )
+            data = await self._consumption_store.async_load()
+            if data and "daily_history" in data:
+                self._daily_consumption_history = data["daily_history"][-7:]
+                self._calculate_weekly_avg()
+            self._consumption_store_loaded = True
 
     async def _record_daily_consumption(self) -> None:
         """Record today's consumption and update 7-day rolling average.
@@ -1255,7 +1261,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 registers = result.registers
                 pos = 0
                 for key in group["keys"]:
-                    info = self.register_map[key]
+                    info = self.register_map.get(key)
+                    if info is None:
+                        _LOGGER.warning("Key '%s' not in register_map, skipping", key)
+                        continue
                     size = info.get("size", 1)
                     endian = info.get("endian", "big")
                     index = info.get("index", 0)
