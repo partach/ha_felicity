@@ -443,7 +443,13 @@ def select_unified_charge_slots(
     today_deficit_slots = math.ceil(energy_deficit / effective_per_slot) if effective_per_slot > 0 and energy_deficit > 0 else 0
     # Negative-price slots are always profitable — exempt from headroom cap
     neg_today_count = sum(1 for s in today_selected if s[0] < 0)
-    max_today_slots = max(max_today_slots, today_deficit_slots, neg_today_count)
+    # Only let deficit override headroom when there's no PV surplus filling
+    # the battery.  When PV will fill the battery, headroom is the real
+    # physical limit and deficit slots would just overcharge.
+    if pv_fill <= 0:
+        max_today_slots = max(max_today_slots, today_deficit_slots, neg_today_count)
+    else:
+        max_today_slots = max(max_today_slots, neg_today_count)
 
     if len(today_selected) > max_today_slots:
         today_selected.sort(key=lambda x: x[0])
@@ -614,18 +620,28 @@ def _schedule_from_grid(
         state.pv_hourly_kwh, state.pv_actual_today_kwh,
         state.current_hour, state.current_minute,
     )
-    _, min_projected, _ = _project_soc_trajectory(
+    _, min_projected, max_projected = _project_soc_trajectory(
         remaining, current_kwh, consumption_per_slot,
         state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
         config.battery_capacity_kwh,
     )
     predictive_deficit = max(0.0, reserve_target - min_projected)
+
+    # When solar will fill the battery to (near) capacity, grid charging
+    # cannot add more useful energy — the battery will be full regardless.
+    # Any evening drain below reserve_target is unavoidable and cannot be
+    # prevented by charging earlier.
+    max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
+    if max_projected >= max_battery_kwh * 0.95:
+        predictive_deficit = 0.0
+
     base_deficit = max(snapshot_deficit, predictive_deficit)
 
     _LOGGER.debug(
         "from_grid deficit: snapshot=%.2f, predictive=%.2f "
-        "(min_projected=%.1f, reserve_target=%.1f)",
-        snapshot_deficit, predictive_deficit, min_projected, reserve_target,
+        "(min_projected=%.1f, max_projected=%.1f, reserve_target=%.1f)",
+        snapshot_deficit, predictive_deficit, min_projected, max_projected,
+        reserve_target,
     )
 
     if config.yesterday_deficit_kwh > 0 and battery_shortfall > base_deficit:
@@ -788,6 +804,13 @@ def _schedule_both(
         config.battery_capacity_kwh,
     )
     predictive_deficit = max(0.0, reserve_target - min_projected)
+
+    # When solar will fill the battery to (near) capacity, grid charging
+    # cannot add more useful energy — the battery will be full regardless.
+    max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
+    if max_projected >= max_battery_kwh * 0.95:
+        predictive_deficit = 0.0
+
     base_deficit = max(snapshot_deficit, predictive_deficit)
 
     _LOGGER.debug(

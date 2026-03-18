@@ -538,6 +538,103 @@ class TestCalculateSchedule:
         charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
         assert len(charge_slots) == 0
 
+    def test_high_soc_abundant_solar_no_grid_charge(self):
+        """High SOC + abundant solar forecast → absolutely no grid charging.
+
+        Reproduces the real-world scenario: battery at 91%, solar forecast
+        52.7 kWh, remaining 36.6 kWh.  The algorithm must NOT schedule any
+        grid charge slots because solar will fill the battery to capacity
+        and grid charging cannot add more useful energy.
+        """
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            consumption_est_kwh=38.5,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=30.0,
+        )
+        pv = make_pv_hourly(52.7)
+        state = default_state(
+            battery_soc_pct=91.0,
+            slot_prices_today=make_prices(24, pattern="u_shape"),
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=36.6,
+            pv_forecast_today=52.7,
+            pv_actual_today_kwh=12.3,
+            current_hour=10,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        assert len(charge_slots) == 0, (
+            f"Expected NO grid charge with SOC 91% and 52.7 kWh solar, "
+            f"but got {len(charge_slots)} charge slots"
+        )
+        assert result.status == "no_action_needed"
+
+    def test_high_soc_abundant_solar_small_battery(self):
+        """Same scenario with a smaller battery where reserve_target = capacity.
+
+        With a 10 kWh battery, min 30% (3 kWh) + overnight reserve can exceed
+        capacity.  Even then, solar will fill the battery and grid charging
+        is pointless.
+        """
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            consumption_est_kwh=15.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=30.0,
+        )
+        pv = make_pv_hourly(52.7)
+        state = default_state(
+            battery_soc_pct=91.0,
+            slot_prices_today=make_prices(24, pattern="u_shape"),
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=36.6,
+            pv_forecast_today=52.7,
+            pv_actual_today_kwh=12.3,
+            current_hour=10,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        assert len(charge_slots) == 0, (
+            f"Expected NO grid charge with small battery at 91% SOC and "
+            f"52.7 kWh solar, but got {len(charge_slots)} charge slots"
+        )
+
+    def test_high_soc_abundant_solar_no_hourly_data(self):
+        """High SOC + abundant solar but without hourly PV breakdown.
+
+        When pv_hourly_kwh is empty, the flat model is used for net_pv
+        and the trajectory has no PV.  The algorithm must still recognise
+        that solar covers the shortfall via the snapshot calculation.
+        """
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            consumption_est_kwh=38.5,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=30.0,
+        )
+        state = default_state(
+            battery_soc_pct=91.0,
+            slot_prices_today=make_prices(24, pattern="u_shape"),
+            pv_hourly_kwh={},  # No hourly data
+            pv_forecast_remaining=36.6,
+            pv_forecast_today=52.7,
+            pv_actual_today_kwh=12.3,
+            current_hour=10,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        assert len(charge_slots) == 0, (
+            f"Expected NO grid charge without hourly PV data but abundant "
+            f"solar forecast, got {len(charge_slots)} charge slots"
+        )
+
     def test_cloudy_day_heavy_charging(self):
         """Cloudy day with minimal PV → lots of grid charging."""
         config = default_config(consumption_est_kwh=38.5)
