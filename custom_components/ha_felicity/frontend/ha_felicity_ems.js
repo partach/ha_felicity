@@ -881,16 +881,22 @@ class FelicityEMSCard extends LitElement {
       const batterySoc = sim.battery_soc_pct;
       const now = new Date();
       const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
-      // For past slots we don't have exact history, so start from beginning of day
-      // estimating battery was at discharge_min + reserve at midnight
+      // For past slots, estimate midnight SOC and simulate forward
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
       const minKwh = dischargeMin * batteryCapacity;
       currentKwh = Math.min(batteryCapacity, minKwh + reserveKwh);
+      // We'll snap to actual SOC at currentSlotIdx during the loop below
+      var snapSlotIdx = currentSlotIdx;
+      var snapKwh = batterySoc != null ? (batterySoc / 100) * batteryCapacity : null;
     }
 
     // Forward simulate
     const trajectory = [];
     for (let i = 0; i < numSlots; i++) {
+      // At the current time slot, snap to actual battery SOC
+      if (!showTomorrow && snapKwh != null && i === snapSlotIdx) {
+        currentKwh = snapKwh;
+      }
       trajectory.push((currentKwh / batteryCapacity) * 100);
 
       const slot = displayData[i];
