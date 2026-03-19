@@ -577,7 +577,7 @@ class FelicityEMSCard extends LitElement {
     const threshold = displayThreshold ?? this._getNumericState("price_threshold");
     if (threshold != null && threshold >= minPrice && threshold <= maxPrice) {
       const thresholdY = marginTop + chartH - ((threshold - minPrice) / range) * chartH;
-      ctx.strokeStyle = "#ebf436";
+      ctx.strokeStyle = "#e8e010";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
@@ -586,7 +586,7 @@ class FelicityEMSCard extends LitElement {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = "#ebf436";
+      ctx.fillStyle = "#e8e010";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(`${threshold.toFixed(2)}`, marginLeft - 2, thresholdY + 3);
