@@ -1,4 +1,4 @@
-"""Tests for select entity resilience fixes.
+"""Tests for select entity resilience fixes."""
 
 import sys
 import os
