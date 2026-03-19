@@ -848,17 +848,23 @@ class FelicityEMSCard extends LitElement {
     // Consumption drain per slot (evenly distributed)
     const consumptionPerSlot = (consumption / 24) * slotDuration;
 
-    // PV production per slot — distribute across daylight hours (6–18)
-    const pvTotal = showTomorrow
-      ? (this._getNumericState("pv_forecast_tomorrow") || 0)
-      : (sim.net_pv_kwh || 0);
-    const daylightSlots = [];
-    for (let i = 0; i < numSlots; i++) {
-      const hour = (i * granularity) / 60;
-      if (hour >= 6 && hour < 18) daylightSlots.push(i);
+    // PV production per slot — use per-hour data when available (matches backend)
+    const pvHourly = (!showTomorrow && sim.pv_hourly_kwh) ? sim.pv_hourly_kwh : null;
+    // Fallback for tomorrow or when hourly data unavailable: distribute total across 6–18
+    let pvFallbackPerSlot = 0;
+    const pvFallbackSlotSet = new Set();
+    if (!pvHourly) {
+      const pvTotal = showTomorrow
+        ? (this._getNumericState("pv_forecast_tomorrow") || 0)
+        : (this._getNumericState("pv_forecast_remaining") || 0);
+      const daylightSlots = [];
+      for (let i = 0; i < numSlots; i++) {
+        const hour = (i * granularity) / 60;
+        if (hour >= 6 && hour < 18) daylightSlots.push(i);
+      }
+      pvFallbackPerSlot = daylightSlots.length > 0 ? pvTotal / daylightSlots.length : 0;
+      daylightSlots.forEach(s => pvFallbackSlotSet.add(s));
     }
-    const pvPerSlot = daylightSlots.length > 0 ? pvTotal / daylightSlots.length : 0;
-    const pvSlotSet = new Set(daylightSlots);
 
     // Starting SOC
     let currentKwh;
@@ -891,8 +897,13 @@ class FelicityEMSCard extends LitElement {
       // Consumption drain
       currentKwh -= consumptionPerSlot;
       // PV production (self-consumed first — charges battery)
-      if (pvSlotSet.has(i)) {
-        currentKwh += pvPerSlot;
+      if (pvHourly) {
+        // Per-hour gross PV data from backend (matches backend projection exactly)
+        const hour = Math.floor((i * granularity) / 60);
+        const pvKwh = pvHourly[hour] || pvHourly[String(hour)] || 0;
+        currentKwh += pvKwh * slotDuration;
+      } else if (pvFallbackSlotSet.has(i)) {
+        currentKwh += pvFallbackPerSlot;
       }
       // Scheduled actions
       if (slot.action === "charge") {

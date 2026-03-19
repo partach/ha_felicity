@@ -164,6 +164,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                 "battery_soc_pct": self.coordinator.battery_soc,
                 "net_pv_kwh": getattr(self.coordinator, '_last_net_pv', 0),
                 "consumption_est_kwh": self.coordinator._get_consumption_estimate(),
+                "pv_hourly_kwh": self.coordinator.pv_hourly_kwh or {},
             },
         }
 
