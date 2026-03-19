@@ -4,7 +4,7 @@ import asyncio
 import sys
 import os
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import importlib.util as _ilu
 import pytest
 
