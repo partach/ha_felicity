@@ -1,4 +1,4 @@
-"""Tests for coordinator resilience fixes.
+"""Tests for coordinator resilience fixes."""
 
 import asyncio
 import sys
