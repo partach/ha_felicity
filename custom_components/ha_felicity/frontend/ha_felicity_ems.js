@@ -567,7 +567,7 @@ class FelicityEMSCard extends LitElement {
 
       // Current slot border
       if (i === currentSlot) {
-        ctx.strokeStyle = "#FFF";
+        ctx.strokeStyle = "#efbdbd";
         ctx.lineWidth = 2;
         ctx.strokeRect(x, marginTop, barW, chartH);
       }
@@ -577,7 +577,7 @@ class FelicityEMSCard extends LitElement {
     const threshold = displayThreshold ?? this._getNumericState("price_threshold");
     if (threshold != null && threshold >= minPrice && threshold <= maxPrice) {
       const thresholdY = marginTop + chartH - ((threshold - minPrice) / range) * chartH;
-      ctx.strokeStyle = "#ebf436";
+      ctx.strokeStyle = "#a8a209";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
@@ -586,7 +586,7 @@ class FelicityEMSCard extends LitElement {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = "#ebf436";
+      ctx.fillStyle = "#a8a209";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(`${threshold.toFixed(2)}`, marginLeft - 2, thresholdY + 3);
@@ -609,7 +609,7 @@ class FelicityEMSCard extends LitElement {
       const socMin = 0;
       const socMax = 100;
 
-      ctx.strokeStyle = "#00e1ff";
+      ctx.strokeStyle = "#08b2c9";
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 3]);
       ctx.beginPath();
@@ -624,7 +624,7 @@ class FelicityEMSCard extends LitElement {
       ctx.setLineDash([]);
 
       // Right Y-axis SOC labels
-      ctx.fillStyle = "#00d5ff";
+      ctx.fillStyle = "#08b2c9";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "left";
       const rightEdge = w - marginRight + 2;
