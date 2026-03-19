@@ -575,7 +575,7 @@ class FelicityEMSCard extends LitElement {
     const threshold = displayThreshold ?? this._getNumericState("price_threshold");
     if (threshold != null && threshold >= minPrice && threshold <= maxPrice) {
       const thresholdY = marginTop + chartH - ((threshold - minPrice) / range) * chartH;
-      ctx.strokeStyle = "#F44336";
+      ctx.strokeStyle = "#ebf436";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
@@ -584,7 +584,7 @@ class FelicityEMSCard extends LitElement {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = "#F44336";
+      ctx.fillStyle = "#ebf436";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(`${threshold.toFixed(2)}`, marginLeft - 2, thresholdY + 3);
@@ -593,7 +593,7 @@ class FelicityEMSCard extends LitElement {
     // Zero line (if negative prices exist)
     if (minPrice < 0) {
       const zeroY = marginTop + chartH - ((0 - minPrice) / range) * chartH;
-      ctx.strokeStyle = "rgba(255,255,255,0.3)";
+      ctx.strokeStyle = "rgba(236, 210, 17, 0.88)";
       ctx.lineWidth = 0.5;
       ctx.beginPath();
       ctx.moveTo(marginLeft, zeroY);
@@ -601,13 +601,13 @@ class FelicityEMSCard extends LitElement {
       ctx.stroke();
     }
 
-    // ── SOC trajectory (orange dotted line) ──────────────────
+    // ── SOC trajectory (blue dotted line) ──────────────────
     const socTrajectory = this._computeSocTrajectory(displayData, showTomorrow);
     if (socTrajectory && socTrajectory.length > 1) {
       const socMin = 0;
       const socMax = 100;
 
-      ctx.strokeStyle = "#FF9800";
+      ctx.strokeStyle = "#00e1ff";
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 3]);
       ctx.beginPath();
@@ -622,7 +622,7 @@ class FelicityEMSCard extends LitElement {
       ctx.setLineDash([]);
 
       // Right Y-axis SOC labels
-      ctx.fillStyle = "#FF9800";
+      ctx.fillStyle = "#00d5ff";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "left";
       const rightEdge = w - marginRight + 2;
@@ -634,7 +634,7 @@ class FelicityEMSCard extends LitElement {
     }
 
     // Y-axis labels (price)
-    ctx.fillStyle = getComputedStyle(this).getPropertyValue("--secondary-text-color") || "#aaa";
+    ctx.fillStyle = getComputedStyle(this).getPropertyValue("--secondary-text-color") || "#e7d91d";
     ctx.font = "9px sans-serif";
     ctx.textAlign = "right";
     ctx.fillText(maxPrice.toFixed(2), marginLeft - 2, marginTop + 8);
@@ -642,7 +642,7 @@ class FelicityEMSCard extends LitElement {
 
     // X-axis hour labels
     ctx.textAlign = "center";
-    ctx.fillStyle = getComputedStyle(this).getPropertyValue("--secondary-text-color") || "#aaa";
+    ctx.fillStyle = getComputedStyle(this).getPropertyValue("--secondary-text-color") || "#e7d91d";
     const slotsPerHour = 60 / granularity;
     const labelInterval = granularity <= 15 ? 4 : granularity <= 30 ? 2 : 1;
     const hourLabelEvery = Math.max(1, Math.ceil(3 / (slotsPerHour * labelInterval)));
@@ -662,7 +662,7 @@ class FelicityEMSCard extends LitElement {
 
     // SOC legend (orange dashed line)
     let lx = legendX;
-    ctx.strokeStyle = "#FF9800";
+    ctx.strokeStyle = "#1dbfe7";
     ctx.lineWidth = 2;
     ctx.setLineDash([4, 2]);
     ctx.beginPath();
@@ -671,7 +671,7 @@ class FelicityEMSCard extends LitElement {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = textColor;
-    ctx.fillText("SOC", lx - 52 + 30, 9);
+    ctx.fillText("SOC", lx - 52 + 34, 9);
 
     // Charge legend
     lx -= 55;

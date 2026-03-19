@@ -32,7 +32,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         groups: list,
         model_combined: dict,
         inverter_model: str,
-        config_entry=ConfigEntry,
+        config_entry: ConfigEntry,
         nordpool_entity: str | None = None,
         nordpool_override: str | None = None,
         forecast_entity: str | None = None,
@@ -549,7 +549,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 consumption_est, num_slots, remaining)
             self.self_consumption_reserve = round(reserve_kwh, 2)
 
-            min_kwh = (discharge_min / 100.0) * battery_capacity
+        #    min_kwh = (discharge_min / 100.0) * battery_capacity
             reserve_target = self._compute_reserve_target(
                 battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
 
@@ -616,7 +616,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.price_threshold = max(s[1] for s in selected)
 
         elif grid_mode == "to_grid":
-            min_kwh = (discharge_min / 100.0) * battery_capacity
+         #   min_kwh = (discharge_min / 100.0) * battery_capacity
 
             # Reserve-aware: protect self-consumption reserve
             reserve_kwh = self._calculate_self_consumption_reserve(
