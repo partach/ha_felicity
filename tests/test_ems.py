@@ -1960,3 +1960,116 @@ class TestReserveTargetPctIntegration:
 
         assert result_none.scheduled_slots == result_zero.scheduled_slots
         assert result_none.grid_energy_planned == result_zero.grid_energy_planned
+
+
+# ---------------------------------------------------------------------------
+# Test: Projected midnight SOC continuity (today→tomorrow)
+# ---------------------------------------------------------------------------
+
+class TestProjectedMidnightContinuity:
+    """Ensure tomorrow's starting SOC is consistent with today's ending SOC.
+
+    Regression test: the frontend used to add both charge and discharge energy
+    to the projected midnight SOC (via the combined 'planned' field).
+    Discharge energy should reduce (not inflate) the projected battery level.
+
+    The backend correctly computes projected_midnight using only charge energy
+    and net_pv, which is why these tests verify backend correctness while
+    documenting the pattern the frontend got wrong.
+    """
+
+    def test_charge_raises_projected_midnight(self):
+        """Charging today should raise projected midnight, resulting in fewer
+        tomorrow charge slots compared to no charging today."""
+        config = default_config(
+            grid_mode="from_grid",
+            consumption_est_kwh=30.0,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=10.0,
+        )
+        # Cheap prices today, expensive tomorrow
+        prices_today = [0.05] * 24
+        prices_tomorrow = [0.40] * 24
+
+        # Low battery — will need to charge today
+        state_low = default_state(
+            battery_soc_pct=15.0,  # 9 kWh
+            slot_prices_today=prices_today,
+            slot_prices_tomorrow=prices_tomorrow,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_forecast_tomorrow=5.0,
+            current_hour=2,
+        )
+        result_low = calculate_schedule(config, state_low)
+
+        # High battery — less/no charging needed today
+        state_high = default_state(
+            battery_soc_pct=95.0,  # 57 kWh
+            slot_prices_today=prices_today,
+            slot_prices_tomorrow=prices_tomorrow,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_forecast_tomorrow=5.0,
+            current_hour=2,
+        )
+        result_high = calculate_schedule(config, state_high)
+
+        # Higher starting SOC should need less total charging across both days
+        total_low = (len([k for k, v in result_low.scheduled_slots.items() if v == "charge"])
+                     + result_low.tomorrow_planned_slots)
+        total_high = (len([k for k, v in result_high.scheduled_slots.items() if v == "charge"])
+                      + result_high.tomorrow_planned_slots)
+        assert total_high <= total_low, (
+            "Higher starting SOC should need less total charging — "
+            "projected midnight must account for current battery level"
+        )
+
+    def test_net_pv_raises_projected_midnight(self):
+        """Remaining PV today should increase projected midnight SOC,
+        reducing tomorrow's charge needs."""
+        config = default_config(
+            grid_mode="from_grid",
+            consumption_est_kwh=20.0,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=10.0,
+        )
+        prices_today = [0.15] * 24
+        prices_tomorrow = [0.15] * 24
+
+        # Without PV
+        state_no_pv = default_state(
+            battery_soc_pct=30.0,
+            slot_prices_today=prices_today,
+            slot_prices_tomorrow=prices_tomorrow,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_forecast_tomorrow=5.0,
+            current_hour=8,
+        )
+        result_no_pv = calculate_schedule(config, state_no_pv)
+
+        # With significant PV remaining
+        state_pv = default_state(
+            battery_soc_pct=30.0,
+            slot_prices_today=prices_today,
+            slot_prices_tomorrow=prices_tomorrow,
+            pv_hourly_kwh=make_pv_hourly(25.0, sunrise=8, sunset=18),
+            pv_forecast_remaining=20.0,
+            pv_forecast_today=25.0,
+            pv_forecast_tomorrow=5.0,
+            current_hour=8,
+        )
+        result_pv = calculate_schedule(config, state_pv)
+
+        total_no_pv = (len([k for k, v in result_no_pv.scheduled_slots.items() if v == "charge"])
+                       + result_no_pv.tomorrow_planned_slots)
+        total_pv = (len([k for k, v in result_pv.scheduled_slots.items() if v == "charge"])
+                    + result_pv.tomorrow_planned_slots)
+        assert total_pv <= total_no_pv, (
+            "PV production today should reduce total charging needs — "
+            "projected midnight must include net_pv"
+        )

@@ -213,7 +213,7 @@ class FelicityEMSCard extends LitElement {
       }
     }
 
-    const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, tomorrowChargeCount: 0, tomorrowPlanned: 0, threshold };
+    const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, plannedChargeKwh: 0, plannedDischargeKwh: 0, tomorrowChargeCount: 0, tomorrowPlanned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
       // Solar-first: target = min SOC floor + overnight reserve.
@@ -325,6 +325,7 @@ class FelicityEMSCard extends LitElement {
           result.slots[s.idx].action = "charge";
         }
         result.chargeCount = todayCharge.length;
+        result.plannedChargeKwh += todayCharge.length * effectivePerSlot;
         result.planned += todayCharge.length * effectivePerSlot;
         result.tomorrowChargeCount = tomorrowCharge.length;
         result.tomorrowPlanned = tomorrowCharge.length * effectivePerSlot;
@@ -361,6 +362,7 @@ class FelicityEMSCard extends LitElement {
           result.slots[s.idx].action = "discharge";
         }
         result.dischargeCount = sellSlots.length;
+        result.plannedDischargeKwh += Math.min(sellable, sellSlots.length * energyPerSlot);
         result.planned += Math.min(sellable, sellSlots.length * energyPerSlot);
 
         if (sellSlots.length && threshold == null) {
@@ -722,13 +724,15 @@ class FelicityEMSCard extends LitElement {
     // if today charged fully, overnight drain brings it to ~min_kwh.
     const batterySoc = sim.battery_soc_pct;
     const currentKwh = batterySoc != null ? (batterySoc / 100) * batteryCapacity : dischargeMin * batteryCapacity;
-    const todayPlanned = this._simResult?.planned || 0;
+    const netPv = sim.net_pv_kwh || 0;
+    const todayChargeKwh = this._simResult?.plannedChargeKwh || 0;
+    const todayDischargeKwh = this._simResult?.plannedDischargeKwh || 0;
     const hoursToMidnight = Math.max(1, 24 - new Date().getHours());
     const drainToMidnight = (consumption / 24) * hoursToMidnight;
-    // Battery at midnight = current + today's planned charging - drain to midnight
+    // Battery at midnight = current + PV remaining + grid charging - grid selling - consumption drain
     // Clamp between min_kwh and max battery
     const minKwh = dischargeMin * batteryCapacity;
-    const projectedMidnight = Math.max(minKwh, Math.min(batteryCapacity, currentKwh + todayPlanned - drainToMidnight));
+    const projectedMidnight = Math.max(minKwh, Math.min(batteryCapacity, currentKwh + netPv + todayChargeKwh - todayDischargeKwh - drainToMidnight));
     const startKwh = projectedMidnight;
     // Overnight reserve: estimate hours from sunset to next sunrise using today's pattern
     const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || (consumption / 24 * 12);
@@ -872,11 +876,13 @@ class FelicityEMSCard extends LitElement {
       // Estimate battery at midnight from today's sim
       const batterySoc = sim.battery_soc_pct;
       const todayKwh = batterySoc != null ? (batterySoc / 100) * batteryCapacity : dischargeMin * batteryCapacity;
-      const todayPlanned = this._todaySimResult?.planned || 0;
+      const netPv = sim.net_pv_kwh || 0;
+      const todayChargeKwh = this._todaySimResult?.plannedChargeKwh || 0;
+      const todayDischargeKwh = this._todaySimResult?.plannedDischargeKwh || 0;
       const hoursToMidnight = Math.max(1, 24 - new Date().getHours());
       const drainToMidnight = (consumption / 24) * hoursToMidnight;
       const minKwh = dischargeMin * batteryCapacity;
-      currentKwh = Math.max(minKwh, Math.min(batteryCapacity, todayKwh + todayPlanned - drainToMidnight));
+      currentKwh = Math.max(minKwh, Math.min(batteryCapacity, todayKwh + netPv + todayChargeKwh - todayDischargeKwh - drainToMidnight));
     } else {
       const batterySoc = sim.battery_soc_pct;
       const now = new Date();
