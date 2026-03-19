@@ -500,11 +500,12 @@ class FelicityEMSCard extends LitElement {
     ctx.scale(dpr, dpr);
 
     const numSlots = displayData.length;
-    const barW = Math.max(1, (w - 40) / numSlots);
     const marginLeft = 30;
+    const marginRight = 30;
     const marginTop = 15;
     const marginBottom = 20;
     const chartH = h - marginTop - marginBottom;
+    const barW = Math.max(1, (w - marginLeft - marginRight) / numSlots);
 
     // Find price range
     const prices = displayData.map((s) => s.price).filter((p) => p != null);
@@ -579,7 +580,7 @@ class FelicityEMSCard extends LitElement {
       ctx.setLineDash([4, 3]);
       ctx.beginPath();
       ctx.moveTo(marginLeft, thresholdY);
-      ctx.lineTo(w - 10, thresholdY);
+      ctx.lineTo(w - marginRight, thresholdY);
       ctx.stroke();
       ctx.setLineDash([]);
 
@@ -596,11 +597,43 @@ class FelicityEMSCard extends LitElement {
       ctx.lineWidth = 0.5;
       ctx.beginPath();
       ctx.moveTo(marginLeft, zeroY);
-      ctx.lineTo(w - 10, zeroY);
+      ctx.lineTo(w - marginRight, zeroY);
       ctx.stroke();
     }
 
-    // Y-axis labels
+    // ── SOC trajectory (orange dotted line) ──────────────────
+    const socTrajectory = this._computeSocTrajectory(displayData, showTomorrow);
+    if (socTrajectory && socTrajectory.length > 1) {
+      const socMin = 0;
+      const socMax = 100;
+
+      ctx.strokeStyle = "#FF9800";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      for (let i = 0; i <= numSlots; i++) {
+        const soc = socTrajectory[i] ?? socTrajectory[socTrajectory.length - 1];
+        const x = marginLeft + i * barW;
+        const y = marginTop + chartH - ((soc - socMin) / (socMax - socMin)) * chartH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Right Y-axis SOC labels
+      ctx.fillStyle = "#FF9800";
+      ctx.font = "9px sans-serif";
+      ctx.textAlign = "left";
+      const rightEdge = w - marginRight + 2;
+      ctx.fillText("100%", rightEdge, marginTop + 8);
+      ctx.fillText("0%", rightEdge, marginTop + chartH);
+      // 50% midline label
+      const mid50Y = marginTop + chartH - (0.5 * chartH);
+      ctx.fillText("50%", rightEdge, mid50Y + 3);
+    }
+
+    // Y-axis labels (price)
     ctx.fillStyle = getComputedStyle(this).getPropertyValue("--secondary-text-color") || "#aaa";
     ctx.font = "9px sans-serif";
     ctx.textAlign = "right";
@@ -624,23 +657,42 @@ class FelicityEMSCard extends LitElement {
     // Legend at top-right
     ctx.font = "9px sans-serif";
     ctx.textAlign = "right";
-    const legendX = w - 5;
+    const legendX = w - marginRight - 5;
     const textColor = getComputedStyle(this).getPropertyValue("--primary-text-color") || "#fff";
+
+    // SOC legend (orange dashed line)
+    let lx = legendX;
+    ctx.strokeStyle = "#FF9800";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 2]);
+    ctx.beginPath();
+    ctx.moveTo(lx - 52, 6);
+    ctx.lineTo(lx - 38, 6);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = textColor;
+    ctx.fillText("SOC", lx - 52 + 30, 9);
+
+    // Charge legend
+    lx -= 55;
     ctx.fillStyle = "#4CAF50";
-    ctx.fillRect(legendX - 55, 2, 8, 8);
+    ctx.fillRect(lx - 55, 2, 8, 8);
     ctx.fillStyle = textColor;
-    ctx.fillText("charge", legendX - 58 + 40, 9);
+    ctx.fillText("charge", lx - 58 + 40, 9);
+
+    // Sell legend
+    lx -= 60;
     ctx.fillStyle = "#FF9800";
-    ctx.fillRect(legendX - 115, 2, 8, 8);
+    ctx.fillRect(lx - 55, 2, 8, 8);
     ctx.fillStyle = textColor;
-    ctx.textAlign = "right";
-    ctx.fillText("sell", legendX - 118 + 30, 9);
+    ctx.fillText("sell", lx - 58 + 30, 9);
+
     if (showTomorrow) {
+      lx -= 55;
       ctx.fillStyle = "rgba(100, 140, 200, 0.35)";
-      ctx.fillRect(legendX - 168, 2, 8, 8);
+      ctx.fillRect(lx - 55, 2, 8, 8);
       ctx.fillStyle = textColor;
-      ctx.textAlign = "right";
-      ctx.fillText("idle", legendX - 171 + 30, 9);
+      ctx.fillText("idle", lx - 58 + 30, 9);
     }
   }
 
@@ -770,6 +822,91 @@ class FelicityEMSCard extends LitElement {
     result.planned = Math.round(result.planned * 100) / 100;
     result.threshold = threshold;
     return result;
+  }
+
+  // ── SOC Trajectory ─────────────────────────────────────────
+  // Forward-simulate battery SOC% through each slot for the displayed day.
+  // Returns an array of SOC% values (one per slot).
+
+  _computeSocTrajectory(displayData, showTomorrow) {
+    const sim = this._getAttr("schedule_status", "sim_params") || {};
+    const batteryCapacity = sim.battery_capacity_kwh || 10;
+    const efficiency = sim.efficiency || 0.90;
+    const consumption = sim.consumption_est_kwh || 10;
+    const overrides = this._simOverrides || {};
+    const chargeMax = (overrides.chargeMax ?? sim.battery_charge_max_pct ?? 100) / 100;
+    const dischargeMin = (overrides.dischargeMin ?? sim.battery_discharge_min_pct ?? 20) / 100;
+
+    const numSlots = displayData.length;
+    const granularity = this._getAttr("schedule_status", "slot_granularity_min") || Math.round((24 * 60) / numSlots);
+    const slotDuration = granularity / 60;  // hours per slot
+
+    const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
+    const powerKw = overrides.powerKw ?? Math.max(1, safeMaxPower / 1000);
+    const energyPerSlot = powerKw * slotDuration;
+
+    // Consumption drain per slot (evenly distributed)
+    const consumptionPerSlot = (consumption / 24) * slotDuration;
+
+    // PV production per slot — distribute across daylight hours (6–18)
+    const pvTotal = showTomorrow
+      ? (this._getNumericState("pv_forecast_tomorrow") || 0)
+      : (sim.net_pv_kwh || 0);
+    const daylightSlots = [];
+    for (let i = 0; i < numSlots; i++) {
+      const hour = (i * granularity) / 60;
+      if (hour >= 6 && hour < 18) daylightSlots.push(i);
+    }
+    const pvPerSlot = daylightSlots.length > 0 ? pvTotal / daylightSlots.length : 0;
+    const pvSlotSet = new Set(daylightSlots);
+
+    // Starting SOC
+    let currentKwh;
+    if (showTomorrow) {
+      // Estimate battery at midnight from today's sim
+      const batterySoc = sim.battery_soc_pct;
+      const todayKwh = batterySoc != null ? (batterySoc / 100) * batteryCapacity : dischargeMin * batteryCapacity;
+      const todayPlanned = this._todaySimResult?.planned || 0;
+      const hoursToMidnight = Math.max(1, 24 - new Date().getHours());
+      const drainToMidnight = (consumption / 24) * hoursToMidnight;
+      const minKwh = dischargeMin * batteryCapacity;
+      currentKwh = Math.max(minKwh, Math.min(batteryCapacity, todayKwh + todayPlanned - drainToMidnight));
+    } else {
+      const batterySoc = sim.battery_soc_pct;
+      const now = new Date();
+      const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
+      // For past slots we don't have exact history, so start from beginning of day
+      // estimating battery was at discharge_min + reserve at midnight
+      const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
+      const minKwh = dischargeMin * batteryCapacity;
+      currentKwh = Math.min(batteryCapacity, minKwh + reserveKwh);
+    }
+
+    // Forward simulate
+    const trajectory = [];
+    for (let i = 0; i < numSlots; i++) {
+      trajectory.push((currentKwh / batteryCapacity) * 100);
+
+      const slot = displayData[i];
+      // Consumption drain
+      currentKwh -= consumptionPerSlot;
+      // PV production (self-consumed first — charges battery)
+      if (pvSlotSet.has(i)) {
+        currentKwh += pvPerSlot;
+      }
+      // Scheduled actions
+      if (slot.action === "charge") {
+        currentKwh += energyPerSlot * efficiency;
+      } else if (slot.action === "discharge") {
+        currentKwh -= energyPerSlot;
+      }
+      // Clamp
+      currentKwh = Math.max(0, Math.min(batteryCapacity, currentKwh));
+    }
+    // Add final point (end of last slot)
+    trajectory.push((currentKwh / batteryCapacity) * 100);
+
+    return trajectory;
   }
 
   _toggleDayView(e) {
