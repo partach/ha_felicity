@@ -332,16 +332,16 @@ TREX-25/50 with micro-inverters on the generator port need special handling. PV 
 ### Stability Improvements (High Priority)
 
 #### A. Eliminate Code Duplication
-**Problem**: coordinator.py duplicates ems.py scheduling logic. Every fix must be applied twice.
-**Fix**: Have `coordinator._calculate_schedule()` build an `EMSConfig` + `EMSState`, call `ems.calculate_schedule()`, and unpack the `ScheduleResult`. Remove the duplicated logic from coordinator.py entirely. This is the single highest-impact refactor.
+**IMPLEMENTED**: coordinator.py now delegates entirely to `ems.calculate_schedule()` via `EMSConfig` + `EMSState` dataclasses. ~340 lines of duplicated scheduling logic removed.
 
-#### B. PV Confidence Recovery
-**Problem**: Confidence drops early on cloudy mornings and stays low even if clouds clear. A morning with 30% confidence will under-predict afternoon solar.
-**Fix**: Weight recent hours more heavily than early hours. For example, use a sliding 3-hour window instead of cumulative since dawn. Alternatively, recalculate confidence from only the last 2-3 hours of production.
+#### B. PV Confidence Recovery — IMPLEMENTED
+Sliding window approach: `_calculate_pv_confidence()` returns `max(cumulative, recent_3h_window)` so confidence recovers when weather improves mid-day.
 
-#### C. Consumption Profile Awareness
-**Problem**: `consumption_est / 24` assumes flat consumption. Evening peaks are missed.
-**Fix**: Build an hourly consumption profile from the weekly history (similar to pv_hourly_kwh). Evening hours (17:00-22:00) typically use 1.5-2x the daily average. This would improve the SOC trajectory prediction significantly.
+#### C. Consumption Profile Awareness — IMPLEMENTED
+Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumption_hourly_kwh` provides per-hour averages used in `_project_soc_trajectory()` and `_validate_schedule_soc()`. Coordinator records hourly breakdown at midnight. Frontend card also uses profiles.
+
+#### C2. SOC History Display — IMPLEMENTED
+Coordinator records battery SOC at each slot boundary in `_soc_history`. Frontend draws solid line for actual past SOC, dotted line for projected future.
 
 ### Correctness Improvements (Medium Priority)
 

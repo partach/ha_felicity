@@ -41,6 +41,7 @@ class EMSState:
     pv_forecast_today: float | None = None
     pv_forecast_tomorrow: float | None = None
     pv_actual_today_kwh: float | None = None
+    consumption_hourly_kwh: dict[int, float] | None = None  # {hour: avg_kwh} from 7-day profile
     current_hour: int = 12
     current_minute: int = 0
 
@@ -143,18 +144,10 @@ def calculate_net_pv_surplus(
     minutes_per_slot = (24 * 60) / num_slots
     consumption_per_hour = consumption_est / 24.0
 
-    # PV confidence factor
-    pv_confidence = 1.0
-    if pv_actual_today_kwh is not None and pv_forecast_today:
-        expected_so_far = 0.0
-        for hour, kwh in pv_hourly_kwh.items():
-            if hour < current_hour:
-                expected_so_far += kwh
-            elif hour == current_hour:
-                expected_so_far += kwh * (current_minute / 60.0)
-        if expected_so_far > 1.0:
-            pv_confidence = min(1.0, pv_actual_today_kwh / expected_so_far)
-            pv_confidence = max(0.1, pv_confidence)
+    # PV confidence factor (uses sliding window for recovery on variable days)
+    pv_confidence = _calculate_pv_confidence(
+        pv_hourly_kwh, pv_actual_today_kwh, current_hour, current_minute,
+    )
 
     # Sum positive surpluses per hour
     surplus_total = 0.0
@@ -187,20 +180,63 @@ def _calculate_pv_confidence(
 ) -> float:
     """Calculate PV production confidence based on actual vs expected output.
 
+    Uses a sliding-window approach: computes both a cumulative confidence
+    (all hours since dawn) and a recent-window confidence (last 3 hours).
+    The final confidence is the MAXIMUM of both, allowing recovery when
+    weather improves after a cloudy morning.
+
     Returns a factor between 0.1 and 1.0.  A value of 1.0 means production
     tracks the forecast; lower values indicate a cloudier day than forecast.
     """
     if not pv_hourly_kwh or pv_actual_today_kwh is None:
         return 1.0
+
+    # Cumulative expected production through the current time
     expected_so_far = 0.0
     for hour, kwh in pv_hourly_kwh.items():
         if hour < current_hour:
             expected_so_far += kwh
         elif hour == current_hour:
             expected_so_far += kwh * (current_minute / 60.0)
+
     if expected_so_far <= 1.0:
         return 1.0
-    confidence = pv_actual_today_kwh / expected_so_far
+
+    cumulative_confidence = pv_actual_today_kwh / expected_so_far
+
+    # Sliding window: compare recent production vs recent forecast.
+    # If we only have total actual, we estimate recent actual as:
+    #   recent_actual = total_actual - expected_before_window
+    # This works because if production recovered in the recent window,
+    # the surplus over expected_before_window reflects that.
+    window_hours = 3
+    window_start = max(0, current_hour - window_hours)
+    expected_before_window = 0.0
+    expected_in_window = 0.0
+    for hour, kwh in pv_hourly_kwh.items():
+        if hour < window_start:
+            expected_before_window += kwh
+        elif hour < current_hour:
+            expected_in_window += kwh
+        elif hour == current_hour:
+            expected_in_window += kwh * (current_minute / 60.0)
+
+    window_confidence = cumulative_confidence  # fallback
+    if expected_in_window >= 0.5:
+        # Estimate actual production in the window by subtracting what
+        # we'd expect to have produced before the window started.
+        recent_actual = max(0.0, pv_actual_today_kwh - expected_before_window)
+        window_confidence = recent_actual / expected_in_window
+
+    confidence = max(cumulative_confidence, window_confidence)
+
+    _LOGGER.debug(
+        "PV confidence: cumulative=%.2f, window(%dh)=%.2f → final=%.2f "
+        "(actual=%.1f, expected_total=%.1f, expected_window=%.1f)",
+        cumulative_confidence, window_hours, window_confidence, confidence,
+        pv_actual_today_kwh, expected_so_far, expected_in_window,
+    )
+
     return max(0.1, min(1.0, confidence))
 
 
@@ -212,8 +248,13 @@ def _project_soc_trajectory(
     minutes_per_slot: float,
     pv_confidence: float = 1.0,
     battery_capacity: float = 100.0,
+    consumption_hourly_kwh: dict[int, float] | None = None,
 ) -> tuple[dict[int, float], float, float]:
     """Project battery SOC through remaining slots (no charge/sell actions).
+
+    When consumption_hourly_kwh is provided, uses per-hour consumption
+    instead of the flat consumption_per_slot.  This improves accuracy
+    for households with uneven load profiles (e.g., evening peaks).
 
     Returns:
         (per_slot_projection, min_kwh, max_kwh)
@@ -228,7 +269,12 @@ def _project_soc_trajectory(
         pv_kwh = (pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
         pv_per_slot = pv_kwh * (minutes_per_slot / 60.0)
 
-        projected = min(battery_capacity, projected + pv_per_slot - consumption_per_slot)
+        if consumption_hourly_kwh and hour in consumption_hourly_kwh:
+            cons_per_slot = consumption_hourly_kwh[hour] * (minutes_per_slot / 60.0)
+        else:
+            cons_per_slot = consumption_per_slot
+
+        projected = min(battery_capacity, projected + pv_per_slot - cons_per_slot)
         projection[slot_idx] = projected
         min_soc = min(min_soc, projected)
         max_soc = max(max_soc, projected)
@@ -249,6 +295,7 @@ def _validate_schedule_soc(
     min_kwh: float,
     energy_per_slot: float,
     efficiency: float,
+    consumption_hourly_kwh: dict[int, float] | None = None,
 ) -> tuple[set[int], set[int]]:
     """Validate schedule by simulating SOC at every slot, pruning violations.
 
@@ -277,7 +324,11 @@ def _validate_schedule_soc(
             pv_kwh = (pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
             pv_per_slot = pv_kwh * (minutes_per_slot / 60.0)
 
-            delta = pv_per_slot - consumption_per_slot
+            if consumption_hourly_kwh and hour in consumption_hourly_kwh:
+                cons = consumption_hourly_kwh[hour] * (minutes_per_slot / 60.0)
+            else:
+                cons = consumption_per_slot
+            delta = pv_per_slot - cons
             if slot_idx in charge_slots:
                 delta += energy_per_slot * efficiency
             if slot_idx in discharge_slots:
@@ -625,6 +676,7 @@ def _schedule_from_grid(
         remaining, current_kwh, consumption_per_slot,
         state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
         config.battery_capacity_kwh,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
     predictive_deficit = max(0.0, reserve_target - min_projected)
 
@@ -679,6 +731,7 @@ def _schedule_from_grid(
         state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
         config.battery_capacity_kwh, min_kwh,
         energy_per_slot, config.efficiency,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
     selected = [(idx, p) for idx, p in selected if idx in validated_charge]
 
@@ -726,6 +779,7 @@ def _schedule_to_grid(
         remaining, current_kwh, consumption_per_slot,
         state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
         config.battery_capacity_kwh,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
     sellable = max(0.0, max_projected - reserve_target) * config.efficiency
 
@@ -752,6 +806,7 @@ def _schedule_to_grid(
         state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
         config.battery_capacity_kwh, reserve_target,
         energy_per_slot, config.efficiency,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
     selected = [(idx, p) for idx, p in selected if idx in validated_discharge]
 
@@ -803,6 +858,7 @@ def _schedule_both(
         remaining, current_kwh, consumption_per_slot,
         state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
         config.battery_capacity_kwh,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
     predictive_deficit = max(0.0, reserve_target - min_projected)
 
@@ -895,6 +951,7 @@ def _schedule_both(
         state.pv_hourly_kwh, minutes_per_slot, pv_confidence,
         config.battery_capacity_kwh, reserve_target,
         energy_per_slot, config.efficiency,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
     charge_slots = [(idx, p) for idx, p in charge_slots if idx in validated_charge]
     sell_selected = [(idx, p) for idx, p in sell_selected if idx in validated_discharge]
