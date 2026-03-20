@@ -606,8 +606,6 @@ class FelicityEMSCard extends LitElement {
     // ── SOC trajectory (solid past / dotted future) ──────────────────
     const socTrajectory = this._computeSocTrajectory(displayData, showTomorrow);
     const socHistory = this._getAttr("schedule_status", "soc_history") || {};
-    const now = new Date();
-    const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
 
     if (socTrajectory && socTrajectory.length > 1) {
       const socMin = 0;
