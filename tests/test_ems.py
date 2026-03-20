@@ -2073,3 +2073,166 @@ class TestProjectedMidnightContinuity:
             "PV production today should reduce total charging needs — "
             "projected midnight must include net_pv"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: Solar protection prevents unnecessary grid charging
+# ---------------------------------------------------------------------------
+
+class TestSolarProtection:
+    """When solar will fill the battery to near capacity, skip grid charging."""
+
+    def test_no_charge_when_solar_fills_battery(self):
+        """from_grid: no grid charge when PV will fill battery to 95%+."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=35.0,
+            consumption_est_kwh=38.5,
+        )
+        # High solar: 40 kWh forecast, strong midday production
+        pv = make_pv_hourly(40.0, sunrise=7, sunset=19)
+        state = default_state(
+            battery_soc_pct=66.0,  # 39.6 kWh at 9:00, climbing
+            slot_prices_today=make_prices(24, base=0.20),
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=18.5,
+            pv_forecast_today=40.0,
+            pv_actual_today_kwh=21.9,
+            current_hour=9,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        assert len(charge_slots) == 0, (
+            f"Should not grid-charge when solar fills battery; got {len(charge_slots)} charge slots"
+        )
+
+    def test_no_charge_both_mode_when_solar_fills_battery(self):
+        """both mode: no grid charge when PV will fill battery to 95%+."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=35.0,
+            consumption_est_kwh=38.5,
+        )
+        pv = make_pv_hourly(40.0, sunrise=7, sunset=19)
+        state = default_state(
+            battery_soc_pct=66.0,
+            slot_prices_today=make_prices(24, base=0.20),
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=18.5,
+            pv_forecast_today=40.0,
+            pv_actual_today_kwh=21.9,
+            current_hour=9,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        assert len(charge_slots) == 0, (
+            f"Both mode: should not grid-charge when solar fills battery; got {len(charge_slots)} charge slots"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test: Arbitrage price delta in both mode
+# ---------------------------------------------------------------------------
+
+class TestArbitragePriceDelta:
+    """When price spread exceeds threshold, charge to full for profitable resale."""
+
+    def test_arbitrage_charges_to_full_on_large_spread(self):
+        """both mode: large price spread triggers full charge."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            arbitrage_price_delta=0.10,  # 10 ct threshold
+        )
+        # Cheap morning (0.05), expensive afternoon (0.40) → spread = 0.35 > 0.10
+        prices = [0.05] * 6 + [0.15] * 6 + [0.40] * 6 + [0.10] * 6
+        state = default_state(
+            battery_soc_pct=40.0,  # 24 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(5.0),  # low PV
+            pv_forecast_remaining=3.0,
+            pv_forecast_today=5.0,
+            pv_actual_today_kwh=1.0,
+            current_hour=2,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        discharge_slots = {k for k, v in result.scheduled_slots.items() if v == "discharge"}
+
+        # With arbitrage active, should charge more aggressively
+        assert len(charge_slots) >= 3, (
+            f"Arbitrage active: expected >=3 charge slots for full charge, got {len(charge_slots)}"
+        )
+        # Should sell in expensive slots
+        assert len(discharge_slots) > 0, "Should sell energy in expensive slots"
+        for s in discharge_slots:
+            assert prices[s] >= 0.30, f"Should only sell at expensive prices, got {prices[s]}"
+
+    def test_no_arbitrage_when_spread_too_small(self):
+        """both mode: small price spread → normal reserve-only charging."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            arbitrage_price_delta=0.20,  # 20 ct threshold
+        )
+        # Spread is only 0.10 (< 0.20 threshold)
+        prices = [0.15] * 12 + [0.25] * 12
+        state = default_state(
+            battery_soc_pct=60.0,  # 36 kWh, close to reserve
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(15.0),
+            pv_forecast_remaining=10.0,
+            pv_forecast_today=15.0,
+            pv_actual_today_kwh=5.0,
+            current_hour=6,
+        )
+        result_delta = calculate_schedule(config, state)
+
+        config_no_delta = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            arbitrage_price_delta=0.0,  # disabled
+        )
+        result_no_delta = calculate_schedule(config_no_delta, state)
+
+        # With insufficient spread, behavior should be the same as no arbitrage
+        charge_delta = len({k for k, v in result_delta.scheduled_slots.items() if v == "charge"})
+        charge_no_delta = len({k for k, v in result_no_delta.scheduled_slots.items() if v == "charge"})
+        assert charge_delta == charge_no_delta, (
+            f"Small spread should not trigger arbitrage: delta={charge_delta}, no_delta={charge_no_delta}"
+        )
+
+    def test_arbitrage_zero_delta_disabled(self):
+        """both mode: arbitrage_price_delta=0 means feature is disabled."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            arbitrage_price_delta=0.0,
+        )
+        prices = [0.05] * 6 + [0.15] * 6 + [0.40] * 6 + [0.10] * 6
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(5.0),
+            pv_forecast_remaining=3.0,
+            pv_forecast_today=5.0,
+            pv_actual_today_kwh=1.0,
+            current_hour=2,
+        )
+        result = calculate_schedule(config, state)
+        # Should work normally without arbitrage feature — no error
+        assert isinstance(result, ScheduleResult)

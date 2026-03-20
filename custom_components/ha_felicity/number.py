@@ -164,6 +164,17 @@ async def async_setup_entry(
             unit="%",
             icon="mdi:battery-lock",
         ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="arbitrage_price_delta",
+            name="Arbitrage Price Delta",
+            min_val=0,
+            max_val=0.50,
+            step=0.01,
+            unit="€/kWh",
+            icon="mdi:cash-multiple",
+        ),
     ])
 
     # Tie all entities to the device

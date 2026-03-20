@@ -26,6 +26,7 @@ class EMSConfig:
     consumption_est_kwh: float = 10.0
     yesterday_deficit_kwh: float = 0.0
     reserve_target_pct: float = 0.0  # 0 = dynamic (min + overnight), >0 = fixed floor %
+    arbitrage_price_delta: float = 0.0  # €/kWh spread threshold for full charge in 'both' mode
 
 
 @dataclass
@@ -826,8 +827,31 @@ def _schedule_both(
     else:
         energy_deficit = base_deficit
 
-    # Predictive sellable: use peak projected SOC above reserve
-    sellable = max(0.0, max_projected - reserve_target) * config.efficiency
+    # Arbitrage price delta: when the price spread is large enough, charge
+    # to full capacity instead of just the reserve — the extra energy can be
+    # sold at a profit that outweighs battery wear.
+    arbitrage_active = False
+    if config.arbitrage_price_delta > 0 and remaining:
+        prices_remaining = [p for _, p in remaining if p is not None]
+        if prices_remaining:
+            price_spread = max(prices_remaining) - min(prices_remaining)
+            if price_spread >= config.arbitrage_price_delta:
+                arbitrage_active = True
+                full_charge_kwh = max_battery_kwh - current_kwh
+                energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
+                _LOGGER.debug(
+                    "Arbitrage active: spread=%.4f >= delta=%.4f, "
+                    "charging to full (deficit=%.2f kWh)",
+                    price_spread, config.arbitrage_price_delta, energy_deficit,
+                )
+
+    # Predictive sellable: use peak projected SOC above reserve.
+    # When arbitrage is active, sellable is based on full capacity since
+    # we're charging to max.
+    if arbitrage_active:
+        sellable = max(0.0, max_battery_kwh - reserve_target) * config.efficiency
+    else:
+        sellable = max(0.0, max_projected - reserve_target) * config.efficiency
 
     charge_slots, tomorrow_slots, tomorrow_charge_kwh = select_unified_charge_slots(
         remaining, energy_deficit, effective_per_slot,

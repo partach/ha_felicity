@@ -78,6 +78,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "efficiency_factor": self._user_input.get("efficiency_factor", 0.90),
             "daily_consumption_estimate": self._user_input.get("daily_consumption_estimate", 10),
             "reserve_target_pct": self._user_input.get("reserve_target_pct", 0),
+            "arbitrage_price_delta": self._user_input.get("arbitrage_price_delta", 0.0),
             CONF_REGISTER_SET: self._user_input.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET),
             "nordpool_entity": self._user_input.get("nordpool_entity"),
             "nordpool_override": self._user_input.get("nordpool_override"),

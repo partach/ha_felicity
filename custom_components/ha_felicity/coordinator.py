@@ -563,12 +563,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.pv_hourly_kwh, self.pv_actual_today_kwh,
                 now.hour, now.minute,
             )
-            _, min_projected, _ = ems_module._project_soc_trajectory(
+            _, min_projected, max_projected = ems_module._project_soc_trajectory(
                 remaining, current_kwh, consumption_per_slot,
                 self.pv_hourly_kwh, minutes_per_slot, pv_confidence,
                 battery_capacity,
             )
             predictive_deficit = max(0.0, reserve_target - min_projected)
+
+            # Solar protection: when solar will fill the battery to near
+            # capacity, grid charging cannot add useful energy.
+            charge_max_pct = opts.get("battery_charge_max_level", 100)
+            max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
+            if max_projected >= max_battery_kwh * 0.95:
+                predictive_deficit = 0.0
+
             base_deficit = max(snapshot_deficit, predictive_deficit)
 
             _LOGGER.debug(
@@ -670,6 +678,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # Priority: 1) self-consume solar  2) keep reserve for overnight
             #           3) only buy grid when solar can't cover  4) only sell true surplus
             effective_per_slot = energy_per_slot * efficiency
+            charge_max_pct = opts.get("battery_charge_max_level", 100)
             round_trip_eff = efficiency * efficiency  # charge + discharge losses
 
             # 1. Self-consumption reserve: energy needed from sunset to sunrise
@@ -698,6 +707,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 battery_capacity,
             )
             predictive_deficit = max(0.0, reserve_target - min_projected)
+
+            # Solar protection: when solar will fill the battery to near
+            # capacity, grid charging cannot add useful energy.
+            max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
+            if max_projected >= max_battery_kwh * 0.95:
+                predictive_deficit = 0.0
+
             base_deficit = max(snapshot_deficit, predictive_deficit)
 
             _LOGGER.debug(
@@ -713,8 +729,30 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             else:
                 energy_deficit = base_deficit
 
+            # Arbitrage price delta: when the price spread is large enough,
+            # charge to full capacity for profitable resale.
+            max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
+            arbitrage_delta = opts.get("arbitrage_price_delta", 0.0)
+            arbitrage_active = False
+            if arbitrage_delta > 0 and remaining:
+                prices_remaining = [p for _, p in remaining if p is not None]
+                if prices_remaining:
+                    price_spread = max(prices_remaining) - min(prices_remaining)
+                    if price_spread >= arbitrage_delta:
+                        arbitrage_active = True
+                        full_charge_kwh = max_battery_kwh - current_kwh
+                        energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
+                        _LOGGER.debug(
+                            "Arbitrage active: spread=%.4f >= delta=%.4f, "
+                            "charging to full (deficit=%.2f kWh)",
+                            price_spread, arbitrage_delta, energy_deficit,
+                        )
+
             # 3. Discharge side — sell energy based on peak projected SOC above reserve
-            sellable = max(0.0, max_projected - reserve_target) * efficiency
+            if arbitrage_active:
+                sellable = max(0.0, max_battery_kwh - reserve_target) * efficiency
+            else:
+                sellable = max(0.0, max_projected - reserve_target) * efficiency
 
             # 4-5. Unified slot selection: pick cheapest from today+tomorrow combined pool
             charge_slots, tomorrow_slots, tomorrow_charge_kwh = self._select_unified_charge_slots(
