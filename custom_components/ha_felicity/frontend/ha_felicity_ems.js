@@ -603,21 +603,46 @@ class FelicityEMSCard extends LitElement {
       ctx.stroke();
     }
 
-    // ── SOC trajectory (blue dotted line) ──────────────────
+    // ── SOC trajectory (solid past / dotted future) ──────────────────
     const socTrajectory = this._computeSocTrajectory(displayData, showTomorrow);
+    const socHistory = this._getAttr("schedule_status", "soc_history") || {};
+    const now = new Date();
+    const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
+
     if (socTrajectory && socTrajectory.length > 1) {
       const socMin = 0;
       const socMax = 100;
+      const toY = (soc) => marginTop + chartH - ((soc - socMin) / (socMax - socMin)) * chartH;
 
+      // Draw solid line for actual past SOC (from soc_history)
+      if (!showTomorrow && Object.keys(socHistory).length > 0) {
+        ctx.strokeStyle = "#08b2c9";
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i <= currentSlotIdx && i <= numSlots; i++) {
+          const histSoc = socHistory[i] ?? socHistory[String(i)];
+          const soc = histSoc != null ? histSoc : (socTrajectory[i] ?? socTrajectory[socTrajectory.length - 1]);
+          const x = marginLeft + i * barW;
+          const y = toY(soc);
+          if (!started) { ctx.moveTo(x, y); started = true; }
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      // Draw dotted line for projected future SOC
       ctx.strokeStyle = "#08b2c9";
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 3]);
       ctx.beginPath();
-      for (let i = 0; i <= numSlots; i++) {
+      const startIdx = showTomorrow ? 0 : Math.max(0, currentSlotIdx);
+      for (let i = startIdx; i <= numSlots; i++) {
         const soc = socTrajectory[i] ?? socTrajectory[socTrajectory.length - 1];
         const x = marginLeft + i * barW;
-        const y = marginTop + chartH - ((soc - socMin) / (socMax - socMin)) * chartH;
-        if (i === 0) ctx.moveTo(x, y);
+        const y = toY(soc);
+        if (i === startIdx) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
@@ -849,8 +874,9 @@ class FelicityEMSCard extends LitElement {
     const powerKw = overrides.powerKw ?? Math.max(1, safeMaxPower / 1000);
     const energyPerSlot = powerKw * slotDuration;
 
-    // Consumption drain per slot (evenly distributed)
-    const consumptionPerSlot = (consumption / 24) * slotDuration;
+    // Consumption drain per slot — use hourly profile when available
+    const consumptionProfile = sim.consumption_hourly_profile || null;
+    const consumptionPerSlotFlat = (consumption / 24) * slotDuration;
 
     // PV production per slot — use per-hour data when available (matches backend)
     const pvHourly = (!showTomorrow && sim.pv_hourly_kwh) ? sim.pv_hourly_kwh : null;
@@ -906,8 +932,12 @@ class FelicityEMSCard extends LitElement {
       trajectory.push((currentKwh / batteryCapacity) * 100);
 
       const slot = displayData[i];
-      // Consumption drain
-      currentKwh -= consumptionPerSlot;
+      // Consumption drain (per-hour profile or flat)
+      const hour = Math.floor((i * granularity) / 60);
+      const consThisSlot = consumptionProfile
+        ? ((consumptionProfile[hour] ?? consumptionProfile[String(hour)] ?? (consumption / 24)) * slotDuration)
+        : consumptionPerSlotFlat;
+      currentKwh -= consThisSlot;
       // PV production (self-consumed first — charges battery)
       if (pvHourly) {
         // Per-hour gross PV data from backend (matches backend projection exactly)

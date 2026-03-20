@@ -76,6 +76,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.safe_max_power = 0 # used in setting rule 1 power checks toward max amperage
         self._last_known_max_amperage: float | None = None
         self.battery_soc: float | None = None  # resolved SOC (type-specific)
+        # SOC history: {slot_index: soc_pct} for past slots today
+        self._soc_history: dict[int, float] = {}
+        self._last_recorded_slot: int = -1
 
         # Forecast & schedule
         self.forecast_entity = forecast_entity
@@ -98,6 +101,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._consumption_store_lock = asyncio.Lock()
         self.weekly_avg_consumption: float | None = None
         self._yesterday_deficit: float = 0.0
+        # Hourly consumption profiles: {hour: avg_kwh} from 7-day history
+        self._hourly_consumption_profile: dict[int, float] = {}
+        self._hourly_consumption_history: list = []  # [{date, hours: {0: kwh, 1: kwh, ...}}]
         self.self_consumption_reserve: float = 0.0
         self._last_net_pv: float = 0.0
         self.tomorrow_precharge: float = 0.0
@@ -486,350 +492,71 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         )
 
     def _calculate_schedule(self, battery_soc: float | None) -> None:
-        """Calculate optimal charge/discharge schedule based on prices, forecast, and battery.
+        """Calculate optimal charge/discharge schedule.
 
-        Handles any slot granularity (15-min, 30-min, hourly).
-        Negative prices: always charge (from_grid), never sell (to_grid).
-        Includes yesterday's deficit carryover in energy target.
-        Uses safe_max_power for realistic energy-per-slot calculation.
+        Delegates entirely to ems.calculate_schedule() — the single source of
+        truth for scheduling logic — and unpacks the result into coordinator
+        attributes.
         """
         opts = self.config_entry.options
-        grid_mode = opts.get("grid_mode", "off")
-
-        if grid_mode == "off" or not self.slot_prices_today:
-            self.scheduled_slots = {}
-            self.cheap_slots_remaining = 0
-            self.grid_energy_planned = 0.0
-            self.schedule_status = "off" if grid_mode == "off" else "no_price_data"
-            return
-
         now = datetime.now()
-        prices = self.slot_prices_today
-        num_slots = len(prices)
-        minutes_per_slot = (24 * 60) / num_slots
-        current_slot = int((now.hour * 60 + now.minute) / minutes_per_slot)
-        current_slot = min(current_slot, num_slots - 1)
-        slot_duration_hours = minutes_per_slot / 60.0
-
-        battery_capacity = opts.get("battery_capacity_kwh", 10)
-        efficiency = opts.get("efficiency_factor", 0.90)
-        discharge_min = opts.get("battery_discharge_min_level", 20)
-        reserve_target_pct = opts.get("reserve_target_pct", 0)
-        consumption_est = self._get_consumption_estimate()
 
         # Use safe_max_power (kW scale 1-10) for realistic slot energy, fallback to power_level
         safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
 
-        remaining = [(i, prices[i]) for i in range(current_slot, num_slots) if prices[i] is not None]
-
-        if not remaining:
-            self.scheduled_slots = {}
-            self.cheap_slots_remaining = 0
-            self.grid_energy_planned = 0.0
-            self.schedule_status = "day_complete"
-            return
-
-        current_kwh = (battery_soc / 100.0) * battery_capacity if battery_soc is not None else 0
-        # Hourly surplus model: only count PV that exceeds consumption per hour
-        net_pv = self._calculate_net_pv_surplus(remaining, num_slots, consumption_est)
-        self._last_net_pv = net_pv  # expose for card simulation
-        energy_per_slot = safe_power_kw * slot_duration_hours
-
-        energy_target = 0.0  # for logging
-
-        if grid_mode == "from_grid":
-            # --- Solar-first strategy ---
-            # Goal: only buy from grid what's needed to survive overnight above discharge_min.
-            # Tomorrow's solar handles refilling the battery; grid is a last resort.
-            # Priority: a) avoid grid, b) buy minimum at cheapest price, c) let solar do the rest.
-            effective_per_slot = energy_per_slot * efficiency
-
-            # 1. Calculate overnight reserve (sunset → sunrise), same as "both" mode
-            reserve_kwh = self._calculate_self_consumption_reserve(
-                consumption_est, num_slots, remaining)
-            self.self_consumption_reserve = round(reserve_kwh, 2)
-
-        #    min_kwh = (discharge_min / 100.0) * battery_capacity
-            reserve_target = self._compute_reserve_target(
-                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
-
-            # 2. How much are we short of the overnight reserve?
-            battery_shortfall = max(0.0, reserve_target - current_kwh)
-            snapshot_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
-
-            # Predictive: simulate SOC trajectory to catch future shortfalls
-            consumption_per_slot = consumption_est / num_slots
-            pv_confidence = ems_module._calculate_pv_confidence(
-                self.pv_hourly_kwh, self.pv_actual_today_kwh,
-                now.hour, now.minute,
-            )
-            _, min_projected, max_projected = ems_module._project_soc_trajectory(
-                remaining, current_kwh, consumption_per_slot,
-                self.pv_hourly_kwh, minutes_per_slot, pv_confidence,
-                battery_capacity,
-            )
-            predictive_deficit = max(0.0, reserve_target - min_projected)
-
-            # Solar protection: when solar will fill the battery to near
-            # capacity, grid charging cannot add useful energy.
-            charge_max_pct = opts.get("battery_charge_max_level", 100)
-            max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
-            if max_projected >= max_battery_kwh * 0.95:
-                predictive_deficit = 0.0
-
-            base_deficit = max(snapshot_deficit, predictive_deficit)
-
-            _LOGGER.debug(
-                "from_grid deficit: snapshot=%.2f, predictive=%.2f "
-                "(min_projected=%.1f, reserve_target=%.1f)",
-                snapshot_deficit, predictive_deficit, min_projected, reserve_target,
-            )
-
-            # Add yesterday's deficit carryover, capped by what the battery can physically accept
-            if self._yesterday_deficit > 0 and battery_shortfall > base_deficit:
-                carryover = min(self._yesterday_deficit, battery_shortfall - base_deficit)
-                energy_deficit = base_deficit + carryover
-                _LOGGER.debug("from_grid carryover: base=%.2f + carryover=%.2f → total=%.2f kWh",
-                              base_deficit, carryover, energy_deficit)
-            else:
-                energy_deficit = base_deficit
-
-            energy_target = energy_deficit
-
-            # Unified slot selection: pick cheapest from today+tomorrow combined pool
-            selected, tomorrow_slots, tomorrow_charge_kwh = self._select_unified_charge_slots(
-                remaining, energy_deficit, effective_per_slot,
-                battery_capacity, discharge_min, consumption_est,
-                efficiency, energy_per_slot,
-                current_kwh=current_kwh, net_pv=net_pv,
-            )
-            self.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
-            self.tomorrow_planned_slots = len(tomorrow_slots)
-            self.tomorrow_planned_kwh = tomorrow_charge_kwh
-
-            if not selected:
-                self.scheduled_slots = {}
-                self.cheap_slots_remaining = 0
-                self.grid_energy_planned = 0.0
-                self.schedule_status = "no_action_needed"
-                return
-
-            self.scheduled_slots = {s[0]: "charge" for s in selected}
-            self.cheap_slots_remaining = len(self.scheduled_slots)
-            self.grid_energy_planned = round(len(selected) * effective_per_slot, 2)
-            energy_target = self.grid_energy_planned
-
-            if selected:
-                # Threshold is the highest price in our selected set (boundary price)
-                self.price_threshold = max(s[1] for s in selected)
-
-        elif grid_mode == "to_grid":
-         #   min_kwh = (discharge_min / 100.0) * battery_capacity
-
-            # Reserve-aware: protect self-consumption reserve
-            reserve_kwh = self._calculate_self_consumption_reserve(
-                consumption_est, num_slots, remaining)
-            self.self_consumption_reserve = round(reserve_kwh, 2)
-            reserve_target = self._compute_reserve_target(
-                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
-
-            # Predictive: project peak SOC to determine total sellable energy
-            consumption_per_slot = consumption_est / num_slots
-            pv_confidence = ems_module._calculate_pv_confidence(
-                self.pv_hourly_kwh, self.pv_actual_today_kwh,
-                now.hour, now.minute,
-            )
-            _, _, max_projected = ems_module._project_soc_trajectory(
-                remaining, current_kwh, consumption_per_slot,
-                self.pv_hourly_kwh, minutes_per_slot, pv_confidence,
-                battery_capacity,
-            )
-            sellable = max(0.0, max_projected - reserve_target) * efficiency
-            energy_target = sellable
-
-            _LOGGER.debug(
-                "to_grid predictive: max_projected=%.1f, reserve_target=%.1f, "
-                "sellable=%.1f kWh",
-                max_projected, reserve_target, sellable,
-            )
-
-            if sellable <= 0:
-                self.scheduled_slots = {}
-                self.cheap_slots_remaining = 0
-                self.grid_energy_planned = 0.0
-                self.schedule_status = "no_action_needed"
-                return
-
-            # Never sell at negative prices
-            positive_slots = [(i, p) for i, p in remaining if p > 0]
-            slots_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
-            sorted_slots = sorted(positive_slots, key=lambda x: -x[1])
-            selected = sorted_slots[:slots_needed]
-
-            self.scheduled_slots = {s[0]: "discharge" for s in selected}
-            self.cheap_slots_remaining = len(self.scheduled_slots)
-            self.grid_energy_planned = round(min(sellable, len(selected) * energy_per_slot), 2)
-
-            if selected:
-                self.price_threshold = min(s[1] for s in selected)
-
-        elif grid_mode == "both":
-            # --- Self-sufficiency-first arbitrage ---
-            # Priority: 1) self-consume solar  2) keep reserve for overnight
-            #           3) only buy grid when solar can't cover  4) only sell true surplus
-            effective_per_slot = energy_per_slot * efficiency
-            charge_max_pct = opts.get("battery_charge_max_level", 100)
-            round_trip_eff = efficiency * efficiency  # charge + discharge losses
-
-            # 1. Self-consumption reserve: energy needed from sunset to sunrise
-            reserve_kwh = self._calculate_self_consumption_reserve(
-                consumption_est, num_slots, remaining)
-            self.self_consumption_reserve = round(reserve_kwh, 2)
-
-            # 2. Charge side — only buy from grid what's needed to cover overnight reserve
-            #    In "both" mode the goal is NOT to fill the battery to charge_max,
-            #    but to ensure we have enough reserve for overnight self-consumption.
-            #    Solar should handle the rest; grid is only a backstop.
-            reserve_target = self._compute_reserve_target(
-                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct)
-            battery_shortfall = max(0.0, reserve_target - current_kwh)  # how much we're short right now
-            snapshot_deficit = max(0.0, battery_shortfall - net_pv)  # after solar, what grid must cover
-
-            # Predictive: simulate SOC trajectory for both charge and sell decisions
-            consumption_per_slot = consumption_est / num_slots
-            pv_confidence = ems_module._calculate_pv_confidence(
-                self.pv_hourly_kwh, self.pv_actual_today_kwh,
-                now.hour, now.minute,
-            )
-            _, min_projected, max_projected = ems_module._project_soc_trajectory(
-                remaining, current_kwh, consumption_per_slot,
-                self.pv_hourly_kwh, minutes_per_slot, pv_confidence,
-                battery_capacity,
-            )
-            predictive_deficit = max(0.0, reserve_target - min_projected)
-
-            # Solar protection: when solar will fill the battery to near
-            # capacity, grid charging cannot add useful energy.
-            max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
-            if max_projected >= max_battery_kwh * 0.95:
-                predictive_deficit = 0.0
-
-            base_deficit = max(snapshot_deficit, predictive_deficit)
-
-            _LOGGER.debug(
-                "both deficit: snapshot=%.2f, predictive=%.2f "
-                "(min=%.1f, max=%.1f, reserve=%.1f)",
-                snapshot_deficit, predictive_deficit,
-                min_projected, max_projected, reserve_target,
-            )
-
-            if self._yesterday_deficit > 0 and battery_shortfall > base_deficit:
-                carryover = min(self._yesterday_deficit, battery_shortfall - base_deficit)
-                energy_deficit = base_deficit + carryover
-            else:
-                energy_deficit = base_deficit
-
-            # Arbitrage price delta: when the price spread is large enough,
-            # charge to full capacity for profitable resale.
-            max_battery_kwh = (charge_max_pct / 100.0) * battery_capacity
-            arbitrage_delta = opts.get("arbitrage_price_delta", 0.0)
-            arbitrage_active = False
-            if arbitrage_delta > 0 and remaining:
-                prices_remaining = [p for _, p in remaining if p is not None]
-                if prices_remaining:
-                    price_spread = max(prices_remaining) - min(prices_remaining)
-                    if price_spread >= arbitrage_delta:
-                        arbitrage_active = True
-                        full_charge_kwh = max_battery_kwh - current_kwh
-                        energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
-                        _LOGGER.debug(
-                            "Arbitrage active: spread=%.4f >= delta=%.4f, "
-                            "charging to full (deficit=%.2f kWh)",
-                            price_spread, arbitrage_delta, energy_deficit,
-                        )
-
-            # 3. Discharge side — sell energy based on peak projected SOC above reserve
-            if arbitrage_active:
-                sellable = max(0.0, max_battery_kwh - reserve_target) * efficiency
-            else:
-                sellable = max(0.0, max_projected - reserve_target) * efficiency
-
-            # 4-5. Unified slot selection: pick cheapest from today+tomorrow combined pool
-            charge_slots, tomorrow_slots, tomorrow_charge_kwh = self._select_unified_charge_slots(
-                remaining, energy_deficit, effective_per_slot,
-                battery_capacity, discharge_min, consumption_est,
-                efficiency, energy_per_slot,
-                current_kwh=current_kwh, net_pv=net_pv,
-            )
-            self.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
-            self.tomorrow_planned_slots = len(tomorrow_slots)
-            self.tomorrow_planned_kwh = tomorrow_charge_kwh
-
-            charge_slot_indices = {s[0] for s in charge_slots}
-
-            # 6. Select discharge slots — only sell true surplus at profitable prices
-            non_negative_slots = [(i, p) for i, p in remaining if p >= 0]
-            available_for_sell = [(i, p) for i, p in non_negative_slots
-                                 if p > 0 and i not in charge_slot_indices]
-
-            # Profitability filter: only sell if price exceeds round-trip cost
-            min_sell_price = 0.0
-            if charge_slots:
-                max_buy_price = max(s[1] for s in charge_slots)
-                min_sell_price = max_buy_price / round_trip_eff
-                available_for_sell = [(i, p) for i, p in available_for_sell if p >= min_sell_price]
-
-            sell_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
-            sorted_expensive = sorted(available_for_sell, key=lambda x: -x[1])
-            sell_selected = sorted_expensive[:sell_needed]
-
-            # 7. Merge into scheduled_slots dict
-            self.scheduled_slots = {}
-            for s in charge_slots:
-                self.scheduled_slots[s[0]] = "charge"
-            for s in sell_selected:
-                self.scheduled_slots[s[0]] = "discharge"
-
-            self.cheap_slots_remaining = len(self.scheduled_slots)
-            charge_energy = round(len(charge_slots) * effective_per_slot, 2) if charge_slots else 0
-            sell_energy = round(min(sellable, len(sell_selected) * energy_per_slot), 2) if sellable > 0 else 0
-            self.grid_energy_planned = round(charge_energy + sell_energy, 2)
-            energy_target = charge_energy + sellable
-
-            # Set threshold to the charge boundary (for info display compatibility)
-            if charge_slots:
-                self.price_threshold = max(s[1] for s in charge_slots)
-            elif sell_selected:
-                self.price_threshold = min(s[1] for s in sell_selected)
-
-            _LOGGER.debug(
-                "Both mode: charge=%.1fkWh (%d slots), sell=%.1fkWh (%d slots), "
-                "reserve=%.1fkWh, reserve_target=%.1fkWh, round_trip_eff=%.0f%%, min_sell=%.4f",
-                charge_energy, len(charge_slots), sell_energy, len(sell_selected),
-                reserve_kwh, reserve_target, round_trip_eff * 100,
-                min_sell_price,
-            )
-
-        else:
-            self.scheduled_slots = {}
-            self.cheap_slots_remaining = 0
-            self.grid_energy_planned = 0.0
-
-        # Update schedule status
-        if not self.scheduled_slots:
-            self.schedule_status = "no_action_needed"
-        elif current_slot in self.scheduled_slots:
-            self.schedule_status = "active"
-        else:
-            self.schedule_status = "waiting"
-
-        _LOGGER.debug(
-            "Schedule: mode=%s, target=%.1fkWh, net_pv=%.1fkWh, slots=%d/%d-min, status=%s, threshold=%.4f, deficit_carryover=%.2f",
-            grid_mode, energy_target, net_pv,
-            len(self.scheduled_slots), int(minutes_per_slot),
-            self.schedule_status, self.price_threshold or 0,
-            self._yesterday_deficit,
+        config = ems_module.EMSConfig(
+            grid_mode=opts.get("grid_mode", "off"),
+            battery_capacity_kwh=opts.get("battery_capacity_kwh", 10),
+            battery_charge_max_pct=opts.get("battery_charge_max_level", 100),
+            battery_discharge_min_pct=opts.get("battery_discharge_min_level", 20),
+            efficiency=opts.get("efficiency_factor", 0.90),
+            safe_power_kw=safe_power_kw,
+            consumption_est_kwh=self._get_consumption_estimate(),
+            yesterday_deficit_kwh=self._yesterday_deficit,
+            reserve_target_pct=opts.get("reserve_target_pct", 0),
+            arbitrage_price_delta=opts.get("arbitrage_price_delta", 0.0),
         )
+
+        state = ems_module.EMSState(
+            battery_soc_pct=battery_soc,
+            slot_prices_today=self.slot_prices_today,
+            slot_prices_tomorrow=self.slot_prices_tomorrow,
+            pv_hourly_kwh=self.pv_hourly_kwh or {},
+            pv_forecast_remaining=self.pv_forecast_remaining,
+            pv_forecast_today=self.pv_forecast_today,
+            pv_forecast_tomorrow=self.pv_forecast_tomorrow,
+            pv_actual_today_kwh=self.pv_actual_today_kwh,
+            consumption_hourly_kwh=self._hourly_consumption_profile or None,
+            current_hour=now.hour,
+            current_minute=now.minute,
+        )
+
+        result = ems_module.calculate_schedule(config, state)
+
+        # Unpack ScheduleResult into coordinator attributes
+        self.scheduled_slots = result.scheduled_slots
+        self.cheap_slots_remaining = result.cheap_slots_remaining
+        self.grid_energy_planned = result.grid_energy_planned
+        self.self_consumption_reserve = result.self_consumption_reserve
+        self.tomorrow_precharge = result.tomorrow_precharge
+        self.tomorrow_planned_slots = result.tomorrow_planned_slots
+        self.tomorrow_planned_kwh = result.tomorrow_planned_kwh
+        self.schedule_status = result.status
+
+        if result.price_threshold is not None:
+            self.price_threshold = result.price_threshold
+
+        # Expose net_pv for card simulation (recalculate — lightweight)
+        if self.slot_prices_today:
+            prices = self.slot_prices_today
+            num_slots = len(prices)
+            minutes_per_slot = (24 * 60) / num_slots
+            current_slot = int((now.hour * 60 + now.minute) / minutes_per_slot)
+            current_slot = min(current_slot, num_slots - 1)
+            remaining = [(i, prices[i]) for i in range(current_slot, num_slots) if prices[i] is not None]
+            self._last_net_pv = self._calculate_net_pv_surplus(remaining, num_slots, config.consumption_est_kwh)
+        else:
+            self._last_net_pv = 0.0
 
     def _get_consumption_estimate(self) -> float:
         """Get best available daily consumption estimate.
@@ -976,6 +703,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if data and "daily_history" in data:
                 self._daily_consumption_history = data["daily_history"][-7:]
                 self._calculate_weekly_avg()
+            if data and "hourly_history" in data:
+                self._hourly_consumption_history = data["hourly_history"][-7:]
+                self._calculate_hourly_profile()
             self._consumption_store_loaded = True
 
     async def _record_daily_consumption(self) -> None:
@@ -1030,10 +760,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Keep last 7 days
         self._daily_consumption_history = self._daily_consumption_history[-7:]
 
+        # Record hourly breakdown from HA history
+        await self._record_hourly_consumption(today_str)
+
         # Persist
         if self._consumption_store:
             await self._consumption_store.async_save({
-                "daily_history": self._daily_consumption_history
+                "daily_history": self._daily_consumption_history,
+                "hourly_history": self._hourly_consumption_history,
             })
 
         self._calculate_weekly_avg()
@@ -1047,6 +781,140 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
         total = sum(entry["kwh"] for entry in self._daily_consumption_history)
         self.weekly_avg_consumption = round(total / len(self._daily_consumption_history), 2)
+
+    async def _record_hourly_consumption(self, date_str: str) -> None:
+        """Record hourly consumption breakdown using HA recorder history.
+
+        Queries the consumption entity's history for the given date and bins
+        energy usage into 24 hourly buckets.  Falls back to flat distribution
+        from the daily total when history is unavailable.
+        """
+        hourly: dict[str, float] = {}  # str keys for JSON serialisation
+
+        entity_id = self._resolve_consumption_entity()
+        if entity_id:
+            hourly = await self._query_hourly_from_history(entity_id, date_str)
+
+        if not hourly:
+            # Fallback: distribute daily total evenly across 24 hours
+            today_entry = next(
+                (e for e in self._daily_consumption_history if e["date"] == date_str), None
+            )
+            if today_entry:
+                per_hour = round(today_entry["kwh"] / 24.0, 3)
+                hourly = {str(h): per_hour for h in range(24)}
+
+        if not hourly:
+            return
+
+        # Remove existing entry for this date
+        self._hourly_consumption_history = [
+            e for e in self._hourly_consumption_history if e["date"] != date_str
+        ]
+        self._hourly_consumption_history.append({"date": date_str, "hours": hourly})
+        self._hourly_consumption_history = self._hourly_consumption_history[-7:]
+        self._calculate_hourly_profile()
+
+    def _resolve_consumption_entity(self) -> str | None:
+        """Return the best entity_id to query for hourly consumption history."""
+        if self.consumption_override_entity:
+            return self.consumption_override_entity
+        # Try to find the sensor entity created by this integration for load energy
+        for key in ["daily_energy_consumed", "daily_load_energy",
+                     "total_load_consumption_energy_day",
+                     "load_consumption_energy_day",
+                     "homeload_day_cost_energy",
+                     "load_day_cost_energy"]:
+            eid = f"sensor.{self.config_entry.title.lower().replace(' ', '_')}_{key}"
+            state = self.hass.states.get(eid)
+            if state and state.state not in ("unknown", "unavailable"):
+                return eid
+        return None
+
+    async def _query_hourly_from_history(self, entity_id: str, date_str: str) -> dict[str, float]:
+        """Query HA recorder for hourly energy breakdown on a given date."""
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+            from datetime import timezone
+
+            start = datetime.strptime(date_str, "%Y-%m-%d").replace(
+                hour=0, minute=0, second=0, tzinfo=timezone.utc
+            )
+            end = start + timedelta(hours=24)
+
+            stats = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start,
+                end,
+                {entity_id},
+                "hour",
+                None,
+                {"change"},
+            )
+
+            if entity_id not in stats or not stats[entity_id]:
+                return {}
+
+            hourly: dict[str, float] = {}
+            for entry in stats[entity_id]:
+                hour = entry["start"].hour
+                change = entry.get("change")
+                if change is not None and change > 0:
+                    # Convert Wh to kWh if needed
+                    kwh = change / 1000.0 if change > 100 else change
+                    hourly[str(hour)] = round(kwh, 3)
+
+            return hourly
+        except Exception as err:
+            _LOGGER.debug("Could not query hourly consumption history: %s", err)
+            return {}
+
+    def _calculate_hourly_profile(self) -> None:
+        """Build per-hour average consumption from 7-day hourly history."""
+        if not self._hourly_consumption_history:
+            self._hourly_consumption_profile = {}
+            return
+
+        hour_totals: dict[int, list[float]] = {h: [] for h in range(24)}
+        for entry in self._hourly_consumption_history:
+            hours = entry.get("hours", {})
+            for h_str, kwh in hours.items():
+                h = int(h_str)
+                if 0 <= h <= 23 and kwh >= 0:
+                    hour_totals[h].append(kwh)
+
+        profile: dict[int, float] = {}
+        for h in range(24):
+            values = hour_totals[h]
+            if values:
+                profile[h] = round(sum(values) / len(values), 3)
+            else:
+                profile[h] = 0.0
+
+        self._hourly_consumption_profile = profile
+        _LOGGER.debug("Hourly consumption profile: %s", profile)
+
+    def _record_soc_snapshot(self, battery_soc: float | None) -> None:
+        """Record battery SOC at the current slot boundary (every 15 min)."""
+        if battery_soc is None:
+            return
+        now = datetime.now()
+        if not self.slot_prices_today:
+            # No price slots — assume 96 slots (15-min granularity)
+            num_slots = 96
+        else:
+            num_slots = len(self.slot_prices_today)
+        minutes_per_slot = (24 * 60) / num_slots
+        current_slot = int((now.hour * 60 + now.minute) / minutes_per_slot)
+        current_slot = min(current_slot, num_slots - 1)
+
+        if current_slot != self._last_recorded_slot:
+            self._soc_history[current_slot] = round(battery_soc, 1)
+            self._last_recorded_slot = current_slot
 
     def _calculate_yesterday_deficit(self, battery_soc: float | None) -> None:
         """At midnight, calculate how much energy target was missed yesterday."""
@@ -1260,6 +1128,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "weekly_avg_consumption": self.weekly_avg_consumption,
             "yesterday_deficit": self._yesterday_deficit,
             "self_consumption_reserve": self.self_consumption_reserve,
+            "consumption_hourly_profile": self._hourly_consumption_profile or {},
+            "soc_history": self._soc_history,
         }
 
         # Add kWh for all Wh registers
@@ -1424,6 +1294,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 await self._record_daily_consumption()
                                 await self._transition_to_state("idle")
                                 self._current_energy_state = None
+                                self._soc_history = {}
+                                self._last_recorded_slot = -1
                                 self._current_day = now.day
                             else:
                                 # Normal cycle: retrieve data, calculate, determine state
@@ -1432,6 +1304,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
                                 self.battery_soc = battery_soc
+                                self._record_soc_snapshot(battery_soc)
 
                                 # In auto mode, run the schedule optimizer
                                 if price_mode == "auto":
