@@ -1,0 +1,422 @@
+# CLAUDE.md — ha_felicity Integration Reference
+
+This document is a mental model for understanding, debugging, and improving the ha_felicity Home Assistant integration. It covers architecture, algorithm logic, known issues, and improvement recommendations.
+
+---
+
+## Project Overview
+
+**ha_felicity** is a Home Assistant integration for Felicity solar inverters (TREX-5, TREX-10, TREX-25, TREX-50). It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
+
+**Version**: 0.9.9.6
+**Communication**: Modbus TCP/RTU via pymodbus
+**Architecture**: Local polling (10-second update cycle)
+
+---
+
+## File Structure
+
+```
+custom_components/ha_felicity/
+├── __init__.py              # Integration setup, platform loading
+├── config_flow.py           # Config flow + options flow (UI setup wizard)
+├── const.py                 # Constants, register groups, model registry
+├── coordinator.py           # Main coordinator (1501 lines) — polling, scheduling, state machine
+├── ems.py                   # Pure EMS algorithm (1004 lines) — testable scheduling logic
+├── sensor.py                # All HA sensor entities (price, schedule, PV, inverter registers)
+├── number.py                # Number entities (power level, SOC limits, capacity, etc.)
+├── select.py                # Select entities (grid_mode, price_mode, safe_power_management)
+├── type_specific.py         # Model-specific Modbus translation layer
+├── trex_five.py             # TREX-5 register map
+├── trex_ten.py              # TREX-10 register map
+├── trex_twenty_five.py      # TREX-25 register map
+├── trex_fifty.py            # TREX-50 register map
+├── date.py                  # Date entities
+├── time.py                  # Time entities
+└── frontend/
+    └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
+
+tests/
+└── test_ems.py              # 99 tests for the pure EMS algorithm
+```
+
+---
+
+## Critical Architecture: Three Copies of Scheduling Logic
+
+**This is the most important thing to understand.** The scheduling algorithm exists in THREE places:
+
+| Location | Purpose | Authoritative? |
+|---|---|---|
+| `ems.py` — `calculate_schedule()` | Pure functions, no HA deps | Used by tests only |
+| `coordinator.py` — `_calculate_schedule()` | Runtime scheduling | **YES — this runs in production** |
+| `frontend/ha_felicity_ems.js` — `_simulateSchedule()` | Client-side preview | Visual only, simplified |
+
+**Known problem**: The coordinator duplicates logic from ems.py rather than calling it. They can (and do) diverge. The recent solar protection bug was caused by ems.py having a fix that coordinator.py was missing. When making algorithm changes:
+1. Always update `ems.py` first (testable)
+2. Mirror the change in `coordinator.py` (production)
+3. Consider updating the JS card if the change affects the preview
+
+**Ideal refactor**: Have the coordinator call `ems.calculate_schedule()` directly instead of duplicating the logic. This would eliminate drift between the two implementations.
+
+---
+
+## Data Flow
+
+```
+Nordpool Entity ──┐
+PV Forecast     ──┤
+Battery SOC     ──┼──▶ Coordinator (10s cycle) ──▶ Schedule Optimizer
+Consumption     ──┤        │                            │
+Grid Current    ──┘        │                            ▼
+                           │                   _determine_energy_state()
+                           │                        │
+                           ▼                        ▼
+                     Sensor entities        _transition_to_state()
+                           │                Write Modbus registers
+                           ▼                (econ_rule_1_enable, etc.)
+                     EMS Card (frontend)
+                     Client-side simulation
+```
+
+---
+
+## Inverter Control
+
+The integration controls the inverter via **Economic Rule 1** Modbus registers. It does NOT schedule individual time slots on the inverter. Instead:
+
+1. The scheduler selects which time slots should charge/discharge
+2. Every 10 seconds, the coordinator checks if the current slot is in the schedule
+3. If the desired state differs from current state, it writes registers
+
+### State Transitions (coordinator.py:1195-1231)
+
+| State | econ_rule_1_enable | Voltage | SOC | Power |
+|---|---|---|---|---|
+| charging | 1 | voltage_level (default 58V) | charge_max (default 100%) | safe_max_power (W) |
+| discharging | 2 | discharge_min_voltage (default 50V) | discharge_min (default 20%) | safe_max_power (W) |
+| idle | 0 | *(not written)* | *(not written)* | *(not written)* |
+
+### Model Differences
+
+| Aspect | TREX-5/10 | TREX-25/50 |
+|---|---|---|
+| Enable register | Single `econ_rule_1_enable` (0/1/2) | `econ_rule_1_grid_charge_enable` + peak shaving |
+| Power unit | Watts | Kilowatts (÷1000) |
+| SOC source | Single register | `min(bat1_soc, bat2_soc)` |
+| Date registers | Written | Not used |
+
+---
+
+## EMS Algorithm Deep Dive
+
+### Config Parameters (EMSConfig in ems.py)
+
+| Parameter | Default | Description |
+|---|---|---|
+| grid_mode | "off" | off / from_grid / to_grid / both |
+| battery_capacity_kwh | 10.0 | Total usable battery capacity |
+| battery_charge_max_pct | 100.0 | Max SOC limit for charging |
+| battery_discharge_min_pct | 20.0 | Min SOC floor for discharging |
+| efficiency | 0.90 | Single-direction efficiency (round-trip = 0.81) |
+| safe_power_kw | 5.0 | Charge/discharge power limit |
+| consumption_est_kwh | 10.0 | Daily consumption (or 7-day rolling avg) |
+| yesterday_deficit_kwh | 0.0 | Carried forward from previous day |
+| reserve_target_pct | 0.0 | 0=dynamic, >0=fixed floor % |
+| arbitrage_price_delta | 0.0 | Price spread threshold for full charge in 'both' mode |
+
+### Core Concept: Reserve Target
+
+The algorithm does NOT try to fill the battery to 100%. It calculates a **reserve target** — just enough to survive overnight:
+
+```
+Dynamic (reserve_target_pct = 0):
+  reserve_target = discharge_min_kwh + overnight_reserve
+  where overnight_reserve = consumption_per_hour × (24 - sunset + sunrise)
+
+Fixed (reserve_target_pct > 0):
+  reserve_target = max(reserve_target_pct × capacity, discharge_min_kwh)
+```
+
+Example: 60 kWh battery, 35% min, 38.5 kWh/d consumption, sunset 19:00, sunrise 7:00
+- min_kwh = 21 kWh
+- overnight = (38.5/24) × 12h = 19.25 kWh → rounds to ~19.3 kWh
+- reserve_target = 21 + 19.3 = 40.3 kWh (~67% of 60 kWh)
+
+### Deficit Calculation (all modes)
+
+```python
+# Snapshot: how much are we short RIGHT NOW?
+battery_shortfall = max(0, reserve_target - current_kwh)
+snapshot_deficit = max(0, battery_shortfall - net_pv)
+
+# Predictive: simulate SOC through all remaining slots
+_, min_projected, max_projected = _project_soc_trajectory(...)
+predictive_deficit = max(0, reserve_target - min_projected)
+
+# Solar protection: if solar fills battery to 95%+ capacity, no grid needed
+if max_projected >= max_battery_kwh * 0.95:
+    predictive_deficit = 0.0
+
+# Use the worse case
+energy_deficit = max(snapshot_deficit, predictive_deficit) + carryover
+```
+
+### PV Confidence Factor
+
+Scales forecast by actual-vs-expected production to handle cloudy days:
+
+```python
+pv_confidence = actual_produced_so_far / forecast_expected_by_now
+# Clamped to [0.1, 1.0]
+# Only activates when >1 kWh was expected (avoids early-morning noise)
+```
+
+### Net PV Surplus (Hourly Model)
+
+Only counts hours where PV > consumption (battery can only charge from surplus):
+
+```python
+for each remaining hour:
+    surplus = pv_hourly[hour] × pv_confidence - consumption_per_hour
+    if surplus > 0:
+        total_surplus += surplus
+```
+
+### Slot Selection
+
+**from_grid**: Pick cheapest slots to cover deficit
+**to_grid**: Pick most expensive slots to sell surplus above reserve
+**both**: Do both, with profitability filter:
+```python
+min_sell_price = max_buy_price / (efficiency × efficiency)
+# Only sell if revenue > round-trip cost
+```
+
+### Unified Two-Day Optimization
+
+When tomorrow's prices are available, merges today+tomorrow slots, picks cheapest from combined pool. Safety swap ensures battery survives until tomorrow's first charge slot.
+
+### Per-Slot SOC Validation
+
+After selecting slots, simulates battery forward through every slot. Drops slots that would violate bounds:
+- Charge pushing SOC > capacity → drop most expensive charge
+- Discharge pulling SOC < minimum → drop least profitable discharge
+
+### Arbitrage Price Delta (both mode)
+
+When `arbitrage_price_delta > 0` and `max_remaining_price - min_remaining_price >= delta`:
+- Charges to **full capacity** instead of just reserve target
+- Sellable energy recalculated based on full capacity
+- Profitability filter still applies
+
+### Headroom Constraint
+
+Prevents over-scheduling when PV will fill the battery:
+```python
+headroom = max(0, max_battery_kwh - current_kwh - net_pv_surplus)
+max_today_slots = floor(headroom / effective_per_slot)
+# Negative-price slots exempt (always profitable)
+```
+
+---
+
+## Safe Power Management (coordinator.py:1077-1193)
+
+Monitors grid current per phase and adjusts inverter power:
+
+| Condition | Action |
+|---|---|
+| Current > 95% of max_amperage | Reduce by 2 kW (emergency) |
+| Current > 80% of max_amperage | Reduce by 1 kW (caution) |
+| Current < 70% of max_amperage | Recover by 1 kW (up to user limit) |
+| Current = 0 | Jump to user's Power Level |
+
+Also detects external changes (user adjusting via inverter app).
+
+---
+
+## Frontend Card (ha_felicity_ems.js)
+
+### Display Elements
+- Battery indicator (10-segment, color-coded by SOC)
+- Price chart (canvas) — bars per slot, colored by action
+- SOC trajectory line (blue dotted)
+- Threshold line (red dashed)
+- PV stats (actual, remaining, forecast today, forecast tomorrow)
+- Schedule stats (charge/discharge counts, planned kWh, reserve)
+
+### Interactive Controls
+- Grid Mode dropdown (off/from_grid/to_grid/both)
+- Price Mode dropdown (manual/auto)
+- Max SOC / Min SOC dropdowns
+- Power Level slider (live preview)
+- Price Threshold Level slider (live preview)
+
+### Client-Side Simulation
+Mirrors coordinator logic for instant preview when dragging sliders. Uses `sim_params` from `schedule_status` sensor attributes.
+
+### Past Slot History
+Fetches `energy_state` history from HA API (throttled 60s), shows what actually happened vs what was planned.
+
+---
+
+## Entity Reference
+
+### Configuration Entities (stored in entry.options)
+
+| Entity | Type | Range | Default | Description |
+|---|---|---|---|---|
+| grid_mode | select | off/from_grid/to_grid/both | off | Main EMS switch |
+| price_mode | select | manual/auto | manual | Price threshold mode |
+| safe_power_management | select | auto/on/off | auto | Amperage protection |
+| power_level | number | 1-10 kW | 5 | Charge/discharge power |
+| price_threshold_level | number | 1-10 | 5 | Manual price level |
+| battery_charge_max_level | number | 30-100% | 100 | Max SOC for charging |
+| battery_discharge_min_level | number | 10-70% | 20 | Min SOC for discharging |
+| battery_capacity_kwh | number | 1-100 kWh | 10 | Usable battery capacity |
+| efficiency_factor | number | 0.70-1.00 | 0.90 | Round-trip efficiency |
+| daily_consumption_estimate | number | 0-100 kWh | 10 | Fallback consumption |
+| reserve_target_pct | number | 0-100% | 0 | Fixed reserve floor (0=dynamic) |
+| arbitrage_price_delta | number | 0-0.50 €/kWh | 0 | Price spread for full charge |
+| max_amperage_per_phase | number | 10-63 A | 16 | Grid current limit |
+| voltage_level | number | 48-60 V | 58 | Charge voltage setpoint |
+| discharge_min_voltage | number | 48-55 V | 50 | Discharge voltage floor |
+
+### Key Sensor Entities
+
+| Sensor | Description |
+|---|---|
+| energy_state | Current state: charging/discharging/idle |
+| schedule_status | Optimizer status + rich attributes for card |
+| charge_likelihood | on_track/tight/at_risk/insufficient |
+| current_price | Real-time electricity price |
+| price_threshold | Calculated threshold |
+| safe_max_power | Current power after safety adjustment |
+| pv_forecast_today/remaining/tomorrow | Solar forecasts |
+| weekly_avg_consumption | 7-day rolling average |
+
+---
+
+## Known Issues and Gotchas
+
+### 1. Code Duplication Between coordinator.py and ems.py
+The coordinator has ~300 lines of scheduling logic that duplicates ems.py. Changes to one must be manually mirrored to the other. This has caused bugs (e.g., missing solar protection in coordinator).
+
+### 2. Frontend Simulation Divergence
+The JS card has a simplified version of the algorithm. It doesn't do SOC trajectory projection or per-slot validation. Complex scenarios (predictive deficit, SOC validation pruning) won't match the backend.
+
+### 3. PV Confidence Can Over-React
+The confidence factor can drop to 0.1 early in the day on partially cloudy mornings, causing excessive grid charging. It doesn't recover when clouds clear.
+
+### 4. Consumption Estimate Sensitivity
+The algorithm uses consumption_est/24 for hourly drain — assumes flat consumption. Houses with evening peaks (cooking, heating) may see under-predicted evening drain.
+
+### 5. Anti-Conflict Guard Only Checks Instantaneous Power
+The 200W grid import check (suppress discharge when importing) triggers on instantaneous reading. Short spikes (kettle, microwave) can briefly suppress profitable discharge.
+
+### 6. Generator-Port Solar Workaround
+TREX-25/50 with micro-inverters on the generator port need special handling. PV registers read 0, falling back to generator_day_cost_energy. Both backend and frontend handle this but it's fragile.
+
+---
+
+## Algorithm Assessment and Improvement Recommendations
+
+### Current Strengths
+1. **Solar-first design** — Grid is a last resort, not default behavior
+2. **Two-day optimization** — Unified slot selection across today+tomorrow is elegant
+3. **Multiple safety layers** — SOC validation, headroom cap, profitability filter, anti-conflict guard
+4. **PV confidence scaling** — Handles forecast uncertainty reasonably well
+5. **Reserve target concept** — Charges only what's needed, not maximum
+
+### Stability Improvements (High Priority)
+
+#### A. Eliminate Code Duplication
+**Problem**: coordinator.py duplicates ems.py scheduling logic. Every fix must be applied twice.
+**Fix**: Have `coordinator._calculate_schedule()` build an `EMSConfig` + `EMSState`, call `ems.calculate_schedule()`, and unpack the `ScheduleResult`. Remove the duplicated logic from coordinator.py entirely. This is the single highest-impact refactor.
+
+#### B. PV Confidence Recovery
+**Problem**: Confidence drops early on cloudy mornings and stays low even if clouds clear. A morning with 30% confidence will under-predict afternoon solar.
+**Fix**: Weight recent hours more heavily than early hours. For example, use a sliding 3-hour window instead of cumulative since dawn. Alternatively, recalculate confidence from only the last 2-3 hours of production.
+
+#### C. Consumption Profile Awareness
+**Problem**: `consumption_est / 24` assumes flat consumption. Evening peaks are missed.
+**Fix**: Build an hourly consumption profile from the weekly history (similar to pv_hourly_kwh). Evening hours (17:00-22:00) typically use 1.5-2x the daily average. This would improve the SOC trajectory prediction significantly.
+
+### Correctness Improvements (Medium Priority)
+
+#### D. SOC Trajectory in Frontend
+**Problem**: The JS card doesn't run the predictive trajectory, so its preview can show different results than the backend.
+**Fix**: Either pass the backend's calculated schedule to the card (already partially done via slot_schedule), or add the trajectory projection to the JS. The simpler approach: always use the backend schedule for display, only simulate for slider preview.
+
+#### E. Arbitrage in Both Mode — Charge Slot Selection
+**Problem**: When arbitrage_price_delta triggers full charging, the algorithm uses the same "cheapest slots" logic. But for arbitrage, you specifically want cheap-buy + expensive-sell pairs.
+**Fix**: When arbitrage is active, only select charge slots that are cheaper than the cheapest available sell slot minus round-trip losses. This ensures every charged kWh has a profitable destination.
+
+#### F. Cross-Validate SOC Between Coordinator and Inverter
+**Problem**: The coordinator tracks SOC from the inverter register but doesn't validate it against expected changes. If a register read fails or returns stale data, the algorithm could make wrong decisions.
+**Fix**: After a charge/discharge cycle, compare expected SOC change with actual. Log a warning if they diverge by >5%. This helps catch communication issues early.
+
+### Feature Improvements (Lower Priority)
+
+#### G. Dynamic Overnight Reserve by Season
+**Problem**: The overnight reserve calculation uses current sunset/sunrise. On equinox transitions, the reserve changes rapidly.
+**Fix**: Smooth the overnight hours estimate over a 7-day average to avoid sudden jumps.
+
+#### H. Multi-Day Optimization
+**Problem**: Only looks 1 day ahead. Can't optimize for weekend patterns or weather fronts.
+**Fix**: When 2-3 day forecasts are available, extend the unified slot pool. Complexity increases significantly though.
+
+#### I. Grid Export Limit Awareness
+**Problem**: Some grid connections have export limits (e.g., 5 kW max feed-in). The algorithm doesn't account for this when scheduling discharge.
+**Fix**: Add a `grid_export_limit_kw` config. When discharging, cap the power to this limit and adjust slot count accordingly.
+
+#### J. Time-of-Use Tariff Support
+**Problem**: Algorithm assumes dynamic (hourly) pricing. Fixed time-of-use tariffs (peak/off-peak) aren't directly supported.
+**Fix**: Allow a virtual price schedule when no Nordpool entity is configured. Map time-of-use periods to synthetic price slots.
+
+### Priority Order
+1. **A (Eliminate duplication)** — Prevents future bugs, reduces maintenance
+2. **B (PV confidence recovery)** — Directly fixes over-charging on variable days
+3. **C (Consumption profiles)** — Improves prediction accuracy
+4. **D (Frontend alignment)** — User trust in the preview
+5. **E-J** — Feature enhancements as needed
+
+---
+
+## Testing
+
+Tests are in `tests/test_ems.py` (99 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+
+```bash
+# Run all tests
+python -m pytest tests/test_ems.py -v
+
+# Run specific test class
+python -m pytest tests/test_ems.py::TestSolarProtection -v
+```
+
+**Test coverage areas**:
+- All three modes (from_grid, to_grid, both)
+- Sunny/cloudy/negative price scenarios
+- Cross-day optimization
+- SOC validation
+- Headroom constraints
+- PV confidence
+- Reserve target override
+- Arbitrage price delta
+- Slot granularity (24/48/96 slots)
+
+**Not tested**: coordinator.py runtime logic (requires HA mocking). This is a gap — when the coordinator diverges from ems.py, tests won't catch it.
+
+---
+
+## Quick Reference: Debugging a Scheduling Issue
+
+1. Check `schedule_status` sensor attributes for `sim_params` (battery state, PV, consumption)
+2. Look at `self_consumption_reserve` and calculate `reserve_target`
+3. Check `pv_actual_today_kwh` vs forecast → confidence factor
+4. Compare `net_pv_kwh` with actual remaining PV
+5. Look at `yesterday_deficit_kwh` — may be inflating today's target
+6. Check `slot_schedule` for what slots were selected and their prices
+7. Enable debug logging: `custom_components.ha_felicity.ems` and `custom_components.ha_felicity.coordinator`
