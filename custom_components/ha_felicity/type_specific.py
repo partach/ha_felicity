@@ -182,9 +182,9 @@ class TypeSpecificHandler:
         _LOGGER.warning("Unsupported model for battery SOC: %s", self._inverter_model)
         return None
               
-    async def write_type_specific_register(self, register_name: str, value: int) -> None:
+    async def write_type_specific_register(self, register_name: str, value: int) -> bool:
         """
-        Model-specific write behavior.
+        Model-specific write behavior. Returns True if write succeeded.
         If a handler exists and handles it → done.
         Otherwise → fallback to standard async_write_register.
         """
@@ -193,19 +193,20 @@ class TypeSpecificHandler:
             "econ_rule_1_start_day": self._handle_rule_1_start_day,
             "econ_rule_1_stop_day":  self._handle_rule_1_stop_day,
             "econ_rule_1_power" : self._handle_econ_rule_1_power,
+            "econ_rule_1_voltage":  self._handle_econ_rule_1_voltage,
             "operating_mode" :  self._handle_operating_mode,
         }
-    
+
         handler = handlers.get(register_name)
         if handler:
             handled = await handler(value)
             if handled:
                 _LOGGER.debug("Special handling applied for %s (model %s)", register_name, self._inverter_model)
-                return
-    
+                return True
+
         # Fallback: normal write
         _LOGGER.debug("Using standard write for %s (no special handler or not handled)", register_name)
-        await self.async_write_register(register_name, value)
+        return await self.async_write_register(register_name, value)
     
       
     async def _handle_rule_1_start_day(self, value: int) -> bool:
@@ -269,27 +270,39 @@ class TypeSpecificHandler:
         """
            Handle economic rule 1 enable (model-specific mapping).
            0 is off, 1 is charging, 2 is discharging
+           Returns True if the critical write succeeded (used by coordinator to verify state transition).
         """
-        
+
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
-            await self.async_write_register("econ_rule_1_enable", value) # same setup as in trex-10
-            return True
-      
+            result = await self.async_write_register("econ_rule_1_enable", value)
+            if not result:
+                _LOGGER.error("Failed to write econ_rule_1_enable=%d on %s", value, self._inverter_model)
+            return result
+
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
-            if value == 1:   # charging → 
-                await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
+            if value == 1:   # charging →
+                result = await self.async_write_register("econ_rule_1_grid_charge_enable", 1)
+                if not result:
+                    _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=1 for charging on %s", self._inverter_model)
+                    return False
                 self.peak_shaving_enabled = True
-            elif value == 2: # discharging → 
+            elif value == 2: # discharging →
                 self.peak_shaving_enabled = False
-                await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # needs to be enabled to charge or discharge
+                result = await self.async_write_register("econ_rule_1_grid_charge_enable", 1)
+                if not result:
+                    _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=1 for discharging on %s", self._inverter_model)
+                    return False
                 await self.async_write_register("grid_peak_shaving_power", int(0))  # needs to be switched off when idle or discharging?
             else:            # idle / unknown → disable both
                 self.peak_shaving_enabled = False
-                await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
+                result = await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
+                if not result:
+                    _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=0 for idle on %s", self._inverter_model)
+                    return False
                 await self.async_write_register("grid_peak_shaving_power", int(0)) # needs to be switched off when idle or discharging?
-     
+
             return True
-      
+
         return False
     
     
@@ -322,9 +335,33 @@ class TypeSpecificHandler:
                await self.async_write_register("grid_peak_shaving_power", int(round(value / 1000.0))) # for trex fifty it is in kW
             return True
       
-        return False   
-    
-        
+        return False
+
+    async def _handle_econ_rule_1_voltage(self, value: int) -> bool:
+        """
+        Handle writing voltage register (model-specific).
+        Ensures value is always a clean integer before writing.
+        For TREX-25/50: validates voltage against battery system (LV vs HV).
+        """
+        # Ensure clean integer — HA options can store floats
+        value = int(round(value))
+
+        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+            _LOGGER.debug("Writing econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
+            result = await self.async_write_register("econ_rule_1_voltage", value)
+            if not result:
+                _LOGGER.error("Failed to write econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
+            return result
+
+        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+            _LOGGER.debug("Writing econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
+            result = await self.async_write_register("econ_rule_1_voltage", value)
+            if not result:
+                _LOGGER.error("Failed to write econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
+            return result
+
+        return False
+
     async def async_write_register(self, key: str, value: int) -> bool:
         """Write to a register, handling size and endianness."""
         if key not in self.register_map:
