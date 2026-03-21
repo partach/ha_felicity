@@ -247,6 +247,7 @@ class TypeSpecificHandler:
             if value == 0: # assume idle, we dont control but we need to set things back if we did (but defaults no know atm)
     #            await self.async_write_register("econ_rule_1_grid_charge_enable", 0) # already happens in coordinator
                 await self.async_write_register("system_mode", 2) # default no sell
+                await self.async_write_register("econ_rule_1_sell_enable", 0) # reset sell flag to prevent stale state on next discharge transition
             elif value == 1: # Charge and we want to control
                 await self.async_write_register("system_mode", 2) # allows charge
                 if self.register_map.get("eco_timeofuse",0) == 0:
