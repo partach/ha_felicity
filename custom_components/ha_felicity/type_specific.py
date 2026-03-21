@@ -354,8 +354,7 @@ class TypeSpecificHandler:
             return result
 
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
-            _LOGGER.info("Writing econ_rule_1_voltage=%dV on %s (register value will be %d after index scaling)",
-                         value, self._inverter_model, value * 10)
+            _LOGGER.debug("Writing econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
             result = await self.async_write_register("econ_rule_1_voltage", value)
             if not result:
                 _LOGGER.error("Failed to write econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
