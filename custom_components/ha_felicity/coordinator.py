@@ -1086,6 +1086,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             soc_limit,
             voltage_level,
         )
+        # Set operating mode FIRST (system_mode, sell_enable) so that when the
+        # economic rule is activated the inverter already sees the correct mode.
+        # On TREX-25/50, enabling the rule before sell_enable is set causes the
+        # inverter to latch a "charge" interpretation when sell_enable is stale
+        # from a previous charging cycle.  Writing mode first eliminates the race.
+        await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
         # The enable write is the critical one — if it fails, the inverter won't change state
         enable_ok = await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
         if not enable_ok:
@@ -1094,8 +1100,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 enable_value, new_state,
             )
             return False
-        # This one should be set by user (because we can start stop via rule enable setting?): NO we do need it
-        await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
         if new_state != "idle":
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", soc_limit)
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
