@@ -320,10 +320,14 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
     def _update_range_from_system(self):
-        """Dynamically adjust min/max based on battery voltage system."""
+        """Dynamically adjust min/max based on battery voltage system.
+
+        Also clamps the stored option value if it falls outside the new range,
+        preventing invalid voltage writes (e.g., 58V on a 400V HV battery system).
+        """
         if not self.coordinator.data:
             return
-        battery_voltage = self.coordinator.data.get("battery_nominal_voltage") 
+        battery_voltage = self.coordinator.data.get("battery_nominal_voltage")
 
         if battery_voltage is None:
             return
@@ -340,5 +344,21 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         if (self.native_min_value != new_min or self.native_max_value != new_max):
             self._attr_native_min_value = new_min
             self._attr_native_max_value = new_max
+
+            # Clamp stored option value to new range to prevent invalid writes
+            current_val = self._entry.options.get(self._option_key)
+            if current_val is not None and (current_val < new_min or current_val > new_max):
+                clamped = max(new_min, min(new_max, current_val))
+                _LOGGER.warning(
+                    "Voltage option '%s' value %s is outside new range [%d-%d] (battery system: %dV) — clamping to %d",
+                    self._option_key, current_val, new_min, new_max, int(battery_voltage), clamped,
+                )
+                updated_options = dict(self._entry.options)
+                updated_options[self._option_key] = clamped
+                self.hass.config_entries.async_update_entry(
+                    self._entry,
+                    options=updated_options,
+                )
+
             # Trigger state update so UI reflects new range
             self.async_write_ha_state()

@@ -1060,17 +1060,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         return safe_level
     
-    async def _transition_to_state(self, new_state: str) -> None:
-        """Apply state change via economic rule 1."""
+    async def _transition_to_state(self, new_state: str) -> bool:
+        """Apply state change via economic rule 1. Returns True if critical writes succeeded."""
         opts = self.config_entry.options
         now = datetime.now()
         date_16bit = (now.month << 8) | now.day
-        voltage_level = (
+        voltage_level = int(
             opts.get("voltage_level", 58)
             if new_state == "charging"
             else opts.get("discharge_min_voltage", 50)
         )
-        soc_limit = (
+        soc_limit = int(
             opts.get("battery_charge_max_level", 100)
             if new_state == "charging"
             else opts.get("battery_discharge_min_level", 20)
@@ -1079,23 +1079,32 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         enable_value = {"charging": 1, "discharging": 2, "idle": 0}[new_state]
 
         _LOGGER.info(
-            "Energy state → %s | Price: %.4f | Threshold: %.4f | SOC limit: %d%%",
+            "Energy state → %s | Price: %.4f | Threshold: %.4f | SOC limit: %d%% | Voltage: %dV",
             new_state.upper(),
             self.current_price or 0,
             self.price_threshold or 0,
             soc_limit,
+            voltage_level,
         )
-        await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
+        # The enable write is the critical one — if it fails, the inverter won't change state
+        enable_ok = await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
+        if not enable_ok:
+            _LOGGER.error(
+                "CRITICAL: Failed to write econ_rule_1_enable=%d for state %s — inverter may be out of sync",
+                enable_value, new_state,
+            )
+            return False
         # This one should be set by user (because we can start stop via rule enable setting?):
  #       await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
         if new_state != "idle":
-            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", int(soc_limit))
+            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", soc_limit)
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_stop_day", date_16bit)
-            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_voltage", int(voltage_level)) # the index is known and used when at writing
+            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_voltage", voltage_level)
             # next one was moved to checking safe power level and no longer used.. but for the new inverter we need to write power level when going from idle
             target_watts = int(round(self.safe_max_power * 1000))
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
+        return True
 
     
     def get_energy_state_info(self) -> dict:
@@ -1344,9 +1353,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                         desired_state = "idle"
 
                                 if desired_state != self._current_energy_state:
-                                    await self._transition_to_state(desired_state)
-                                    self._current_energy_state = desired_state
-                                    self._last_state_change = now
+                                    success = await self._transition_to_state(desired_state)
+                                    if success:
+                                        self._current_energy_state = desired_state
+                                        self._last_state_change = now
+                                    else:
+                                        _LOGGER.warning(
+                                            "State transition to %s failed — will retry next cycle (inverter may still be in %s)",
+                                            desired_state, self._current_energy_state,
+                                        )
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",
