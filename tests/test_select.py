@@ -1,16 +1,10 @@
-"""Tests for select entity resilience fixes.
-
-Covers:
-- Bug #5: Direct mutation of coordinator data on select write
-  - HA_FelicitySelect: optimistic update only on explicit True
-  - HA_FelicitySelectMulti: same guard + write success check
-"""
+"""Tests for select entity resilience fixes."""
 
 import sys
 import os
 import types
 from unittest.mock import AsyncMock, MagicMock
-
+import importlib.util as _ilu
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -68,7 +62,6 @@ sys.modules["custom_components.ha_felicity"] = _pkg
 sys.modules["custom_components.ha_felicity.const"] = _const_mod
 sys.modules["custom_components.ha_felicity.coordinator"] = _coord_mock
 
-import importlib.util as _ilu
 
 _select_path = os.path.join(_pkg_root, "select.py")
 _spec = _ilu.spec_from_file_location(

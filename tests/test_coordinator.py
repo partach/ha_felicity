@@ -1,16 +1,11 @@
-"""Tests for coordinator resilience fixes.
-
-Covers:
-- Bug #4: Missing bounds check in multi-register reconstruction
-- Bug #6: Race condition in consumption store init
-"""
+"""Tests for coordinator resilience fixes."""
 
 import asyncio
 import sys
 import os
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
-
+from unittest.mock import AsyncMock, MagicMock
+import importlib.util as _ilu
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -60,7 +55,6 @@ sys.modules["custom_components.ha_felicity.const"] = _const_mod
 sys.modules["custom_components.ha_felicity.type_specific"] = _type_specific_mod
 
 # ems module — import the real one (already tested separately)
-import importlib.util as _ilu
 
 _ems_path = os.path.join(
     os.path.dirname(__file__), "..", "custom_components", "ha_felicity", "ems.py"

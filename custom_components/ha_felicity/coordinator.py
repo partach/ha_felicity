@@ -1094,8 +1094,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 enable_value, new_state,
             )
             return False
-        # This one should be set by user (because we can start stop via rule enable setting?):
- #       await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
+        # This one should be set by user (because we can start stop via rule enable setting?): NO we do need it
+        await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
         if new_state != "idle":
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", soc_limit)
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
