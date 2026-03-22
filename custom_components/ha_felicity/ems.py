@@ -180,6 +180,12 @@ def _calculate_pv_confidence(
 ) -> float:
     """Calculate PV production confidence based on actual vs expected output.
 
+    The confidence starts at 1.0 (trust the forecast) and only reduces when
+    there is substantial evidence of underperformance.  An "evidence weight"
+    controls how much we trust the actual-vs-expected ratio: when only a
+    small fraction of the day's total forecast should have been produced,
+    the evidence is weak and the confidence stays close to 1.0.
+
     Uses a sliding-window approach: computes both a cumulative confidence
     (all hours since dawn) and a recent-window confidence (last 3 hours).
     The final confidence is the MAXIMUM of both, allowing recovery when
@@ -191,7 +197,8 @@ def _calculate_pv_confidence(
     if not pv_hourly_kwh or pv_actual_today_kwh is None:
         return 1.0
 
-    # Cumulative expected production through the current time
+    # Total daily forecast and cumulative expected through the current time
+    total_forecast = sum(pv_hourly_kwh.values())
     expected_so_far = 0.0
     for hour, kwh in pv_hourly_kwh.items():
         if hour < current_hour:
@@ -201,6 +208,13 @@ def _calculate_pv_confidence(
 
     if expected_so_far <= 1.0:
         return 1.0
+
+    # Evidence weight: how much of the day's production was expected by now.
+    # When only a small fraction has been expected (early morning), we don't
+    # have enough data to deviate from the forecast.  The weight ramps
+    # linearly from 0 to 1 as expected_so_far goes from 0 to 20% of total.
+    evidence_threshold = max(total_forecast * 0.20, 3.0)  # at least 3 kWh
+    evidence_weight = min(1.0, expected_so_far / evidence_threshold)
 
     cumulative_confidence = pv_actual_today_kwh / expected_so_far
 
@@ -228,13 +242,20 @@ def _calculate_pv_confidence(
         recent_actual = max(0.0, pv_actual_today_kwh - expected_before_window)
         window_confidence = recent_actual / expected_in_window
 
-    confidence = max(cumulative_confidence, window_confidence)
+    raw_confidence = max(cumulative_confidence, window_confidence)
+
+    # Blend: start at 1.0, gradually shift to measured confidence as
+    # evidence accumulates.  This prevents over-reacting in early morning
+    # when actual production is naturally low.
+    confidence = 1.0 * (1.0 - evidence_weight) + raw_confidence * evidence_weight
 
     _LOGGER.debug(
-        "PV confidence: cumulative=%.2f, window(%dh)=%.2f → final=%.2f "
-        "(actual=%.1f, expected_total=%.1f, expected_window=%.1f)",
-        cumulative_confidence, window_hours, window_confidence, confidence,
-        pv_actual_today_kwh, expected_so_far, expected_in_window,
+        "PV confidence: cumulative=%.2f, window(%dh)=%.2f, raw=%.2f, "
+        "evidence_weight=%.2f → final=%.2f "
+        "(actual=%.1f, expected_total=%.1f, total_forecast=%.1f)",
+        cumulative_confidence, window_hours, window_confidence, raw_confidence,
+        evidence_weight, confidence,
+        pv_actual_today_kwh, expected_so_far, total_forecast,
     )
 
     return max(0.1, min(1.0, confidence))

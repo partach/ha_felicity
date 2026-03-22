@@ -877,6 +877,8 @@ class FelicityEMSCard extends LitElement {
     const consumptionPerSlotFlat = (consumption / 24) * slotDuration;
 
     // PV production per slot — use per-hour data when available (matches backend)
+    // Apply pv_confidence from backend to scale forecast on cloudy days
+    const pvConfidence = (!showTomorrow && sim.pv_confidence != null) ? sim.pv_confidence : 1.0;
     const pvHourly = (!showTomorrow && sim.pv_hourly_kwh) ? sim.pv_hourly_kwh : null;
     // Fallback for tomorrow or when hourly data unavailable: distribute total across 6–18
     let pvFallbackPerSlot = 0;
@@ -938,9 +940,9 @@ class FelicityEMSCard extends LitElement {
       currentKwh -= consThisSlot;
       // PV production (self-consumed first — charges battery)
       if (pvHourly) {
-        // Per-hour gross PV data from backend (matches backend projection exactly)
+        // Per-hour gross PV data from backend, scaled by pv_confidence
         const hour = Math.floor((i * granularity) / 60);
-        const pvKwh = pvHourly[hour] || pvHourly[String(hour)] || 0;
+        const pvKwh = (pvHourly[hour] || pvHourly[String(hour)] || 0) * pvConfidence;
         currentKwh += pvKwh * slotDuration;
       } else if (pvFallbackSlotSet.has(i)) {
         currentKwh += pvFallbackPerSlot;
