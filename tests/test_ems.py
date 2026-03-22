@@ -1092,6 +1092,38 @@ class TestPVConfidence:
         conf = _calculate_pv_confidence(pv, 0.0, 14)
         assert conf == 0.1
 
+    def test_early_morning_low_actual_trusts_forecast(self):
+        """Early morning with low actual should still trust forecast.
+
+        At 8 AM with only ~1-2 kWh expected out of 54 kWh forecast,
+        evidence is too weak to deviate from the forecast.
+        """
+        pv = make_pv_hourly(54.0, sunrise=7, sunset=19)
+        # At 8 AM, only ~0.7 kWh produced vs ~1.5 kWh expected
+        conf = _calculate_pv_confidence(pv, 0.7, 8, 0)
+        # Evidence weight is low → confidence stays close to 1.0
+        assert conf >= 0.85, f"Early morning confidence {conf} too low, should trust forecast"
+
+    def test_midday_low_actual_reduces_confidence(self):
+        """By midday with substantial evidence, low actual → low confidence."""
+        pv = make_pv_hourly(54.0, sunrise=7, sunset=19)
+        expected_by_14 = sum(kwh for h, kwh in pv.items() if h < 14)
+        # Only 30% of expected produced by 2 PM — genuinely cloudy
+        conf = _calculate_pv_confidence(pv, expected_by_14 * 0.3, 14)
+        assert conf < 0.45, f"Midday confidence {conf} too high with only 30% production"
+
+    def test_evidence_weight_gradual(self):
+        """Confidence transitions smoothly from trust to measured."""
+        pv = make_pv_hourly(50.0, sunrise=7, sunset=19)
+        # At hour 9 (little evidence) with 50% actual
+        expected_by_9 = sum(kwh for h, kwh in pv.items() if h < 9)
+        conf_9 = _calculate_pv_confidence(pv, expected_by_9 * 0.5, 9)
+        # At hour 14 (lots of evidence) with same 50% ratio
+        expected_by_14 = sum(kwh for h, kwh in pv.items() if h < 14)
+        conf_14 = _calculate_pv_confidence(pv, expected_by_14 * 0.5, 14)
+        # Hour 9 should be closer to 1.0 than hour 14
+        assert conf_9 > conf_14, f"Early confidence {conf_9} should be higher than midday {conf_14}"
+
 
 class TestSOCTrajectory:
     def test_flat_consumption_no_pv(self):

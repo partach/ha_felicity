@@ -106,6 +106,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._hourly_consumption_history: list = []  # [{date, hours: {0: kwh, 1: kwh, ...}}]
         self.self_consumption_reserve: float = 0.0
         self._last_net_pv: float = 0.0
+        self._last_pv_confidence: float = 1.0
         self.tomorrow_precharge: float = 0.0
         self.tomorrow_planned_slots: int = 0
         self.tomorrow_planned_kwh: float = 0.0
@@ -546,7 +547,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if result.price_threshold is not None:
             self.price_threshold = result.price_threshold
 
-        # Expose net_pv for card simulation (recalculate — lightweight)
+        # Expose net_pv and pv_confidence for card simulation
         if self.slot_prices_today:
             prices = self.slot_prices_today
             num_slots = len(prices)
@@ -557,6 +558,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self._last_net_pv = self._calculate_net_pv_surplus(remaining, num_slots, config.consumption_est_kwh)
         else:
             self._last_net_pv = 0.0
+
+        self._last_pv_confidence = ems_module._calculate_pv_confidence(
+            self.pv_hourly_kwh, self.pv_actual_today_kwh,
+            now.hour, now.minute,
+        )
 
     def _get_consumption_estimate(self) -> float:
         """Get best available daily consumption estimate.
