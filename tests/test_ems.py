@@ -2139,6 +2139,33 @@ class TestSolarProtection:
             f"Should not grid-charge when solar fills battery; got {len(charge_slots)} charge slots"
         )
 
+    def test_no_charge_when_no_hourly_pv_but_remaining_forecast(self):
+        """from_grid: no grid charge when hourly PV data is missing but
+        remaining PV forecast is high enough to fill the battery."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=35.8,
+        )
+        # Simulate: no hourly PV data (wh_hours missing from entity)
+        # but forecast says 27.2 kWh remaining, 54.5 kWh total today
+        state = default_state(
+            battery_soc_pct=76.0,  # 45.6 kWh of 60
+            slot_prices_today=make_prices(96, base=0.14),
+            pv_hourly_kwh={},  # no hourly breakdown!
+            pv_forecast_remaining=27.2,
+            pv_forecast_today=54.5,
+            pv_actual_today_kwh=22.9,
+            current_hour=13,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        assert len(charge_slots) == 0, (
+            f"Should not grid-charge when synthesized PV shows battery will fill; "
+            f"got {len(charge_slots)} charge slots"
+        )
+
     def test_no_charge_both_mode_when_solar_fills_battery(self):
         """both mode: no grid charge when PV will fill battery to 95%+."""
         config = default_config(
