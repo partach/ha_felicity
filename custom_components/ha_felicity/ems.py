@@ -70,6 +70,34 @@ class AvailableInfo:
     charge_likelihood: str = "no_data"
 
 
+def _synthesize_pv_hourly(
+    pv_forecast_today: float,
+    sunrise: int = 6,
+    sunset: int = 20,
+) -> dict[int, float]:
+    """Generate synthetic hourly PV distribution using a solar bell curve.
+
+    Used as a fallback when the forecast entity provides a daily total
+    but no per-hour breakdown (wh_hours / detailedHourly missing).
+    """
+    if pv_forecast_today <= 0:
+        return {}
+
+    total_minutes = (sunset - sunrise) * 60
+    hourly: dict[int, float] = {}
+    for hour in range(sunrise, sunset):
+        # fraction of solar day elapsed at start and end of this hour
+        start_min = (hour - sunrise) * 60
+        end_min = start_min + 60
+        f_start = start_min / total_minutes
+        f_end = end_min / total_minutes
+        # bell-curve fraction produced in this hour
+        produced_start = (1 - math.cos(math.pi * f_start)) / 2
+        produced_end = (1 - math.cos(math.pi * f_end)) / 2
+        hourly[hour] = pv_forecast_today * (produced_end - produced_start)
+    return hourly
+
+
 def calculate_self_consumption_reserve(
     consumption_est: float,
     pv_hourly_kwh: dict[int, float] | None = None,
@@ -623,6 +651,29 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     if not remaining:
         result.status = "day_complete"
         return result
+
+    # When per-hour PV data is unavailable, synthesize from daily forecast
+    # so that _project_soc_trajectory can account for solar production.
+    if (not state.pv_hourly_kwh
+            and state.pv_forecast_today and state.pv_forecast_today > 0
+            and state.pv_forecast_remaining and state.pv_forecast_remaining > 0):
+        state = EMSState(
+            battery_soc_pct=state.battery_soc_pct,
+            slot_prices_today=state.slot_prices_today,
+            slot_prices_tomorrow=state.slot_prices_tomorrow,
+            pv_hourly_kwh=_synthesize_pv_hourly(state.pv_forecast_today),
+            pv_forecast_remaining=state.pv_forecast_remaining,
+            pv_forecast_today=state.pv_forecast_today,
+            pv_forecast_tomorrow=state.pv_forecast_tomorrow,
+            pv_actual_today_kwh=state.pv_actual_today_kwh,
+            consumption_hourly_kwh=state.consumption_hourly_kwh,
+            current_hour=state.current_hour,
+            current_minute=state.current_minute,
+        )
+        _LOGGER.debug(
+            "Synthesized hourly PV from daily forecast (%.1f kWh)",
+            state.pv_forecast_today,
+        )
 
     battery_soc = state.battery_soc_pct
     current_kwh = (battery_soc / 100.0) * config.battery_capacity_kwh if battery_soc is not None else 0.0
