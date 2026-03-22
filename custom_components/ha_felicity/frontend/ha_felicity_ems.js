@@ -879,7 +879,8 @@ class FelicityEMSCard extends LitElement {
     // PV production per slot — use per-hour data when available (matches backend)
     // Apply pv_confidence from backend to scale forecast on cloudy days
     const pvConfidence = (!showTomorrow && sim.pv_confidence != null) ? sim.pv_confidence : 1.0;
-    const pvHourly = (!showTomorrow && sim.pv_hourly_kwh) ? sim.pv_hourly_kwh : null;
+    const pvHourlyRaw = (!showTomorrow && sim.pv_hourly_kwh) ? sim.pv_hourly_kwh : null;
+    const pvHourly = (pvHourlyRaw && Object.keys(pvHourlyRaw).length > 0) ? pvHourlyRaw : null;
     // Fallback for tomorrow or when hourly data unavailable: distribute total across 6–18
     let pvFallbackPerSlot = 0;
     const pvFallbackSlotSet = new Set();
