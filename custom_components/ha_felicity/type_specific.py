@@ -247,20 +247,22 @@ class TypeSpecificHandler:
             if value == 0: # assume idle, we dont control but we need to set things back if we did (but defaults no know atm)
     #            await self.async_write_register("econ_rule_1_grid_charge_enable", 0) # already happens in coordinator
                 await self.async_write_register("system_mode", 2) # default no sell
-                await self.async_write_register("econ_rule_1_sell_enable", 0) # reset sell flag to prevent stale state on next discharge transition
+ #               await self.async_write_register("econ_rule_1_sell_enable", 0) # reset sell flag to prevent stale state on next discharge transition
+                await self.async_write_register("zero_export_to_ct_sell_enable", 1) # Would it standard be ok to allow this?
             elif value == 1: # Charge and we want to control
                 await self.async_write_register("system_mode", 2) # allows charge
                 if self.register_map.get("eco_timeofuse",0) == 0:
                     _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
                 await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
-                await self.async_write_register("econ_rule_1_sell_enable", 0) # we want to charge, not sell
+#                await self.async_write_register("econ_rule_1_sell_enable", 0) # we want to charge, not sell
+                await self.async_write_register("zero_export_to_ct_sell_enable", 0) # Provide back to grid if needed. (to_grid or from_grid is enabled)
             elif value == 2: # discharge to grid and we want to control
                 if self.register_map.get("eco_timeofuse",0) == 0:
                     _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
                 await self.async_write_register("zero_export_to_ct_sell_enable", 1) # Provide back to grid if needed. (to_grid or from_grid is enabled)
                 await self.async_write_register("system_mode", 0)
                 await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
-                await self.async_write_register("econ_rule_1_sell_enable", 1) # we need to enable sell as we want to discharge to sell
+#                await self.async_write_register("econ_rule_1_sell_enable", 1) # we need to enable sell as we want to discharge to sell
             else:    
               _LOGGER.warning("Operating mode unknown for TREX50 series, not changing registers")
             return True
@@ -282,6 +284,7 @@ class TypeSpecificHandler:
 
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
             if value == 1:   # charging →
+                await self.async_write_register("econ_rule_1_sell_enable", 0) # No selling when charging
                 result = await self.async_write_register("econ_rule_1_grid_charge_enable", 1)
                 if not result:
                     _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=1 for charging on %s", self._inverter_model)
@@ -289,16 +292,18 @@ class TypeSpecificHandler:
                 self.peak_shaving_enabled = True
             elif value == 2: # discharging →
                 self.peak_shaving_enabled = False
-                result = await self.async_write_register("econ_rule_1_grid_charge_enable", 1)
+                await self.async_write_register("econ_rule_1_sell_enable", 1) # We want to sell
+                result = await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
                 if not result:
-                    _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=1 for discharging on %s", self._inverter_model)
+                    _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=0 for discharging on %s", self._inverter_model)
                     return False
                 await self.async_write_register("grid_peak_shaving_power", int(0))  # needs to be switched off when idle or discharging?
             else:            # idle / unknown → disable both
                 self.peak_shaving_enabled = False
-                result = await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
+                await self.async_write_register("econ_rule_1_sell_enable", 1) # Do we want to sell when in idle?
+                result = await self.async_write_register("econ_rule_1_grid_charge_enable", 1) # would it default be ok?
                 if not result:
-                    _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=0 for idle on %s", self._inverter_model)
+                    _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=1 for idle on %s", self._inverter_model)
                     return False
                 await self.async_write_register("grid_peak_shaving_power", int(0)) # needs to be switched off when idle or discharging?
 
