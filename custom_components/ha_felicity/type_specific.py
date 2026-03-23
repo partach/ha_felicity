@@ -248,7 +248,7 @@ class TypeSpecificHandler:
     #            await self.async_write_register("econ_rule_1_grid_charge_enable", 0) # already happens in coordinator
                 await self.async_write_register("system_mode", 2) # default no sell
  #               await self.async_write_register("econ_rule_1_sell_enable", 0) # reset sell flag to prevent stale state on next discharge transition
-                await self.async_write_register("zero_export_to_ct_sell_enable", 1) # Would it standard be ok to allow this?
+                await self.async_write_register("zero_export_to_ct_sell_enable", 0) # Would it standard be ok to allow this? No the it seems to prefere selling to loading battery (?)
             elif value == 1: # Charge and we want to control
                 await self.async_write_register("system_mode", 2) # allows charge
                 if self.register_map.get("eco_timeofuse",0) == 0:
