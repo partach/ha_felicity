@@ -393,7 +393,13 @@ class TestUnifiedSlotSelection:
         assert len(tmr_low) > len(tmr_high)
 
     def test_safety_swap(self):
-        """When battery can't bridge to tomorrow, swaps tomorrow→today slots."""
+        """Battery at min SOC survives to tomorrow — no forced today charging.
+
+        The inverter stops providing house power once SOC reaches min_kwh,
+        so the bridge projection clamps at min_kwh.  When cheap tomorrow
+        slots are available, the algorithm should NOT force expensive today
+        slots just because the raw (unclamped) projection dips below min.
+        """
         # Battery very low, few today slots, cheap tomorrow slots
         remaining_today = [(i, 0.30 + i * 0.01) for i in range(20, 24)]
         tomorrow_prices = [0.05] * 24
@@ -407,16 +413,17 @@ class TestUnifiedSlotSelection:
             consumption_est=38.5,
             efficiency=0.90,
             energy_per_slot=5.0,
-            current_kwh=15.0,  # very low
+            current_kwh=15.0,  # very low, but above min_kwh (12)
             net_pv=0.0,
             charge_max_pct=100.0,
             slot_prices_tomorrow=tomorrow_prices,
             pv_forecast_tomorrow=30.0,
             current_hour=20,
         )
-        # Should have some today slots despite tomorrow being cheaper,
-        # because battery needs to survive the bridge
-        assert len(today) > 0
+        # With the bridge clamp fix, battery survives at min_kwh (12 kWh)
+        # until tomorrow's cheap slots.  All charging deferred to tomorrow.
+        assert len(today) == 0
+        assert len(tomorrow) > 0
 
     def test_high_pv_tomorrow_reduces_grid_charging(self):
         """When tomorrow PV surplus exceeds consumption, grid charging is reduced.

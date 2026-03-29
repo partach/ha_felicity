@@ -306,7 +306,37 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 _LOGGER.error("Failed to write %s = %s to %s", key, value, entity_id)
     
     hass.services.async_register(DOMAIN, "write_register", handle_write_register)
-    
+
+    async def handle_set_slot_overrides(call: ServiceCall):
+        """Handle set_slot_overrides service — persists manual slot overrides from the card."""
+        entity_ids = call.data.get("entity_id")
+        if not entity_ids:
+            _LOGGER.error("set_slot_overrides: entity_id required")
+            return
+        if isinstance(entity_ids, str):
+            entity_ids = [entity_ids]
+
+        import json
+        overrides_raw = call.data.get("overrides", "{}")
+        try:
+            overrides = json.loads(overrides_raw) if isinstance(overrides_raw, str) else overrides_raw
+        except (json.JSONDecodeError, TypeError):
+            _LOGGER.error("set_slot_overrides: invalid overrides JSON")
+            return
+
+        for entity_id in entity_ids:
+            entity_registry = er.async_get(hass)
+            ent = entity_registry.async_get(entity_id)
+            if not ent or ent.config_entry_id not in hass.data[DOMAIN]:
+                _LOGGER.error("No Felicity config entry for entity %s", entity_id)
+                continue
+            coordinator = hass.data[DOMAIN][ent.config_entry_id]
+            coordinator.slot_overrides = overrides
+            _LOGGER.info("Set slot overrides for %s: %s", entity_id, overrides)
+            await coordinator.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, "set_slot_overrides", handle_set_slot_overrides)
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     coordinator = hass.data[DOMAIN].pop(entry.entry_id, None)

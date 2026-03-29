@@ -22,3 +22,17 @@ write_register:
           min: -2147483648
           max: 2147483647
           step: 1
+
+set_slot_overrides:
+  name: Set Slot Overrides
+  description: Set manual slot overrides for the EMS schedule (from the EMS card click-to-override feature).
+  target:
+    entity:
+      integration: ha_felicity
+  fields:
+    overrides:
+      name: Overrides
+      description: JSON string with slot overrides, e.g. {"today":{"20":"charge"},"tomorrow":{"3":"charge"}}
+      required: true
+      selector:
+        text:

@@ -89,6 +89,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.pv_forecast_tomorrow: float | None = None
         self.pv_hourly_kwh: dict[int, float] = {}  # {hour: kwh} from forecast entity
         self.scheduled_slots: dict[int, str] = {}  # {slot_idx: "charge" | "discharge"}
+        self.slot_overrides: dict = {}  # manual overrides from card: {today: {idx: action}, tomorrow: {idx: action}}
         self.cheap_slots_remaining: int = 0
         self.grid_energy_planned: float = 0.0
         self.schedule_status: str = "unknown"
@@ -536,6 +537,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # Unpack ScheduleResult into coordinator attributes
         self.scheduled_slots = result.scheduled_slots
+
+        # Merge manual slot overrides from the card
+        today_overrides = self.slot_overrides.get("today", {})
+        if today_overrides:
+            grid_mode = opts.get("grid_mode", "off")
+            for idx_str, action in today_overrides.items():
+                idx = int(idx_str)
+                # Respect grid_mode: from_grid only allows charge, to_grid only discharge
+                if grid_mode == "from_grid" and action != "charge":
+                    continue
+                if grid_mode == "to_grid" and action != "discharge":
+                    continue
+                self.scheduled_slots[idx] = action
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
         self.self_consumption_reserve = result.self_consumption_reserve
@@ -628,8 +642,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         else:  # to_grid
             available = [s for s in remaining if s[1] >= self.price_threshold]
 
-        self.available_slots_at_threshold = len(available)
-        self.available_energy_capacity = round(len(available) * energy_per_slot, 2)
+        # Include tomorrow's slots so likelihood reflects the full two-day
+        # picture the scheduler actually uses.
+        tomorrow_available = 0
+        if self.slot_prices_tomorrow:
+            for tp in self.slot_prices_tomorrow:
+                if tp is None:
+                    continue
+                if effective_mode == "from_grid" and tp <= self.price_threshold:
+                    tomorrow_available += 1
+                elif effective_mode != "from_grid" and tp >= self.price_threshold:
+                    tomorrow_available += 1
+
+        self.available_slots_at_threshold = len(available) + tomorrow_available
+        self.available_energy_capacity = round(self.available_slots_at_threshold * energy_per_slot, 2)
 
         # Set schedule_status for manual mode (schedule optimizer only runs in auto)
         if price_mode == "manual":
@@ -1149,6 +1175,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "self_consumption_reserve": self.self_consumption_reserve,
             "consumption_hourly_profile": self._hourly_consumption_profile or {},
             "soc_history": self._soc_history,
+            "slot_overrides": self.slot_overrides if self.slot_overrides else {},
         }
 
         # Add kWh for all Wh registers
