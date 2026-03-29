@@ -54,18 +54,16 @@ class FelicityEMSCard extends LitElement {
   }
 
   _loadSlotOverridesFromBackend() {
-    // Load persisted overrides from backend (once) so they survive page reloads
-    if (this._overridesLoaded) return;
+    // Always sync overrides from the backend so they survive page reloads
+    // and are visible across multiple browser tabs/sessions.
     const backendOverrides = this._getAttr("schedule_status", "slot_overrides");
     if (backendOverrides && typeof backendOverrides === "object") {
-      const hasContent = Object.keys(backendOverrides.today || {}).length > 0
-        || Object.keys(backendOverrides.tomorrow || {}).length > 0;
-      if (hasContent) {
-        this._slotOverrides = {
-          today: backendOverrides.today || {},
-          tomorrow: backendOverrides.tomorrow || {},
-        };
-        this._overridesLoaded = true;
+      const newToday = backendOverrides.today || {};
+      const newTomorrow = backendOverrides.tomorrow || {};
+      const backendJson = JSON.stringify({ today: newToday, tomorrow: newTomorrow });
+      const localJson = JSON.stringify(this._slotOverrides);
+      if (backendJson !== localJson) {
+        this._slotOverrides = { today: newToday, tomorrow: newTomorrow };
       }
     }
   }
