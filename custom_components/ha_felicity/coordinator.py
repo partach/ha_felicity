@@ -89,7 +89,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.pv_forecast_tomorrow: float | None = None
         self.pv_hourly_kwh: dict[int, float] = {}  # {hour: kwh} from forecast entity
         self.scheduled_slots: dict[int, str] = {}  # {slot_idx: "charge" | "discharge"}
-        self.slot_overrides: dict = entry.options.get("slot_overrides", {})  # manual overrides from card, persisted in entry.options
+        self.slot_overrides: dict = config_entry.options.get("slot_overrides", {})  # manual overrides from card, persisted in entry.options
         self.cheap_slots_remaining: int = 0
         self.grid_energy_planned: float = 0.0
         self.schedule_status: str = "unknown"
