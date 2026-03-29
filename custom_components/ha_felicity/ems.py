@@ -323,7 +323,7 @@ def _project_soc_trajectory(
         else:
             cons_per_slot = consumption_per_slot
 
-        projected = min(battery_capacity, projected + pv_per_slot - cons_per_slot)
+        projected = max(0.0, min(battery_capacity, projected + pv_per_slot - cons_per_slot))
         projection[slot_idx] = projected
         min_soc = min(min_soc, projected)
         max_soc = max(max_soc, projected)
@@ -585,7 +585,12 @@ def select_unified_charge_slots(
         bridge_consumption = consumption_per_hour * hours_until_tmr_charge
 
         today_charge_energy = len(today_selected) * effective_per_slot
-        projected = current_kwh + net_pv + today_charge_energy - bridge_consumption
+        # Clamp: the inverter stops providing house power once SOC hits
+        # min_kwh, so the battery cannot drain below that from consumption
+        # alone.  Without this clamp the bridge over-estimates the shortfall
+        # and forces expensive today slots when cheap tomorrow slots suffice.
+        raw_projected = current_kwh + net_pv + today_charge_energy - bridge_consumption
+        projected = max(min_kwh, raw_projected)
 
         if projected < min_kwh:
             shortfall_kwh = min_kwh - projected
@@ -1076,8 +1081,20 @@ def calculate_available_info(
     else:
         available = [s for s in remaining if s[1] >= price_threshold]
 
-    info.available_slots = len(available)
-    info.available_energy_capacity = round(len(available) * energy_per_slot, 2)
+    # Include tomorrow's slots in capacity calculation so likelihood
+    # reflects the full two-day picture the scheduler actually uses.
+    tomorrow_available = 0
+    if state.slot_prices_tomorrow:
+        for tp in state.slot_prices_tomorrow:
+            if tp is None:
+                continue
+            if effective_mode == "from_grid" and tp <= price_threshold:
+                tomorrow_available += 1
+            elif effective_mode != "from_grid" and tp >= price_threshold:
+                tomorrow_available += 1
+
+    info.available_slots = len(available) + tomorrow_available
+    info.available_energy_capacity = round(info.available_slots * energy_per_slot, 2)
 
     if state.battery_soc_pct is None:
         info.charge_likelihood = "unknown"

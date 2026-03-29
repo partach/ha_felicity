@@ -10,6 +10,8 @@ class FelicityEMSCard extends LitElement {
       _simResult: { type: Object },     // latest simulation output
       _viewTomorrow: { type: Boolean }, // manual today/tomorrow toggle (null = auto)
       _pastSlotActions: { type: Object }, // past slot actions from HA history
+      _slotOverrides: { type: Object }, // manual slot overrides: { today: {idx: action}, tomorrow: {idx: action} }
+      _pendingClick: { type: Object },  // first click for two-click override selection
     };
   }
 
@@ -23,6 +25,8 @@ class FelicityEMSCard extends LitElement {
     this._hasTomorrowData = false; // tracks if tomorrow price data is available
     this._pastSlotActions = {};    // slot index → "charging"/"discharging" from HA history
     this._lastHistoryFetch = 0;   // timestamp of last history fetch
+    this._slotOverrides = { today: {}, tomorrow: {} };  // manual slot overrides
+    this._pendingClick = null;     // { slotIdx, action, day } — first click of two-click selection
   }
 
   static getConfigElement() {
@@ -43,7 +47,26 @@ class FelicityEMSCard extends LitElement {
     if (changedProps.has("hass")) {
       this._resolveDeviceEntities();
       this._fetchEnergyHistory();
+      this._loadSlotOverridesFromBackend();
       this._drawSlotTimeline();
+      this._attachCanvasClickHandler();
+    }
+  }
+
+  _loadSlotOverridesFromBackend() {
+    // Load persisted overrides from backend (once) so they survive page reloads
+    if (this._overridesLoaded) return;
+    const backendOverrides = this._getAttr("schedule_status", "slot_overrides");
+    if (backendOverrides && typeof backendOverrides === "object") {
+      const hasContent = Object.keys(backendOverrides.today || {}).length > 0
+        || Object.keys(backendOverrides.tomorrow || {}).length > 0;
+      if (hasContent) {
+        this._slotOverrides = {
+          today: backendOverrides.today || {},
+          tomorrow: backendOverrides.tomorrow || {},
+        };
+        this._overridesLoaded = true;
+      }
     }
   }
 
@@ -302,7 +325,9 @@ class FelicityEMSCard extends LitElement {
           const hoursUntilTmrCharge = Math.max(1, (24 - now.getHours()) + earliestTmrHour);
           const bridgeConsumption = (consumption / 24) * hoursUntilTmrCharge;
           const todayChargeEnergy = todayCharge.length * effectivePerSlot;
-          const projected = currentKwh + netPv + todayChargeEnergy - bridgeConsumption;
+          // Clamp: inverter stops providing house power at min SOC,
+          // so battery cannot drain below minKwh from consumption alone.
+          const projected = Math.max(minKwh, currentKwh + netPv + todayChargeEnergy - bridgeConsumption);
 
           if (projected < minKwh) {
             // Swap: replace most expensive tomorrow slots with cheapest available today slots
@@ -371,7 +396,21 @@ class FelicityEMSCard extends LitElement {
       }
     }
 
-    result.planned = Math.round(result.planned * 100) / 100;
+    // Apply manual slot overrides (from click-to-override)
+    const todayOverrides = this._slotOverrides?.today || {};
+    for (const [idx, action] of Object.entries(todayOverrides)) {
+      const i = parseInt(idx, 10);
+      if (i >= 0 && i < result.slots.length) {
+        result.slots[i].action = action;
+      }
+    }
+    // Recalculate counts after overrides
+    result.chargeCount = result.slots.filter(s => s.action === "charge").length;
+    result.dischargeCount = result.slots.filter(s => s.action === "discharge").length;
+    result.plannedChargeKwh = result.chargeCount * effectivePerSlot;
+    result.plannedDischargeKwh = result.dischargeCount * energyPerSlot;
+    result.planned = Math.round((result.plannedChargeKwh + result.plannedDischargeKwh) * 100) / 100;
+
     result.threshold = threshold;
     return result;
   }
@@ -569,6 +608,24 @@ class FelicityEMSCard extends LitElement {
       if (i === currentSlot) {
         ctx.strokeStyle = "#efbdbd";
         ctx.lineWidth = 2;
+        ctx.strokeRect(x, marginTop, barW, chartH);
+      }
+
+      // Override slot indicator: white dashed border
+      const day = showTomorrow ? "tomorrow" : "today";
+      const overrideAction = this._slotOverrides?.[day]?.[i];
+      if (overrideAction != null) {
+        ctx.strokeStyle = overrideAction === "charge" ? "#00ff88" : "#ffaa00";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([3, 2]);
+        ctx.strokeRect(x + 1, y, Math.max(1, barW - 2), barH);
+        ctx.setLineDash([]);
+      }
+
+      // Pending first-click indicator: pulsing border
+      if (this._pendingClick && this._pendingClick.day === day && this._pendingClick.slotIdx === i) {
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2.5;
         ctx.strokeRect(x, marginTop, barW, chartH);
       }
     }
@@ -846,7 +903,20 @@ class FelicityEMSCard extends LitElement {
       }
     }
 
-    result.planned = Math.round(result.planned * 100) / 100;
+    // Apply manual slot overrides for tomorrow
+    const tmrOverrides = this._slotOverrides?.tomorrow || {};
+    for (const [idx, action] of Object.entries(tmrOverrides)) {
+      const i = parseInt(idx, 10);
+      if (i >= 0 && i < result.slots.length) {
+        result.slots[i].action = action;
+      }
+    }
+    result.chargeCount = result.slots.filter(s => s.action === "charge").length;
+    result.dischargeCount = result.slots.filter(s => s.action === "discharge").length;
+    result.planned = Math.round(
+      (result.chargeCount * effectivePerSlot + result.dischargeCount * energyPerSlot) * 100
+    ) / 100;
+
     result.threshold = threshold;
     return result;
   }
@@ -971,6 +1041,126 @@ class FelicityEMSCard extends LitElement {
     } else {
       this._viewTomorrow = true;
     }
+    this._drawSlotTimeline();
+    this.requestUpdate();
+  }
+
+  // ── Canvas click handler for slot overrides ─────────────────
+
+  _attachCanvasClickHandler() {
+    const canvas = this.shadowRoot?.querySelector("#slot-timeline");
+    if (!canvas || canvas._clickHandlerAttached) return;
+    canvas._clickHandlerAttached = true;
+    canvas.style.cursor = "pointer";
+    canvas.addEventListener("click", (e) => this._handleCanvasClick(e));
+  }
+
+  _handleCanvasClick(e) {
+    const canvas = e.target;
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+
+    const gridMode = this._simOverrides.gridMode ?? this._getState("grid_mode") ?? "off";
+    if (gridMode === "off") return;
+
+    // Determine which slot was clicked using same layout as _drawSlotTimeline
+    const day = this._showingTomorrow ? "tomorrow" : "today";
+    const displayData = this._showingTomorrow
+      ? (this._tomorrowSlotData || [])
+      : (this._getAttr("schedule_status", "slot_schedule") || this._getRawPriceSlots("today") || []);
+    if (!displayData.length) return;
+
+    const numSlots = displayData.length;
+    const w = canvas.offsetWidth;
+    const marginLeft = 30;
+    const marginRight = 30;
+    const barW = Math.max(1, (w - marginLeft - marginRight) / numSlots);
+
+    const slotIdx = Math.floor((clickX - marginLeft) / barW);
+    if (slotIdx < 0 || slotIdx >= numSlots) return;
+
+    const slot = displayData[slotIdx];
+    if (slot == null || slot.price == null) return;
+
+    const threshold = this._simResult?.threshold ?? this._getNumericState("price_threshold") ?? 0;
+    const overrides = this._slotOverrides[day] || {};
+
+    // Click on an already-overridden slot → cancel that override
+    if (overrides[slotIdx] != null) {
+      delete overrides[slotIdx];
+      this._slotOverrides = { ...this._slotOverrides, [day]: { ...overrides } };
+      this._pendingClick = null;
+      this._persistSlotOverrides();
+      this._drawSlotTimeline();
+      this.requestUpdate();
+      return;
+    }
+
+    // Determine click intent: charge (below threshold) or sell (above threshold)
+    const clickAction = slot.price <= threshold ? "charge" : "discharge";
+
+    // Enforce grid_mode restrictions
+    if (gridMode === "from_grid" && clickAction === "discharge") return;
+    if (gridMode === "to_grid" && clickAction === "charge") return;
+
+    // Two-click selection logic
+    if (!this._pendingClick) {
+      // First click — store pending
+      this._pendingClick = { slotIdx, action: clickAction, day };
+      this._drawSlotTimeline();  // show pending indicator
+      this.requestUpdate();
+      return;
+    }
+
+    // Second click
+    const pending = this._pendingClick;
+    this._pendingClick = null;
+
+    // If different day or different action type → cancel
+    if (pending.day !== day || pending.action !== clickAction) {
+      this._drawSlotTimeline();
+      this.requestUpdate();
+      return;
+    }
+
+    // Same day, same action type → mark range
+    const startSlot = Math.min(pending.slotIdx, slotIdx);
+    const endSlot = Math.max(pending.slotIdx, slotIdx);
+    const newOverrides = { ...(this._slotOverrides[day] || {}) };
+    for (let i = startSlot; i <= endSlot; i++) {
+      if (displayData[i]?.price != null) {
+        newOverrides[i] = clickAction;
+      }
+    }
+    this._slotOverrides = { ...this._slotOverrides, [day]: newOverrides };
+    this._persistSlotOverrides();
+    this._drawSlotTimeline();
+    this.requestUpdate();
+  }
+
+  async _persistSlotOverrides() {
+    // Persist overrides to the coordinator via a HA service call
+    const eid = this._getEntityId("schedule_status");
+    if (!eid || !this.hass) return;
+    try {
+      await this.hass.callService("ha_felicity", "set_slot_overrides", {
+        entity_id: eid,
+        overrides: JSON.stringify(this._slotOverrides),
+      });
+    } catch (err) {
+      console.warn("Failed to persist slot overrides:", err);
+    }
+  }
+
+  _hasSlotOverrides() {
+    const t = this._slotOverrides || {};
+    return Object.keys(t.today || {}).length > 0 || Object.keys(t.tomorrow || {}).length > 0;
+  }
+
+  _clearSlotOverrides() {
+    this._slotOverrides = { today: {}, tomorrow: {} };
+    this._pendingClick = null;
+    this._persistSlotOverrides();
     this._drawSlotTimeline();
     this.requestUpdate();
   }
@@ -1134,6 +1324,17 @@ class FelicityEMSCard extends LitElement {
               </div>
             </div>
             <canvas id="slot-timeline"></canvas>
+            ${this._hasSlotOverrides() ? html`
+              <div class="override-bar">
+                <span class="override-hint">${this._pendingClick ? 'Click second slot to complete range' : 'Manual overrides active'}</span>
+                <span class="override-clear" @click=${() => this._clearSlotOverrides()}>Clear</span>
+              </div>
+            ` : this._pendingClick ? html`
+              <div class="override-bar">
+                <span class="override-hint">Click second slot to complete range (same type)</span>
+                <span class="override-clear" @click=${() => { this._pendingClick = null; this._drawSlotTimeline(); this.requestUpdate(); }}>Cancel</span>
+              </div>
+            ` : ''}
           </div>
 
           <!-- Schedule stats -->
@@ -1497,6 +1698,31 @@ class FelicityEMSCard extends LitElement {
         height: 120px;
         border-radius: 6px;
         background: var(--secondary-background-color);
+      }
+      .override-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 3px 8px;
+        margin-top: 2px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 4px;
+        font-size: 0.7em;
+      }
+      .override-hint {
+        color: var(--secondary-text-color);
+        font-style: italic;
+      }
+      .override-clear {
+        color: #ff6b6b;
+        cursor: pointer;
+        font-weight: 600;
+        padding: 1px 6px;
+        border: 1px solid #ff6b6b;
+        border-radius: 4px;
+      }
+      .override-clear:hover {
+        background: rgba(255, 107, 107, 0.2);
       }
 
       /* Stats row */
