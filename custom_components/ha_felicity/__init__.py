@@ -333,6 +333,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             coordinator = hass.data[DOMAIN][ent.config_entry_id]
             coordinator.slot_overrides = overrides
             _LOGGER.info("Set slot overrides for %s: %s", entity_id, overrides)
+
+            # Persist to entry.options so overrides survive HA restarts
+            entry = hass.config_entries.async_get_entry(ent.config_entry_id)
+            if entry:
+                new_options = {**entry.options, "slot_overrides": overrides}
+                hass.config_entries.async_update_entry(entry, options=new_options)
+
             await coordinator.async_request_refresh()
 
     hass.services.async_register(DOMAIN, "set_slot_overrides", handle_set_slot_overrides)

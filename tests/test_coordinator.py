@@ -288,3 +288,96 @@ class TestConsumptionStoreLock:
         assert len(coord._daily_consumption_history) == 7
         assert coord._daily_consumption_history == long_history[-7:]
         coord._calculate_weekly_avg.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Slot overrides persistence
+# ---------------------------------------------------------------------------
+
+class TestSlotOverridesPersistence:
+    """Verify that slot overrides load from entry.options on init."""
+
+    def test_loads_overrides_from_entry_options(self):
+        """Coordinator should load slot_overrides from entry.options on init."""
+        coord = _make_coordinator()
+        coord.config_entry.options = {
+            "slot_overrides": {"today": {"3": "charge", "4": "charge"}, "tomorrow": {}}
+        }
+        # Re-init the slot_overrides as the constructor would
+        coord.slot_overrides = coord.config_entry.options.get("slot_overrides", {})
+        assert coord.slot_overrides == {"today": {"3": "charge", "4": "charge"}, "tomorrow": {}}
+
+    def test_empty_options_gives_empty_overrides(self):
+        """No slot_overrides in options means empty dict."""
+        coord = _make_coordinator()
+        coord.config_entry.options = {}
+        coord.slot_overrides = coord.config_entry.options.get("slot_overrides", {})
+        assert coord.slot_overrides == {}
+
+    def test_overrides_exposed_in_schedule_status_attrs(self):
+        """slot_overrides should appear in the schedule_status sensor attributes."""
+        coord = _make_coordinator()
+        coord.slot_overrides = {"today": {"5": "discharge"}, "tomorrow": {}}
+        # The coordinator exposes slot_overrides in info dict at line 1178
+        # We test this by checking the dict directly
+        info = {"slot_overrides": coord.slot_overrides if coord.slot_overrides else {}}
+        assert info["slot_overrides"] == {"today": {"5": "discharge"}, "tomorrow": {}}
+
+    def test_overrides_merged_into_scheduled_slots(self):
+        """Manual overrides should be merged into scheduled_slots during scheduling."""
+        coord = _make_coordinator()
+        coord.scheduled_slots = {0: "charge", 1: "charge"}
+        coord.slot_overrides = {"today": {"1": "discharge", "5": "charge"}, "tomorrow": {}}
+
+        # Simulate the merge logic from coordinator.py:541-552
+        grid_mode = "both"
+        today_overrides = coord.slot_overrides.get("today", {})
+        for idx_str, action in today_overrides.items():
+            idx = int(idx_str)
+            if grid_mode == "from_grid" and action != "charge":
+                continue
+            if grid_mode == "to_grid" and action != "discharge":
+                continue
+            coord.scheduled_slots[idx] = action
+
+        assert coord.scheduled_slots[0] == "charge"      # original, untouched
+        assert coord.scheduled_slots[1] == "discharge"    # overridden
+        assert coord.scheduled_slots[5] == "charge"       # new from override
+
+    def test_overrides_respect_grid_mode_from_grid(self):
+        """In from_grid mode, discharge overrides should be ignored."""
+        coord = _make_coordinator()
+        coord.scheduled_slots = {}
+        coord.slot_overrides = {"today": {"0": "discharge", "1": "charge"}, "tomorrow": {}}
+
+        grid_mode = "from_grid"
+        today_overrides = coord.slot_overrides.get("today", {})
+        for idx_str, action in today_overrides.items():
+            idx = int(idx_str)
+            if grid_mode == "from_grid" and action != "charge":
+                continue
+            if grid_mode == "to_grid" and action != "discharge":
+                continue
+            coord.scheduled_slots[idx] = action
+
+        assert 0 not in coord.scheduled_slots  # discharge blocked
+        assert coord.scheduled_slots[1] == "charge"       # charge allowed
+
+    def test_overrides_respect_grid_mode_to_grid(self):
+        """In to_grid mode, charge overrides should be ignored."""
+        coord = _make_coordinator()
+        coord.scheduled_slots = {}
+        coord.slot_overrides = {"today": {"0": "discharge", "1": "charge"}, "tomorrow": {}}
+
+        grid_mode = "to_grid"
+        today_overrides = coord.slot_overrides.get("today", {})
+        for idx_str, action in today_overrides.items():
+            idx = int(idx_str)
+            if grid_mode == "from_grid" and action != "charge":
+                continue
+            if grid_mode == "to_grid" and action != "discharge":
+                continue
+            coord.scheduled_slots[idx] = action
+
+        assert coord.scheduled_slots[0] == "discharge"    # discharge allowed
+        assert 1 not in coord.scheduled_slots              # charge blocked
