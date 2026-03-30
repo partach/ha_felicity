@@ -315,6 +315,29 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         return "idle"
 
+    async def _rotate_slot_overrides(self) -> None:
+        """Move tomorrow's slot overrides to today and clear tomorrow.
+
+        Called at midnight so that user-added slots for 'tomorrow' become
+        the active 'today' overrides when the new day starts.
+        """
+        tomorrow = self.slot_overrides.get("tomorrow", {})
+        if tomorrow:
+            self.slot_overrides = {"today": tomorrow, "tomorrow": {}}
+            _LOGGER.info(
+                "Rotated %d tomorrow slot overrides to today", len(tomorrow)
+            )
+        else:
+            # No tomorrow overrides — just clear today's stale overrides
+            self.slot_overrides = {"today": {}, "tomorrow": {}}
+            _LOGGER.debug("Cleared slot overrides for new day (no tomorrow overrides)")
+
+        # Persist to config entry so it survives restarts
+        entry = self.config_entry
+        if entry:
+            new_options = {**entry.options, "slot_overrides": self.slot_overrides}
+            self.hass.config_entries.async_update_entry(entry, options=new_options)
+
     def _current_slot_index(self) -> int | None:
         """Get the current time slot index based on price array granularity.
 
@@ -1343,6 +1366,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 self._soc_history = {}
                                 self._last_recorded_slot = -1
                                 self._current_day = now.day
+
+                                # Propagate tomorrow's slot overrides → today
+                                await self._rotate_slot_overrides()
                             else:
                                 # Normal cycle: retrieve data, calculate, determine state
                                 self._retrieve_slot_prices(price_state)
