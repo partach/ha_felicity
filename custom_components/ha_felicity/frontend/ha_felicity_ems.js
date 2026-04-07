@@ -364,7 +364,8 @@ class FelicityEMSCard extends LitElement {
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
       const reserveTarget = Math.min(batteryCapacity, minKwh + reserveKwh);
-      const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency;
+      // Safety margin (15%) matches backend to avoid over-scheduling discharge
+      const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency * 0.85;
       const roundTrip = efficiency * efficiency;
 
       if (sellable > 0) {
@@ -881,7 +882,8 @@ class FelicityEMSCard extends LitElement {
       // For selling tomorrow: estimate available energy after solar charges the battery
       // Battery fills from startKwh + pvTomorrow, capped at charge_max
       const projectedKwh = Math.min(chargeMax * batteryCapacity, startKwh + pvTomorrow);
-      const sellable = Math.max(0, projectedKwh - reserveTarget) * efficiency;
+      // Safety margin (15%) matches backend to avoid over-scheduling discharge
+      const sellable = Math.max(0, projectedKwh - reserveTarget) * efficiency * 0.85;
       const roundTrip = efficiency * efficiency;
 
       if (sellable > 0) {
@@ -1016,14 +1018,16 @@ class FelicityEMSCard extends LitElement {
       } else if (pvFallbackSlotSet.has(i)) {
         currentKwh += pvFallbackPerSlot;
       }
-      // Scheduled actions
+      // Scheduled actions — respect battery bounds like the real inverter does
+      const minKwhFloor = dischargeMin * batteryCapacity;
       if (slot.action === "charge") {
         currentKwh += energyPerSlot * efficiency;
-      } else if (slot.action === "discharge") {
-        currentKwh -= energyPerSlot;
+      } else if (slot.action === "discharge" && currentKwh > minKwhFloor) {
+        // Inverter stops discharging at the SOC floor — don't drain below it
+        currentKwh -= Math.min(energyPerSlot, currentKwh - minKwhFloor);
       }
-      // Clamp
-      currentKwh = Math.max(0, Math.min(batteryCapacity, currentKwh));
+      // Clamp to physical limits (discharge_min floor, capacity ceiling)
+      currentKwh = Math.max(minKwhFloor, Math.min(batteryCapacity, currentKwh));
     }
     // Add final point (end of last slot)
     trajectory.push((currentKwh / batteryCapacity) * 100);
