@@ -106,6 +106,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._hourly_consumption_profile: dict[int, float] = {}
         self._hourly_consumption_history: list = []  # [{date, hours: {0: kwh, 1: kwh, ...}}]
         self.self_consumption_reserve: float = 0.0
+        self._reserve_target_pct: float = 0.0  # computed reserve target as battery %
         self._last_net_pv: float = 0.0
         self._last_pv_confidence: float = 1.0
         self.tomorrow_precharge: float = 0.0
@@ -283,7 +284,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     if slot_action == "charge" and battery_soc < charge_max:
                         return "charging"
                     if slot_action == "discharge" and battery_soc > discharge_min:
-                        return "discharging"
+                        # Guard against draining below reserve target.
+                        # The schedule was planned assuming SOC stays above
+                        # reserve_target, so enforce that here — not just
+                        # the lower discharge_min hard floor.
+                        discharge_floor = max(discharge_min, self._reserve_target_pct)
+                        if battery_soc > discharge_floor:
+                            return "discharging"
+                        _LOGGER.info(
+                            "Skipping discharge: SOC %.1f%% at or below "
+                            "reserve target %.1f%% (discharge_min=%.1f%%)",
+                            battery_soc, self._reserve_target_pct, discharge_min,
+                        )
                 return "idle"
             # Auto mode fallback when no slot data yet
             _LOGGER.debug("Auto mode: no slot data available, returning idle")
@@ -576,6 +588,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
         self.self_consumption_reserve = result.self_consumption_reserve
+        self._reserve_target_pct = result.reserve_target_pct
         self.tomorrow_precharge = result.tomorrow_precharge
         self.tomorrow_planned_slots = result.tomorrow_planned_slots
         self.tomorrow_planned_kwh = result.tomorrow_planned_kwh
@@ -1125,11 +1138,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if new_state == "charging"
             else opts.get("discharge_min_voltage", 50)
         )
-        soc_limit = int(
-            opts.get("battery_charge_max_level", 100)
-            if new_state == "charging"
-            else opts.get("battery_discharge_min_level", 20)
-        )
+        if new_state == "charging":
+            soc_limit = int(opts.get("battery_charge_max_level", 100))
+        elif new_state == "discharging" and opts.get("price_mode", "manual") == "auto" and self._reserve_target_pct > 0:
+            # In auto mode, use the computed reserve target as the inverter
+            # SOC floor so the hardware enforces the same floor the schedule
+            # was planned around — not just the lower discharge_min_level.
+            soc_limit = int(round(self._reserve_target_pct))
+            _LOGGER.info(
+                "Discharge SOC floor set to reserve target %d%% "
+                "(discharge_min=%d%%)",
+                soc_limit, int(opts.get("battery_discharge_min_level", 20)),
+            )
+        else:
+            soc_limit = int(opts.get("battery_discharge_min_level", 20))
 
         enable_value = {"charging": 1, "discharging": 2, "idle": 0}[new_state]
 
@@ -1196,6 +1218,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "weekly_avg_consumption": self.weekly_avg_consumption,
             "yesterday_deficit": self._yesterday_deficit,
             "self_consumption_reserve": self.self_consumption_reserve,
+            "reserve_target_pct": self._reserve_target_pct,
             "consumption_hourly_profile": self._hourly_consumption_profile or {},
             "soc_history": self._soc_history,
             "slot_overrides": self.slot_overrides if self.slot_overrides else {},
