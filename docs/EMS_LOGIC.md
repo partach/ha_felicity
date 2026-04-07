@@ -1,6 +1,6 @@
 # EMS Decision Logic: How Felicity Decides What To Do
 
-This document traces the complete decision path of the Felicity EMS, from raw inputs to inverter action, for each mode. It is written to allow a logic review of the algorithm, particularly the "both" mode where aggressive selling has been observed.
+This document traces the complete decision path of the Felicity EMS, from raw inputs to inverter action, for each mode.
 
 ---
 
@@ -14,7 +14,7 @@ These are the user-configurable parameters. Every calculation in the algorithm t
 |---|---|---|---|
 | **battery_capacity_kwh** | 1-100 kWh | 10 | The total usable battery size. All kWh calculations scale from this: `current_kwh = SOC% * capacity`. A wrong value here corrupts every decision. |
 | **battery_charge_max_level** | 30-100% | 100% | The SOC ceiling. The scheduler won't charge above this, and the inverter register is set to this value during charging. Lowering it (e.g., 90%) preserves battery longevity but reduces available storage. |
-| **battery_discharge_min_level** | 10-70% | 20% | The SOC hard floor. The inverter is told never to discharge below this. **Critical**: this is the value written to the Modbus register -- it's the last line of defence. The scheduler's `reserve_target` (see below) is always higher, but if estimates are wrong, the battery drains to THIS level, not the planned reserve. |
+| **battery_discharge_min_level** | 10-70% | 20% | The SOC hard floor. In **manual mode**, this is written directly to the inverter Modbus register as the discharge limit. In **auto mode**, the inverter register is set to the higher `reserve_target` instead (see below), with `discharge_min_level` serving as the absolute backstop that the reserve target can never go below. |
 | **efficiency_factor** | 0.70-1.00 | 0.90 | Single-direction charging efficiency. Round-trip = efficiency^2 (default 0.81). Affects: how much grid energy actually reaches the battery (`effective_per_slot = power * hours * efficiency`), the profitability filter in "both" mode (`min_sell_price = buy_price / efficiency^2`), and how much sellable energy can be extracted (`sellable * efficiency`). A too-high value (e.g., 0.95) makes the system overestimate what's available, leading to deeper drain. |
 
 ### Voltage Settings (Inverter Protection)
@@ -58,19 +58,19 @@ The settings form a hierarchy of constraints:
 arbitrage_price_delta  -->  Determines charging target (reserve vs full)
         |
         v
-reserve_target_pct  -->  The PLANNED floor for scheduling
-        |
+reserve_target_pct  -->  The floor for scheduling AND runtime discharge (auto mode)
+        |                  Written to inverter register when discharging
         v
 efficiency_factor  -->  How much energy is actually usable (scales everything)
-        |
+        |                  Sellable energy further reduced by 15% safety margin
         v
-battery_discharge_min_level  -->  The ACTUAL floor written to inverter (last defence)
+battery_discharge_min_level  -->  Hard floor (manual mode) / absolute backstop (auto mode)
         |
         v
 discharge_min_voltage  -->  Hardware protection (inverter stops here regardless)
 ```
 
-**The gap between `reserve_target` and `discharge_min_level` is where the aggressive selling problem lives.** The scheduler plans to keep SOC above reserve_target (~60-70% typically), but the inverter is told the floor is discharge_min (20%). When reality diverges from the plan (cloud cover, consumption spike, forecast error), the battery drains through that gap.
+In auto mode, the scheduler, the runtime discharge guard, and the inverter register all use `reserve_target` as the discharge floor. The `discharge_min_level` only acts as the absolute minimum that the reserve target cannot go below.
 
 ---
 
@@ -235,12 +235,12 @@ A set of slot indices marked "charge". The inverter charges during these slots a
 
 ### Step 1: Calculate Sellable Energy
 
-Uses the SOC trajectory projection to find the peak battery level:
+Uses the SOC trajectory projection to find the peak battery level, with a 15% safety margin to account for forecast/consumption errors and the gap between peak SOC time (midday) and discharge time (evening):
 ```
-sellable = max(0, max_projected - reserve_target) * efficiency
+sellable = max(0, max_projected - reserve_target) * efficiency * 0.85
 ```
 
-Key point: `max_projected` is the PEAK SOC from the passive trajectory. If PV pushes the battery to 95% at noon, that's the peak, even though by evening the battery may be at 60%. The sellable energy is the amount ABOVE the reserve target at that peak, multiplied by single-direction efficiency.
+Key point: `max_projected` is the PEAK SOC from the passive trajectory. If PV pushes the battery to 95% at noon, that's the peak, even though by evening the battery may be at 60%. The sellable energy is the amount ABOVE the reserve target at that peak, scaled by efficiency and the safety margin.
 
 ### Step 2: Select Most Expensive Sell Slots
 
@@ -280,11 +280,12 @@ energy_deficit = max(energy_deficit, max_battery_kwh - current_kwh - net_pv)
 
 ### Step 3: Calculate Sellable Energy
 
+A 15% safety margin is applied to all sellable calculations to account for consumption/PV forecast errors:
 ```
 if arbitrage_active:
-    sellable = (max_battery_kwh - reserve_target) * efficiency
+    sellable = (max_battery_kwh - reserve_target) * efficiency * 0.85
 else:
-    sellable = (max_projected - reserve_target) * efficiency
+    sellable = (max_projected - reserve_target) * efficiency * 0.85
 ```
 
 ### Step 4: Select Charge Slots (Same as `from_grid`)
@@ -364,179 +365,88 @@ The schedule is recalculated periodically. Every 10 seconds, the coordinator:
 | State | econ_rule_1_enable | SOC limit | Voltage | Power |
 |---|---|---|---|---|
 | charging | 1 | `battery_charge_max_level` (e.g., 100%) | `voltage_level` (e.g., 58V) | `safe_max_power` (W) |
-| discharging | 2 | `battery_discharge_min_level` (e.g., 20%) | `discharge_min_voltage` (e.g., 50V) | `safe_max_power` (W) |
+| discharging (manual) | 2 | `battery_discharge_min_level` (e.g., 20%) | `discharge_min_voltage` (e.g., 50V) | `safe_max_power` (W) |
+| discharging (auto) | 2 | `reserve_target_pct` (e.g., 70%) | `discharge_min_voltage` (e.g., 50V) | `safe_max_power` (W) |
 | idle | 0 | *(not written)* | *(not written)* | *(not written)* |
+
+In auto mode, the inverter's SOC floor register is set to the computed `reserve_target_pct` rather than `discharge_min_level`. This means the inverter hardware itself enforces the same floor the schedule was planned around, even if the coordinator's polling cycle is delayed.
 
 ### SOC Boundary Enforcement in `_determine_energy_state`
 
 Before entering a state:
 - **Charging**: only if `battery_soc < charge_max` (e.g., < 100%)
-- **Discharging**: only if `battery_soc > discharge_min` (e.g., > 20%)
+- **Discharging (manual)**: only if `battery_soc > discharge_min` (e.g., > 20%)
+- **Discharging (auto)**: only if `battery_soc > max(discharge_min, reserve_target_pct)` (e.g., > 70%). If SOC has dropped to or below the reserve target, the discharge slot is skipped and logged.
 
 If SOC hits the limit mid-slot, the state transitions to idle on the next 10-second cycle.
 
 ---
 
-## 8. Analysis: Why "Both" Mode Sells Too Aggressively
+## 8. Design Notes
 
-After tracing the logic, here are the potential causes of the battery draining below minimum in "both" mode:
+### Sellable Energy Safety Margin
 
-### Issue A: Sellable Energy Based on Peak SOC, Not SOC at Time of Selling
+The sellable calculation uses `max_projected` (the peak SOC from the passive trajectory, usually midday). Discharge slots typically fire in the evening when prices are highest, by which time the battery has drained from afternoon consumption. To account for this timing gap, plus PV forecast uncertainty and consumption estimate errors, a 15% safety margin is applied:
 
-```python
-sellable = max(0, max_projected - reserve_target) * efficiency
+```
+sellable = max(0, peak_soc - reserve_target) * efficiency * 0.85
 ```
 
-`max_projected` is the PEAK battery level from the passive trajectory -- typically the midday solar peak. But discharge slots are usually scheduled in the evening (highest prices). By evening, the battery has already drained from afternoon consumption. The SOC validation should catch this, but there's a subtle gap (see Issue C).
+This means the system schedules fewer discharge slots than the theoretical maximum, leaving buffer for real-world conditions.
 
-### Issue B: SOC Validation Floor vs. Inverter Floor Mismatch
+### Three Layers of Discharge Protection (Auto Mode)
 
-The SOC validation uses `reserve_target` as its floor (e.g., 70% for a 10 kWh battery with dynamic reserve). But when the inverter is put into discharge mode, the Modbus register is set to `battery_discharge_min_level` (e.g., 20%).
+In auto mode, three independent mechanisms prevent the battery from draining below the reserve target:
 
-**This means**: The schedule is designed to keep SOC above 70%, but the inverter is told it can discharge down to 20%. If actual consumption is higher than estimated, or PV underperforms, the inverter will happily drain the battery well below the intended reserve.
+1. **Schedule planner** (`ems.py`): SOC validation simulates every slot forward and prunes discharge slots that would cause SOC to drop below `reserve_target`.
+2. **Runtime guard** (`coordinator.py` — `_determine_energy_state`): Before entering discharge, checks `battery_soc > max(discharge_min, reserve_target_pct)`. If SOC has already fallen to the reserve, the slot is skipped.
+3. **Inverter register** (`coordinator.py` — `_transition_to_state`): The inverter's `econ_rule_1_soc` register is set to `reserve_target_pct` (not `discharge_min_level`), so the inverter hardware itself stops at the intended floor even if polling is delayed.
 
-The 10-second polling loop will transition to idle once `battery_soc <= discharge_min`, but the damage is done -- the battery has been drained below the planned reserve_target.
+In manual mode, `discharge_min_level` is used at all three layers.
 
-**This is likely the primary cause.** The schedule plans conservatively, but the inverter has a much lower hard floor. Any estimation error (consumption spike, cloud cover, forecast miss) results in deeper drain than intended.
+### Arbitrage Mode Considerations
 
-### Issue C: Consumption Estimate Sensitivity
-
-The default flat consumption model (`consumption_est / 24`) underestimates evening consumption for most households. Even with hourly profiles, estimation errors compound across multiple discharge slots.
-
-If actual evening consumption is 30% higher than the profile suggests, each discharge slot drains the battery faster than the validation predicted.
-
-### Issue D: PV Confidence Over-Estimation
-
-If PV confidence stays at 1.0 (forecast matches production), the net_pv surplus is trusted fully. But forecasts have inherent uncertainty. A 10 kWh surplus forecast that only delivers 7 kWh means 3 kWh less battery energy than planned, making every discharge slot drain deeper than expected.
-
-### Issue E: Arbitrage Mode Amplifies the Problem
-
-When `arbitrage_price_delta > 0` and is triggered:
-- Energy deficit inflates to charge the battery to 100%
-- Sellable inflates to `max_battery_kwh - reserve_target` (the entire range)
-- This schedules maximum charge AND maximum discharge
-- Any estimation error hits harder because the margins are thinner
-
-### Issue F: No Intra-Day Re-Evaluation of Sell Slots
-
-The schedule is recalculated periodically, but if the battery is already lower than expected when an evening discharge slot arrives, the system still discharges. The `_determine_energy_state` only checks `battery_soc > discharge_min` (the LOW floor, e.g., 20%), not `battery_soc > reserve_target`.
-
-**This is a second critical gap**: The runtime execution doesn't enforce the same floor that the schedule was designed around. The schedule says "this is safe because SOC will stay above reserve_target" but the runtime only prevents discharge below `discharge_min`.
-
-### Worked Example: How Settings Combine to Cause Over-Discharge
-
-Consider a typical setup:
-```
-battery_capacity_kwh = 10
-battery_charge_max_level = 100%
-battery_discharge_min_level = 20%    --> 2.0 kWh hard floor
-efficiency_factor = 0.90
-reserve_target_pct = 0 (dynamic)
-arbitrage_price_delta = 0.10 EUR/kWh
-daily_consumption = 12 kWh/day
-```
-
-At 14:00 on a sunny day:
-- Battery SOC: 90% (9.0 kWh), peak projected 95% (9.5 kWh) from PV
-- Dynamic reserve_target = 2.0 + (12/24 * 12h) = 8.0 kWh (80%)
-- Price spread today: 0.25 EUR/kWh --> exceeds arbitrage_delta (0.10)
-- **Arbitrage activates**: deficit inflated to charge to 100%
-- Sellable = (10.0 - 8.0) * 0.90 = **1.8 kWh**
-- At 5 kW, 30-min slots: 1 discharge slot scheduled at 18:00 (2.5 kWh capacity)
-
-At 18:00 when discharge fires:
-- PV has stopped, consumption drained battery to ~7.5 kWh (75%)
-- Discharge removes 2.5 kWh at 5 kW for 30 min
-- **BUT** house is also consuming ~0.5 kWh/h during that slot
-- Battery drops to: 7.5 - 2.5 - 0.25 = **4.75 kWh (47.5%)**
-- This is well below reserve_target (8.0 kWh / 80%) but well above discharge_min (2.0 kWh / 20%)
-- The inverter doesn't stop because its floor is 20%, not 80%
-
-After 18:30, the house keeps consuming overnight:
-- 12h * 0.5 kWh/h = 6.0 kWh needed
-- Battery has 4.75 kWh above the 2.0 kWh floor = 2.75 kWh available
-- **Battery hits 20% floor around 23:30** -- 7.5 hours of no power until sunrise
-
-This example shows why even a SINGLE discharge slot can cause problems when the inverter's hard floor (20%) is far below the planned reserve (80%).
+When `arbitrage_price_delta > 0` and the day's price spread exceeds it, the system charges to full capacity and sells everything above reserve. This is inherently more aggressive than normal operation. The three protection layers above still apply, but margins are thinner. Users experiencing unwanted deep discharge should consider:
+- Setting `arbitrage_price_delta = 0` to disable arbitrage
+- Increasing `reserve_target_pct` to keep a larger buffer
+- Both changes can be combined
 
 ---
 
-## 9. Fixes Implemented
-
-All four fixes from the analysis have been implemented:
-
-### Fix 1: Use Reserve Target as Runtime Discharge Floor -- IMPLEMENTED
-
-**File**: `coordinator.py` — `_determine_energy_state()`
-
-In auto mode, the discharge guard now checks `battery_soc > max(discharge_min, reserve_target_pct)` instead of just `battery_soc > discharge_min`. When SOC is at or below the computed reserve target, the discharge slot is skipped and logged. This aligns the runtime guard with the floor the schedule was planned around.
-
-### Fix 2: Write Reserve Target as Inverter SOC Floor -- IMPLEMENTED
-
-**File**: `coordinator.py` — `_transition_to_state()`
-
-When entering discharge state in auto mode, the inverter's `econ_rule_1_soc` register is now written with the computed `reserve_target_pct` (e.g., 70%) instead of `discharge_min_level` (e.g., 20%). This means even if the 10-second polling cycle is delayed or the coordinator misses a cycle, the inverter hardware itself stops discharging at the intended reserve level. Manual mode continues using `discharge_min_level` as before.
-
-### Fix 3: Reduce Sellable by Safety Margin -- IMPLEMENTED
-
-**Files**: `ems.py` — `_schedule_to_grid()` and `_schedule_both()`
-
-A 15% safety margin is now applied to all sellable energy calculations:
-```python
-sellable = max(0, max_projected - reserve_target) * efficiency * 0.85
-```
-This accounts for consumption estimate errors, PV forecast uncertainty, and the inherent gap between peak SOC (midday) and actual SOC when discharge slots fire (evening). The margin reduces the number of discharge slots scheduled, leaving more buffer.
-
-### Fix 4: Reserve Target Passed Through Schedule Result -- IMPLEMENTED
-
-**Files**: `ems.py` — `ScheduleResult.reserve_target_pct`, `coordinator.py`
-
-The computed reserve target (as a battery %) is now included in `ScheduleResult` and stored on the coordinator. This enables Fixes 1 and 2 — the runtime code can enforce the same floor the scheduler planned around, without recomputing it.
-
-### Combined Effect
-
-Using the worked example from Section 8 (10 kWh battery, 20% min, 80% reserve target):
-
-**Before fixes**: Inverter told floor is 20%, sells aggressively, battery hits 20% by 23:30.
-
-**After fixes**:
-- Sellable reduced by 15%: 1.8 kWh → 1.53 kWh (may eliminate marginal discharge slots)
-- `_determine_energy_state` checks SOC > 80% before allowing discharge
-- Inverter register set to 80% (not 20%) — hardware won't discharge below reserve
-- If battery is at 75% when evening discharge slot arrives → **slot is skipped**, battery preserved for overnight
-
----
-
-## 10. Summary Decision Flowchart
+## 9. Summary Decision Flowchart
 
 ```
 START (every 10 seconds)
-  |
-  v
+  │
+  ▼
 Read battery SOC, prices, PV, consumption
-  |
-  v
-grid_mode == "off"? --> IDLE
-  |
-  v
+  │
+  ▼
+grid_mode == "off"? ──yes──▶ IDLE
+  │ no
+  ▼
 Recalculate schedule (periodically)
-  |
-  +-- from_grid: deficit = max(snapshot, predictive) + carryover
-  |     pick cheapest slots to cover deficit
-  |
-  +-- to_grid: sellable = (peak_soc - reserve) * efficiency
-  |     pick most expensive slots
-  |
-  +-- both: deficit + sellable with profitability filter
-  |     charge cheap, sell expensive
-  |
-  v
+  │
+  ├── from_grid: deficit = max(snapshot, predictive) + carryover
+  │     pick cheapest slots to cover deficit
+  │
+  ├── to_grid: sellable = (peak_soc - reserve) * efficiency * 0.85
+  │     pick most expensive slots
+  │
+  └── both: deficit + sellable with profitability filter
+        charge cheap, sell expensive
+  │
+  ▼
 Current slot in schedule?
-  |
-  +-- charge slot & SOC < charge_max --> CHARGING
-  +-- discharge slot & SOC > reserve_target --> DISCHARGING  (auto mode uses reserve_target, not discharge_min)
-  +-- not in schedule --> IDLE
-  |
-  v
+  │
+  ├── charge slot & SOC < charge_max ──▶ CHARGING
+  │     inverter SOC register = charge_max
+  │
+  ├── discharge slot & SOC > reserve_target ──▶ DISCHARGING
+  │     inverter SOC register = reserve_target (auto) or discharge_min (manual)
+  │
+  └── not in schedule ──▶ IDLE
+  │
+  ▼
 Write Modbus registers if state changed
 ```
