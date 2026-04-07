@@ -4,7 +4,77 @@ This document traces the complete decision path of the Felicity EMS, from raw in
 
 ---
 
-## 1. Inputs: What the EMS Knows
+## 1. User Configuration: The Settings That Shape Every Decision
+
+These are the user-configurable parameters. Every calculation in the algorithm traces back to one or more of these settings.
+
+### Battery Settings
+
+| Setting | Range | Default | How It's Used |
+|---|---|---|---|
+| **battery_capacity_kwh** | 1-100 kWh | 10 | The total usable battery size. All kWh calculations scale from this: `current_kwh = SOC% * capacity`. A wrong value here corrupts every decision. |
+| **battery_charge_max_level** | 30-100% | 100% | The SOC ceiling. The scheduler won't charge above this, and the inverter register is set to this value during charging. Lowering it (e.g., 90%) preserves battery longevity but reduces available storage. |
+| **battery_discharge_min_level** | 10-70% | 20% | The SOC hard floor. The inverter is told never to discharge below this. **Critical**: this is the value written to the Modbus register -- it's the last line of defence. The scheduler's `reserve_target` (see below) is always higher, but if estimates are wrong, the battery drains to THIS level, not the planned reserve. |
+| **efficiency_factor** | 0.70-1.00 | 0.90 | Single-direction charging efficiency. Round-trip = efficiency^2 (default 0.81). Affects: how much grid energy actually reaches the battery (`effective_per_slot = power * hours * efficiency`), the profitability filter in "both" mode (`min_sell_price = buy_price / efficiency^2`), and how much sellable energy can be extracted (`sellable * efficiency`). A too-high value (e.g., 0.95) makes the system overestimate what's available, leading to deeper drain. |
+
+### Voltage Settings (Inverter Protection)
+
+| Setting | Range | Default | How It's Used |
+|---|---|---|---|
+| **voltage_level** | 48-60V | 58V | Written to the inverter when entering **charge** state. This is the target charge voltage -- the inverter's constant-voltage phase begins here. Higher values charge fuller but stress the battery more. |
+| **discharge_min_voltage** | 48-55V | 50V | Written to the inverter when entering **discharge** state. This is the voltage floor below which the inverter stops discharging. Protects battery cells from over-discharge damage. Lower values extract more energy but reduce battery lifespan. |
+
+These voltage settings are **not used by the scheduling algorithm** -- they are pure inverter protection parameters written to Modbus registers during state transitions. The algorithm works in SOC percentages and kWh; the voltages are the inverter's own safety layer.
+
+### Reserve & Self-Consumption
+
+| Setting | Range | Default | How It's Used |
+|---|---|---|---|
+| **reserve_target_pct** | 0-100% | 0 (dynamic) | Controls how much battery to keep for self-consumption. **When 0** (default): the reserve is calculated dynamically as `discharge_min + overnight_consumption`. **When > 0**: uses this fixed percentage as the floor (e.g., 50% means always keep at least half the battery). Increasing this is the most direct way to prevent the battery draining too low in "both" mode -- it raises the bar that the scheduler plans around. |
+| **daily_consumption_estimate** | 0-100 kWh | 10 | Fallback when no 7-day average is available. Used to estimate overnight drain, hourly consumption, and deficit calculations. |
+
+### Power & Grid
+
+| Setting | Range | Default | How It's Used |
+|---|---|---|---|
+| **power_level** | 1-10 kW | 5 | Base charge/discharge power. Determines energy per slot: `energy_per_slot = power * slot_hours`. Higher = fewer slots needed but more grid stress. |
+| **safe_power_management** | auto/on/off | auto | When active, monitors grid amperage per phase and reduces power to prevent overload (see Section on Safe Power). The actual power used may be lower than `power_level`. |
+| **max_amperage_per_phase** | 10-63A | 16A | Grid current limit for safe power management. |
+
+### Pricing & Arbitrage
+
+| Setting | Range | Default | How It's Used |
+|---|---|---|---|
+| **grid_mode** | off/from_grid/to_grid/both | off | The master switch. Determines which algorithm runs. "off" = no grid interaction. |
+| **price_mode** | manual/auto | manual | "manual" uses a price threshold (level 1-10); "auto" uses the optimizer to pick slots. All algorithm logic described in this document runs in "auto" mode. |
+| **price_threshold_level** | 1-10 | 5 | Manual mode only: maps to a price point between min and max. Slots below this charge, above this sell. |
+| **arbitrage_price_delta** | 0-0.50 EUR/kWh | 0 | **Both mode only.** When > 0 and the day's price spread (max - min) exceeds this threshold, the algorithm switches from conservative "charge to reserve" to aggressive "charge to 100% and sell everything above reserve". **This is the biggest amplifier of aggressive selling.** Set to 0 to disable. When active, it maximizes both charge and discharge slot counts, leaving thinner margins for error. |
+
+### How These Settings Interact
+
+The settings form a hierarchy of constraints:
+
+```
+arbitrage_price_delta  -->  Determines charging target (reserve vs full)
+        |
+        v
+reserve_target_pct  -->  The PLANNED floor for scheduling
+        |
+        v
+efficiency_factor  -->  How much energy is actually usable (scales everything)
+        |
+        v
+battery_discharge_min_level  -->  The ACTUAL floor written to inverter (last defence)
+        |
+        v
+discharge_min_voltage  -->  Hardware protection (inverter stops here regardless)
+```
+
+**The gap between `reserve_target` and `discharge_min_level` is where the aggressive selling problem lives.** The scheduler plans to keep SOC above reserve_target (~60-70% typically), but the inverter is told the floor is discharge_min (20%). When reality diverges from the plan (cloud cover, consumption spike, forecast error), the battery drains through that gap.
+
+---
+
+## 2. Live Inputs: What the EMS Reads Each Cycle
 
 Every 10 seconds, the coordinator gathers these inputs and feeds them to the scheduler:
 
@@ -91,7 +161,7 @@ This gives:
 
 ---
 
-## 2. Mode: `from_grid` (Buy Only)
+## 3. Mode: `from_grid` (Buy Only)
 
 **Goal**: Charge the battery from the grid at the cheapest possible prices, but only enough to survive overnight.
 
@@ -159,7 +229,7 @@ A set of slot indices marked "charge". The inverter charges during these slots a
 
 ---
 
-## 3. Mode: `to_grid` (Sell Only)
+## 4. Mode: `to_grid` (Sell Only)
 
 **Goal**: Sell battery energy to the grid at the highest prices, while keeping enough for overnight self-consumption.
 
@@ -191,7 +261,7 @@ A set of slot indices marked "discharge".
 
 ---
 
-## 4. Mode: `both` (Buy + Sell)
+## 5. Mode: `both` (Buy + Sell)
 
 **Goal**: Buy cheap, sell expensive, while maintaining self-consumption reserve. This is where the aggressive selling issue occurs.
 
@@ -256,7 +326,7 @@ The validation iterates until no violations remain. The floor is `reserve_target
 
 ---
 
-## 5. Two-Day Unified Optimization
+## 6. Two-Day Unified Optimization
 
 When tomorrow's prices are available (typically from ~13:00), the algorithm creates a unified pool:
 
@@ -279,7 +349,7 @@ This means if tomorrow has very cheap overnight prices, the algorithm may delay 
 
 ---
 
-## 6. Runtime Execution (Every 10 Seconds)
+## 7. Runtime Execution (Every 10 Seconds)
 
 The schedule is recalculated periodically. Every 10 seconds, the coordinator:
 
@@ -307,7 +377,7 @@ If SOC hits the limit mid-slot, the state transitions to idle on the next 10-sec
 
 ---
 
-## 7. Analysis: Why "Both" Mode Sells Too Aggressively
+## 8. Analysis: Why "Both" Mode Sells Too Aggressively
 
 After tracing the logic, here are the potential causes of the battery draining below minimum in "both" mode:
 
@@ -353,9 +423,45 @@ The schedule is recalculated periodically, but if the battery is already lower t
 
 **This is a second critical gap**: The runtime execution doesn't enforce the same floor that the schedule was designed around. The schedule says "this is safe because SOC will stay above reserve_target" but the runtime only prevents discharge below `discharge_min`.
 
+### Worked Example: How Settings Combine to Cause Over-Discharge
+
+Consider a typical setup:
+```
+battery_capacity_kwh = 10
+battery_charge_max_level = 100%
+battery_discharge_min_level = 20%    --> 2.0 kWh hard floor
+efficiency_factor = 0.90
+reserve_target_pct = 0 (dynamic)
+arbitrage_price_delta = 0.10 EUR/kWh
+daily_consumption = 12 kWh/day
+```
+
+At 14:00 on a sunny day:
+- Battery SOC: 90% (9.0 kWh), peak projected 95% (9.5 kWh) from PV
+- Dynamic reserve_target = 2.0 + (12/24 * 12h) = 8.0 kWh (80%)
+- Price spread today: 0.25 EUR/kWh --> exceeds arbitrage_delta (0.10)
+- **Arbitrage activates**: deficit inflated to charge to 100%
+- Sellable = (10.0 - 8.0) * 0.90 = **1.8 kWh**
+- At 5 kW, 30-min slots: 1 discharge slot scheduled at 18:00 (2.5 kWh capacity)
+
+At 18:00 when discharge fires:
+- PV has stopped, consumption drained battery to ~7.5 kWh (75%)
+- Discharge removes 2.5 kWh at 5 kW for 30 min
+- **BUT** house is also consuming ~0.5 kWh/h during that slot
+- Battery drops to: 7.5 - 2.5 - 0.25 = **4.75 kWh (47.5%)**
+- This is well below reserve_target (8.0 kWh / 80%) but well above discharge_min (2.0 kWh / 20%)
+- The inverter doesn't stop because its floor is 20%, not 80%
+
+After 18:30, the house keeps consuming overnight:
+- 12h * 0.5 kWh/h = 6.0 kWh needed
+- Battery has 4.75 kWh above the 2.0 kWh floor = 2.75 kWh available
+- **Battery hits 20% floor around 23:30** -- 7.5 hours of no power until sunrise
+
+This example shows why even a SINGLE discharge slot can cause problems when the inverter's hard floor (20%) is far below the planned reserve (80%).
+
 ---
 
-## 8. Suggested Fixes for Aggressive Selling
+## 9. Suggested Fixes for Aggressive Selling
 
 ### Fix 1: Use Reserve Target as Runtime Discharge Floor (High Impact)
 
@@ -385,7 +491,7 @@ Before entering discharge state, check if current SOC is still consistent with t
 
 ---
 
-## 9. Summary Decision Flowchart
+## 10. Summary Decision Flowchart
 
 ```
 START (every 10 seconds)
