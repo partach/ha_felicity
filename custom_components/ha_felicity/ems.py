@@ -55,6 +55,7 @@ class ScheduleResult:
     grid_energy_planned: float = 0.0
     cheap_slots_remaining: int = 0
     self_consumption_reserve: float = 0.0
+    reserve_target_pct: float = 0.0  # computed reserve target as battery %
     tomorrow_planned_slots: int = 0
     tomorrow_planned_kwh: float = 0.0
     tomorrow_precharge: float = 0.0
@@ -738,6 +739,9 @@ def _schedule_from_grid(
 
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
     reserve_target = _compute_reserve_target(config, reserve_kwh)
+    result.reserve_target_pct = round(
+        (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
+    ) if config.battery_capacity_kwh > 0 else 0.0
 
     battery_shortfall = max(0.0, reserve_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)
@@ -844,6 +848,9 @@ def _schedule_to_grid(
         config.consumption_est_kwh, state.pv_hourly_kwh)
     result.self_consumption_reserve = round(reserve_kwh, 2)
     reserve_target = _compute_reserve_target(config, reserve_kwh)
+    result.reserve_target_pct = round(
+        (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
+    ) if config.battery_capacity_kwh > 0 else 0.0
 
     # Predictive: project peak SOC to determine total sellable energy
     pv_confidence = _calculate_pv_confidence(
@@ -858,11 +865,14 @@ def _schedule_to_grid(
         config.battery_capacity_kwh,
         consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
-    sellable = max(0.0, max_projected - reserve_target) * config.efficiency
+    # Safety margin (15%): accounts for consumption estimate errors,
+    # PV forecast uncertainty, and the gap between peak SOC (midday)
+    # and actual SOC when discharge slots fire (evening).
+    sellable = max(0.0, max_projected - reserve_target) * config.efficiency * 0.85
 
     _LOGGER.debug(
         "to_grid predictive: max_projected=%.1f, reserve_target=%.1f, "
-        "sellable=%.1f kWh",
+        "sellable=%.1f kWh (with 15%% safety margin)",
         max_projected, reserve_target, sellable,
     )
 
@@ -921,6 +931,9 @@ def _schedule_both(
     result.self_consumption_reserve = round(reserve_kwh, 2)
 
     reserve_target = _compute_reserve_target(config, reserve_kwh)
+    result.reserve_target_pct = round(
+        (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
+    ) if config.battery_capacity_kwh > 0 else 0.0
     battery_shortfall = max(0.0, reserve_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)
 
@@ -981,10 +994,13 @@ def _schedule_both(
     # Predictive sellable: use peak projected SOC above reserve.
     # When arbitrage is active, sellable is based on full capacity since
     # we're charging to max.
+    # Safety margin (15%): accounts for consumption estimate errors,
+    # PV forecast uncertainty, and the gap between peak SOC (midday)
+    # and actual SOC when discharge slots fire (evening).
     if arbitrage_active:
-        sellable = max(0.0, max_battery_kwh - reserve_target) * config.efficiency
+        sellable = max(0.0, max_battery_kwh - reserve_target) * config.efficiency * 0.85
     else:
-        sellable = max(0.0, max_projected - reserve_target) * config.efficiency
+        sellable = max(0.0, max_projected - reserve_target) * config.efficiency * 0.85
 
     charge_slots, tomorrow_slots, tomorrow_charge_kwh = select_unified_charge_slots(
         remaining, energy_deficit, effective_per_slot,

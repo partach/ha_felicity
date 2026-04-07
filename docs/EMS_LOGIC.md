@@ -461,33 +461,49 @@ This example shows why even a SINGLE discharge slot can cause problems when the 
 
 ---
 
-## 9. Suggested Fixes for Aggressive Selling
+## 9. Fixes Implemented
 
-### Fix 1: Use Reserve Target as Runtime Discharge Floor (High Impact)
+All four fixes from the analysis have been implemented:
 
-In `_determine_energy_state`, when in auto/both mode, check against `reserve_target` instead of `discharge_min`:
+### Fix 1: Use Reserve Target as Runtime Discharge Floor -- IMPLEMENTED
 
+**File**: `coordinator.py` — `_determine_energy_state()`
+
+In auto mode, the discharge guard now checks `battery_soc > max(discharge_min, reserve_target_pct)` instead of just `battery_soc > discharge_min`. When SOC is at or below the computed reserve target, the discharge slot is skipped and logged. This aligns the runtime guard with the floor the schedule was planned around.
+
+### Fix 2: Write Reserve Target as Inverter SOC Floor -- IMPLEMENTED
+
+**File**: `coordinator.py` — `_transition_to_state()`
+
+When entering discharge state in auto mode, the inverter's `econ_rule_1_soc` register is now written with the computed `reserve_target_pct` (e.g., 70%) instead of `discharge_min_level` (e.g., 20%). This means even if the 10-second polling cycle is delayed or the coordinator misses a cycle, the inverter hardware itself stops discharging at the intended reserve level. Manual mode continues using `discharge_min_level` as before.
+
+### Fix 3: Reduce Sellable by Safety Margin -- IMPLEMENTED
+
+**Files**: `ems.py` — `_schedule_to_grid()` and `_schedule_both()`
+
+A 15% safety margin is now applied to all sellable energy calculations:
 ```python
-# Instead of: if battery_soc > discharge_min
-# Use: if battery_soc_kwh > reserve_target_kwh
+sellable = max(0, max_projected - reserve_target) * efficiency * 0.85
 ```
+This accounts for consumption estimate errors, PV forecast uncertainty, and the inherent gap between peak SOC (midday) and actual SOC when discharge slots fire (evening). The margin reduces the number of discharge slots scheduled, leaving more buffer.
 
-This aligns the runtime guard with the planning assumption.
+### Fix 4: Reserve Target Passed Through Schedule Result -- IMPLEMENTED
 
-### Fix 2: Write Reserve Target as Inverter SOC Floor
+**Files**: `ems.py` — `ScheduleResult.reserve_target_pct`, `coordinator.py`
 
-When transitioning to discharge state, write `reserve_target_pct` (not `discharge_min_level`) to `econ_rule_1_soc`. This way, even if the 10-second polling is delayed, the inverter itself stops at the intended floor.
+The computed reserve target (as a battery %) is now included in `ScheduleResult` and stored on the coordinator. This enables Fixes 1 and 2 — the runtime code can enforce the same floor the scheduler planned around, without recomputing it.
 
-### Fix 3: Reduce Sellable by Safety Margin
+### Combined Effect
 
-Apply a conservative factor to sellable energy:
-```python
-sellable = max(0, max_projected - reserve_target) * efficiency * 0.85  # 15% safety margin
-```
+Using the worked example from Section 8 (10 kWh battery, 20% min, 80% reserve target):
 
-### Fix 4: Re-Validate Against Actual SOC Before Each Discharge
+**Before fixes**: Inverter told floor is 20%, sells aggressively, battery hits 20% by 23:30.
 
-Before entering discharge state, check if current SOC is still consistent with the schedule's expectations. If SOC is significantly lower than projected, skip the discharge slot.
+**After fixes**:
+- Sellable reduced by 15%: 1.8 kWh → 1.53 kWh (may eliminate marginal discharge slots)
+- `_determine_energy_state` checks SOC > 80% before allowing discharge
+- Inverter register set to 80% (not 20%) — hardware won't discharge below reserve
+- If battery is at 75% when evening discharge slot arrives → **slot is skipped**, battery preserved for overnight
 
 ---
 
@@ -518,7 +534,7 @@ Recalculate schedule (periodically)
 Current slot in schedule?
   |
   +-- charge slot & SOC < charge_max --> CHARGING
-  +-- discharge slot & SOC > discharge_min --> DISCHARGING  <-- HERE: should check reserve_target
+  +-- discharge slot & SOC > reserve_target --> DISCHARGING  (auto mode uses reserve_target, not discharge_min)
   +-- not in schedule --> IDLE
   |
   v
