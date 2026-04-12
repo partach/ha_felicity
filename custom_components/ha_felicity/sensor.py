@@ -160,6 +160,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                 "battery_capacity_kwh": opts.get("battery_capacity_kwh", 10),
                 "battery_charge_max_pct": opts.get("battery_charge_max_level", 100),
                 "battery_discharge_min_pct": opts.get("battery_discharge_min_level", 20),
+                "reserve_target_pct": opts.get("reserve_target_pct", 0),
                 "efficiency": opts.get("efficiency_factor", 0.90),
                 "battery_soc_pct": self.coordinator.battery_soc,
                 "net_pv_kwh": getattr(self.coordinator, '_last_net_pv', 0),
