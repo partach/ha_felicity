@@ -549,6 +549,8 @@ class FelicityEMSCard extends LitElement {
 
     // Find price range
     const prices = displayData.map((s) => s.price).filter((p) => p != null);
+    const actualMinPrice = prices.length ? Math.min(...prices) : 0;
+    const actualMaxPrice = prices.length ? Math.max(...prices) : 0;
     const minPrice = Math.min(...prices, 0);
     const maxPrice = Math.max(...prices, 0.01);
     const range = maxPrice - minPrice || 0.01;
@@ -657,6 +659,24 @@ class FelicityEMSCard extends LitElement {
       ctx.moveTo(marginLeft, zeroY);
       ctx.lineTo(w - marginRight, zeroY);
       ctx.stroke();
+    }
+
+    // Lowest-price indicator line + label (only meaningful when strictly above the axis floor)
+    if (prices.length && actualMinPrice > minPrice + 1e-6) {
+      const minY = marginTop + chartH - ((actualMinPrice - minPrice) / range) * chartH;
+      ctx.strokeStyle = "rgba(76, 175, 80, 0.75)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(marginLeft, minY);
+      ctx.lineTo(w - marginRight, minY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "rgba(76, 175, 80, 0.95)";
+      ctx.font = "9px sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(actualMinPrice.toFixed(2), marginLeft - 2, minY + 3);
     }
 
     // ── SOC trajectory (solid past / dotted future) ──────────────────
