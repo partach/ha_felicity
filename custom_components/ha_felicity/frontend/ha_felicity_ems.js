@@ -194,10 +194,21 @@ class FelicityEMSCard extends LitElement {
     const batteryCapacity = sim.battery_capacity_kwh || 10;
     const chargeMax = (overrides.chargeMax ?? sim.battery_charge_max_pct ?? 100) / 100;
     const dischargeMin = (overrides.dischargeMin ?? sim.battery_discharge_min_pct ?? 20) / 100;
+    const reserveTargetPct = sim.reserve_target_pct || 0;
     const efficiency = sim.efficiency || 0.90;
     const batterySoc = sim.battery_soc_pct;
     const netPv = sim.net_pv_kwh || 0;
     const yesterdayDeficit = this._getAttr("schedule_status", "yesterday_deficit_kwh") || 0;
+
+    // Mirrors ems._compute_reserve_target: fixed floor if reserveTargetPct > 0,
+    // otherwise dynamic (dischargeMin floor + overnight reserve).
+    const computeReserveTarget = (minKwh, reserveKwh) => {
+      if (reserveTargetPct > 0) {
+        const fixedFloor = (reserveTargetPct / 100) * batteryCapacity;
+        return Math.min(batteryCapacity, Math.max(fixedFloor, minKwh));
+      }
+      return Math.min(batteryCapacity, minKwh + reserveKwh);
+    };
 
     const numSlots = slotData.length;
     const granularity = this._getAttr("schedule_status", "slot_granularity_min") || Math.round((24 * 60) / numSlots);
@@ -237,11 +248,11 @@ class FelicityEMSCard extends LitElement {
     const result = { slots: slotData.map(s => ({ ...s, action: null })), chargeCount: 0, dischargeCount: 0, planned: 0, plannedChargeKwh: 0, plannedDischargeKwh: 0, tomorrowChargeCount: 0, tomorrowPlanned: 0, threshold };
 
     if (gridMode === "from_grid" || gridMode === "both") {
-      // Solar-first: target = min SOC floor + overnight reserve.
-      // After overnight drain the battery should still be at min SOC.
+      // Solar-first: target = min SOC floor + overnight reserve (dynamic)
+      // or fixed percentage floor when reserveTargetPct > 0. Matches ems.py.
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
-      const reserveTarget = Math.min(batteryCapacity, minKwh + reserveKwh);
+      const reserveTarget = computeReserveTarget(minKwh, reserveKwh);
       const shortfall = Math.max(0, reserveTarget - currentKwh);
       let deficit = Math.max(0, shortfall - netPv);
       if (yesterdayDeficit > 0 && shortfall > deficit) {
@@ -266,7 +277,7 @@ class FelicityEMSCard extends LitElement {
           currentKwh + netPv + deficit - drainToMidnight
         ));
 
-        const tmrReserveTarget = Math.min(batteryCapacity, minKwh + tmrReserve);
+        const tmrReserveTarget = computeReserveTarget(minKwh, tmrReserve);
         // Daytime gap: on low-PV days battery drains during the day too
         const daytimeGap = Math.max(0, consumption - pvTmr);
         // grid_charge >= reserve_target + daytime_gap - projected_midnight
@@ -363,7 +374,7 @@ class FelicityEMSCard extends LitElement {
     if (gridMode === "to_grid" || gridMode === "both") {
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
-      const reserveTarget = Math.min(batteryCapacity, minKwh + reserveKwh);
+      const reserveTarget = computeReserveTarget(minKwh, reserveKwh);
       // Safety margin (15%) matches backend to avoid over-scheduling discharge
       const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency * 0.85;
       const roundTrip = efficiency * efficiency;
@@ -808,9 +819,20 @@ class FelicityEMSCard extends LitElement {
     const batteryCapacity = sim.battery_capacity_kwh || 10;
     const chargeMax = (overrides.chargeMax ?? sim.battery_charge_max_pct ?? 100) / 100;
     const dischargeMin = (overrides.dischargeMin ?? sim.battery_discharge_min_pct ?? 20) / 100;
+    const reserveTargetPct = sim.reserve_target_pct || 0;
     const efficiency = sim.efficiency || 0.90;
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow") || 0;
     const consumption = sim.consumption_est_kwh || 10;
+
+    // Mirrors ems._compute_reserve_target: fixed floor if reserveTargetPct > 0,
+    // otherwise dynamic (dischargeMin floor + overnight reserve).
+    const computeReserveTarget = (minKwhArg, reserveKwhArg) => {
+      if (reserveTargetPct > 0) {
+        const fixedFloor = (reserveTargetPct / 100) * batteryCapacity;
+        return Math.min(batteryCapacity, Math.max(fixedFloor, minKwhArg));
+      }
+      return Math.min(batteryCapacity, minKwhArg + reserveKwhArg);
+    };
 
     const numSlots = slotData.length;
     const granularity = Math.round((24 * 60) / numSlots);
@@ -835,7 +857,7 @@ class FelicityEMSCard extends LitElement {
     const startKwh = projectedMidnight;
     // Overnight reserve: estimate hours from sunset to next sunrise using today's pattern
     const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || (consumption / 24 * 12);
-    const reserveTarget = Math.min(batteryCapacity, dischargeMin * batteryCapacity + reserveKwh);
+    const reserveTarget = computeReserveTarget(dischargeMin * batteryCapacity, reserveKwh);
     // Daytime gap: on low-PV days battery drains during the day too
     const daytimeGap = Math.max(0, consumption - pvTomorrow);
 
