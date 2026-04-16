@@ -60,6 +60,7 @@ The 3 possible ways are explained in the picture below. At the moment the last p
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-connect.png" width="600"/>
   <br><em>Ways to connect the inverter</em>
 </p>
+NOTE: when using the USR-D164 wifi module you need to put Pack Interval to 100 (20 causes packet loss)
 
 ## Installation options
 The T-REX 5 and 10K series with HP or HL (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3) can be selected with selecting
