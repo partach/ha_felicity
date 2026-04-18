@@ -143,16 +143,18 @@ For example if you have a maximum of 16A per group, set the value to 16A. The in
 (by decreasing the user requested power level, controlled via rule 1 via the integration).
 It will keep monitorning this and will increase the battery loading to requested power levels if the amperage becomes lower.
 
-## Using the card
+## Using the cards
 After installation of the integration you need to first reboot HA.
-The card will be automatically installed and registered by the integration on start up.
+The cards will be automatically installed and registered by the integration on start up.
 To use the card in your dashboard, go to you dashboard, edit, choose `Add card`.
-Choose `Manual`
-Add first line: `type: custom:felicity-inverter-card`
+They can be found at the bottom of the list.
+If they are not visible you can choose `Manual` as card type.
+Add first line: `type: custom:felicity-inverter-card` for the inverter card and `type: custom:felicity-ems-card` for the EMS card.
 Then choose the `visual editor` to continue.
-From the `Device` dropdown chose your felicity inverter install.
+From the `Device` dropdown chose your felicity inverter integration installed.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card-expl.png" width="600"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-ems-card.png" width="390" style="vertical-align: middle; margin: 0 10px;"/>
   <br><em>Card usage explained</em>
 </p>
 
