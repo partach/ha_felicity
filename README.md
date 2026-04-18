@@ -59,7 +59,7 @@ The 3 possible ways are explained in the picture below. At the moment the last p
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-connect.png" width="600"/>
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/modbus_location_trex10k.png" width="400"/>
-  <br><em>Ways to connect the inverter and TREXT10k modbus location</em>
+  <br><em>Ways to connect the inverter and TREX10k modbus location</em>
 </p>
 NOTE: when using the USR-D164 wifi module you need to put Pack Interval to 100 (20 causes packet loss)
 
