@@ -157,7 +157,7 @@ Then choose the `visual editor` to continue.
 From the `Device` dropdown chose your felicity inverter integration installed.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card-expl.png" width="600"/>
-  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-ems-card.png" width="390" style="vertical-align: middle; margin: 0 10px;"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/ems_ui_explanation.png" width="600"/>
   <br><em>Card usage explained</em>
 </p>
 
