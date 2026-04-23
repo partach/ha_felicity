@@ -93,18 +93,34 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_schedule_status"
         self._attr_icon = "mdi:calendar-clock"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._cached_attributes: dict = {}
 
     @property
     def native_value(self):
         return self.coordinator.schedule_status or "unknown"
 
-    @property
-    def extra_state_attributes(self):
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Rebuild the cached attributes once per coordinator tick."""
         try:
-            return self._build_attributes()
+            self._cached_attributes = self._build_attributes()
         except Exception:
             _LOGGER.debug("Error building schedule_status attributes", exc_info=True)
-            return {}
+            self._cached_attributes = {}
+        super()._handle_coordinator_update()
+
+    async def async_added_to_hass(self) -> None:
+        """Prime the attribute cache on initial add."""
+        await super().async_added_to_hass()
+        try:
+            self._cached_attributes = self._build_attributes()
+        except Exception:
+            _LOGGER.debug("Error priming schedule_status attributes", exc_info=True)
+            self._cached_attributes = {}
+
+    @property
+    def extra_state_attributes(self):
+        return self._cached_attributes
 
     def _build_attributes(self):
         slot_prices = self.coordinator.slot_prices_today

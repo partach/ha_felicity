@@ -282,6 +282,30 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
                     slot_action = self.scheduled_slots[slot_idx]
                     if slot_action == "charge" and battery_soc < charge_max:
+                        # Defer charging when a cheaper charge slot is
+                        # scheduled later.  The 10-second re-evaluation
+                        # cycle adjusts the deficit naturally, so we don't
+                        # lose coverage — we just shift charging to
+                        # cheaper slots.  Negative-price slots are always
+                        # profitable — never defer those.
+                        current_price = self.slot_prices_today[slot_idx]
+                        if current_price is not None and current_price >= 0:
+                            future_charge_prices = [
+                                self.slot_prices_today[idx]
+                                for idx, action in self.scheduled_slots.items()
+                                if idx > slot_idx
+                                and action == "charge"
+                                and self.slot_prices_today[idx] is not None
+                            ]
+                            if (future_charge_prices
+                                    and min(future_charge_prices) < current_price):
+                                _LOGGER.debug(
+                                    "Deferring charge at slot %d (%.4f) — "
+                                    "cheaper slot available later (%.4f)",
+                                    slot_idx, current_price,
+                                    min(future_charge_prices),
+                                )
+                                return "idle"
                         return "charging"
                     if slot_action == "discharge" and battery_soc > discharge_min:
                         # Guard against draining below reserve target.
@@ -420,6 +444,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
 
         now = datetime.now()
+        today_date = now.date()
         attrs = state.attributes or {}
         remaining = None
         hourly_kwh: dict[int, float] = {}
@@ -433,8 +458,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     ts = self._parse_forecast_time(ts_str)
                     if ts:
                         wh_val = float(value)
-                        # Accumulate per-hour production in kWh
-                        hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + wh_val / 1000.0
+                        # Only accumulate entries for today — otherwise a
+                        # multi-day forecast pollutes the hour buckets with
+                        # tomorrow's/day-after's values (same hour, different day).
+                        if ts.date() == today_date:
+                            hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + wh_val / 1000.0
                         if ts >= now:
                             remaining_wh += wh_val
                 remaining = remaining_wh / 1000.0
@@ -442,6 +470,22 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Could not parse forecast hourly data: %s", err)
 
         self.pv_hourly_kwh = hourly_kwh
+
+        # Derive today's total from the (date-filtered) hourly data.  This
+        # recovers the correct forecast when the entity's state attribute is
+        # stale right after midnight — common with Forecast.Solar's
+        # "today_remaining" sensor which lingers at 0 until the integration
+        # refreshes for the new day.
+        hourly_total_today = sum(hourly_kwh.values())
+        if hourly_total_today > 0:
+            entity_today = self.pv_forecast_today or 0.0
+            if entity_today < hourly_total_today * 0.5:
+                _LOGGER.debug(
+                    "pv_forecast_today (%.1f) looks stale vs hourly sum (%.1f); "
+                    "using hourly sum",
+                    entity_today, hourly_total_today,
+                )
+                self.pv_forecast_today = round(hourly_total_today, 2)
 
         # Fallback: estimate remaining PV using solar bell curve
         if remaining is None and self.pv_forecast_today:
