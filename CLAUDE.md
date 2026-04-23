@@ -89,6 +89,14 @@ The integration controls the inverter via **Economic Rule 1** Modbus registers. 
 2. Every 10 seconds, the coordinator checks if the current slot is in the schedule
 3. If the desired state differs from current state, it writes registers
 
+**Charge deferral** (`coordinator._determine_energy_state`): when the current
+slot is flagged `charge` but a later scheduled charge slot has a cheaper
+price (non-negative slots only), execution returns `idle` instead. The next
+10s re-evaluation cycle adjusts the deficit naturally, so charging shifts to
+the cheapest scheduled slot. This compensates for deficit shrinking as PV
+confidence recovers mid-day — without it, early expensive slots would
+execute while later cheaper slots got dropped from a re-plan.
+
 ### State Transitions (coordinator.py:1195-1231)
 
 | State | econ_rule_1_enable | Voltage | SOC | Power |
@@ -306,6 +314,12 @@ The coordinator has ~300 lines of scheduling logic that duplicates ems.py. Chang
 ### 2. Frontend Simulation Divergence
 The JS card has a simplified version of the algorithm. It doesn't do SOC trajectory projection or per-slot validation. Complex scenarios (predictive deficit, SOC validation pruning) won't match the backend.
 
+Settings now mirrored in the card's simulation: `reserve_target_pct`,
+`arbitrage_price_delta`. Still missing: per-slot SOC trajectory, validation
+pruning, PV confidence sliding window. When those matter, the backend-
+provided `slot_schedule` attribute is authoritative — the card overlays its
+own simulation only for live slider previews.
+
 ### 3. PV Confidence Can Over-React
 The confidence factor can drop to 0.1 early in the day on partially cloudy mornings, causing excessive grid charging. It doesn't recover when clouds clear.
 
@@ -317,6 +331,15 @@ The 200W grid import check (suppress discharge when importing) triggers on insta
 
 ### 6. Generator-Port Solar Workaround
 TREX-25/50 with micro-inverters on the generator port need special handling. PV registers read 0, falling back to generator_day_cost_energy. Both backend and frontend handle this but it's fragile.
+
+### 7. Forecast.Solar `wh_hours` date handling
+`_retrieve_pv_forecast` now filters `wh_hours` entries by today's date before
+bucketing them into `pv_hourly_kwh[hour]`. Without that filter, a multi-day
+forecast would sum today's + tomorrow's + day-after's values into the same
+hour slot. This was especially painful at midnight when stale
+`state.state` combined with hour-merged buckets broke the schedule. When
+`state.state` still reports the previous day's stale total, the coordinator
+falls back to the filtered hourly sum.
 
 ---
 
@@ -343,11 +366,29 @@ Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumptio
 #### C2. SOC History Display — IMPLEMENTED
 Coordinator records battery SOC at each slot boundary in `_soc_history`. Frontend draws solid line for actual past SOC, dotted line for projected future.
 
+#### C3. Cheapest-First Charge Execution — IMPLEMENTED
+`_determine_energy_state` defers execution at a scheduled charge slot if a
+later scheduled charge slot has a lower price. Prevents expensive-early-slot
+commitment when the deficit would have shrunk (e.g., PV confidence
+recovering) by the time the cheaper late slot would execute. Negative-price
+slots are exempt.
+
+#### C4. Schedule-Status Attribute Caching — IMPLEMENTED
+`HA_FelicityScheduleStatusSensor` caches `extra_state_attributes` and
+rebuilds only in `_handle_coordinator_update`. Avoids rebuilding the
+attribute dict (with 96-slot arrays, hourly PV/consumption maps, SOC
+history) on every HA state read — fixes a `helpers/entity.py:1214` slow-
+update warning.
+
 ### Correctness Improvements (Medium Priority)
 
 #### D. SOC Trajectory in Frontend
 **Problem**: The JS card doesn't run the predictive trajectory, so its preview can show different results than the backend.
 **Fix**: Either pass the backend's calculated schedule to the card (already partially done via slot_schedule), or add the trajectory projection to the JS. The simpler approach: always use the backend schedule for display, only simulate for slider preview.
+**Status**: `reserve_target_pct` and `arbitrage_price_delta` are now
+mirrored in both `_simulateSchedule` and `_simulateScheduleTomorrow`
+(via `sim_params`). Trajectory projection and validation pruning still
+live only on the backend.
 
 #### E. Arbitrage in Both Mode — Charge Slot Selection
 **Problem**: When arbitrage_price_delta triggers full charging, the algorithm uses the same "cheapest slots" logic. But for arbitrage, you specifically want cheap-buy + expensive-sell pairs.
