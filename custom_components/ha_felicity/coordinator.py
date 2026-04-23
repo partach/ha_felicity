@@ -282,6 +282,30 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
                     slot_action = self.scheduled_slots[slot_idx]
                     if slot_action == "charge" and battery_soc < charge_max:
+                        # Defer charging when a cheaper charge slot is
+                        # scheduled later.  The 10-second re-evaluation
+                        # cycle adjusts the deficit naturally, so we don't
+                        # lose coverage — we just shift charging to
+                        # cheaper slots.  Negative-price slots are always
+                        # profitable — never defer those.
+                        current_price = self.slot_prices_today[slot_idx]
+                        if current_price is not None and current_price >= 0:
+                            future_charge_prices = [
+                                self.slot_prices_today[idx]
+                                for idx, action in self.scheduled_slots.items()
+                                if idx > slot_idx
+                                and action == "charge"
+                                and self.slot_prices_today[idx] is not None
+                            ]
+                            if (future_charge_prices
+                                    and min(future_charge_prices) < current_price):
+                                _LOGGER.debug(
+                                    "Deferring charge at slot %d (%.4f) — "
+                                    "cheaper slot available later (%.4f)",
+                                    slot_idx, current_price,
+                                    min(future_charge_prices),
+                                )
+                                return "idle"
                         return "charging"
                     if slot_action == "discharge" and battery_soc > discharge_min:
                         # Guard against draining below reserve target.
