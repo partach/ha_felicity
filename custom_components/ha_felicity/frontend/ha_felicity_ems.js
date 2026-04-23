@@ -230,6 +230,20 @@ class FelicityEMSCard extends LitElement {
     const energyPerSlot = powerKw * slotDuration;
     const effectivePerSlot = energyPerSlot * efficiency;
 
+    // Arbitrage: when today's remaining price spread >= arbitrage_price_delta,
+    // charge to full capacity so the extra energy can be sold at peak.
+    // Mirrors ems._schedule_both lines 976-1003.
+    const arbitrageDelta = sim.arbitrage_price_delta || 0;
+    const maxBatteryKwh = chargeMax * batteryCapacity;
+    let arbitrageActive = false;
+    if (arbitrageDelta > 0 && remaining.length) {
+      const prices = remaining.map(s => s.price);
+      const spread = Math.max(...prices) - Math.min(...prices);
+      if (spread >= arbitrageDelta) {
+        arbitrageActive = true;
+      }
+    }
+
     // Calculate threshold from price level override
     let threshold = null;
     if (overrides.priceLevel != null) {
@@ -257,6 +271,11 @@ class FelicityEMSCard extends LitElement {
       let deficit = Math.max(0, shortfall - netPv);
       if (yesterdayDeficit > 0 && shortfall > deficit) {
         deficit += Math.min(yesterdayDeficit, shortfall - deficit);
+      }
+      // Arbitrage: charge to full capacity when spread is profitable.
+      if (arbitrageActive) {
+        const fullCharge = Math.max(0, maxBatteryKwh - currentKwh);
+        deficit = Math.max(deficit, Math.max(0, fullCharge - netPv));
       }
 
       // Unified slot selection: combine today + tomorrow into one pool
@@ -375,8 +394,10 @@ class FelicityEMSCard extends LitElement {
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
       const reserveTarget = computeReserveTarget(minKwh, reserveKwh);
-      // Safety margin (15%) matches backend to avoid over-scheduling discharge
-      const sellable = Math.max(0, currentKwh - reserveTarget) * efficiency * 0.85;
+      // Safety margin (15%) matches backend to avoid over-scheduling discharge.
+      // With arbitrage active, we charge to full, so peak SOC is maxBatteryKwh.
+      const peakKwh = arbitrageActive ? maxBatteryKwh : currentKwh;
+      const sellable = Math.max(0, peakKwh - reserveTarget) * efficiency * 0.85;
       const roundTrip = efficiency * efficiency;
 
       if (sellable > 0) {
@@ -870,6 +891,20 @@ class FelicityEMSCard extends LitElement {
       return { slots: this._markAll(slotData, null), chargeCount: 0, dischargeCount: 0, planned: 0, threshold: null };
     }
 
+    // Arbitrage: when tomorrow's price spread >= arbitrage_price_delta,
+    // charge to full capacity so the extra energy can be sold at peak.
+    // Mirrors ems._schedule_both lines 976-1003.
+    const arbitrageDelta = sim.arbitrage_price_delta || 0;
+    const maxBatteryKwh = chargeMax * batteryCapacity;
+    let arbitrageActive = false;
+    if (arbitrageDelta > 0 && remaining.length) {
+      const prices = remaining.map(s => s.price);
+      const spread = Math.max(...prices) - Math.min(...prices);
+      if (spread >= arbitrageDelta) {
+        arbitrageActive = true;
+      }
+    }
+
     let threshold = null;
     if (overrides.priceLevel != null) {
       const prices = slotData.map(s => s.price).filter(p => p != null);
@@ -905,7 +940,15 @@ class FelicityEMSCard extends LitElement {
       } else {
         // Standalone tomorrow calculation (no unified data available)
         const shortfall = Math.max(0, reserveTarget + daytimeGap - startKwh);
-        const deficit = shortfall;
+        let deficit = shortfall;
+        // Arbitrage: charge to full capacity when spread is profitable.
+        // PV surplus (pv - consumption) offsets the grid charge needed.
+        if (arbitrageActive) {
+          const fullCharge = maxBatteryKwh - startKwh;
+          const pvSurplus = Math.max(0, pvTomorrow - consumption);
+          const arbitrageDeficit = Math.max(0, fullCharge - pvSurplus);
+          deficit = Math.max(deficit, arbitrageDeficit);
+        }
         if (deficit > 0) {
           const neg = remaining.filter(s => s.price < 0);
           const nonNeg = remaining.filter(s => s.price >= 0).sort((a, b) => a.price - b.price);
@@ -922,8 +965,12 @@ class FelicityEMSCard extends LitElement {
 
     if (gridMode === "to_grid" || gridMode === "both") {
       // For selling tomorrow: estimate available energy after solar charges the battery
-      // Battery fills from startKwh + pvTomorrow, capped at charge_max
-      const projectedKwh = Math.min(chargeMax * batteryCapacity, startKwh + pvTomorrow);
+      // Battery fills from startKwh + pvTomorrow, capped at charge_max.
+      // When arbitrage is active, we'll be grid-charging to full, so the
+      // peak SOC is max capacity — more energy available to sell.
+      const projectedKwh = arbitrageActive
+        ? maxBatteryKwh
+        : Math.min(maxBatteryKwh, startKwh + pvTomorrow);
       // Safety margin (15%) matches backend to avoid over-scheduling discharge
       const sellable = Math.max(0, projectedKwh - reserveTarget) * efficiency * 0.85;
       const roundTrip = efficiency * efficiency;
