@@ -112,9 +112,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.tomorrow_precharge: float = 0.0
         self.tomorrow_planned_slots: int = 0
         self.tomorrow_planned_kwh: float = 0.0
+        self._backend_soc_trajectory: list[float] = []
 
         # Always-visible slot info (regardless of price_mode)
         self.available_slots_at_threshold: int = 0
+        self._available_total_with_tomorrow: int = 0
         self.available_energy_capacity: float = 0.0
         self.charge_likelihood: str = "unknown"
 
@@ -637,6 +639,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.tomorrow_planned_slots = result.tomorrow_planned_slots
         self.tomorrow_planned_kwh = result.tomorrow_planned_kwh
         self.schedule_status = result.status
+        self._backend_soc_trajectory = result.soc_trajectory
 
         if result.price_threshold is not None:
             self.price_threshold = result.price_threshold
@@ -734,8 +737,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 elif effective_mode != "from_grid" and tp >= self.price_threshold:
                     tomorrow_available += 1
 
-        self.available_slots_at_threshold = len(available) + tomorrow_available
-        self.available_energy_capacity = round(self.available_slots_at_threshold * energy_per_slot, 2)
+        self.available_slots_at_threshold = len(available)
+        self._available_total_with_tomorrow = len(available) + tomorrow_available
+        self.available_energy_capacity = round(self._available_total_with_tomorrow * energy_per_slot, 2)
 
         # Set schedule_status for manual mode (schedule optimizer only runs in auto)
         if price_mode == "manual":
@@ -792,7 +796,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.charge_likelihood = "idle (sell mode info)"
             elif sellable <= 0:
                 self.charge_likelihood = "nothing_to_sell"
-            elif self.available_slots_at_threshold > 0:
+            elif self._available_total_with_tomorrow > 0:
                 self.charge_likelihood = "selling"
             else:
                 self.charge_likelihood = "no_profitable_slots"

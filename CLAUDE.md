@@ -208,8 +208,13 @@ When tomorrow's prices are available, merges today+tomorrow slots, picks cheapes
 ### Per-Slot SOC Validation
 
 After selecting slots, simulates battery forward through every slot. Drops slots that would violate bounds:
-- Charge pushing SOC > capacity → drop most expensive charge
+- Charge pushing SOC > capacity → drop most expensive non-negative charge first, then negative-price charges if needed
 - Discharge pulling SOC < minimum → drop least profitable discharge
+
+Negative-price slots are no longer fully exempt from overflow pruning.
+When PV production combined with grid charging would overfill the battery,
+negative-price charge slots are dropped to prevent forced grid export at
+penalty rates (inverter cannot disconnect PV panels).
 
 ### Arbitrage Price Delta (both mode)
 
@@ -224,7 +229,8 @@ Prevents over-scheduling when PV will fill the battery:
 ```python
 headroom = max(0, max_battery_kwh - current_kwh - net_pv_surplus)
 max_today_slots = floor(headroom / effective_per_slot)
-# Negative-price slots exempt (always profitable)
+# Negative-price slots pass through here (profitable to consume),
+# but _validate_schedule_soc prunes any that would cause overflow.
 ```
 
 ---
@@ -312,12 +318,18 @@ Fetches `energy_state` history from HA API (throttled 60s), shows what actually 
 The coordinator has ~300 lines of scheduling logic that duplicates ems.py. Changes to one must be manually mirrored to the other. This has caused bugs (e.g., missing solar protection in coordinator).
 
 ### 2. Frontend Simulation Divergence
-The JS card has a simplified version of the algorithm. It doesn't do SOC trajectory projection or per-slot validation. Complex scenarios (predictive deficit, SOC validation pruning) won't match the backend.
+The JS card has a simplified version of the algorithm. It doesn't do SOC
+trajectory projection or per-slot validation. Complex scenarios (predictive
+deficit, SOC validation pruning) won't match the backend.
 
 Settings now mirrored in the card's simulation: `reserve_target_pct`,
-`arbitrage_price_delta`. Still missing: per-slot SOC trajectory, validation
-pruning, PV confidence sliding window. When those matter, the backend-
-provided `slot_schedule` attribute is authoritative — the card overlays its
+`arbitrage_price_delta`, PV-aware headroom for negative-price slots.
+Backend-computed SOC trajectory (`backend_soc_trajectory` in `sim_params`)
+is now used for the today-view line chart when no slider overrides are
+active. The card falls back to client-side trajectory only during live
+slider preview. Still missing in client-side sim: validation pruning, PV
+confidence sliding window. The backend-provided `slot_schedule` attribute
+is authoritative — the card overlays its
 own simulation only for live slider previews.
 
 ### 3. PV Confidence Can Over-React
@@ -382,13 +394,31 @@ update warning.
 
 ### Correctness Improvements (Medium Priority)
 
-#### D. SOC Trajectory in Frontend
-**Problem**: The JS card doesn't run the predictive trajectory, so its preview can show different results than the backend.
-**Fix**: Either pass the backend's calculated schedule to the card (already partially done via slot_schedule), or add the trajectory projection to the JS. The simpler approach: always use the backend schedule for display, only simulate for slider preview.
-**Status**: `reserve_target_pct` and `arbitrage_price_delta` are now
-mirrored in both `_simulateSchedule` and `_simulateScheduleTomorrow`
-(via `sim_params`). Trajectory projection and validation pruning still
-live only on the backend.
+#### D. SOC Trajectory in Frontend — IMPLEMENTED
+Backend now computes `soc_trajectory` (list of SOC% per slot) in
+`ScheduleResult` via `_compute_scheduled_soc_trajectory()`. Passed to
+frontend via `sim_params.backend_soc_trajectory`. The card uses this
+authoritative trajectory for the today-view line chart when no overrides
+are active, falling back to client-side simulation only during live slider
+preview. `reserve_target_pct` and `arbitrage_price_delta` are also mirrored
+in both `_simulateSchedule` and `_simulateScheduleTomorrow`.
+
+#### D2. Negative-Price PV Headroom Protection — IMPLEMENTED
+`_validate_schedule_soc` no longer fully exempts negative-price charge
+slots from overflow pruning. When PV production combined with grid charging
+would push SOC above capacity, negative-price slots are dropped (least
+negative first, after non-negative slots). This prevents the inverter
+from being forced to export PV surplus to grid at penalty rates because
+it cannot disconnect PV panels. The headroom cap in
+`select_unified_charge_slots` still allows all negative-price slots through;
+the downstream SOC validation handles the pruning.
+
+#### D3. Available Slots Counter Clarification — IMPLEMENTED
+`available_slots_at_threshold` now counts only today's remaining slots
+(not tomorrow's). Tomorrow's slots are still included in the energy
+capacity calculation for charge likelihood. In `both` mode,
+`cheap_slots_remaining` now counts only charge slots (not charge +
+discharge combined).
 
 #### E. Arbitrage in Both Mode — Charge Slot Selection
 **Problem**: When arbitrage_price_delta triggers full charging, the algorithm uses the same "cheapest slots" logic. But for arbitrage, you specifically want cheap-buy + expensive-sell pairs.
@@ -427,7 +457,7 @@ live only on the backend.
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (99 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (111 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

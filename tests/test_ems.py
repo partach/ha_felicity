@@ -742,7 +742,24 @@ class TestCalculateSchedule:
         assert len(discharge_slots) == 0
 
     def test_negative_prices_from_grid(self):
-        """Negative prices always trigger charging in from_grid mode."""
+        """Negative prices trigger charging when battery has room."""
+        config = default_config(battery_capacity_kwh=60.0)
+        prices = make_prices(24, pattern="negative")
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(10.0),
+            pv_forecast_remaining=5.0,
+            pv_actual_today_kwh=5.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        charged_neg = sum(1 for s in charge_slots if prices[s] < 0)
+        assert charged_neg > 0
+
+    def test_negative_prices_skipped_when_pv_fills_battery(self):
+        """Negative-price charging skipped when PV would overfill the battery."""
         config = default_config()
         prices = make_prices(24, pattern="negative")
         state = default_state(
@@ -755,9 +772,7 @@ class TestCalculateSchedule:
         )
         result = calculate_schedule(config, state)
         charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
-        # Should charge during negative price slots even with full-ish battery
-        charged_neg = sum(1 for s in charge_slots if prices[s] < 0)
-        assert charged_neg > 0
+        assert len(charge_slots) == 0
 
     def test_yesterday_deficit_carryover(self):
         """Yesterday's deficit increases today's charging."""
@@ -1045,9 +1060,25 @@ class TestScenarios:
         assert result.tomorrow_planned_kwh > 0
 
     def test_scenario_negative_prices_bonus_charge(self):
-        """When negative prices appear, always charge even if battery is fine."""
+        """Negative prices trigger charging when battery has room."""
+        config = default_config(battery_capacity_kwh=60.0, consumption_est_kwh=20.0)
+        prices = [0.25] * 10 + [-0.05, -0.03, -0.01] + [0.25] * 11
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(10.0),
+            pv_forecast_remaining=5.0,
+            pv_actual_today_kwh=5.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        neg_slots = [s for s in charge_slots if prices[s] < 0]
+        assert len(neg_slots) >= 1
+
+    def test_scenario_negative_prices_skipped_when_battery_full_with_pv(self):
+        """Negative prices skipped when PV + high SOC leaves no room."""
         config = default_config(consumption_est_kwh=20.0)
-        # Some negative slots mixed in
         prices = [0.25] * 10 + [-0.05, -0.03, -0.01] + [0.25] * 11
         state = default_state(
             battery_soc_pct=70.0,
@@ -1059,9 +1090,49 @@ class TestScenarios:
         )
         result = calculate_schedule(config, state)
         charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
-        # Negative price slots should be included
         neg_slots = [s for s in charge_slots if prices[s] < 0]
-        assert len(neg_slots) >= 1  # at least some negative slots selected
+        # With 10 kWh battery at 70% and 35 kWh PV, no room for grid charging
+        assert len(neg_slots) == 0
+
+    def test_scenario_both_mode_negative_prices_with_headroom(self):
+        """Both mode charges at negative prices when battery has room."""
+        config = default_config(
+            grid_mode="both", battery_capacity_kwh=60.0,
+            consumption_est_kwh=20.0, arbitrage_price_delta=0.20,
+        )
+        prices = [0.05] * 4 + [-0.10, -0.08, -0.05] + [0.30] * 17
+        state = default_state(
+            battery_soc_pct=30.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(15.0),
+            pv_forecast_remaining=10.0,
+            pv_actual_today_kwh=5.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        neg_slots = [s for s in charge_slots if prices[s] < 0]
+        assert len(neg_slots) >= 1
+
+    def test_scenario_both_mode_negative_prices_limited_by_pv(self):
+        """Both mode limits negative-price charging when PV would overflow battery."""
+        config = default_config(
+            grid_mode="both", consumption_est_kwh=10.0,
+        )
+        # Lots of negative-price slots during PV hours
+        prices = [0.10] * 6 + [-0.05] * 8 + [0.10] * 10
+        state = default_state(
+            battery_soc_pct=80.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(40.0),
+            pv_forecast_remaining=25.0,
+            pv_actual_today_kwh=15.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        # Battery at 80% with 40 kWh PV on 10 kWh battery: almost no room
+        assert len(charge_slots) <= 2
 
 
 # ---------------------------------------------------------------------------
@@ -1130,6 +1201,58 @@ class TestPVConfidence:
         conf_14 = _calculate_pv_confidence(pv, expected_by_14 * 0.5, 14)
         # Hour 9 should be closer to 1.0 than hour 14
         assert conf_9 > conf_14, f"Early confidence {conf_9} should be higher than midday {conf_14}"
+
+
+class TestBackendSocTrajectory:
+    """Tests for the authoritative SOC trajectory returned by calculate_schedule."""
+
+    def test_trajectory_length_matches_slots(self):
+        """Backend trajectory has one entry per slot."""
+        config = default_config()
+        state = default_state(battery_soc_pct=50.0, current_hour=0)
+        result = calculate_schedule(config, state)
+        num_slots = len(state.slot_prices_today)
+        assert len(result.soc_trajectory) == num_slots
+
+    def test_trajectory_reflects_charging(self):
+        """SOC rises at charge slots."""
+        config = default_config(consumption_est_kwh=5.0)
+        prices = [0.05] * 4 + [0.30] * 20
+        state = default_state(
+            battery_soc_pct=30.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        assert len(result.soc_trajectory) == 24
+        charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
+        if charge_slots:
+            first = min(charge_slots)
+            last = max(charge_slots)
+            # SOC at last+1 (if exists) or last should be higher than at first
+            after_last = min(last + 1, len(result.soc_trajectory) - 1)
+            assert result.soc_trajectory[after_last] > result.soc_trajectory[first]
+
+    def test_trajectory_no_schedule_still_returned(self):
+        """Even with no scheduled actions, trajectory is computed."""
+        config = default_config(grid_mode="from_grid")
+        state = default_state(
+            battery_soc_pct=95.0,
+            pv_hourly_kwh=make_pv_hourly(40.0),
+            pv_forecast_remaining=20.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        assert len(result.soc_trajectory) == len(state.slot_prices_today)
+
+    def test_trajectory_off_mode_empty(self):
+        """Grid mode off produces empty trajectory."""
+        config = default_config(grid_mode="off")
+        state = default_state(battery_soc_pct=50.0)
+        result = calculate_schedule(config, state)
+        assert result.soc_trajectory == []
 
 
 class TestSOCTrajectory:
