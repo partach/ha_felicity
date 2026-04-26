@@ -715,9 +715,15 @@ class FelicityEMSCard extends LitElement {
     }
 
     // ── SOC trajectory (solid past / dotted future) ──────────────────
-    // Prefer backend-computed trajectory when no overrides are active
-    const hasOverrides = this._simOverrides && Object.keys(this._simOverrides).length > 0;
-    const backendTrajectory = (!hasOverrides && !showTomorrow)
+    // Prefer backend-computed trajectory when no overrides are active.
+    // Fall back to client-side simulation when user is previewing via
+    // sliders (_simOverrides) or manual slot clicks (_slotOverrides).
+    const hasSliderOverrides = this._simOverrides && Object.keys(this._simOverrides).length > 0;
+    const hasSlotOverrides = this._slotOverrides
+      && (Object.keys(this._slotOverrides.today || {}).length > 0
+          || Object.keys(this._slotOverrides.tomorrow || {}).length > 0);
+    const hasAnyOverrides = hasSliderOverrides || hasSlotOverrides;
+    const backendTrajectory = (!hasAnyOverrides && !showTomorrow)
       ? ((this._getAttr("schedule_status", "sim_params") || {}).backend_soc_trajectory || null)
       : null;
     const socTrajectory = (backendTrajectory && backendTrajectory.length === numSlots)
