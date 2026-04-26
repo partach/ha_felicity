@@ -608,11 +608,9 @@ class FelicityEMSCard extends LitElement {
       if (showTomorrow) {
         // Tomorrow: color by simulated action
         if (slot.action === "charge") {
-          ctx.fillStyle = "rgba(76, 175, 80, 0.6)"; // green, slightly softer
+          ctx.fillStyle = price < 0 ? "rgba(33, 150, 243, 0.6)" : "rgba(76, 175, 80, 0.6)";
         } else if (slot.action === "discharge") {
           ctx.fillStyle = "rgba(255, 152, 0, 0.6)"; // orange, slightly softer
-        } else if (price < 0) {
-          ctx.fillStyle = "rgba(33, 150, 243, 0.6)";
         } else {
           ctx.fillStyle = "rgba(100, 140, 200, 0.35)";
         }
@@ -625,11 +623,9 @@ class FelicityEMSCard extends LitElement {
         } else if (isPast && pastAction === "discharging") {
           ctx.fillStyle = "rgba(255, 152, 0, 0.3)";  // dim orange — actually discharged
         } else if (slot.action === "charge") {
-          ctx.fillStyle = isPast ? "rgba(150, 150, 150, 0.2)" : "#4CAF50";
+          ctx.fillStyle = isPast ? "rgba(150, 150, 150, 0.2)" : (price < 0 ? "#2196F3" : "#4CAF50");
         } else if (slot.action === "discharge") {
           ctx.fillStyle = isPast ? "rgba(150, 150, 150, 0.2)" : "#FF9800";
-        } else if (price < 0) {
-          ctx.fillStyle = isPast ? "rgba(33, 150, 243, 0.3)" : "#2196F3";
         } else {
           ctx.fillStyle = isPast ? "rgba(150, 150, 150, 0.2)" : "rgba(150, 150, 150, 0.4)";
         }
