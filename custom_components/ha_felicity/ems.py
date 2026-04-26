@@ -60,6 +60,7 @@ class ScheduleResult:
     tomorrow_planned_kwh: float = 0.0
     tomorrow_precharge: float = 0.0
     status: str = "off"
+    soc_trajectory: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -332,6 +333,61 @@ def _project_soc_trajectory(
     return projection, min_soc, max_soc
 
 
+def _compute_scheduled_soc_trajectory(
+    prices: list[float | None],
+    num_slots: int,
+    minutes_per_slot: float,
+    current_kwh: float,
+    current_slot: int,
+    scheduled_slots: dict[int, str],
+    config: EMSConfig,
+    state: EMSState,
+) -> list[float]:
+    """Compute SOC% trajectory for all slots using the finalized schedule.
+
+    Returns a list of SOC% values (one per slot, from slot 0 to num_slots-1).
+    Past slots (before current_slot) use current_kwh back-projected;
+    future slots simulate forward with PV, consumption, and scheduled actions.
+    """
+    pv_confidence = _calculate_pv_confidence(
+        state.pv_hourly_kwh, state.pv_actual_today_kwh,
+        state.current_hour, state.current_minute,
+    )
+    energy_per_slot = config.safe_power_kw * (minutes_per_slot / 60.0)
+    min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
+    cap = config.battery_capacity_kwh
+
+    trajectory: list[float] = []
+    soc = current_kwh
+
+    for i in range(num_slots):
+        if i == current_slot:
+            soc = current_kwh
+
+        pct = max(0.0, min(100.0, (soc / cap) * 100.0)) if cap > 0 else 0.0
+        trajectory.append(round(pct, 1))
+
+        hour = int((i * minutes_per_slot) / 60)
+        pv_kwh = (state.pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+        pv_per_slot = pv_kwh * (minutes_per_slot / 60.0)
+
+        if state.consumption_hourly_kwh and hour in state.consumption_hourly_kwh:
+            cons = state.consumption_hourly_kwh[hour] * (minutes_per_slot / 60.0)
+        else:
+            cons = (config.consumption_est_kwh / num_slots)
+
+        delta = pv_per_slot - cons
+        action = scheduled_slots.get(i)
+        if action == "charge":
+            delta += energy_per_slot * config.efficiency
+        elif action == "discharge" and soc > min_kwh:
+            delta -= min(energy_per_slot, soc - min_kwh)
+
+        soc = max(min_kwh, min(cap, soc + delta))
+
+    return trajectory
+
+
 def _validate_schedule_soc(
     remaining: list[tuple[int, float]],
     charge_slots: set[int],
@@ -423,8 +479,11 @@ def _validate_schedule_soc(
                 drop, price_of.get(drop, 0.0), violation_slot,
             )
         else:
-            # Remove the most expensive non-negative charge at or before violation.
-            # Negative-price slots are always profitable — exempt from overflow.
+            # Remove the most expensive charge at or before violation.
+            # Prefer dropping non-negative slots first; fall back to
+            # negative-price slots if those are the only ones left —
+            # a negative-price slot that overflows the battery still
+            # causes forced PV export at penalty rates.
             candidates = [
                 s for s in charge_slots
                 if s <= violation_slot and price_of.get(s, 0.0) >= 0
@@ -435,7 +494,13 @@ def _validate_schedule_soc(
                     if price_of.get(s, 0.0) >= 0
                 ]
             if not candidates:
-                # Only negative-price charge slots remain — keep them all
+                candidates = [
+                    s for s in charge_slots
+                    if s <= violation_slot
+                ]
+            if not candidates:
+                candidates = list(charge_slots)
+            if not candidates:
                 break
             # Remove the most expensive charge slot
             drop = max(candidates, key=lambda s: price_of.get(s, 0.0))
@@ -543,11 +608,10 @@ def select_unified_charge_slots(
     headroom = max(0.0, max_battery_kwh - current_kwh - pv_fill)
     max_today_slots = math.floor(headroom / effective_per_slot) if effective_per_slot > 0 else 0
     today_deficit_slots = math.ceil(energy_deficit / effective_per_slot) if effective_per_slot > 0 and energy_deficit > 0 else 0
-    # Negative-price slots are always profitable — exempt from headroom cap
     neg_today_count = sum(1 for s in today_selected if s[0] < 0)
-    # Only let deficit override headroom when there's no PV surplus filling
-    # the battery.  When PV will fill the battery, headroom is the real
-    # physical limit and deficit slots would just overcharge.
+    # Allow negative-price slots through: they're profitable (paid to consume).
+    # SOC validation downstream will prune any that would cause battery overflow
+    # when combined with PV production.
     if pv_fill <= 0:
         max_today_slots = max(max_today_slots, today_deficit_slots, neg_today_count)
     else:
@@ -715,6 +779,14 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         result.status = "active"
     else:
         result.status = "waiting"
+
+    # Compute authoritative SOC trajectory with the finalized schedule
+    result.soc_trajectory = _compute_scheduled_soc_trajectory(
+        prices, num_slots, minutes_per_slot,
+        current_kwh, current_slot,
+        result.scheduled_slots,
+        config, state,
+    )
 
     return result
 
@@ -1055,7 +1127,7 @@ def _schedule_both(
     for s in sell_selected:
         result.scheduled_slots[s[0]] = "discharge"
 
-    result.cheap_slots_remaining = len(result.scheduled_slots)
+    result.cheap_slots_remaining = len(charge_slots)
     charge_energy = round(len(charge_slots) * effective_per_slot, 2) if charge_slots else 0
     sell_energy = round(min(sellable, len(sell_selected) * energy_per_slot), 2) if sellable > 0 else 0
     result.grid_energy_planned = round(charge_energy + sell_energy, 2)
@@ -1109,8 +1181,9 @@ def calculate_available_info(
             elif effective_mode != "from_grid" and tp >= price_threshold:
                 tomorrow_available += 1
 
-    info.available_slots = len(available) + tomorrow_available
-    info.available_energy_capacity = round(info.available_slots * energy_per_slot, 2)
+    info.available_slots = len(available)
+    total_with_tomorrow = len(available) + tomorrow_available
+    info.available_energy_capacity = round(total_with_tomorrow * energy_per_slot, 2)
 
     if state.battery_soc_pct is None:
         info.charge_likelihood = "unknown"
@@ -1158,7 +1231,7 @@ def calculate_available_info(
             info.charge_likelihood = "idle (sell mode info)"
         elif sellable <= 0:
             info.charge_likelihood = "nothing_to_sell"
-        elif info.available_slots > 0:
+        elif total_with_tomorrow > 0:
             info.charge_likelihood = "selling"
         else:
             info.charge_likelihood = "no_profitable_slots"

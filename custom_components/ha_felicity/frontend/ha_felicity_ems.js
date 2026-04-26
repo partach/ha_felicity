@@ -327,11 +327,18 @@ class FelicityEMSCard extends LitElement {
         let tomorrowCharge = allSelected.filter(s => s.day === 1);
 
         // Battery headroom cap: today can only charge what the battery can absorb
-        const headroom = Math.max(0, chargeMax * batteryCapacity - currentKwh);
-        const maxTodaySlots = Math.max(
-          effectivePerSlot > 0 ? Math.floor(headroom / effectivePerSlot) : 0,
-          effectivePerSlot > 0 && deficit > 0 ? Math.ceil(deficit / effectivePerSlot) : 0
-        );
+        const pvFill = Math.max(0, netPv);
+        const headroom = Math.max(0, chargeMax * batteryCapacity - currentKwh - pvFill);
+        let maxTodaySlots = effectivePerSlot > 0 ? Math.floor(headroom / effectivePerSlot) : 0;
+        const negTodayCount = todayCharge.filter(s => s.price < 0).length;
+        if (pvFill <= 0) {
+          maxTodaySlots = Math.max(maxTodaySlots,
+            effectivePerSlot > 0 && deficit > 0 ? Math.ceil(deficit / effectivePerSlot) : 0,
+            negTodayCount
+          );
+        } else {
+          maxTodaySlots = Math.max(maxTodaySlots, negTodayCount);
+        }
         if (todayCharge.length > maxTodaySlots) {
           todayCharge.sort((a, b) => a.price - b.price);  // cheapest first
           const excess = todayCharge.slice(maxTodaySlots);
@@ -712,7 +719,14 @@ class FelicityEMSCard extends LitElement {
     }
 
     // ── SOC trajectory (solid past / dotted future) ──────────────────
-    const socTrajectory = this._computeSocTrajectory(displayData, showTomorrow);
+    // Prefer backend-computed trajectory when no overrides are active
+    const hasOverrides = this._simOverrides && Object.keys(this._simOverrides).length > 0;
+    const backendTrajectory = (!hasOverrides && !showTomorrow)
+      ? ((this._getAttr("schedule_status", "sim_params") || {}).backend_soc_trajectory || null)
+      : null;
+    const socTrajectory = (backendTrajectory && backendTrajectory.length === numSlots)
+      ? backendTrajectory
+      : this._computeSocTrajectory(displayData, showTomorrow);
     const socHistory = this._getAttr("schedule_status", "soc_history") || {};
 
     if (socTrajectory && socTrajectory.length > 1) {

@@ -185,6 +185,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                 "pv_hourly_kwh": self.coordinator.pv_hourly_kwh or {},
                 "pv_confidence": getattr(self.coordinator, '_last_pv_confidence', 1.0),
                 "consumption_hourly_profile": self.coordinator._hourly_consumption_profile or {},
+                "backend_soc_trajectory": self.coordinator._backend_soc_trajectory,
             },
             "soc_history": self.coordinator._soc_history,
             "slot_overrides": self.coordinator.slot_overrides if self.coordinator.slot_overrides else {},
