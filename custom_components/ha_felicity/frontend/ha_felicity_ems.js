@@ -198,6 +198,7 @@ class FelicityEMSCard extends LitElement {
     const efficiency = sim.efficiency || 0.90;
     const batterySoc = sim.battery_soc_pct;
     const netPv = sim.net_pv_kwh || 0;
+    const consumption = sim.consumption_est_kwh || 10;
     const yesterdayDeficit = this._getAttr("schedule_status", "yesterday_deficit_kwh") || 0;
 
     // Mirrors ems._compute_reserve_target: fixed floor if reserveTargetPct > 0,
@@ -419,7 +420,46 @@ class FelicityEMSCard extends LitElement {
 
         available.sort((a, b) => b.price - a.price);
         const needed = energyPerSlot > 0 ? Math.ceil(sellable / energyPerSlot) : 0;
-        const sellSlots = available.slice(0, needed);
+        let sellSlots = available.slice(0, needed);
+
+        // Per-slot SOC validation: drop sells that push SOC below reserve
+        {
+          const consumptionProfile = sim.consumption_hourly_profile || null;
+          const pvHourly = sim.pv_hourly_kwh || null;
+          const pvConfidence = sim.pv_confidence ?? 1.0;
+          const now = new Date();
+          const currentSlotI = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
+          let validating = true;
+          while (validating) {
+            validating = false;
+            const sellSet = new Set(sellSlots.map(s => s.idx));
+            let soc = currentKwh;
+            let violationIdx = -1;
+            for (let ii = currentSlotI; ii < numSlots; ii++) {
+              const hr = Math.floor((ii * granularity) / 60);
+              const cons = consumptionProfile
+                ? ((consumptionProfile[hr] ?? consumptionProfile[String(hr)] ?? (consumption / 24)) * slotDuration)
+                : (consumption / 24) * slotDuration;
+              const pvKwh = pvHourly ? ((pvHourly[hr] || pvHourly[String(hr)] || 0) * pvConfidence * slotDuration) : 0;
+              let delta = pvKwh - cons;
+              if (chargeIdxSet.has(ii)) delta += energyPerSlot * efficiency;
+              if (sellSet.has(ii)) delta -= energyPerSlot;
+              soc += delta;
+              if (soc < reserveTarget - 0.01) {
+                violationIdx = ii;
+                break;
+              }
+              soc = Math.max(0, Math.min(batteryCapacity, soc));
+            }
+            if (violationIdx >= 0 && sellSlots.length > 0) {
+              const candidates = sellSlots.filter(s => s.idx <= violationIdx);
+              const toDrop = (candidates.length > 0 ? candidates : sellSlots)
+                .reduce((min, s) => s.price < min.price ? s : min, sellSlots[0]);
+              sellSlots = sellSlots.filter(s => s !== toDrop);
+              validating = true;
+            }
+          }
+        }
 
         for (const s of sellSlots) {
           result.slots[s.idx].action = "discharge";
@@ -513,7 +553,17 @@ class FelicityEMSCard extends LitElement {
 
     // Run client-side simulation on today's data (uses _tomorrowSlotData internally)
     const simResult = this._simulateSchedule(todaySlotData, this._simOverrides);
-    this._simResult = simResult;
+
+    // When no overrides are active, prefer the backend's validated schedule
+    // for bar colors. The client-side sim may produce different sell slots
+    // than the backend (which has SOC validation + reserve target protection).
+    const hasSliderOverrides = this._simOverrides && Object.keys(this._simOverrides).length > 0;
+    const hasSlotOverrides = this._slotOverrides
+      && (Object.keys(this._slotOverrides.today || {}).length > 0
+          || Object.keys(this._slotOverrides.tomorrow || {}).length > 0);
+    const hasAnyOverrides = hasSliderOverrides || hasSlotOverrides;
+    const useBackendSchedule = !hasAnyOverrides && todaySlotData?.some(s => s.action != null);
+    this._simResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
 
     // Manual override or auto-switch to tomorrow when no actions remain
     const hasTomorrow = tomorrowSlotData?.length > 0;
@@ -528,7 +578,7 @@ class FelicityEMSCard extends LitElement {
 
     // For tomorrow, run a forecast simulation too (no current-slot offset)
     // Keep today's sim for unified stats (tomorrowChargeCount, tomorrowPlanned)
-    this._todaySimResult = simResult;
+    this._todaySimResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
     let displayData, displayThreshold;
     if (showTomorrow) {
       const tmrSim = this._simulateScheduleTomorrow(tomorrowSlotData, this._simOverrides);
@@ -536,7 +586,7 @@ class FelicityEMSCard extends LitElement {
       displayThreshold = tmrSim?.threshold;
       this._simResult = tmrSim;  // stats reflect tomorrow preview
     } else {
-      displayData = simResult?.slots ?? todaySlotData;
+      displayData = useBackendSchedule ? todaySlotData : (simResult?.slots ?? todaySlotData);
       displayThreshold = simResult?.threshold;
     }
 
@@ -1000,7 +1050,55 @@ class FelicityEMSCard extends LitElement {
         }
         available.sort((a, b) => b.price - a.price);
         const needed = energyPerSlot > 0 ? Math.ceil(sellable / energyPerSlot) : 0;
-        const sellSlots = available.slice(0, needed);
+        let sellSlots = available.slice(0, needed);
+
+        // Per-slot SOC validation: simulate forward and drop discharge slots
+        // that would push SOC below reserve_target. Matches backend
+        // _validate_schedule_soc behavior.
+        const consumptionProfile = sim.consumption_hourly_profile || null;
+        const pvHourlyTmr = null; // TODO: tomorrow hourly PV not available yet
+        const pvFallbackTotal = pvTomorrow;
+        const daylightSlots = [];
+        for (let ii = 0; ii < numSlots; ii++) {
+          const hr = (ii * granularity) / 60;
+          if (hr >= 6 && hr < 18) daylightSlots.push(ii);
+        }
+        const pvPerDaylightSlot = daylightSlots.length > 0 ? pvFallbackTotal / daylightSlots.length : 0;
+        const daylightSet = new Set(daylightSlots);
+
+        let validated = true;
+        while (validated) {
+          validated = false;
+          const sellSet = new Set(sellSlots.map(s => s.idx));
+          const chargeSet = chargeIdxSet;
+          let soc = startKwh;
+          let violationIdx = -1;
+          for (let ii = 0; ii < numSlots; ii++) {
+            const hr = Math.floor((ii * granularity) / 60);
+            const cons = consumptionProfile
+              ? ((consumptionProfile[hr] ?? consumptionProfile[String(hr)] ?? (consumption / 24)) * slotDuration)
+              : (consumption / 24) * slotDuration;
+            const pv = daylightSet.has(ii) ? pvPerDaylightSlot : 0;
+            let delta = pv - cons;
+            if (chargeSet.has(ii)) delta += energyPerSlot * efficiency;
+            if (sellSet.has(ii)) delta -= energyPerSlot;
+            soc += delta;
+            if (soc < reserveTarget - 0.01) {
+              violationIdx = ii;
+              break;
+            }
+            soc = Math.max(0, Math.min(batteryCapacity, soc));
+          }
+          if (violationIdx >= 0 && sellSlots.length > 0) {
+            // Drop least profitable sell slot at or before violation
+            const candidates = sellSlots.filter(s => s.idx <= violationIdx);
+            const toDrop = (candidates.length > 0 ? candidates : sellSlots)
+              .reduce((min, s) => s.price < min.price ? s : min, sellSlots[0]);
+            sellSlots = sellSlots.filter(s => s !== toDrop);
+            validated = true;
+          }
+        }
+
         for (const s of sellSlots) result.slots[s.idx].action = "discharge";
         result.dischargeCount = sellSlots.length;
         result.planned += Math.min(sellable, sellSlots.length * energyPerSlot);
