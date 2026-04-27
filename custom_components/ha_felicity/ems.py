@@ -346,8 +346,9 @@ def _compute_scheduled_soc_trajectory(
     """Compute SOC% trajectory for all slots using the finalized schedule.
 
     Returns a list of SOC% values (one per slot, from slot 0 to num_slots-1).
-    Past slots (before current_slot) use current_kwh back-projected;
-    future slots simulate forward with PV, consumption, and scheduled actions.
+    Past slots use current_kwh as placeholder (frontend uses soc_history
+    for past slots instead). Future slots simulate forward with PV,
+    consumption, and scheduled actions.
     """
     pv_confidence = _calculate_pv_confidence(
         state.pv_hourly_kwh, state.pv_actual_today_kwh,
@@ -356,11 +357,16 @@ def _compute_scheduled_soc_trajectory(
     energy_per_slot = config.safe_power_kw * (minutes_per_slot / 60.0)
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
     cap = config.battery_capacity_kwh
+    current_pct = max(0.0, min(100.0, (current_kwh / cap) * 100.0)) if cap > 0 else 0.0
 
     trajectory: list[float] = []
     soc = current_kwh
 
     for i in range(num_slots):
+        if i < current_slot:
+            trajectory.append(round(current_pct, 1))
+            continue
+
         if i == current_slot:
             soc = current_kwh
 
