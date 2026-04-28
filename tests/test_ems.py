@@ -2537,3 +2537,61 @@ class TestInverterMaxPowerCap:
             safe_power_kw=0.0,
         )
         assert 12 in validated_charge
+
+
+class TestBothModeSellWithChargeEnergy:
+    """Tests that both mode sells surplus from grid-charged energy."""
+
+    def test_sell_slots_when_pv_confidence_low(self):
+        """Both mode should sell surplus even when PV confidence is near zero.
+
+        Scenario: battery at 28%, PV confidence 0.1 (0 kWh produced),
+        grid charges several slots bringing battery well above reserve.
+        The sell side should see the surplus and schedule discharge.
+        """
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=13.0,
+            safe_power_kw=12.5,
+            inverter_max_power_kw=25.0,
+        )
+        prices = [0.02] * 6 + [0.05] * 6 + [0.08] * 6 + [0.15] * 6
+        state = default_state(
+            battery_soc_pct=28.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(39.0),
+            pv_forecast_remaining=24.0,
+            pv_forecast_today=39.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=10,
+        )
+        result = calculate_schedule(config, state)
+        charge_count = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        sell_count = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert charge_count > 0, "Should have charge slots"
+        assert sell_count > 0, "Should have sell slots — charge energy creates surplus above reserve"
+
+    def test_no_sell_when_all_prices_equal(self):
+        """No sell slots when all prices are identical (profitability filter blocks)."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=40.0,
+            safe_power_kw=5.0,
+        )
+        prices = [0.10] * 24
+        state = default_state(
+            battery_soc_pct=20.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        sell_count = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert sell_count == 0

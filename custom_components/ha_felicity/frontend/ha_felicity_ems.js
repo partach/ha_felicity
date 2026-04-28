@@ -403,9 +403,12 @@ class FelicityEMSCard extends LitElement {
       const minKwh = dischargeMin * batteryCapacity;
       const reserveKwh = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
       const reserveTarget = computeReserveTarget(minKwh, reserveKwh);
-      // Safety margin (15%) matches backend to avoid over-scheduling discharge.
-      // With arbitrage active, we charge to full, so peak SOC is maxBatteryKwh.
-      const peakKwh = arbitrageActive ? maxBatteryKwh : currentKwh;
+      // Include planned charge energy in peak estimate so the sell side
+      // knows the battery will have surplus.  SOC validation prunes any
+      // sells that would actually drain below reserve.
+      const chargeEnergyPlanned = result.chargeCount * effectivePerSlot;
+      const peakWithCharge = Math.min(maxBatteryKwh, currentKwh + chargeEnergyPlanned);
+      const peakKwh = arbitrageActive ? maxBatteryKwh : peakWithCharge;
       const sellable = Math.max(0, peakKwh - reserveTarget) * efficiency * 0.85;
       const roundTrip = efficiency * efficiency;
 
@@ -1031,14 +1034,12 @@ class FelicityEMSCard extends LitElement {
     }
 
     if (gridMode === "to_grid" || gridMode === "both") {
-      // For selling tomorrow: estimate available energy after solar charges the battery
-      // Battery fills from startKwh + pvTomorrow, capped at charge_max.
-      // When arbitrage is active, we'll be grid-charging to full, so the
-      // peak SOC is max capacity — more energy available to sell.
+      // Include planned charge energy + PV in peak estimate so sell side
+      // sees the surplus.  SOC validation prunes overcommitted sells.
+      const chargeEnergyPlanned = result.chargeCount * effectivePerSlot;
       const projectedKwh = arbitrageActive
         ? maxBatteryKwh
-        : Math.min(maxBatteryKwh, startKwh + pvTomorrow);
-      // Safety margin (15%) matches backend to avoid over-scheduling discharge
+        : Math.min(maxBatteryKwh, startKwh + pvTomorrow + chargeEnergyPlanned);
       const sellable = Math.max(0, projectedKwh - reserveTarget) * efficiency * 0.85;
       const roundTrip = efficiency * efficiency;
 
