@@ -1083,17 +1083,6 @@ def _schedule_both(
                     price_spread, config.arbitrage_price_delta, energy_deficit,
                 )
 
-    # Predictive sellable: use peak projected SOC above reserve.
-    # When arbitrage is active, sellable is based on full capacity since
-    # we're charging to max.
-    # Safety margin (15%): accounts for consumption estimate errors,
-    # PV forecast uncertainty, and the gap between peak SOC (midday)
-    # and actual SOC when discharge slots fire (evening).
-    if arbitrage_active:
-        sellable = max(0.0, max_battery_kwh - reserve_target) * config.efficiency * 0.85
-    else:
-        sellable = max(0.0, max_projected - reserve_target) * config.efficiency * 0.85
-
     charge_slots, tomorrow_slots, tomorrow_charge_kwh = select_unified_charge_slots(
         remaining, energy_deficit, effective_per_slot,
         config.battery_capacity_kwh, config.battery_discharge_min_pct,
@@ -1109,6 +1098,19 @@ def _schedule_both(
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
     result.tomorrow_planned_slots = len(tomorrow_slots)
     result.tomorrow_planned_kwh = tomorrow_charge_kwh
+
+    # Sellable energy: peak projected SOC above reserve.
+    # After charge selection, include the planned charge energy so the sell
+    # side knows the battery will have surplus to sell.  Without this, a low
+    # PV-confidence day would show 0 sellable despite grid-charging the
+    # battery well above reserve.  The downstream SOC validation prunes any
+    # sell slots that would actually drain the battery below reserve.
+    if arbitrage_active:
+        sellable = max(0.0, max_battery_kwh - reserve_target) * config.efficiency * 0.85
+    else:
+        charge_energy_planned = len(charge_slots) * effective_per_slot
+        peak_with_charge = min(max_battery_kwh, max_projected + charge_energy_planned)
+        sellable = max(0.0, peak_with_charge - reserve_target) * config.efficiency * 0.85
 
     charge_slot_indices = {s[0] for s in charge_slots}
 
