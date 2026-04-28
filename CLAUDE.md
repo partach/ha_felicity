@@ -37,7 +37,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 99 tests for the pure EMS algorithm
+└── test_ems.py              # 115 tests for the pure EMS algorithm
 ```
 
 ---
@@ -107,12 +107,19 @@ execute while later cheaper slots got dropped from a re-plan.
 
 ### Model Differences
 
-| Aspect | TREX-5/10 | TREX-25/50 |
-|---|---|---|
-| Enable register | Single `econ_rule_1_enable` (0/1/2) | `econ_rule_1_grid_charge_enable` + peak shaving |
-| Power unit | Watts | Kilowatts (÷1000) |
-| SOC source | Single register | `min(bat1_soc, bat2_soc)` |
-| Date registers | Written | Not used |
+| Aspect | TREX-5 | TREX-10 | TREX-25 | TREX-50 |
+|---|---|---|---|---|
+| Max inverter power | 5 kW | 10 kW | 25 kW | 50 kW |
+| Enable register | Single `econ_rule_1_enable` (0/1/2) | Same | `econ_rule_1_grid_charge_enable` + peak shaving | Same |
+| Power unit | Watts | Watts | Kilowatts (÷1000) | Kilowatts (÷1000) |
+| SOC source | Single register | Single register | `min(bat1_soc, bat2_soc)` | `min(bat1_soc, bat2_soc)` |
+| Date registers | Written | Written | Not used | Not used |
+
+`INVERTER_MAX_POWER_KW` in `const.py` maps each model to its max power.
+The power_level slider range and SOC trajectory calculations use this to
+cap grid charge when PV is active: `grid_kw = min(safe_power_kw, inverter_max - pv_kw)`.
+This prevents the SOC prediction from assuming unrealistic charge rates
+(e.g., 8 kW grid + 7 kW PV = 15 kW on a 10 kW inverter).
 
 ---
 
@@ -128,6 +135,7 @@ execute while later cheaper slots got dropped from a re-plan.
 | battery_discharge_min_pct | 20.0 | Min SOC floor for discharging |
 | efficiency | 0.90 | Single-direction efficiency (round-trip = 0.81) |
 | safe_power_kw | 5.0 | Charge/discharge power limit |
+| inverter_max_power_kw | 10.0 | Total inverter power limit (model-specific) |
 | consumption_est_kwh | 10.0 | Daily consumption (or 7-day rolling avg) |
 | yesterday_deficit_kwh | 0.0 | Carried forward from previous day |
 | reserve_target_pct | 0.0 | 0=dynamic, >0=fixed floor % |
@@ -457,7 +465,7 @@ discharge combined).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (111 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (115 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

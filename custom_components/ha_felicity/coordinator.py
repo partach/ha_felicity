@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pymodbus.exceptions import ModbusException, ConnectionException
-from .const import DOMAIN, INVERTER_MODEL_TREX_TEN # only for determining default
+from .const import DOMAIN, INVERTER_MODEL_TREX_TEN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW
 from .type_specific import TypeSpecificHandler
 from . import ems as ems_module
 
@@ -54,6 +54,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._last_register_set: str | None = None
         self.model_combined = model_combined
         self.inverter_model = inverter_model if inverter_model else INVERTER_MODEL_TREX_TEN
+        self._inverter_max_power_kw = INVERTER_MAX_POWER_KW.get(self.inverter_model, 10)
         self.TypeSpecificHandler = TypeSpecificHandler(client=self.client, slave_id=self.slave_id, inverter_model=self.inverter_model, register_map=self.register_map)
         
         # Nordpool: override wins over entity
@@ -586,6 +587,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # Use safe_max_power (kW scale 1-10) for realistic slot energy, fallback to power_level
         safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
+        inverter_model = self.config_entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+        inverter_max_kw = INVERTER_MAX_POWER_KW.get(inverter_model, 10)
 
         config = ems_module.EMSConfig(
             grid_mode=opts.get("grid_mode", "off"),
@@ -594,6 +597,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             battery_discharge_min_pct=opts.get("battery_discharge_min_level", 20),
             efficiency=opts.get("efficiency_factor", 0.90),
             safe_power_kw=safe_power_kw,
+            inverter_max_power_kw=inverter_max_kw,
             consumption_est_kwh=self._get_consumption_estimate(),
             yesterday_deficit_kwh=self._yesterday_deficit,
             reserve_target_pct=opts.get("reserve_target_pct", 0),

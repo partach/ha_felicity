@@ -23,6 +23,7 @@ class EMSConfig:
     battery_discharge_min_pct: float = 20.0
     efficiency: float = 0.90
     safe_power_kw: float = 5.0
+    inverter_max_power_kw: float = 10.0
     consumption_est_kwh: float = 10.0
     yesterday_deficit_kwh: float = 0.0
     reserve_target_pct: float = 0.0  # 0 = dynamic (min + overnight), >0 = fixed floor %
@@ -385,7 +386,9 @@ def _compute_scheduled_soc_trajectory(
         delta = pv_per_slot - cons
         action = scheduled_slots.get(i)
         if action == "charge":
-            delta += energy_per_slot * config.efficiency
+            grid_kw = min(config.safe_power_kw,
+                          max(0.0, config.inverter_max_power_kw - pv_kwh * pv_confidence))
+            delta += grid_kw * (minutes_per_slot / 60.0) * config.efficiency
         elif action == "discharge" and soc > min_kwh:
             delta -= min(energy_per_slot, soc - min_kwh)
 
@@ -407,6 +410,8 @@ def _validate_schedule_soc(
     min_kwh: float,
     energy_per_slot: float,
     efficiency: float,
+    inverter_max_power_kw: float = 0.0,
+    safe_power_kw: float = 0.0,
     consumption_hourly_kwh: dict[int, float] | None = None,
 ) -> tuple[set[int], set[int]]:
     """Validate schedule by simulating SOC at every slot, pruning violations.
@@ -442,7 +447,12 @@ def _validate_schedule_soc(
                 cons = consumption_per_slot
             delta = pv_per_slot - cons
             if slot_idx in charge_slots:
-                delta += energy_per_slot * efficiency
+                if inverter_max_power_kw > 0:
+                    grid_kw = min(safe_power_kw or energy_per_slot / (minutes_per_slot / 60.0),
+                                  max(0.0, inverter_max_power_kw - pv_kwh * pv_confidence))
+                    delta += grid_kw * (minutes_per_slot / 60.0) * efficiency
+                else:
+                    delta += energy_per_slot * efficiency
             if slot_idx in discharge_slots:
                 delta -= energy_per_slot
 
@@ -891,6 +901,8 @@ def _schedule_from_grid(
         config.battery_capacity_kwh, min_kwh,
         energy_per_slot, config.efficiency,
         consumption_hourly_kwh=state.consumption_hourly_kwh,
+        inverter_max_power_kw=config.inverter_max_power_kw,
+        safe_power_kw=config.safe_power_kw,
     )
     selected = [(idx, p) for idx, p in selected if idx in validated_charge]
 
@@ -972,6 +984,8 @@ def _schedule_to_grid(
         config.battery_capacity_kwh, reserve_target,
         energy_per_slot, config.efficiency,
         consumption_hourly_kwh=state.consumption_hourly_kwh,
+        inverter_max_power_kw=config.inverter_max_power_kw,
+        safe_power_kw=config.safe_power_kw,
     )
     selected = [(idx, p) for idx, p in selected if idx in validated_discharge]
 
@@ -1123,6 +1137,8 @@ def _schedule_both(
         config.battery_capacity_kwh, reserve_target,
         energy_per_slot, config.efficiency,
         consumption_hourly_kwh=state.consumption_hourly_kwh,
+        inverter_max_power_kw=config.inverter_max_power_kw,
+        safe_power_kw=config.safe_power_kw,
     )
     charge_slots = [(idx, p) for idx, p in charge_slots if idx in validated_charge]
     sell_selected = [(idx, p) for idx, p in sell_selected if idx in validated_discharge]
