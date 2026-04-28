@@ -139,15 +139,16 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                     "action": action,
                 })
 
-        # Build tomorrow's slot data (prices only, no schedule yet)
+        # Build tomorrow's slot data with backend-computed actions
         tomorrow_slot_data = []
         tomorrow_prices = self.coordinator.slot_prices_tomorrow
+        tomorrow_scheduled = self.coordinator._tomorrow_scheduled_slots or {}
         if tomorrow_prices:
             for i, price in enumerate(tomorrow_prices):
                 tomorrow_slot_data.append({
                     "slot": i,
                     "price": round(price, 4) if price is not None else None,
-                    "action": None,
+                    "action": tomorrow_scheduled.get(i),
                 })
 
         return {
@@ -186,6 +187,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                 "pv_confidence": getattr(self.coordinator, '_last_pv_confidence', 1.0),
                 "consumption_hourly_profile": self.coordinator._hourly_consumption_profile or {},
                 "backend_soc_trajectory": self.coordinator._backend_soc_trajectory,
+                "backend_soc_trajectory_tomorrow": self.coordinator._backend_soc_trajectory_tomorrow,
                 "inverter_max_power_kw": self.coordinator._inverter_max_power_kw,
             },
             "soc_history": self.coordinator._soc_history,

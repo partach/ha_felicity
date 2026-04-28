@@ -45,6 +45,7 @@ _calculate_pv_confidence = ems._calculate_pv_confidence
 _project_soc_trajectory = ems._project_soc_trajectory
 _validate_schedule_soc = ems._validate_schedule_soc
 _compute_reserve_target = ems._compute_reserve_target
+_compute_tomorrow_schedule = ems._compute_tomorrow_schedule
 
 
 # ---------------------------------------------------------------------------
@@ -2595,3 +2596,391 @@ class TestBothModeSellWithChargeEnergy:
         result = calculate_schedule(config, state)
         sell_count = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
         assert sell_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Integration Tests: Real-World Scenarios
+# ---------------------------------------------------------------------------
+
+class TestIntegrationCustomerScenarios:
+    """End-to-end tests mimicking real customer configurations.
+
+    Each test reproduces a specific customer setup (TREX model, battery size,
+    consumption, PV, prices) and asserts the schedule meets operational
+    requirements: SOC never below min, sell slots exist when surplus is
+    available, charge slots are reasonable, tomorrow schedule is computed.
+    """
+
+    def _assert_soc_never_below_min(self, result, config, state):
+        """Verify the SOC trajectory never dips below discharge_min."""
+        if not result.soc_trajectory:
+            return
+        min_allowed = config.battery_discharge_min_pct
+        for i, soc in enumerate(result.soc_trajectory):
+            assert soc >= min_allowed - 0.5, (
+                f"SOC at slot {i} is {soc}%, below min {min_allowed}%"
+            )
+
+    def _assert_no_flat_trajectory(self, result):
+        """Verify SOC trajectory isn't completely flat (consumption should drain)."""
+        if not result.soc_trajectory or len(result.soc_trajectory) < 3:
+            return
+        unique = set(round(s, 0) for s in result.soc_trajectory)
+        assert len(unique) > 1, "SOC trajectory is flat — consumption isn't draining battery"
+
+    def test_trex25_both_mode_low_battery_no_pv(self):
+        """Customer: TREX-25, 60kWh, both mode, 28% SOC, 0 PV produced.
+
+        SOC starts below reserve target, so SOC validation correctly prunes
+        sell slots (battery must stay above reserve at every point).
+        Charges to cover overnight needs.
+        """
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            battery_charge_max_pct=100.0,
+            consumption_est_kwh=13.0,
+            safe_power_kw=12.5,
+            inverter_max_power_kw=25.0,
+            efficiency=0.90,
+        )
+        prices_today = (
+            [0.02, 0.02, 0.03, 0.03, 0.04, 0.05]
+            + [0.08, 0.10, 0.12, 0.14, 0.15, 0.14]
+            + [0.12, 0.10, 0.09, 0.08, 0.07, 0.10]
+            + [0.18, 0.22, 0.25, 0.20, 0.15, 0.08]
+        )
+        state = default_state(
+            battery_soc_pct=28.0,
+            slot_prices_today=prices_today,
+            pv_hourly_kwh=make_pv_hourly(39.0),
+            pv_forecast_remaining=24.0,
+            pv_forecast_today=39.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=10,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        assert charges > 0, "Should charge — battery is below reserve"
+        self._assert_soc_never_below_min(result, config, state)
+        self._assert_no_flat_trajectory(result)
+
+    def test_trex25_both_mode_high_battery_sells(self):
+        """TREX-25, battery above reserve — should sell at peak prices."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=13.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=25.0,
+        )
+        prices = [0.02] * 6 + [0.05] * 6 + [0.08] * 6 + [0.15] * 6
+        state = default_state(
+            battery_soc_pct=80.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(30.0),
+            pv_forecast_remaining=15.0,
+            pv_forecast_today=30.0,
+            pv_actual_today_kwh=15.0,
+            current_hour=12,
+        )
+        result = calculate_schedule(config, state)
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert sells > 0, "Should sell — battery is well above reserve"
+        self._assert_soc_never_below_min(result, config, state)
+
+    def test_trex10_from_grid_cloudy_day(self):
+        """TREX-10, 20kWh battery, from_grid, cloudy day (PV conf ~0.2).
+
+        High PV forecast (30 kWh) but only 1.5 kWh produced by noon
+        drops confidence, forcing grid charging.
+        """
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+        )
+        prices = [0.05] * 6 + [0.10] * 6 + [0.15] * 6 + [0.25] * 6
+        state = default_state(
+            battery_soc_pct=35.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(30.0),
+            pv_forecast_remaining=20.0,
+            pv_forecast_today=30.0,
+            pv_actual_today_kwh=1.5,
+            current_hour=12,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        assert charges > 0, "Should charge — cloudy day with low PV confidence"
+        self._assert_soc_never_below_min(result, config, state)
+
+    def test_trex5_to_grid_sunny_day(self):
+        """TREX-5, 10kWh battery, to_grid only, sunny day.
+
+        Expected: sell slots at peak prices, no charge slots.
+        """
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=8.0,
+            safe_power_kw=3.0,
+            inverter_max_power_kw=5.0,
+        )
+        prices = (
+            [0.05] * 6 + [0.10] * 4 + [0.08] * 4
+            + [0.10] * 2 + [0.15] * 2 + [0.25, 0.30, 0.28, 0.20, 0.12, 0.08]
+        )
+        state = default_state(
+            battery_soc_pct=80.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(20.0),
+            pv_forecast_remaining=10.0,
+            pv_forecast_today=20.0,
+            pv_actual_today_kwh=10.0,
+            current_hour=12,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert charges == 0, "to_grid mode should not charge"
+        assert sells > 0, "Should sell at evening peak"
+        self._assert_soc_never_below_min(result, config, state)
+
+    def test_trex50_both_mode_with_arbitrage(self):
+        """TREX-50, 100kWh battery, both mode with arbitrage delta.
+
+        No PV scenario: all charge comes from grid, creating large surplus
+        above reserve for selling.
+        """
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=100.0,
+            battery_discharge_min_pct=15.0,
+            battery_charge_max_pct=95.0,
+            consumption_est_kwh=30.0,
+            safe_power_kw=25.0,
+            inverter_max_power_kw=50.0,
+            arbitrage_price_delta=0.10,
+        )
+        prices = [0.02] * 8 + [0.05] * 4 + [0.04] * 4 + [0.15, 0.20, 0.25, 0.30, 0.28, 0.18, 0.10, 0.05]
+        state = default_state(
+            battery_soc_pct=60.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=6,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert charges > 0, "Should charge for arbitrage"
+        assert sells > 0, "Should sell at evening peak — battery well above reserve"
+        self._assert_soc_never_below_min(result, config, state)
+
+    def test_trex25_negative_prices_with_pv(self):
+        """TREX-25 with negative prices during high PV: negative-price
+        charge slots shouldn't overflow battery when PV is already filling it.
+        """
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=15.0,
+            safe_power_kw=12.5,
+            inverter_max_power_kw=25.0,
+        )
+        prices = [0.10] * 6 + [-0.05, -0.03, -0.02, -0.01] + [0.08] * 8 + [0.15] * 6
+        state = default_state(
+            battery_soc_pct=70.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(45.0),
+            pv_forecast_remaining=30.0,
+            pv_forecast_today=45.0,
+            pv_actual_today_kwh=15.0,
+            current_hour=9,
+        )
+        result = calculate_schedule(config, state)
+        if result.soc_trajectory:
+            max_soc = max(result.soc_trajectory)
+            assert max_soc <= 100.5, f"SOC exceeds 100%: {max_soc}"
+        self._assert_soc_never_below_min(result, config, state)
+
+    def test_early_morning_schedule_full_day(self):
+        """Schedule at midnight (hour 0) with all slots remaining.
+
+        Verifies the algorithm handles the full-day case without errors
+        and produces a valid SOC trajectory.
+        """
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=12.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+        )
+        prices = make_prices(48, pattern="v_shape")
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(18.0),
+            pv_forecast_remaining=18.0,
+            pv_forecast_today=18.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.soc_trajectory, "Should produce SOC trajectory"
+        assert len(result.soc_trajectory) == 48, "Should have one entry per slot"
+        self._assert_soc_never_below_min(result, config, state)
+
+
+class TestTomorrowScheduleIntegration:
+    """Tests for the tomorrow schedule computation via calculate_schedule."""
+
+    def test_tomorrow_schedule_computed_when_prices_available(self):
+        """When tomorrow prices exist and deficit requires tomorrow charge,
+        schedule includes tomorrow slots."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+        )
+        today_prices = [0.20] * 20 + [0.25, 0.30, 0.25, 0.20]
+        tomorrow_prices = [0.02] * 8 + [0.10] * 8 + [0.25] * 4 + [0.08] * 4
+        state = default_state(
+            battery_soc_pct=30.0,
+            slot_prices_today=today_prices,
+            slot_prices_tomorrow=tomorrow_prices,
+            pv_hourly_kwh=make_pv_hourly(15.0),
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=15.0,
+            pv_forecast_tomorrow=12.0,
+            pv_actual_today_kwh=15.0,
+            current_hour=20,
+        )
+        result = calculate_schedule(config, state)
+        assert result.tomorrow_scheduled_slots, "Should have tomorrow scheduled slots"
+        assert result.tomorrow_soc_trajectory, "Should have tomorrow SOC trajectory"
+        assert len(result.tomorrow_soc_trajectory) == 24
+
+    def test_tomorrow_schedule_empty_when_grid_off(self):
+        """No tomorrow schedule when grid_mode is off."""
+        config = default_config(grid_mode="off")
+        state = default_state(
+            slot_prices_tomorrow=[0.10] * 24,
+            pv_forecast_tomorrow=15.0,
+        )
+        result = calculate_schedule(config, state)
+        assert not result.tomorrow_scheduled_slots
+
+    def test_tomorrow_schedule_empty_when_no_prices(self):
+        """No tomorrow schedule when tomorrow prices are unavailable."""
+        config = default_config(grid_mode="from_grid")
+        state = default_state(slot_prices_tomorrow=None)
+        result = calculate_schedule(config, state)
+        assert not result.tomorrow_scheduled_slots
+        assert not result.tomorrow_soc_trajectory
+
+    def test_tomorrow_trajectory_starts_from_today_end(self):
+        """Tomorrow's SOC trajectory should start near today's ending SOC."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+        )
+        today_prices = make_prices(24, pattern="cheap_morning")
+        tomorrow_prices = make_prices(24, pattern="v_shape")
+        state = default_state(
+            battery_soc_pct=60.0,
+            slot_prices_today=today_prices,
+            slot_prices_tomorrow=tomorrow_prices,
+            pv_hourly_kwh=make_pv_hourly(15.0),
+            pv_forecast_remaining=8.0,
+            pv_forecast_today=15.0,
+            pv_forecast_tomorrow=12.0,
+            pv_actual_today_kwh=7.0,
+            current_hour=12,
+        )
+        result = calculate_schedule(config, state)
+        if result.soc_trajectory and result.tomorrow_soc_trajectory:
+            today_end = result.soc_trajectory[-1]
+            tomorrow_start = result.tomorrow_soc_trajectory[0]
+            assert abs(today_end - tomorrow_start) < 15, (
+                f"Tomorrow start SOC ({tomorrow_start}%) diverges from "
+                f"today end SOC ({today_end}%) by more than 15%"
+            )
+
+    def test_tomorrow_both_mode_has_sell_slots(self):
+        """Tomorrow schedule in both mode: charge cheap slots, sell at peak."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=100.0,
+            battery_discharge_min_pct=15.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=25.0,
+        )
+        today_prices = [0.15] * 22 + [0.25, 0.30]
+        tomorrow_prices = [0.01] * 8 + [0.04] * 4 + [0.06] * 4 + [0.20, 0.30, 0.40, 0.35] + [0.08] * 4
+        state = default_state(
+            battery_soc_pct=20.0,
+            slot_prices_today=today_prices,
+            slot_prices_tomorrow=tomorrow_prices,
+            pv_hourly_kwh=make_pv_hourly(20.0),
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=20.0,
+            pv_forecast_tomorrow=30.0,
+            pv_actual_today_kwh=20.0,
+            current_hour=22,
+        )
+        result = calculate_schedule(config, state)
+        tmr_charges = sum(1 for v in result.tomorrow_scheduled_slots.values() if v == "charge")
+        tmr_sells = sum(1 for v in result.tomorrow_scheduled_slots.values() if v == "discharge")
+        assert tmr_charges > 0, "Tomorrow should have charge slots"
+        assert tmr_sells > 0, "Tomorrow should have sell slots at peak prices"
+
+    def test_tomorrow_soc_never_below_min(self):
+        """Tomorrow's SOC trajectory should never go below discharge_min."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=40.0,
+            battery_discharge_min_pct=25.0,
+            consumption_est_kwh=20.0,
+            safe_power_kw=8.0,
+            inverter_max_power_kw=10.0,
+        )
+        today_prices = make_prices(24, pattern="rising")
+        tomorrow_prices = [0.03] * 6 + [0.10] * 6 + [0.05] * 6 + [0.20] * 6
+        state = default_state(
+            battery_soc_pct=45.0,
+            slot_prices_today=today_prices,
+            slot_prices_tomorrow=tomorrow_prices,
+            pv_hourly_kwh=make_pv_hourly(20.0),
+            pv_forecast_remaining=10.0,
+            pv_forecast_today=20.0,
+            pv_forecast_tomorrow=18.0,
+            pv_actual_today_kwh=10.0,
+            current_hour=12,
+        )
+        result = calculate_schedule(config, state)
+        min_allowed = config.battery_discharge_min_pct
+        for i, soc in enumerate(result.tomorrow_soc_trajectory):
+            assert soc >= min_allowed - 1.0, (
+                f"Tomorrow SOC at slot {i} is {soc}%, below min {min_allowed}%"
+            )

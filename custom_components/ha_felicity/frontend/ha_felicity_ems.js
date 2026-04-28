@@ -584,15 +584,38 @@ class FelicityEMSCard extends LitElement {
       showTomorrow = false;
     }
 
-    // For tomorrow, run a forecast simulation too (no current-slot offset)
     // Keep today's sim for unified stats (tomorrowChargeCount, tomorrowPlanned)
     this._todaySimResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
     let displayData, displayThreshold;
     if (showTomorrow) {
-      const tmrSim = this._simulateScheduleTomorrow(tomorrowSlotData, this._simOverrides);
-      displayData = tmrSim?.slots ?? tomorrowSlotData;
-      displayThreshold = tmrSim?.threshold;
-      this._simResult = tmrSim;  // stats reflect tomorrow preview
+      const useBackendTomorrow = !hasAnyOverrides && tomorrowSlotData?.some(s => s.action != null);
+      if (useBackendTomorrow) {
+        // Backend is authoritative — use its schedule directly
+        const sim = this._getAttr("schedule_status", "sim_params") || {};
+        const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
+        const powerKw = Math.max(1, safeMaxPower / 1000);
+        const granMin = this._getAttr("schedule_status", "slot_granularity_min") || Math.round((24 * 60) / tomorrowSlotData.length);
+        const slotDur = granMin / 60;
+        const eff = sim.efficiency || 0.90;
+        const effectivePerSlot = powerKw * slotDur * eff;
+        const chargeCount = tomorrowSlotData.filter(s => s.action === "charge").length;
+        const dischargeCount = tomorrowSlotData.filter(s => s.action === "discharge").length;
+        displayData = tomorrowSlotData;
+        displayThreshold = null;
+        this._simResult = {
+          slots: tomorrowSlotData,
+          chargeCount,
+          dischargeCount,
+          planned: Math.round((chargeCount * effectivePerSlot + dischargeCount * powerKw * slotDur) * 100) / 100,
+          threshold: null,
+        };
+      } else {
+        // Overrides active — run client-side simulation for preview
+        const tmrSim = this._simulateScheduleTomorrow(tomorrowSlotData, this._simOverrides);
+        displayData = tmrSim?.slots ?? tomorrowSlotData;
+        displayThreshold = tmrSim?.threshold;
+        this._simResult = tmrSim;
+      }
     } else {
       displayData = useBackendSchedule ? todaySlotData : (simResult?.slots ?? todaySlotData);
       displayThreshold = simResult?.threshold;
@@ -776,10 +799,14 @@ class FelicityEMSCard extends LitElement {
     // Prefer backend-computed trajectory when no overrides are active.
     // Fall back to client-side simulation when user is previewing via
     // sliders (_simOverrides) or manual slot clicks (_slotOverrides).
-    const backendTrajectory = (!hasAnyOverrides && !showTomorrow)
-      ? ((this._getAttr("schedule_status", "sim_params") || {}).backend_soc_trajectory || null)
-      : null;
-    const socTrajectory = (backendTrajectory && backendTrajectory.length === numSlots)
+    let backendTrajectory = null;
+    if (!hasAnyOverrides) {
+      const simParams = this._getAttr("schedule_status", "sim_params") || {};
+      backendTrajectory = showTomorrow
+        ? (simParams.backend_soc_trajectory_tomorrow || null)
+        : (simParams.backend_soc_trajectory || null);
+    }
+    const socTrajectory = (backendTrajectory && backendTrajectory.length >= numSlots)
       ? backendTrajectory
       : this._computeSocTrajectory(displayData, showTomorrow);
     const socHistory = this._getAttr("schedule_status", "soc_history") || {};
