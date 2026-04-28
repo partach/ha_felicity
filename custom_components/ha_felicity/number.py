@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.core import callback
-from .const import DOMAIN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL
+from .const import DOMAIN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW
 from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,7 +57,9 @@ async def async_setup_entry(
             option_key="power_level",
             name="Power Level",
             min_val=1,
-            max_val=10,
+            max_val=INVERTER_MAX_POWER_KW.get(
+                entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL), 10
+            ),
             step=0.5,
             icon="mdi:battery-plus-variant"
         ),

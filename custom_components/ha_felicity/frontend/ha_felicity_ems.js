@@ -199,6 +199,7 @@ class FelicityEMSCard extends LitElement {
     const batterySoc = sim.battery_soc_pct;
     const netPv = sim.net_pv_kwh || 0;
     const consumption = sim.consumption_est_kwh || 10;
+    const inverterMaxKw = sim.inverter_max_power_kw || 10;
     const yesterdayDeficit = this._getAttr("schedule_status", "yesterday_deficit_kwh") || 0;
 
     // Mirrors ems._compute_reserve_target: fixed floor if reserveTargetPct > 0,
@@ -440,9 +441,13 @@ class FelicityEMSCard extends LitElement {
               const cons = consumptionProfile
                 ? ((consumptionProfile[hr] ?? consumptionProfile[String(hr)] ?? (consumption / 24)) * slotDuration)
                 : (consumption / 24) * slotDuration;
-              const pvKwh = pvHourly ? ((pvHourly[hr] || pvHourly[String(hr)] || 0) * pvConfidence * slotDuration) : 0;
+              const pvHrKw = pvHourly ? ((pvHourly[hr] || pvHourly[String(hr)] || 0) * pvConfidence) : 0;
+              const pvKwh = pvHrKw * slotDuration;
               let delta = pvKwh - cons;
-              if (chargeIdxSet.has(ii)) delta += energyPerSlot * efficiency;
+              if (chargeIdxSet.has(ii)) {
+                const gridKw = Math.min(powerKw, Math.max(0, inverterMaxKw - pvHrKw));
+                delta += gridKw * slotDuration * efficiency;
+              }
               if (sellSet.has(ii)) delta -= energyPerSlot;
               soc += delta;
               if (soc < reserveTarget - 0.01) {
@@ -905,6 +910,7 @@ class FelicityEMSCard extends LitElement {
     const efficiency = sim.efficiency || 0.90;
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow") || 0;
     const consumption = sim.consumption_est_kwh || 10;
+    const inverterMaxKw = sim.inverter_max_power_kw || 10;
 
     // Mirrors ems._compute_reserve_target: fixed floor if reserveTargetPct > 0,
     // otherwise dynamic (dischargeMin floor + overnight reserve).
@@ -1074,8 +1080,12 @@ class FelicityEMSCard extends LitElement {
               ? ((consumptionProfile[hr] ?? consumptionProfile[String(hr)] ?? (consumption / 24)) * slotDuration)
               : (consumption / 24) * slotDuration;
             const pv = daylightSet.has(ii) ? pvPerDaylightSlot : 0;
+            const pvKwRate = slotDuration > 0 ? pv / slotDuration : 0;
             let delta = pv - cons;
-            if (chargeSet.has(ii)) delta += energyPerSlot * efficiency;
+            if (chargeSet.has(ii)) {
+              const gridKw = Math.min(powerKw, Math.max(0, inverterMaxKw - pvKwRate));
+              delta += gridKw * slotDuration * efficiency;
+            }
             if (sellSet.has(ii)) delta -= energyPerSlot;
             soc += delta;
             if (soc < reserveTarget - 0.01) {
@@ -1138,6 +1148,7 @@ class FelicityEMSCard extends LitElement {
 
     const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
     const powerKw = overrides.powerKw ?? Math.max(1, safeMaxPower / 1000);
+    const inverterMaxKw = sim.inverter_max_power_kw || 10;
     const energyPerSlot = powerKw * slotDuration;
 
     // Consumption drain per slot — use hourly profile when available
@@ -1219,7 +1230,16 @@ class FelicityEMSCard extends LitElement {
       // Scheduled actions — respect battery bounds like the real inverter does
       const minKwhFloor = dischargeMin * batteryCapacity;
       if (slot.action === "charge") {
-        currentKwh += energyPerSlot * efficiency;
+        // PV rate for this slot (kW, not kWh) to cap grid charge at inverter limit
+        let pvKwRate = 0;
+        if (pvHourly) {
+          const hrC = Math.floor((i * granularity) / 60);
+          pvKwRate = (pvHourly[hrC] || pvHourly[String(hrC)] || 0) * pvConfidence;
+        } else if (pvFallbackSlotSet.has(i) && slotDuration > 0) {
+          pvKwRate = pvFallbackPerSlot / slotDuration;
+        }
+        const gridKw = Math.min(powerKw, Math.max(0, inverterMaxKw - pvKwRate));
+        currentKwh += gridKw * slotDuration * efficiency;
       } else if (slot.action === "discharge" && currentKwh > minKwhFloor) {
         // Inverter stops discharging at the SOC floor — don't drain below it
         currentKwh -= Math.min(energyPerSlot, currentKwh - minKwhFloor);
@@ -1688,12 +1708,14 @@ class FelicityEMSCard extends LitElement {
     if (!eid) return html``;
     const entity = this.hass.states[eid];
     if (!entity) return html``;
+    const sim = this._getAttr("schedule_status", "sim_params") || {};
+    const maxPower = sim.inverter_max_power_kw || 10;
     const display = this._simOverrides.powerKw ?? parseFloat(entity.state) ?? 5;
 
     return html`
       <div class="control-item">
         <span class="control-label">Power ${display} kW</span>
-        <input type="range" min="1" max="10" step="0.5" .value=${display}
+        <input type="range" min="1" max="${maxPower}" step="0.5" .value=${display}
           @input=${(e) => this._previewPower(parseFloat(e.target.value))}
           @change=${(e) => this._commitPower(parseFloat(e.target.value))} />
       </div>

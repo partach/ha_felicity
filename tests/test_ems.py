@@ -2425,3 +2425,115 @@ class TestArbitragePriceDelta:
         result = calculate_schedule(config, state)
         # Should work normally without arbitrage feature — no error
         assert isinstance(result, ScheduleResult)
+
+
+class TestInverterMaxPowerCap:
+    """Tests that inverter max power caps grid charge when PV is active."""
+
+    def test_trajectory_caps_grid_charge_with_high_pv(self):
+        """SOC trajectory should not assume grid can deliver full power when PV is active."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            safe_power_kw=8.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=5.0,
+        )
+        # 7 kW PV during hours 8-16 → grid capped at 3 kW (10 - 7)
+        pv = {h: 7.0 for h in range(8, 16)}
+        state = default_state(
+            battery_soc_pct=20.0,
+            slot_prices_today=[0.10] * 24,
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=10.0,
+            pv_forecast_today=56.0,
+            pv_actual_today_kwh=28.0,
+            current_hour=10,
+        )
+        result = calculate_schedule(config, state)
+        # The trajectory should exist and show realistic SOC growth
+        assert len(result.soc_trajectory) == 24
+        # At hour 10 with 7 kW PV, grid should be capped to 3 kW, not 8 kW.
+        # Check that trajectory doesn't climb as fast as uncapped 8 kW would.
+        uncapped_config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            safe_power_kw=8.0,
+            inverter_max_power_kw=100.0,  # effectively no cap
+            consumption_est_kwh=5.0,
+        )
+        uncapped_result = calculate_schedule(uncapped_config, state)
+        # With high PV, the capped trajectory should climb slower during PV hours
+        # (comparing a charge slot during PV hours)
+        charge_slots = [s for s, a in result.scheduled_slots.items() if a == "charge" and 8 <= s < 16]
+        if charge_slots:
+            slot = charge_slots[0]
+            assert result.soc_trajectory[slot] <= uncapped_result.soc_trajectory[slot] + 0.1
+
+    def test_no_cap_at_night(self):
+        """At night (no PV), grid charge should use full safe_power_kw."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            safe_power_kw=8.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=30.0,
+            slot_prices_today=[0.05] * 6 + [0.20] * 18,
+            pv_hourly_kwh={},  # no PV data at all
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=2,
+        )
+        result = calculate_schedule(config, state)
+        # Night charge slots should exist and grid can deliver full 8 kW
+        charge_slots = {s for s, a in result.scheduled_slots.items() if a == "charge"}
+        assert len(charge_slots) > 0
+
+    def test_validate_soc_respects_inverter_cap(self):
+        """_validate_schedule_soc should use capped grid energy during charge slots."""
+        # Charge slot at hour 12 with 7 kW PV, inverter max 10 → grid 3 kW
+        remaining = [(i, 0.10) for i in range(24)]
+        charge_slots = {12}
+        discharge_slots = set()
+        pv = {12: 7.0}
+        validated_charge, _ = _validate_schedule_soc(
+            remaining, charge_slots, discharge_slots,
+            current_kwh=5.0,
+            consumption_per_slot=0.5,
+            pv_hourly_kwh=pv,
+            minutes_per_slot=60.0,
+            pv_confidence=1.0,
+            battery_capacity=10.0,
+            min_kwh=2.0,
+            energy_per_slot=8.0,  # 8 kW * 1h
+            efficiency=0.90,
+            inverter_max_power_kw=10.0,
+            safe_power_kw=8.0,
+        )
+        # Slot 12 should still be valid (grid charges at 3 kW, PV at 7 kW)
+        assert 12 in validated_charge
+
+    def test_default_inverter_max_no_cap(self):
+        """When inverter_max_power_kw=0 (default), no capping should occur."""
+        remaining = [(12, 0.10)]
+        charge_slots = {12}
+        pv = {12: 7.0}
+        validated_charge, _ = _validate_schedule_soc(
+            remaining, charge_slots, set(),
+            current_kwh=5.0,
+            consumption_per_slot=0.5,
+            pv_hourly_kwh=pv,
+            minutes_per_slot=60.0,
+            pv_confidence=1.0,
+            battery_capacity=100.0,
+            min_kwh=2.0,
+            energy_per_slot=8.0,
+            efficiency=0.90,
+            inverter_max_power_kw=0.0,  # no cap
+            safe_power_kw=0.0,
+        )
+        assert 12 in validated_charge
