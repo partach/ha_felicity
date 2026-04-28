@@ -37,7 +37,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 115 tests for the pure EMS algorithm
+└── test_ems.py              # 130 tests for the pure EMS algorithm
 ```
 
 ---
@@ -278,6 +278,14 @@ Also detects external changes (user adjusting via inverter app).
 ### Client-Side Simulation
 Mirrors coordinator logic for instant preview when dragging sliders. Uses `sim_params` from `schedule_status` sensor attributes.
 
+**Backend as single source of truth**: For both today and tomorrow views,
+when no slider or slot overrides are active, the card uses
+backend-provided `slot_schedule` / `slot_schedule_tomorrow` (with actions)
+and `backend_soc_trajectory` / `backend_soc_trajectory_tomorrow` for the
+SOC line. Client-side simulation (`_simulateSchedule`,
+`_simulateScheduleTomorrow`, `_computeSocTrajectory`) only runs when the
+user is actively previewing via sliders or manual slot clicks.
+
 ### Past Slot History
 Fetches `energy_state` history from HA API (throttled 60s), shows what actually happened vs what was planned.
 
@@ -292,7 +300,7 @@ Fetches `energy_state` history from HA API (throttled 60s), shows what actually 
 | grid_mode | select | off/from_grid/to_grid/both | off | Main EMS switch |
 | price_mode | select | manual/auto | manual | Price threshold mode |
 | safe_power_management | select | auto/on/off | auto | Amperage protection |
-| power_level | number | 1-10 kW | 5 | Charge/discharge power |
+| power_level | number | 1-N kW (model max) | 5 | Charge/discharge power |
 | price_threshold_level | number | 1-10 | 5 | Manual price level |
 | battery_charge_max_level | number | 30-100% | 100 | Max SOC for charging |
 | battery_discharge_min_level | number | 10-70% | 20 | Min SOC for discharging |
@@ -465,7 +473,7 @@ discharge combined).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (115 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (130 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -485,6 +493,10 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Reserve target override
 - Arbitrage price delta
 - Slot granularity (24/48/96 slots)
+- Inverter max power cap (per-model)
+- Both-mode sell with charge energy (low PV confidence)
+- Integration tests: real-world TREX-5/10/25/50 scenarios
+- Tomorrow schedule computation and SOC trajectory
 
 **Not tested**: coordinator.py runtime logic (requires HA mocking). This is a gap — when the coordinator diverges from ems.py, tests won't catch it.
 

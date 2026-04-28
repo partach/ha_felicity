@@ -114,6 +114,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.tomorrow_planned_slots: int = 0
         self.tomorrow_planned_kwh: float = 0.0
         self._backend_soc_trajectory: list[float] = []
+        self._tomorrow_scheduled_slots: dict[int, str] = {}
+        self._backend_soc_trajectory_tomorrow: list[float] = []
 
         # Always-visible slot info (regardless of price_mode)
         self.available_slots_at_threshold: int = 0
@@ -644,6 +646,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.tomorrow_planned_kwh = result.tomorrow_planned_kwh
         self.schedule_status = result.status
         self._backend_soc_trajectory = result.soc_trajectory
+        self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots
+        self._backend_soc_trajectory_tomorrow = result.tomorrow_soc_trajectory
 
         if result.price_threshold is not None:
             self.price_threshold = result.price_threshold
