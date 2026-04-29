@@ -2984,3 +2984,68 @@ class TestTomorrowScheduleIntegration:
             assert soc >= min_allowed - 1.0, (
                 f"Tomorrow SOC at slot {i} is {soc}%, below min {min_allowed}%"
             )
+
+
+class TestInherentLowSOCValidation:
+    """Tests that SOC validation doesn't falsely prune sell slots when
+    battery starts below reserve but PV recovers it before sells execute."""
+
+    def test_sell_slots_preserved_when_pv_recovers_soc(self):
+        """Battery at 25% (below reserve 29%), PV fills to 100% by midday.
+        Sell slots in evening should survive — the low SOC is inherent,
+        not caused by selling.
+        """
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=20.0,
+            inverter_max_power_kw=25.0,
+        )
+        prices = [0.02] * 7 + [-0.004] * 3 + [0.02] * 4 + [0.05] * 4 + [0.10] * 6
+        state = default_state(
+            battery_soc_pct=25.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(51.0),
+            pv_forecast_remaining=38.0,
+            pv_forecast_today=51.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=9,
+        )
+        result = calculate_schedule(config, state)
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert sells > 0, (
+            "Should sell in evening — PV fills battery to 100%, "
+            "inherent low SOC at start shouldn't prune future sells"
+        )
+        for i, soc in enumerate(result.soc_trajectory):
+            assert soc >= config.battery_discharge_min_pct - 0.5, (
+                f"SOC at slot {i} is {soc}%, below min {config.battery_discharge_min_pct}%"
+            )
+
+    def test_sell_still_pruned_when_discharge_causes_violation(self):
+        """When a sell actually causes SOC to drop below min, it should
+        still be pruned (the fix only affects inherent low SOC)."""
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=30.0,
+            consumption_est_kwh=8.0,
+            safe_power_kw=5.0,
+        )
+        prices = [0.05] * 12 + [0.15] * 6 + [0.25] * 6
+        state = default_state(
+            battery_soc_pct=45.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(5.0),
+            pv_forecast_remaining=2.0,
+            pv_forecast_today=5.0,
+            pv_actual_today_kwh=3.0,
+            current_hour=14,
+        )
+        result = calculate_schedule(config, state)
+        for i, soc in enumerate(result.soc_trajectory):
+            assert soc >= config.battery_discharge_min_pct - 1.0, (
+                f"SOC at slot {i} is {soc}%, violates min {config.battery_discharge_min_pct}%"
+            )
