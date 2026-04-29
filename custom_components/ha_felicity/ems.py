@@ -436,6 +436,7 @@ def _validate_schedule_soc(
     for _ in range(max_iterations):
         violation_slot: int | None = None
         violation_type: str | None = None  # "low" or "high"
+        discharge_seen = False  # track if a discharge happened before violation
 
         soc = current_kwh
         for slot_idx, _ in remaining:
@@ -457,12 +458,20 @@ def _validate_schedule_soc(
                     delta += energy_per_slot * efficiency
             if slot_idx in discharge_slots:
                 delta -= energy_per_slot
+                discharge_seen = True
 
             soc = soc + delta
 
             # Check bounds BEFORE clamping — charging a full battery wastes
             # energy, discharging an empty one is impossible.
             if soc < min_kwh - 0.01:
+                # If no discharge happened before this point, the low SOC
+                # is inherent (battery starts below reserve/min) — not
+                # caused by any scheduled discharge.  Clamp and continue
+                # rather than pruning unrelated future discharge slots.
+                if not discharge_seen:
+                    soc = max(0.0, min(battery_capacity, soc))
+                    continue
                 violation_slot = slot_idx
                 violation_type = "low"
                 break
@@ -484,7 +493,6 @@ def _validate_schedule_soc(
                 if s <= violation_slot
             ]
             if not candidates:
-                # Remove any discharge slot (least valuable)
                 candidates = list(discharge_slots)
             if not candidates:
                 break
