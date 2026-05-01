@@ -759,8 +759,9 @@ class TestCalculateSchedule:
         charged_neg = sum(1 for s in charge_slots if prices[s] < 0)
         assert charged_neg > 0
 
-    def test_negative_prices_skipped_when_pv_fills_battery(self):
-        """Negative-price charging skipped when PV would overfill the battery."""
+    def test_negative_prices_kept_when_pv_fills_battery(self):
+        """Negative-price charging preserved when PV fills battery — the
+        overflow is PV-caused, so negative-price income is pure profit."""
         config = default_config()
         prices = make_prices(24, pattern="negative")
         state = default_state(
@@ -773,7 +774,10 @@ class TestCalculateSchedule:
         )
         result = calculate_schedule(config, state)
         charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
-        assert len(charge_slots) == 0
+        neg_slots = [s for s in charge_slots if prices[s] < 0]
+        assert len(neg_slots) > 0, (
+            "Negative-price slots should be kept when PV fills battery anyway"
+        )
 
     def test_yesterday_deficit_carryover(self):
         """Yesterday's deficit increases today's charging."""
@@ -1077,8 +1081,9 @@ class TestScenarios:
         neg_slots = [s for s in charge_slots if prices[s] < 0]
         assert len(neg_slots) >= 1
 
-    def test_scenario_negative_prices_skipped_when_battery_full_with_pv(self):
-        """Negative prices skipped when PV + high SOC leaves no room."""
+    def test_scenario_negative_prices_kept_when_pv_fills_battery(self):
+        """Negative-price slots kept when PV alone fills battery — overflow
+        is PV-caused, negative-price income is pure profit."""
         config = default_config(consumption_est_kwh=20.0)
         prices = [0.25] * 10 + [-0.05, -0.03, -0.01] + [0.25] * 11
         state = default_state(
@@ -1092,8 +1097,9 @@ class TestScenarios:
         result = calculate_schedule(config, state)
         charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
         neg_slots = [s for s in charge_slots if prices[s] < 0]
-        # With 10 kWh battery at 70% and 35 kWh PV, no room for grid charging
-        assert len(neg_slots) == 0
+        assert len(neg_slots) >= 1, (
+            "Negative-price slots should be kept when PV fills battery anyway"
+        )
 
     def test_scenario_both_mode_negative_prices_with_headroom(self):
         """Both mode charges at negative prices when battery has room."""
@@ -1115,8 +1121,9 @@ class TestScenarios:
         neg_slots = [s for s in charge_slots if prices[s] < 0]
         assert len(neg_slots) >= 1
 
-    def test_scenario_both_mode_negative_prices_limited_by_pv(self):
-        """Both mode limits negative-price charging when PV would overflow battery."""
+    def test_scenario_both_mode_negative_prices_kept_when_pv_fills(self):
+        """Both mode keeps negative-price charging when PV fills battery —
+        overflow is PV-caused, negative-price income is profit."""
         config = default_config(
             grid_mode="both", consumption_est_kwh=10.0,
         )
@@ -1132,8 +1139,10 @@ class TestScenarios:
         )
         result = calculate_schedule(config, state)
         charge_slots = [k for k, v in result.scheduled_slots.items() if v == "charge"]
-        # Battery at 80% with 40 kWh PV on 10 kWh battery: almost no room
-        assert len(charge_slots) <= 2
+        neg_slots = [s for s in charge_slots if prices[s] < 0]
+        assert len(neg_slots) >= 1, (
+            "Negative-price slots should be kept when PV fills battery anyway"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3023,6 +3032,72 @@ class TestInherentLowSOCValidation:
             assert soc >= config.battery_discharge_min_pct - 0.5, (
                 f"SOC at slot {i} is {soc}%, below min {config.battery_discharge_min_pct}%"
             )
+
+    def test_negative_charge_preserved_when_pv_fills_battery(self):
+        """When PV alone would fill the battery, negative-price charge slots
+        should NOT be pruned — the overflow is PV-caused, and charging at
+        negative prices is pure profit."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+        )
+        # Negative prices at hours 7-10, positive rest of day
+        prices = [0.05] * 7 + [-0.46, -0.30, -0.20] + [0.05] * 4 + [0.10] * 4 + [0.15] * 6
+        state = default_state(
+            battery_soc_pct=29.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(65.0),
+            pv_forecast_remaining=64.7,
+            pv_forecast_today=65.0,
+            pv_actual_today_kwh=0.3,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 7}
+        neg_charged = charges & neg_slots
+        assert len(neg_charged) == len(neg_slots), (
+            f"All {len(neg_slots)} negative-price slots should be charged "
+            f"(PV fills battery anyway), but only {len(neg_charged)} are: "
+            f"charged={sorted(charges)}, neg={sorted(neg_slots)}"
+        )
+
+    def test_negative_charge_still_pruned_when_pv_insufficient(self):
+        """When PV doesn't fill the battery, negative-price charge slots
+        that would cause overflow should still be pruned."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+        )
+        # Battery nearly full, little PV, negative prices
+        prices = [0.05] * 7 + [-0.10, -0.05, -0.02] + [0.05] * 14
+        state = default_state(
+            battery_soc_pct=92.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(5.0),
+            pv_forecast_remaining=3.0,
+            pv_forecast_today=5.0,
+            pv_actual_today_kwh=2.0,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 7}
+        # At 92% of 60 = 55.2 kWh, capacity = 60, only 4.8 kWh headroom
+        # With 5 kW * 0.9 eff = 4.5 kWh per slot, only 1 slot fits.
+        # PV doesn't fill battery → overflow pruning should still apply.
+        assert len(charges & neg_slots) < len(neg_slots), (
+            f"Not all negative slots should charge when battery is nearly full "
+            f"and PV insufficient — overflow pruning should apply"
+        )
 
     def test_sell_still_pruned_when_discharge_causes_violation(self):
         """When a sell actually causes SOC to drop below min, it should
