@@ -562,16 +562,30 @@ class FelicityEMSCard extends LitElement {
     // Run client-side simulation on today's data (uses _tomorrowSlotData internally)
     const simResult = this._simulateSchedule(todaySlotData, this._simOverrides);
 
-    // When no overrides are active, prefer the backend's validated schedule
+    // When no slider overrides are active, prefer the backend's validated schedule
     // for bar colors. The client-side sim may produce different sell slots
     // than the backend (which has SOC validation + reserve target protection).
+    // Slot overrides (manual clicks) are already merged into the backend schedule,
+    // so they don't require falling back to client-side simulation.
     const hasSliderOverrides = this._simOverrides && Object.keys(this._simOverrides).length > 0;
-    const hasSlotOverrides = this._slotOverrides
-      && (Object.keys(this._slotOverrides.today || {}).length > 0
-          || Object.keys(this._slotOverrides.tomorrow || {}).length > 0);
-    const hasAnyOverrides = hasSliderOverrides || hasSlotOverrides;
-    const useBackendSchedule = !hasAnyOverrides && todaySlotData?.some(s => s.action != null);
-    this._simResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
+    const hasTodaySlotOverrides = this._slotOverrides
+      && Object.keys(this._slotOverrides.today || {}).length > 0;
+    const hasTomorrowSlotOverrides = this._slotOverrides
+      && Object.keys(this._slotOverrides.tomorrow || {}).length > 0;
+    const useBackendSchedule = !hasSliderOverrides && todaySlotData?.some(s => s.action != null);
+
+    // When using backend schedule with slot overrides, overlay local overrides
+    // for immediate visual feedback (backend may not have refreshed yet).
+    if (useBackendSchedule && hasTodaySlotOverrides) {
+      const merged = todaySlotData.map(s => ({ ...s }));
+      for (const [idx, action] of Object.entries(this._slotOverrides.today)) {
+        const i = parseInt(idx, 10);
+        if (i >= 0 && i < merged.length) merged[i].action = action;
+      }
+      this._simResult = { ...simResult, slots: merged };
+    } else {
+      this._simResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
+    }
 
     // Manual override or auto-switch to tomorrow when no actions remain
     const hasTomorrow = tomorrowSlotData?.length > 0;
@@ -585,10 +599,10 @@ class FelicityEMSCard extends LitElement {
     }
 
     // Keep today's sim for unified stats (tomorrowChargeCount, tomorrowPlanned)
-    this._todaySimResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
+    this._todaySimResult = this._simResult;
     let displayData, displayThreshold;
     if (showTomorrow) {
-      const useBackendTomorrow = !hasAnyOverrides && tomorrowSlotData?.some(s => s.action != null);
+      const useBackendTomorrow = !hasSliderOverrides && tomorrowSlotData?.some(s => s.action != null);
       if (useBackendTomorrow) {
         // Backend is authoritative — use its schedule directly
         const sim = this._getAttr("schedule_status", "sim_params") || {};
@@ -598,26 +612,37 @@ class FelicityEMSCard extends LitElement {
         const slotDur = granMin / 60;
         const eff = sim.efficiency || 0.90;
         const effectivePerSlot = powerKw * slotDur * eff;
-        const chargeCount = tomorrowSlotData.filter(s => s.action === "charge").length;
-        const dischargeCount = tomorrowSlotData.filter(s => s.action === "discharge").length;
-        displayData = tomorrowSlotData;
+        // Overlay local tomorrow overrides for immediate feedback
+        let tmrSlots = tomorrowSlotData;
+        if (hasTomorrowSlotOverrides) {
+          tmrSlots = tomorrowSlotData.map(s => ({ ...s }));
+          for (const [idx, action] of Object.entries(this._slotOverrides.tomorrow)) {
+            const i = parseInt(idx, 10);
+            if (i >= 0 && i < tmrSlots.length) tmrSlots[i].action = action;
+          }
+        }
+        const chargeCount = tmrSlots.filter(s => s.action === "charge").length;
+        const dischargeCount = tmrSlots.filter(s => s.action === "discharge").length;
+        displayData = tmrSlots;
         displayThreshold = null;
         this._simResult = {
-          slots: tomorrowSlotData,
+          slots: tmrSlots,
           chargeCount,
           dischargeCount,
           planned: Math.round((chargeCount * effectivePerSlot + dischargeCount * powerKw * slotDur) * 100) / 100,
           threshold: null,
         };
       } else {
-        // Overrides active — run client-side simulation for preview
+        // Slider overrides active — run client-side simulation for preview
         const tmrSim = this._simulateScheduleTomorrow(tomorrowSlotData, this._simOverrides);
         displayData = tmrSim?.slots ?? tomorrowSlotData;
         displayThreshold = tmrSim?.threshold;
         this._simResult = tmrSim;
       }
     } else {
-      displayData = useBackendSchedule ? todaySlotData : (simResult?.slots ?? todaySlotData);
+      displayData = useBackendSchedule
+        ? (this._simResult?.slots ?? todaySlotData)
+        : (simResult?.slots ?? todaySlotData);
       displayThreshold = simResult?.threshold;
     }
 
@@ -796,11 +821,11 @@ class FelicityEMSCard extends LitElement {
     }
 
     // ── SOC trajectory (solid past / dotted future) ──────────────────
-    // Prefer backend-computed trajectory when no overrides are active.
-    // Fall back to client-side simulation when user is previewing via
-    // sliders (_simOverrides) or manual slot clicks (_slotOverrides).
+    // Prefer backend-computed trajectory when no slider overrides are active.
+    // Slot overrides (manual clicks) are handled by the backend, so its
+    // trajectory remains authoritative. Only slider previews need client-side.
     let backendTrajectory = null;
-    if (!hasAnyOverrides) {
+    if (!hasSliderOverrides) {
       const simParams = this._getAttr("schedule_status", "sim_params") || {};
       backendTrajectory = showTomorrow
         ? (simParams.backend_soc_trajectory_tomorrow || null)
