@@ -3095,8 +3095,8 @@ class TestInherentLowSOCValidation:
         # With 5 kW * 0.9 eff = 4.5 kWh per slot, only 1 slot fits.
         # PV doesn't fill battery → overflow pruning should still apply.
         assert len(charges & neg_slots) < len(neg_slots), (
-            f"Not all negative slots should charge when battery is nearly full "
-            f"and PV insufficient — overflow pruning should apply"
+            "Not all negative slots should charge when battery is nearly full "
+            "and PV insufficient — overflow pruning should apply"
         )
 
     def test_sell_still_pruned_when_discharge_causes_violation(self):
