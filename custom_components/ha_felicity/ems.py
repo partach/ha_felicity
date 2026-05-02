@@ -431,6 +431,23 @@ def _validate_schedule_soc(
     # Build price lookup from remaining
     price_of: dict[int, float] = {idx: price for idx, price in remaining}
 
+    # Check if PV alone would fill the battery (net surplus > available space).
+    # When true, overflow is PV-caused — pruning negative-price charge slots
+    # won't prevent it, and the negative-price income is pure profit.
+    pv_surplus_total = 0.0
+    for slot_idx, _ in remaining:
+        hour = int((slot_idx * minutes_per_slot) / 60)
+        pv_kwh = (pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+        pv_per_slot = pv_kwh * (minutes_per_slot / 60.0)
+        if consumption_hourly_kwh and hour in consumption_hourly_kwh:
+            cons = consumption_hourly_kwh[hour] * (minutes_per_slot / 60.0)
+        else:
+            cons = consumption_per_slot
+        surplus = pv_per_slot - cons
+        if surplus > 0:
+            pv_surplus_total += surplus
+    pv_fills_battery = pv_surplus_total >= (battery_capacity - current_kwh) * 0.9
+
     max_iterations = len(charge_slots) + len(discharge_slots) + 1
 
     for _ in range(max_iterations):
@@ -507,9 +524,7 @@ def _validate_schedule_soc(
         else:
             # Remove the most expensive charge at or before violation.
             # Prefer dropping non-negative slots first; fall back to
-            # negative-price slots if those are the only ones left —
-            # a negative-price slot that overflows the battery still
-            # causes forced PV export at penalty rates.
+            # negative-price slots only when PV alone wouldn't overflow.
             candidates = [
                 s for s in charge_slots
                 if s <= violation_slot and price_of.get(s, 0.0) >= 0
@@ -520,6 +535,17 @@ def _validate_schedule_soc(
                     if price_of.get(s, 0.0) >= 0
                 ]
             if not candidates:
+                # Only negative-price slots remain.  If PV alone would
+                # fill the battery, the overflow is PV-caused — pruning
+                # negative-price slots won't prevent it, and the income
+                # from charging at negative prices is pure profit.
+                if pv_fills_battery:
+                    _LOGGER.debug(
+                        "SOC validation: keeping negative-price charge slots — "
+                        "PV surplus (%.1f kWh) fills battery anyway",
+                        pv_surplus_total,
+                    )
+                    break
                 candidates = [
                     s for s in charge_slots
                     if s <= violation_slot

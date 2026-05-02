@@ -219,10 +219,12 @@ After selecting slots, simulates battery forward through every slot. Drops slots
 - Charge pushing SOC > capacity → drop most expensive non-negative charge first, then negative-price charges if needed
 - Discharge pulling SOC < minimum → drop least profitable discharge
 
-Negative-price slots are no longer fully exempt from overflow pruning.
-When PV production combined with grid charging would overfill the battery,
-negative-price charge slots are dropped to prevent forced grid export at
-penalty rates (inverter cannot disconnect PV panels).
+Negative-price slots are preserved when PV alone would fill the battery
+(surplus ≥ 90% of remaining capacity).  In that case the overflow is
+PV-caused — pruning negative-price slots won't prevent it, and the
+negative-price income is pure profit.  When PV is insufficient to cause
+overflow on its own, negative-price charge slots are still pruned to
+prevent forced grid export at penalty rates.
 
 ### Arbitrage Price Delta (both mode)
 
@@ -237,8 +239,8 @@ Prevents over-scheduling when PV will fill the battery:
 ```python
 headroom = max(0, max_battery_kwh - current_kwh - net_pv_surplus)
 max_today_slots = floor(headroom / effective_per_slot)
-# Negative-price slots pass through here (profitable to consume),
-# but _validate_schedule_soc prunes any that would cause overflow.
+# Negative-price slots pass through here (profitable to consume).
+# SOC validation prunes only when PV alone wouldn't fill the battery.
 ```
 
 ---
@@ -473,7 +475,7 @@ discharge combined).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (130 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (134 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

@@ -692,12 +692,15 @@ class FelicityEMSCard extends LitElement {
     const chartH = h - marginTop - marginBottom;
     const barW = Math.max(1, (w - marginLeft - marginRight) / numSlots);
 
-    // Find price range
+    // Find price range — add padding below minimum so bars at the lowest
+    // price still have visible height (otherwise they're clipped to 0px).
     const prices = displayData.map((s) => s.price).filter((p) => p != null);
     const actualMinPrice = prices.length ? Math.min(...prices) : 0;
     const actualMaxPrice = prices.length ? Math.max(...prices) : 0;
-    const minPrice = Math.min(...prices, 0);
+    const rawMin = Math.min(...prices, 0);
     const maxPrice = Math.max(...prices, 0.01);
+    const rawRange = maxPrice - rawMin || 0.01;
+    const minPrice = rawMin - rawRange * 0.05;
     const range = maxPrice - minPrice || 0.01;
 
     // Current time marker (only for today view)
