@@ -1275,21 +1275,15 @@ class FelicityInverterCard extends LitElement {
     const entity = this.hass.states[entityId];
     if (!entity) return html``;
 
-    const currentLevel = parseInt(entity.state) || 5;
+    const currentLevel = parseFloat(entity.state) || 5;
+    const maxPower = entity.attributes?.max ?? 10;
+    const step = entity.attributes?.step ?? 0.5;
 
     return html`
       <div class="control-group">
-        <span class="control-label">Power Level</span>
-        <select
-          @change=${(e) => this._handlePowerLevelChange(entityId, e.target.value)}
-          .value=${currentLevel}
-        >
-          ${[1,2,3,4,5,6,7,8,9,10].map(level => html`
-            <option value="${level}" ?selected=${level === currentLevel}>
-              ${level}
-            </option>
-          `)}
-        </select>
+        <span class="control-label">Power Level ${currentLevel} kW</span>
+        <input type="range" min="1" max="${maxPower}" step="${step}" .value=${currentLevel}
+          @change=${(e) => this._handlePowerLevelChange(entityId, parseFloat(e.target.value))} />
       </div>
     `;
   }

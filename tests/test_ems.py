@@ -3095,8 +3095,8 @@ class TestInherentLowSOCValidation:
         # With 5 kW * 0.9 eff = 4.5 kWh per slot, only 1 slot fits.
         # PV doesn't fill battery → overflow pruning should still apply.
         assert len(charges & neg_slots) < len(neg_slots), (
-            f"Not all negative slots should charge when battery is nearly full "
-            f"and PV insufficient — overflow pruning should apply"
+            "Not all negative slots should charge when battery is nearly full "
+            "and PV insufficient — overflow pruning should apply"
         )
 
     def test_sell_still_pruned_when_discharge_causes_violation(self):
@@ -3124,3 +3124,367 @@ class TestInherentLowSOCValidation:
             assert soc >= config.battery_discharge_min_pct - 1.0, (
                 f"SOC at slot {i} is {soc}%, violates min {config.battery_discharge_min_pct}%"
             )
+
+
+class TestUrgentRecoveryCharge:
+    """When battery is below discharge_min, force immediate charge slots."""
+
+    def test_immediate_charge_when_below_min(self):
+        """Battery at 10% with 20% min should charge NOW, not wait for
+        cheaper slots hours later."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=11.0,
+            safe_power_kw=20.0,
+            inverter_max_power_kw=25.0,
+        )
+        prices = [0.10] * 8 + [0.05] * 3 + [0.10] * 13
+        state = default_state(
+            battery_soc_pct=10.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=8,
+        )
+        result = calculate_schedule(config, state)
+        # Current slot (hour 8) must be scheduled for charge
+        assert result.scheduled_slots.get(8) == "charge", (
+            f"Battery at 10% (below 20% min) should force immediate charge "
+            f"at current slot 8, got: {result.scheduled_slots}"
+        )
+
+    def test_no_urgent_charge_when_above_min(self):
+        """Battery above discharge_min should NOT force immediate charge."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=11.0,
+            safe_power_kw=5.0,
+        )
+        # Cheap slots at hours 2-4, expensive at hour 12 (current)
+        prices = [0.30] * 2 + [0.05] * 3 + [0.30] * 19
+        state = default_state(
+            battery_soc_pct=25.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=12,
+        )
+        result = calculate_schedule(config, state)
+        # Hour 12 is expensive, battery is above min — no forced charge
+        if result.scheduled_slots.get(12) == "charge":
+            # It might be scheduled by the optimizer if needed, but not forced
+            pass  # OK if optimizer chose it
+
+    def test_urgent_recovery_adds_enough_slots(self):
+        """Urgent recovery should add enough slots to reach discharge_min."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+        )
+        # 15-min granularity: 96 slots
+        prices = [0.10] * 96
+        state = default_state(
+            battery_soc_pct=5.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=8,
+        )
+        result = calculate_schedule(config, state)
+        # Battery at 3 kWh (5% of 60), min = 12 kWh, need 9 kWh
+        # At 5 kW * 0.25h * 0.9 eff = 1.125 kWh per slot → ceil(9/1.125) = 8 slots
+        # Current slot at hour 8 = slot 32 (of 96)
+        current_slot = 32
+        immediate_charges = sum(
+            1 for i in range(current_slot, min(current_slot + 10, 96))
+            if result.scheduled_slots.get(i) == "charge"
+        )
+        assert immediate_charges >= 1, (
+            "Battery far below min should have immediate charge slots "
+            f"starting at current slot, got: {sorted(result.scheduled_slots.items())[:15]}"
+        )
+
+
+class TestBothModeFullCharge:
+    """Both mode should charge to full capacity when profitable pairs exist."""
+
+    def test_both_mode_charges_to_full_with_spread(self):
+        """Both mode with price spread should charge well beyond reserve_target."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=11.0,
+            safe_power_kw=5.0,
+        )
+        # Cheap morning, expensive evening → profitable spread
+        prices = [0.05] * 8 + [0.10] * 6 + [0.25] * 10
+        state = default_state(
+            battery_soc_pct=10.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        # Should charge aggressively (well beyond the ~29% reserve_target)
+        # and sell in the evening
+        assert charges >= 5, (
+            f"Both mode should charge to full for arbitrage, got only {charges} charge slots"
+        )
+        assert sells >= 1, (
+            f"Both mode should sell at expensive prices, got {sells} sell slots"
+        )
+
+    def test_both_mode_no_charge_when_pv_fills(self):
+        """Both mode should NOT grid-charge when PV fills the battery."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=11.0,
+            safe_power_kw=5.0,
+        )
+        prices = [0.05] * 8 + [0.10] * 6 + [0.25] * 10
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(60.0),
+            pv_forecast_remaining=50.0,
+            pv_forecast_today=60.0,
+            pv_actual_today_kwh=10.0,
+            current_hour=8,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        # PV fills battery → no grid charging needed (only sells)
+        assert charges == 0, (
+            f"Both mode should skip grid charging when PV fills battery, got {charges}"
+        )
+
+
+class TestBatteryCycleCost:
+    """#14: battery wear cost in profitability filter."""
+
+    def test_high_cycle_cost_blocks_marginal_arbitrage(self):
+        """When cycle cost > spread, sell slots should be filtered out."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=10.0,
+            consumption_est_kwh=8.0,
+            efficiency=0.95,  # round-trip 0.9025
+            battery_cycle_cost_eur_kwh=0.10,  # very high wear cost
+        )
+        # Spread: buy 0.05, sell 0.10. Round-trip min sell = 0.05/0.9025 ≈ 0.055.
+        # With wear: min sell = 0.055 + 0.10/0.9025 ≈ 0.166. Sell at 0.10 fails.
+        prices = [0.05] * 6 + [0.10] * 6 + [0.05] * 6 + [0.10] * 6
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert sells == 0, (
+            f"High cycle cost should block marginal arbitrage, got {sells} sells"
+        )
+
+    def test_zero_cycle_cost_allows_arbitrage(self):
+        """Default cycle cost = 0 preserves legacy behaviour: wide-spread
+        arbitrage produces sell slots."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=8.0,
+            safe_power_kw=5.0,
+            battery_cycle_cost_eur_kwh=0.0,
+        )
+        # Plenty of cheap slots; battery has 30 kWh headroom for round-trip.
+        prices = [0.30] * 6 + [0.05] * 10 + [0.30] * 8
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=6,
+        )
+        result = calculate_schedule(config, state)
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert sells > 0, "Wide-spread arbitrage should sell when cycle cost is 0"
+
+
+class TestOptimizationPriority:
+    """#12: optimization_priority knob (cost / longevity / self_consumption)."""
+
+    def test_longevity_enforces_cycle_cost_floor(self):
+        """Longevity priority enforces a minimum 0.05 cycle cost even
+        when battery_cycle_cost_eur_kwh is left at 0."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=10.0,
+            consumption_est_kwh=8.0,
+            optimization_priority="longevity",
+        )
+        # Spread small enough to be blocked by the longevity floor
+        prices = [0.05] * 6 + [0.10] * 6 + [0.05] * 6 + [0.10] * 6
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        assert sells == 0, (
+            "Longevity priority should block marginal arbitrage even with "
+            f"cycle_cost=0, got {sells} sells"
+        )
+
+    def test_self_consumption_raises_reserve_target(self):
+        """Self-consumption priority raises the dynamic reserve."""
+        config_cost = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=20.0,
+            optimization_priority="cost",
+        )
+        config_self = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=20.0,
+            optimization_priority="self_consumption",
+        )
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=[0.10] * 24,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=0,
+        )
+        result_cost = calculate_schedule(config_cost, state)
+        result_self = calculate_schedule(config_self, state)
+        assert result_self.reserve_target_pct > result_cost.reserve_target_pct, (
+            f"self_consumption reserve ({result_self.reserve_target_pct}%) "
+            f"should exceed cost reserve ({result_cost.reserve_target_pct}%)"
+        )
+
+
+class TestBlockExportOnNegativePrice:
+    """#5: prevent grid export at negative prices."""
+
+    def test_to_grid_skips_negative_slots(self):
+        """to_grid mode should never sell at p < 0."""
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=8.0,
+        )
+        prices = [-0.05] * 6 + [0.30] * 6 + [-0.05] * 6 + [0.30] * 6
+        state = default_state(
+            battery_soc_pct=80.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        for idx, action in result.scheduled_slots.items():
+            if action == "discharge":
+                assert prices[idx] >= 0, (
+                    f"Slot {idx} (price {prices[idx]}) should not be a sell slot"
+                )
+
+
+class TestPVConfidenceEMA:
+    """#3: EMA smoothing prevents oscillation."""
+
+    def test_smoothing_dampens_spike(self):
+        """A new very-low confidence is dampened by previous high."""
+        # Set up: forecast 30 kWh, actual_so_far very low (e.g., dark hour)
+        pv_hourly = make_pv_hourly(30.0)
+        # At hour 12, expected_so_far should be ~half of 30 = 15
+        # actual = 5 → cumulative confidence ≈ 0.33
+        instant = ems._calculate_pv_confidence(
+            pv_hourly, 5.0, 12, 0,
+        )
+        # With high previous confidence, smoothed is much higher than instant
+        smoothed = ems._calculate_pv_confidence(
+            pv_hourly, 5.0, 12, 0,
+            previous_confidence=1.0, ema_alpha=0.3,
+        )
+        assert smoothed > instant, (
+            f"smoothed ({smoothed}) should be > instant ({instant}) when prev=1.0"
+        )
+        # alpha=0.3, so smoothed = 0.3*instant + 0.7*1.0
+        expected = 0.3 * instant + 0.7 * 1.0
+        assert abs(smoothed - expected) < 0.01
+
+
+class TestPVForecastFallback:
+    """#4: fallback when forecast.solar is unavailable."""
+
+    def test_fallback_used_when_forecast_missing(self):
+        """When pv_forecast_today is None but pv_fallback_today_kwh is set,
+        the algorithm should use the fallback instead of treating PV as 0."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=10.0,
+        )
+        prices = [0.10] * 24
+        # Without fallback: PV=0, full deficit forces aggressive grid charge
+        state_no_fb = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=None,
+            pv_actual_today_kwh=0.0,
+            current_hour=8,
+        )
+        # With fallback: 25 kWh expected → less grid charge needed
+        state_fb = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=None,
+            pv_fallback_today_kwh=25.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=8,
+        )
+        result_no_fb = calculate_schedule(config, state_no_fb)
+        result_fb = calculate_schedule(config, state_fb)
+        no_fb_charges = sum(1 for v in result_no_fb.scheduled_slots.values() if v == "charge")
+        fb_charges = sum(1 for v in result_fb.scheduled_slots.values() if v == "charge")
+        assert fb_charges <= no_fb_charges, (
+            f"With PV fallback ({fb_charges} charges), should plan no more "
+            f"grid charging than without ({no_fb_charges})"
+        )

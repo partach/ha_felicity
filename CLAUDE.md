@@ -130,16 +130,24 @@ This prevents the SOC prediction from assuming unrealistic charge rates
 | Parameter | Default | Description |
 |---|---|---|
 | grid_mode | "off" | off / from_grid / to_grid / both |
-| battery_capacity_kwh | 10.0 | Total usable battery capacity |
+| battery_capacity_kwh | 10.0 | Effective capacity (coordinator scales nominal × SOH) |
 | battery_charge_max_pct | 100.0 | Max SOC limit for charging |
 | battery_discharge_min_pct | 20.0 | Min SOC floor for discharging |
 | efficiency | 0.90 | Single-direction efficiency (round-trip = 0.81) |
 | safe_power_kw | 5.0 | Charge/discharge power limit |
 | inverter_max_power_kw | 10.0 | Total inverter power limit (model-specific) |
 | consumption_est_kwh | 10.0 | Daily consumption (or 7-day rolling avg) |
-| yesterday_deficit_kwh | 0.0 | Carried forward from previous day |
+| yesterday_deficit_kwh | 0.0 | Carried forward from previous day; reset on grid_mode change |
 | reserve_target_pct | 0.0 | 0=dynamic, >0=fixed floor % |
 | arbitrage_price_delta | 0.0 | Price spread threshold for full charge in 'both' mode |
+| battery_cycle_cost_eur_kwh | 0.0 | Wear cost; added to min sell price |
+| optimization_priority | "cost" | cost / longevity / self_consumption |
+| block_export_on_negative_price | True | Skip sell scheduling at p < 0 |
+
+The coordinator applies a SOH factor to nominal `battery_capacity_kwh`
+before constructing `EMSConfig` — ems.py treats the capacity as
+already-effective.  SOH is estimated from cumulative cycle throughput
+(see "Cycle counting + SOH" below).
 
 ### Core Concept: Reserve Target
 
@@ -390,6 +398,15 @@ falls back to the filtered hourly sum.
 #### B. PV Confidence Recovery — IMPLEMENTED
 Sliding window approach: `_calculate_pv_confidence()` returns `max(cumulative, recent_3h_window)` so confidence recovers when weather improves mid-day.
 
+**EMA smoothing**: now also takes `previous_confidence` and applies an
+exponential moving average (alpha=0.3) to dampen single-hour weather
+oscillations.  Coordinator passes `_last_pv_confidence` on every tick.
+
+**Forecast.solar fallback**: when the forecast service is unavailable,
+`pv_fallback_today_kwh` is supplied by the coordinator (rough daylight-
+extrapolation from today's actual production) so the algorithm doesn't
+default to PV=0 and over-aggressively grid-charge.
+
 #### C. Consumption Profile Awareness — IMPLEMENTED
 Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumption_hourly_kwh` provides per-hour averages used in `_project_soc_trajectory()` and `_validate_schedule_soc()`. Coordinator records hourly breakdown at midnight. Frontend card also uses profiles.
 
@@ -402,6 +419,12 @@ later scheduled charge slot has a lower price. Prevents expensive-early-slot
 commitment when the deficit would have shrunk (e.g., PV confidence
 recovering) by the time the cheaper late slot would execute. Negative-price
 slots are exempt.
+
+**Deferral stall prevention**: never defer when SOC is at/below
+reserve_target (battery needs charging now, regardless of price), and only
+defer when the future slot is cheaper by ≥ 1¢/kWh.  Without these guards,
+recovering PV confidence could keep deferring the same slot indefinitely
+until the day ended without any charging.
 
 #### C4. Schedule-Status Attribute Caching — IMPLEMENTED
 `HA_FelicityScheduleStatusSensor` caches `extra_state_attributes` and
@@ -473,9 +496,99 @@ discharge combined).
 
 ---
 
+### Multi-Objective + Lifecycle Fixes (Implemented)
+
+A second wave of fixes addressing pitfalls flagged in a professional EMS
+review.  These extend the algorithm beyond pure cost minimisation and add
+runtime safeguards.
+
+| ID | Fix | Where |
+|---|---|---|
+| #1 | Cheap-slot deferral stall guards (SOC-floor + 1¢ gap) | coordinator |
+| #3 | EMA smoothing on PV confidence (alpha=0.3) | ems |
+| #4 | Forecast.solar fallback (`pv_fallback_today_kwh`) | ems + coordinator |
+| #5 | `block_export_on_negative_price` config | ems |
+| #6 | Modbus stale-data guard (refuse to plan on stale data) | coordinator |
+| #8 | Skip recalc when input hash + slot unchanged | coordinator |
+| #9 | Re-validate SOC after slot-override merge | coordinator |
+| #10 | Reset `yesterday_deficit` on grid_mode change | coordinator |
+| #12 | `optimization_priority` (cost / longevity / self_consumption) | ems |
+| #13 | SOH tracking from cycle throughput (persisted) | coordinator |
+| #14 | `battery_cycle_cost_eur_kwh` in profitability filter | ems |
+
+**Cycle counting + SOH (#13)**: coordinator's `_track_cycle_throughput`
+accumulates positive/negative SOC deltas (kWh, jitter floor 0.5%).
+Equivalent full cycles = min(charged, discharged) / capacity.
+SOH curve: `max(0.80, 1.0 - cycles × 5e-5)` — conservative LFP.
+Persisted in the consumption store so it survives restarts.  The
+SOH factor multiplies nominal `battery_capacity_kwh` before the
+`EMSConfig` is constructed; ems.py treats it as already-effective.
+
+**`optimization_priority`**:
+- `cost` (default): legacy behaviour, minimise grid spend.
+- `longevity`: enforces a 0.05 €/kWh cycle-cost floor (regardless of
+  the explicit `battery_cycle_cost_eur_kwh` setting).
+- `self_consumption`: multiplies the dynamic overnight reserve by
+  1.25× to keep more PV-stored energy in the battery for self-use
+  (less grid-export of solar).
+
+**Override SOC validation (#9)**: after merging `slot_overrides` into
+`scheduled_slots`, the coordinator re-runs `_validate_schedule_soc`.
+Manually-added charge slots that would overflow the battery, or
+discharge slots that would drain below the reserve, are dropped
+(with a log entry).  Previously a user click could set up an
+infeasible schedule.
+
+**Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC,
+prices, PV forecast, deficit, overrides, power) — when unchanged
+AND we're still in the same slot, the algorithm is not re-run.
+Recomputed on slot boundaries.  Cuts CPU on the 10-second tick.
+
+### Deferred Items (Need Separate Iteration)
+
+These were flagged in the same review but require larger changes
+or design discussion before implementation:
+
+#### #2 MILP Optimizer
+Current scheduler is greedy (cheapest-first).  A mixed-integer linear
+programme over the 24-48h horizon would find provably optimal
+schedules — typically 5-15% better on complex price patterns.
+**Why deferred**: requires adding `pulp` or `scipy.optimize`
+(scipy is heavy), a fundamentally different approach, and careful
+tuning of the objective function to reflect the existing
+constraints (SOC bounds, headroom, anti-conflict).  Expected
+2-week effort with substantial test coverage.
+
+#### #7 Frontend Simulation Drift
+The JS card has a simplified `_simulateSchedule` that doesn't fully
+match the backend (no SOC trajectory pruning, no PV-overflow
+exemption).  Slider previews show *roughly* the expected schedule
+but can diverge from what the backend will produce.
+**Partial mitigation**: backend is authoritative when no slider
+overrides are active.  **Full fix** would either remove client-side
+simulation entirely (slider preview becomes a backend round-trip,
+~1s lag) or align the simulation logic exactly (significant code
+duplication risk, same drift pattern as before refactor #A).
+Needs UX discussion before action.
+
+#### #11 EV / Heat Pump / Smart-Appliance Coordination
+A modern EMS orchestrates flexible loads (EV charging, heat pumps,
+water heaters) alongside the battery.  A heat pump with thermal
+mass is essentially a "thermal battery" that can shift consumption
+to cheap hours.
+**Why deferred**: requires new entity contracts (which heat
+pump?  which EV charger?), control logic to set their schedules,
+and a model of their constraints (min/max power, thermal lag,
+SOC-equivalent).  Each integration would be its own design.
+A reasonable starting point would be a `flexible_load_kw` config
+that the algorithm adds to the consumption estimate during
+specific time windows.
+
+---
+
 ## Testing
 
-Tests are in `tests/test_ems.py` (134 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (146 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
