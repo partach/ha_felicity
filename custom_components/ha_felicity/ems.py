@@ -28,6 +28,22 @@ class EMSConfig:
     yesterday_deficit_kwh: float = 0.0
     reserve_target_pct: float = 0.0  # 0 = dynamic (min + overnight), >0 = fixed floor %
     arbitrage_price_delta: float = 0.0  # €/kWh spread threshold for full charge in 'both' mode
+    # Battery degradation cost: each cycled kWh has a wear cost.  Used to
+    # require a profitable spread before scheduling arbitrage.  Typical LFP
+    # range: 0.02-0.05 €/kWh.  0.0 disables (legacy behaviour).
+    battery_cycle_cost_eur_kwh: float = 0.0
+    # Optimization priority: cost / longevity / self_consumption.
+    # cost: minimise grid spend (legacy default).
+    # longevity: bias against cycling — higher cycle-cost penalty.
+    # self_consumption: maximise PV self-use, reduce grid imports.
+    optimization_priority: str = "cost"
+    # Disallow grid export during negative-price slots.  Some markets
+    # (DE/NL) penalise feed-in at negative prices.  When True, sell slots
+    # at p < 0 are blocked even in to_grid / both modes.
+    block_export_on_negative_price: bool = True
+    # NOTE: battery State of Health (SOH) is applied by the coordinator
+    # before constructing this config — it scales battery_capacity_kwh
+    # by the SOH factor.  ems.py treats the capacity as already-effective.
 
 
 @dataclass
@@ -43,6 +59,15 @@ class EMSState:
     pv_forecast_tomorrow: float | None = None
     pv_actual_today_kwh: float | None = None
     consumption_hourly_kwh: dict[int, float] | None = None  # {hour: avg_kwh} from 7-day profile
+    # Previous-tick PV confidence for EMA smoothing.  None on first call.
+    previous_pv_confidence: float | None = None
+    # Last successful Modbus read timestamp (epoch seconds).  When stale
+    # (older than the configured threshold), the algorithm refuses to plan.
+    last_modbus_read_ts: float | None = None
+    # Fallback PV total for today when forecast.solar is unavailable.
+    # Coordinator sets this from the 7-day rolling average of actual daily
+    # PV.  Used only when pv_forecast_today is None or 0.
+    pv_fallback_today_kwh: float | None = None
     current_hour: int = 12
     current_minute: int = 0
 
@@ -140,6 +165,8 @@ def _compute_reserve_target(
 
     When reserve_target_pct > 0, uses that as a fixed floor percentage.
     Otherwise falls back to the dynamic calculation: discharge_min + overnight reserve.
+    When optimization_priority == "self_consumption", the dynamic reserve is
+    boosted to keep more PV-stored energy in the battery for self-use.
     """
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
 
@@ -148,7 +175,10 @@ def _compute_reserve_target(
         # Use the higher of fixed floor and discharge minimum
         return min(config.battery_capacity_kwh, max(fixed_floor, min_kwh))
 
-    return min(config.battery_capacity_kwh, min_kwh + reserve_kwh)
+    # Self-consumption priority: hold extra reserve to favour PV self-use
+    # over grid exports.  Adds a 25% buffer on top of the overnight reserve.
+    multiplier = 1.25 if config.optimization_priority == "self_consumption" else 1.0
+    return min(config.battery_capacity_kwh, min_kwh + reserve_kwh * multiplier)
 
 
 def calculate_net_pv_surplus(
@@ -161,6 +191,7 @@ def calculate_net_pv_surplus(
     pv_forecast_today: float | None = None,
     current_hour: int = 12,
     current_minute: int = 0,
+    previous_pv_confidence: float | None = None,
 ) -> float:
     """Calculate net PV surplus using per-hour solar production vs consumption.
 
@@ -177,9 +208,10 @@ def calculate_net_pv_surplus(
     minutes_per_slot = (24 * 60) / num_slots
     consumption_per_hour = consumption_est / 24.0
 
-    # PV confidence factor (uses sliding window for recovery on variable days)
+    # PV confidence factor (sliding window + EMA smoothing across ticks)
     pv_confidence = _calculate_pv_confidence(
         pv_hourly_kwh, pv_actual_today_kwh, current_hour, current_minute,
+        previous_confidence=previous_pv_confidence,
     )
 
     # Sum positive surpluses per hour
@@ -210,6 +242,8 @@ def _calculate_pv_confidence(
     pv_actual_today_kwh: float | None,
     current_hour: int,
     current_minute: int = 0,
+    previous_confidence: float | None = None,
+    ema_alpha: float = 0.3,
 ) -> float:
     """Calculate PV production confidence based on actual vs expected output.
 
@@ -282,16 +316,25 @@ def _calculate_pv_confidence(
     # when actual production is naturally low.
     confidence = 1.0 * (1.0 - evidence_weight) + raw_confidence * evidence_weight
 
+    # EMA smoothing to prevent oscillation: a single dark/bright hour can
+    # otherwise swing the raw confidence dramatically.  Blend the new value
+    # with the previous one to enforce hysteresis.
+    if previous_confidence is not None:
+        smoothed = ema_alpha * confidence + (1.0 - ema_alpha) * previous_confidence
+    else:
+        smoothed = confidence
+
     _LOGGER.debug(
         "PV confidence: cumulative=%.2f, window(%dh)=%.2f, raw=%.2f, "
-        "evidence_weight=%.2f → final=%.2f "
-        "(actual=%.1f, expected_total=%.1f, total_forecast=%.1f)",
+        "evidence_weight=%.2f, instant=%.2f, smoothed=%.2f "
+        "(prev=%s, actual=%.1f, expected_total=%.1f, total_forecast=%.1f)",
         cumulative_confidence, window_hours, window_confidence, raw_confidence,
-        evidence_weight, confidence,
+        evidence_weight, confidence, smoothed,
+        f"{previous_confidence:.2f}" if previous_confidence is not None else "None",
         pv_actual_today_kwh, expected_so_far, total_forecast,
     )
 
-    return max(0.1, min(1.0, confidence))
+    return max(0.1, min(1.0, smoothed))
 
 
 def _project_soc_trajectory(
@@ -356,6 +399,7 @@ def _compute_scheduled_soc_trajectory(
     pv_confidence = _calculate_pv_confidence(
         state.pv_hourly_kwh, state.pv_actual_today_kwh,
         state.current_hour, state.current_minute,
+        previous_confidence=state.previous_pv_confidence,
     )
     energy_per_slot = config.safe_power_kw * (minutes_per_slot / 60.0)
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
@@ -926,26 +970,60 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
 
     # When per-hour PV data is unavailable, synthesize from daily forecast
     # so that _project_soc_trajectory can account for solar production.
+    # Forecast service downtime fallback: if pv_forecast_today is missing
+    # but the coordinator supplied pv_fallback_today_kwh (7-day actual avg),
+    # use that instead of treating PV as zero — otherwise the algorithm
+    # over-charges from grid on every clear day after a forecast outage.
+    forecast_total = state.pv_forecast_today
+    forecast_remaining = state.pv_forecast_remaining
+    used_fallback = False
+    if (not forecast_total or forecast_total <= 0) and state.pv_fallback_today_kwh:
+        forecast_total = state.pv_fallback_today_kwh
+        # Estimate remaining as: total × (remaining_daylight / total_daylight)
+        # using the 6-20 daylight window from _synthesize_pv_hourly.
+        daylight_start, daylight_end = 6, 20
+        remaining_daylight_min = max(
+            0,
+            (daylight_end * 60) - max(
+                state.current_hour * 60 + state.current_minute,
+                daylight_start * 60,
+            ),
+        )
+        total_daylight_min = (daylight_end - daylight_start) * 60
+        if total_daylight_min > 0:
+            forecast_remaining = forecast_total * (remaining_daylight_min / total_daylight_min)
+        used_fallback = True
+
     if (not state.pv_hourly_kwh
-            and state.pv_forecast_today and state.pv_forecast_today > 0
-            and state.pv_forecast_remaining and state.pv_forecast_remaining > 0):
+            and forecast_total and forecast_total > 0
+            and forecast_remaining and forecast_remaining > 0):
         state = EMSState(
             battery_soc_pct=state.battery_soc_pct,
             slot_prices_today=state.slot_prices_today,
             slot_prices_tomorrow=state.slot_prices_tomorrow,
-            pv_hourly_kwh=_synthesize_pv_hourly(state.pv_forecast_today),
-            pv_forecast_remaining=state.pv_forecast_remaining,
-            pv_forecast_today=state.pv_forecast_today,
+            pv_hourly_kwh=_synthesize_pv_hourly(forecast_total),
+            pv_forecast_remaining=forecast_remaining,
+            pv_forecast_today=forecast_total,
             pv_forecast_tomorrow=state.pv_forecast_tomorrow,
             pv_actual_today_kwh=state.pv_actual_today_kwh,
             consumption_hourly_kwh=state.consumption_hourly_kwh,
+            previous_pv_confidence=state.previous_pv_confidence,
+            last_modbus_read_ts=state.last_modbus_read_ts,
+            pv_fallback_today_kwh=state.pv_fallback_today_kwh,
             current_hour=state.current_hour,
             current_minute=state.current_minute,
         )
-        _LOGGER.debug(
-            "Synthesized hourly PV from daily forecast (%.1f kWh)",
-            state.pv_forecast_today,
-        )
+        if used_fallback:
+            _LOGGER.warning(
+                "PV forecast unavailable — using fallback (%.1f kWh from "
+                "7-day actual avg, %.1f kWh remaining)",
+                forecast_total, forecast_remaining,
+            )
+        else:
+            _LOGGER.debug(
+                "Synthesized hourly PV from daily forecast (%.1f kWh)",
+                forecast_total,
+            )
 
     battery_soc = state.battery_soc_pct
     current_kwh = (battery_soc / 100.0) * config.battery_capacity_kwh if battery_soc is not None else 0.0
@@ -1059,6 +1137,7 @@ def _schedule_from_grid(
     pv_confidence = _calculate_pv_confidence(
         state.pv_hourly_kwh, state.pv_actual_today_kwh,
         state.current_hour, state.current_minute,
+        previous_confidence=state.previous_pv_confidence,
     )
     _, min_projected, max_projected = _project_soc_trajectory(
         remaining, current_kwh, consumption_per_slot,
@@ -1165,6 +1244,7 @@ def _schedule_to_grid(
     pv_confidence = _calculate_pv_confidence(
         state.pv_hourly_kwh, state.pv_actual_today_kwh,
         state.current_hour, state.current_minute,
+        previous_confidence=state.previous_pv_confidence,
     )
     minutes_per_slot = (24 * 60) / num_slots
     consumption_per_slot = config.consumption_est_kwh / num_slots
@@ -1189,7 +1269,20 @@ def _schedule_to_grid(
         result.status = "no_action_needed"
         return result
 
+    # Filter sell candidates: strictly positive prices.  When
+    # block_export_on_negative_price is True, zero-price slots also pass
+    # through but negatives are blocked.
     positive_slots = [(i, p) for i, p in remaining if p > 0]
+
+    # Apply battery cycle wear cost: every sold kWh wears the battery.
+    cycle_cost = config.battery_cycle_cost_eur_kwh
+    if config.optimization_priority == "longevity":
+        cycle_cost = max(cycle_cost, 0.05)
+    round_trip_eff = config.efficiency * config.efficiency
+    cycle_cost_per_sold_kwh = cycle_cost / round_trip_eff if round_trip_eff > 0 else 0.0
+    if cycle_cost_per_sold_kwh > 0:
+        positive_slots = [(i, p) for i, p in positive_slots if p >= cycle_cost_per_sold_kwh]
+
     slots_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
     sorted_slots = sorted(positive_slots, key=lambda x: -x[1])
     selected = sorted_slots[:slots_needed]
@@ -1254,6 +1347,7 @@ def _schedule_both(
     pv_confidence = _calculate_pv_confidence(
         state.pv_hourly_kwh, state.pv_actual_today_kwh,
         state.current_hour, state.current_minute,
+        previous_confidence=state.previous_pv_confidence,
     )
     _, min_projected, max_projected = _project_soc_trajectory(
         remaining, current_kwh, consumption_per_slot,
@@ -1352,16 +1446,32 @@ def _schedule_both(
 
     charge_slot_indices = {s[0] for s in charge_slots}
 
-    # Sell side
-    non_negative_slots = [(i, p) for i, p in remaining if p >= 0]
+    # Sell side: filter to strictly positive prices.  When
+    # block_export_on_negative_price is True (default), zero-price slots
+    # also pass through but negatives are blocked — selling at p < 0 means
+    # paying the grid to take energy.
+    sell_price_floor = 0.0 if config.block_export_on_negative_price else float("-inf")
+    non_negative_slots = [(i, p) for i, p in remaining if p > sell_price_floor]
     available_for_sell = [(i, p) for i, p in non_negative_slots
                          if p > 0 and i not in charge_slot_indices]
+
+    # Effective cycle wear cost per kWh sold (longevity priority increases
+    # this).  Roundtrip-divided because every sold kWh required ≈1/η stored.
+    cycle_cost = config.battery_cycle_cost_eur_kwh
+    if config.optimization_priority == "longevity":
+        cycle_cost = max(cycle_cost, 0.05)  # enforce a longevity floor
+    cycle_cost_per_sold_kwh = cycle_cost / round_trip_eff if round_trip_eff > 0 else 0.0
 
     min_sell_price = 0.0
     if charge_slots:
         max_buy_price = max(s[1] for s in charge_slots)
-        min_sell_price = max_buy_price / round_trip_eff
+        # Sell must cover: round-trip losses on the buy AND cycle wear cost.
+        min_sell_price = (max_buy_price / round_trip_eff) + cycle_cost_per_sold_kwh
         available_for_sell = [(i, p) for i, p in available_for_sell if p >= min_sell_price]
+    elif cycle_cost_per_sold_kwh > 0:
+        # No buy slots: still require sell price > cycle wear cost
+        # (selling stored PV/yesterday's charge wears the battery too).
+        available_for_sell = [(i, p) for i, p in available_for_sell if p >= cycle_cost_per_sold_kwh]
 
     sell_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
     sorted_expensive = sorted(available_for_sell, key=lambda x: -x[1])
