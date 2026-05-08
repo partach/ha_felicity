@@ -1284,23 +1284,42 @@ def _schedule_both(
     else:
         energy_deficit = base_deficit
 
-    # Arbitrage price delta: when the price spread is large enough, charge
-    # to full capacity instead of just the reserve — the extra energy can be
-    # sold at a profit that outweighs battery wear.
+    # Both mode: charge to full capacity when profitable buy-sell pairs exist.
+    # The user opted into arbitrage by selecting 'both' — the algorithm should
+    # maximise stored energy available for selling at peak prices, not just
+    # target the conservative reserve.  Skip when solar already fills the
+    # battery (no point grid-charging).
     arbitrage_active = False
-    if config.arbitrage_price_delta > 0 and remaining:
-        prices_remaining = [p for _, p in remaining if p is not None]
-        if prices_remaining:
-            price_spread = max(prices_remaining) - min(prices_remaining)
-            if price_spread >= config.arbitrage_price_delta:
-                arbitrage_active = True
-                full_charge_kwh = max_battery_kwh - current_kwh
-                energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
-                _LOGGER.debug(
-                    "Arbitrage active: spread=%.4f >= delta=%.4f, "
-                    "charging to full (deficit=%.2f kWh)",
-                    price_spread, config.arbitrage_price_delta, energy_deficit,
-                )
+    prices_remaining = [p for _, p in remaining if p is not None]
+    if prices_remaining and max_projected < max_battery_kwh * 0.95:
+        cheapest_buy = min(prices_remaining)
+        most_expensive = max(prices_remaining)
+        min_profitable_sell = cheapest_buy / round_trip_eff
+        if most_expensive >= min_profitable_sell:
+            arbitrage_active = True
+            full_charge_kwh = max_battery_kwh - current_kwh
+            energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
+            _LOGGER.debug(
+                "Both-mode arbitrage: buy=%.4f, sell=%.4f (min profitable=%.4f), "
+                "charging to full (deficit=%.2f kWh)",
+                cheapest_buy, most_expensive, min_profitable_sell, energy_deficit,
+            )
+
+    # Arbitrage price delta: optional additional constraint.  When set > 0,
+    # requires the price spread to exceed this threshold before activating
+    # full charging.  With the default of 0, the profitability check above
+    # handles arbitrage automatically.
+    if not arbitrage_active and config.arbitrage_price_delta > 0 and prices_remaining:
+        price_spread = max(prices_remaining) - min(prices_remaining)
+        if price_spread >= config.arbitrage_price_delta:
+            arbitrage_active = True
+            full_charge_kwh = max_battery_kwh - current_kwh
+            energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
+            _LOGGER.debug(
+                "Arbitrage delta active: spread=%.4f >= delta=%.4f, "
+                "charging to full (deficit=%.2f kWh)",
+                price_spread, config.arbitrage_price_delta, energy_deficit,
+            )
 
     charge_slots, tomorrow_slots, tomorrow_charge_kwh = select_unified_charge_slots(
         remaining, energy_deficit, effective_per_slot,

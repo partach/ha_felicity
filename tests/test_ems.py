@@ -3216,3 +3216,65 @@ class TestUrgentRecoveryCharge:
             "Battery far below min should have immediate charge slots "
             f"starting at current slot, got: {sorted(result.scheduled_slots.items())[:15]}"
         )
+
+
+class TestBothModeFullCharge:
+    """Both mode should charge to full capacity when profitable pairs exist."""
+
+    def test_both_mode_charges_to_full_with_spread(self):
+        """Both mode with price spread should charge well beyond reserve_target."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=11.0,
+            safe_power_kw=5.0,
+        )
+        # Cheap morning, expensive evening → profitable spread
+        prices = [0.05] * 8 + [0.10] * 6 + [0.25] * 10
+        state = default_state(
+            battery_soc_pct=10.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        sells = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        # Should charge aggressively (well beyond the ~29% reserve_target)
+        # and sell in the evening
+        assert charges >= 5, (
+            f"Both mode should charge to full for arbitrage, got only {charges} charge slots"
+        )
+        assert sells >= 1, (
+            f"Both mode should sell at expensive prices, got {sells} sell slots"
+        )
+
+    def test_both_mode_no_charge_when_pv_fills(self):
+        """Both mode should NOT grid-charge when PV fills the battery."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=11.0,
+            safe_power_kw=5.0,
+        )
+        prices = [0.05] * 8 + [0.10] * 6 + [0.25] * 10
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(60.0),
+            pv_forecast_remaining=50.0,
+            pv_forecast_today=60.0,
+            pv_actual_today_kwh=10.0,
+            current_hour=8,
+        )
+        result = calculate_schedule(config, state)
+        charges = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        # PV fills battery → no grid charging needed (only sells)
+        assert charges == 0, (
+            f"Both mode should skip grid charging when PV fills battery, got {charges}"
+        )
