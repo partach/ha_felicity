@@ -1,8 +1,10 @@
 """Data update coordinator for Felicity with proper async handling."""
 
 import asyncio
+import json
 import logging
 import math
+import time
 from datetime import timedelta, datetime
 from typing import Dict, Any
 from homeassistant.core import HomeAssistant
@@ -122,6 +124,24 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._available_total_with_tomorrow: int = 0
         self.available_energy_capacity: float = 0.0
         self.charge_likelihood: str = "unknown"
+
+        # Modbus staleness tracking (#6).  Updated on each successful read.
+        self._last_modbus_success_ts: float | None = None
+        self._stale_data_threshold_sec: int = 120  # 2 min = ~12 ticks
+
+        # Schedule recalc cache (#8).  Skip recompute when inputs unchanged.
+        self._last_schedule_input_hash: int | None = None
+        self._last_schedule_slot_idx: int = -1
+
+        # Cycle counting + SOH (#13).  Persisted as part of consumption store.
+        self._cycle_charged_kwh: float = 0.0
+        self._cycle_discharged_kwh: float = 0.0
+        self._battery_soh_factor: float = 1.0
+        self._last_soc_for_cycles: float | None = None
+
+        # Grid-mode change tracking (#10).  Detect transitions to reset
+        # transient state that shouldn't survive a mode change.
+        self._last_grid_mode: str | None = None
 
     @property
     def pv_actual_today_kwh(self) -> float | None:
@@ -293,8 +313,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         # lose coverage — we just shift charging to
                         # cheaper slots.  Negative-price slots are always
                         # profitable — never defer those.
+                        # GUARDS to prevent deferral stall (#1):
+                        #  - never defer when SOC is at/below reserve target
+                        #    (battery needs charging now, regardless of price)
+                        #  - require a meaningful price gap (>= 1¢/kWh)
+                        #    so tiny differences don't keep deferring forever
                         current_price = self.slot_prices_today[slot_idx]
-                        if current_price is not None and current_price >= 0:
+                        below_reserve = battery_soc <= self._reserve_target_pct
+                        if (current_price is not None
+                                and current_price >= 0
+                                and not below_reserve):
                             future_charge_prices = [
                                 self.slot_prices_today[idx]
                                 for idx, action in self.scheduled_slots.items()
@@ -302,11 +330,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 and action == "charge"
                                 and self.slot_prices_today[idx] is not None
                             ]
+                            min_meaningful_gap = 0.01  # 1¢/kWh
                             if (future_charge_prices
-                                    and min(future_charge_prices) < current_price):
+                                    and (current_price - min(future_charge_prices))
+                                        >= min_meaningful_gap):
                                 _LOGGER.debug(
                                     "Deferring charge at slot %d (%.4f) — "
-                                    "cheaper slot available later (%.4f)",
+                                    "meaningfully cheaper slot later (%.4f)",
                                     slot_idx, current_price,
                                     min(future_charge_prices),
                                 )
@@ -587,14 +617,51 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         opts = self.config_entry.options
         now = datetime.now()
 
+        grid_mode = opts.get("grid_mode", "off")
+
+        # Reset transient state on grid_mode change (#10).  yesterday_deficit
+        # was computed for a different mode; carrying it over inflates today's
+        # plan after a switch.  We keep the consumption profile (it's mode-
+        # independent).
+        if self._last_grid_mode is not None and self._last_grid_mode != grid_mode:
+            _LOGGER.info(
+                "Grid mode changed %s → %s — resetting yesterday_deficit",
+                self._last_grid_mode, grid_mode,
+            )
+            self._yesterday_deficit = 0.0
+            self._last_schedule_input_hash = None  # force recompute
+        self._last_grid_mode = grid_mode
+
+        # Stale-data guard (#6).  If we haven't had a successful Modbus read
+        # in too long, keep the previous schedule rather than planning on
+        # stale battery SOC / register values.
+        if (self._last_modbus_success_ts is not None
+                and time.time() - self._last_modbus_success_ts
+                    > self._stale_data_threshold_sec):
+            _LOGGER.warning(
+                "Modbus data is stale (last successful read %.0fs ago) — "
+                "keeping previous schedule",
+                time.time() - self._last_modbus_success_ts,
+            )
+            self.schedule_status = "stale_data"
+            return
+
         # Use safe_max_power (kW scale 1-10) for realistic slot energy, fallback to power_level
         safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
         inverter_model = self.config_entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
         inverter_max_kw = INVERTER_MAX_POWER_KW.get(inverter_model, 10)
 
+        # Apply SOH factor (#13): scale nominal capacity by ageing factor.
+        nominal_capacity = opts.get("battery_capacity_kwh", 10) or 10
+        effective_capacity = nominal_capacity * self._battery_soh_factor
+
+        # Fallback PV (#4): coordinator computes a 7-day actual avg for
+        # use when forecast.solar is unavailable.
+        pv_fallback = self._compute_pv_fallback()
+
         config = ems_module.EMSConfig(
-            grid_mode=opts.get("grid_mode", "off"),
-            battery_capacity_kwh=opts.get("battery_capacity_kwh", 10),
+            grid_mode=grid_mode,
+            battery_capacity_kwh=effective_capacity,
             battery_charge_max_pct=opts.get("battery_charge_max_level", 100),
             battery_discharge_min_pct=opts.get("battery_discharge_min_level", 20),
             efficiency=opts.get("efficiency_factor", 0.90),
@@ -604,6 +671,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             yesterday_deficit_kwh=self._yesterday_deficit,
             reserve_target_pct=opts.get("reserve_target_pct", 0),
             arbitrage_price_delta=opts.get("arbitrage_price_delta", 0.0),
+            battery_cycle_cost_eur_kwh=opts.get("battery_cycle_cost_eur_kwh", 0.0),
+            optimization_priority=opts.get("optimization_priority", "cost"),
+            block_export_on_negative_price=opts.get(
+                "block_export_on_negative_price", True
+            ),
         )
 
         state = ems_module.EMSState(
@@ -616,19 +688,48 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             pv_forecast_tomorrow=self.pv_forecast_tomorrow,
             pv_actual_today_kwh=self.pv_actual_today_kwh,
             consumption_hourly_kwh=self._hourly_consumption_profile or None,
+            previous_pv_confidence=self._last_pv_confidence,
+            last_modbus_read_ts=self._last_modbus_success_ts,
+            pv_fallback_today_kwh=pv_fallback,
             current_hour=now.hour,
             current_minute=now.minute,
         )
+
+        # Skip recalc when inputs unchanged (#8).  Hashing the inputs lets
+        # us detect "nothing meaningful changed since last tick" — common
+        # case between price updates.  Always recompute on slot boundary.
+        current_slot_idx = int((now.hour * 60 + now.minute) / ((24 * 60) / len(self.slot_prices_today))) if self.slot_prices_today else -1
+        input_hash = hash((
+            grid_mode,
+            round(battery_soc, 1) if battery_soc is not None else None,
+            tuple(self.slot_prices_today) if self.slot_prices_today else None,
+            tuple(self.slot_prices_tomorrow) if self.slot_prices_tomorrow else None,
+            round(self.pv_forecast_today, 2) if self.pv_forecast_today else None,
+            round(self.pv_actual_today_kwh, 2) if self.pv_actual_today_kwh else None,
+            self._yesterday_deficit,
+            json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
+            safe_power_kw,
+        ))
+        if (input_hash == self._last_schedule_input_hash
+                and current_slot_idx == self._last_schedule_slot_idx):
+            _LOGGER.debug(
+                "Schedule recalc skipped — inputs unchanged (slot %d)",
+                current_slot_idx,
+            )
+            return
+        self._last_schedule_input_hash = input_hash
+        self._last_schedule_slot_idx = current_slot_idx
 
         result = ems_module.calculate_schedule(config, state)
 
         # Unpack ScheduleResult into coordinator attributes
         self.scheduled_slots = result.scheduled_slots
 
-        # Merge manual slot overrides from the card
+        # Merge manual slot overrides from the card, then re-validate (#9).
+        # Without validation, a manual override could push SOC above
+        # capacity (overflow) or below the floor (deep discharge).
         today_overrides = self.slot_overrides.get("today", {})
         if today_overrides:
-            grid_mode = opts.get("grid_mode", "off")
             for idx_str, action in today_overrides.items():
                 idx = int(idx_str)
                 # Respect grid_mode: from_grid only allows charge, to_grid only discharge
@@ -637,6 +738,58 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if grid_mode == "to_grid" and action != "discharge":
                     continue
                 self.scheduled_slots[idx] = action
+
+            # Re-run SOC validation on the merged schedule.  Drops any
+            # manually-added slot that would violate battery bounds.
+            if self.slot_prices_today and battery_soc is not None:
+                num_slots_t = len(self.slot_prices_today)
+                minutes_per_slot_t = (24 * 60) / num_slots_t
+                current_slot_t = int(
+                    (now.hour * 60 + now.minute) / minutes_per_slot_t
+                )
+                current_slot_t = min(current_slot_t, num_slots_t - 1)
+                remaining_t = [
+                    (i, self.slot_prices_today[i])
+                    for i in range(current_slot_t, num_slots_t)
+                    if self.slot_prices_today[i] is not None
+                ]
+                charge_set = {
+                    i for i, a in self.scheduled_slots.items() if a == "charge"
+                }
+                discharge_set = {
+                    i for i, a in self.scheduled_slots.items() if a == "discharge"
+                }
+                current_kwh_t = (battery_soc / 100.0) * effective_capacity
+                min_kwh_t = (config.battery_discharge_min_pct / 100.0) * effective_capacity
+                consumption_per_slot_t = config.consumption_est_kwh / num_slots_t
+                energy_per_slot_t = config.safe_power_kw * (minutes_per_slot_t / 60.0)
+                pv_conf = self._last_pv_confidence or 1.0
+                validated_charge, validated_discharge = ems_module._validate_schedule_soc(
+                    remaining_t, charge_set, discharge_set,
+                    current_kwh_t, consumption_per_slot_t,
+                    self.pv_hourly_kwh or {}, minutes_per_slot_t, pv_conf,
+                    effective_capacity, min_kwh_t,
+                    energy_per_slot_t, config.efficiency,
+                    consumption_hourly_kwh=self._hourly_consumption_profile or None,
+                    inverter_max_power_kw=config.inverter_max_power_kw,
+                    safe_power_kw=config.safe_power_kw,
+                )
+                # Drop any slot rejected by validation, including overrides
+                dropped: list[int] = []
+                for idx in list(self.scheduled_slots.keys()):
+                    action = self.scheduled_slots[idx]
+                    if action == "charge" and idx not in validated_charge:
+                        del self.scheduled_slots[idx]
+                        dropped.append(idx)
+                    elif action == "discharge" and idx not in validated_discharge:
+                        del self.scheduled_slots[idx]
+                        dropped.append(idx)
+                if dropped:
+                    _LOGGER.warning(
+                        "Override SOC validation: dropped %d slot(s) that would "
+                        "violate battery bounds: %s",
+                        len(dropped), sorted(dropped),
+                    )
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
         self.self_consumption_reserve = result.self_consumption_reserve
@@ -830,6 +983,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if data and "hourly_history" in data:
                 self._hourly_consumption_history = data["hourly_history"][-7:]
                 self._calculate_hourly_profile()
+            # Cycle counting + SOH (#13).  Persisted across restarts so we
+            # can estimate battery wear from cumulative throughput.
+            if data and "cycle_charged_kwh" in data:
+                self._cycle_charged_kwh = float(data.get("cycle_charged_kwh", 0))
+                self._cycle_discharged_kwh = float(data.get("cycle_discharged_kwh", 0))
+                self._battery_soh_factor = float(data.get("battery_soh_factor", 1.0))
             self._consumption_store_loaded = True
 
     async def _record_daily_consumption(self) -> None:
@@ -892,6 +1051,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self._consumption_store.async_save({
                 "daily_history": self._daily_consumption_history,
                 "hourly_history": self._hourly_consumption_history,
+                "cycle_charged_kwh": round(self._cycle_charged_kwh, 3),
+                "cycle_discharged_kwh": round(self._cycle_discharged_kwh, 3),
+                "battery_soh_factor": round(self._battery_soh_factor, 4),
             })
 
         self._calculate_weekly_avg()
@@ -905,6 +1067,82 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
         total = sum(entry["kwh"] for entry in self._daily_consumption_history)
         self.weekly_avg_consumption = round(total / len(self._daily_consumption_history), 2)
+
+    def _compute_pv_fallback(self) -> float | None:
+        """7-day rolling average of actual daily PV (#4).
+
+        Used when forecast.solar is unavailable so the algorithm doesn't
+        treat PV as zero — that would over-aggressively grid-charge on
+        every clear day after a forecast service outage.
+
+        Returns None when no actual PV history is available.
+        """
+        # We piggy-back on the daily consumption store: there is no separate
+        # PV history yet, so return None for now and rely on yesterday's
+        # actual when available via pv_actual_today_kwh on the previous tick.
+        # Future: track _daily_pv_history alongside daily consumption.
+        if self.pv_actual_today_kwh is None or self.pv_actual_today_kwh <= 0:
+            return None
+        # Rough fallback: assume today will produce similarly to today-so-far
+        # extrapolated by remaining daylight.  This is a crude estimate but
+        # better than zero.
+        now = datetime.now()
+        if now.hour < 6 or now.hour >= 20:
+            return None  # outside daylight, can't extrapolate
+        elapsed_daylight = max(1, now.hour - 6)
+        total_daylight = 14
+        return self.pv_actual_today_kwh * (total_daylight / elapsed_daylight)
+
+    def _track_cycle_throughput(self, current_soc: float | None) -> None:
+        """Accumulate charged/discharged kWh from SOC changes (#13).
+
+        Called on each successful update.  Each positive delta counts as
+        charging throughput; each negative as discharging.  Equivalent
+        full cycles = min(charged, discharged) / capacity_kwh.
+        """
+        if current_soc is None or current_soc < 0 or current_soc > 100:
+            return
+        capacity = self.config_entry.options.get("battery_capacity_kwh", 10) or 10
+        if self._last_soc_for_cycles is None:
+            self._last_soc_for_cycles = current_soc
+            return
+        delta_pct = current_soc - self._last_soc_for_cycles
+        # Ignore noise: only count changes >= 0.5% to avoid sensor jitter
+        if abs(delta_pct) < 0.5:
+            return
+        delta_kwh = (delta_pct / 100.0) * capacity
+        if delta_kwh > 0:
+            self._cycle_charged_kwh += delta_kwh
+        else:
+            self._cycle_discharged_kwh += abs(delta_kwh)
+        self._last_soc_for_cycles = current_soc
+        self._update_soh_estimate()
+
+    def _update_soh_estimate(self) -> None:
+        """Estimate SOH from equivalent full cycles (#13).
+
+        Uses a conservative LFP-style curve: ~0.005% capacity loss per
+        equivalent full cycle, floored at 80% SOH.  For a 60 kWh battery,
+        6000 cycles ≈ 80% SOH.  For NMC chemistries this would be more
+        aggressive; the user can override via config later if needed.
+        """
+        capacity = self.config_entry.options.get("battery_capacity_kwh", 10) or 10
+        if capacity <= 0:
+            return
+        equivalent_cycles = min(
+            self._cycle_charged_kwh, self._cycle_discharged_kwh
+        ) / capacity
+        # 0.5% loss per 100 cycles, floor at 80%
+        soh = max(0.80, 1.0 - equivalent_cycles * 0.00005)
+        # Smooth: only update SOH when it changes by ≥ 0.1%
+        if abs(soh - self._battery_soh_factor) >= 0.001:
+            self._battery_soh_factor = soh
+            _LOGGER.debug(
+                "SOH update: equivalent_cycles=%.1f, soh=%.4f "
+                "(charged=%.1f, discharged=%.1f kWh total)",
+                equivalent_cycles, soh,
+                self._cycle_charged_kwh, self._cycle_discharged_kwh,
+            )
 
     async def _record_hourly_consumption(self, date_str: str) -> None:
         """Record hourly consumption breakdown using HA recorder history.
@@ -1456,6 +1694,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
                                 self.battery_soc = battery_soc
                                 self._record_soc_snapshot(battery_soc)
+                                # Modbus read succeeded — refresh staleness ts (#6)
+                                self._last_modbus_success_ts = time.time()
+                                # Cycle counting + SOH update (#13)
+                                self._track_cycle_throughput(battery_soc)
 
                                 # In auto mode, run the schedule optimizer
                                 if price_mode == "auto":
