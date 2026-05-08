@@ -973,6 +973,31 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             energy_per_slot, num_slots, current_slot,
         )
 
+    # Urgent recovery: when battery is below discharge_min, force immediate
+    # charge slots starting from the current slot.  The cheapest-slot optimizer
+    # may schedule charge hours from now, leaving the battery critically low
+    # in the meantime.  This ensures the inverter starts charging NOW.
+    min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
+    if (current_kwh < min_kwh
+            and config.grid_mode in ("from_grid", "both")
+            and result.scheduled_slots is not None):
+        effective_per_slot = config.safe_power_kw * (minutes_per_slot / 60.0) * config.efficiency
+        recovery_needed = min_kwh - current_kwh
+        urgent_slots_needed = math.ceil(recovery_needed / effective_per_slot) if effective_per_slot > 0 else 0
+        added = 0
+        for i in range(current_slot, num_slots):
+            if added >= urgent_slots_needed:
+                break
+            if result.scheduled_slots.get(i) != "charge":
+                result.scheduled_slots[i] = "charge"
+                added += 1
+        if added:
+            _LOGGER.info(
+                "Urgent recovery: battery at %.1f kWh (min=%.1f), "
+                "forced %d immediate charge slot(s)",
+                current_kwh, min_kwh, added,
+            )
+
     # Update status
     if not result.scheduled_slots:
         if result.status not in ("off", "no_price_data", "day_complete"):
