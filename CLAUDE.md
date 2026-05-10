@@ -234,6 +234,15 @@ negative-price income is pure profit.  When PV is insufficient to cause
 overflow on its own, negative-price charge slots are still pruned to
 prevent forced grid export at penalty rates.
 
+**Phantom-charge detection**: when a charge slot is scheduled at a
+moment the battery is already at capacity (`soc_before >= capacity - 0.01`),
+the inverter physically cannot store the energy (BMS rejects).  These
+slots are dropped regardless of price — even negative-price slots,
+because the income doesn't materialise if no grid energy is drawn.
+The validation simulates forward through PV-only overflows (clamping
+soc and continuing) instead of breaking on the first PV-caused
+violation, which lets it detect phantom charges later in the day.
+
 ### Arbitrage Price Delta (both mode)
 
 When `arbitrage_price_delta > 0` and `max_remaining_price - min_remaining_price >= delta`:
