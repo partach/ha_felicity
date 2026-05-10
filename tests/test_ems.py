@@ -2733,13 +2733,15 @@ class TestIntegrationCustomerScenarios:
     def test_trex5_to_grid_sunny_day(self):
         """TREX-5, 10kWh battery, to_grid only, sunny day.
 
-        Expected: sell slots at peak prices, no charge slots.
+        Expected: sell slots at peak prices, no charge slots, SOC stays
+        above reserve target (consumption tuned so reserve doesn't block
+        the evening sell).
         """
         config = default_config(
             grid_mode="to_grid",
             battery_capacity_kwh=10.0,
             battery_discharge_min_pct=20.0,
-            consumption_est_kwh=8.0,
+            consumption_est_kwh=4.0,  # smaller reserve to leave room for sell
             safe_power_kw=3.0,
             inverter_max_power_kw=5.0,
         )
@@ -3487,4 +3489,76 @@ class TestPVForecastFallback:
         assert fb_charges <= no_fb_charges, (
             f"With PV fallback ({fb_charges} charges), should plan no more "
             f"grid charging than without ({no_fb_charges})"
+        )
+
+
+class TestTomorrowFullBatteryNoPhantomCharge:
+    """When battery is already full and tomorrow's PV will keep it there,
+    no charge slots should be scheduled — the inverter can't charge a
+    full battery.  Regression test for the negative-price slot getting
+    scheduled at hour 16 when SOC was 100% all day."""
+
+    def test_no_tomorrow_charge_when_battery_full_with_pv(self):
+        """Battery starts full, PV tomorrow keeps it full → no charge slots."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=35.0,
+            battery_charge_max_pct=100.0,
+            consumption_est_kwh=30.9,
+            safe_power_kw=8.0,
+        )
+        # One slot has a slightly negative price tomorrow (would otherwise
+        # be auto-selected by negative-slot pickup)
+        prices_today = [0.20] * 24
+        prices_tomorrow = [0.20] * 16 + [-0.01] + [0.20] * 7
+        state = default_state(
+            battery_soc_pct=100.0,
+            slot_prices_today=prices_today,
+            slot_prices_tomorrow=prices_tomorrow,
+            pv_hourly_kwh=make_pv_hourly(48.0),
+            pv_forecast_remaining=10.2,
+            pv_forecast_today=48.0,
+            pv_forecast_tomorrow=40.0,
+            pv_actual_today_kwh=37.9,
+            current_hour=15,
+        )
+        result = calculate_schedule(config, state)
+        tomorrow_charges = sum(
+            1 for v in result.tomorrow_scheduled_slots.values() if v == "charge"
+        )
+        assert tomorrow_charges == 0, (
+            f"Battery full + PV keeps it full → no tomorrow charge slots, "
+            f"got {tomorrow_charges}: {result.tomorrow_scheduled_slots}"
+        )
+
+    def test_negative_charge_kept_when_battery_has_room(self):
+        """The fix shouldn't break the legitimate case: when battery has
+        actual room to fill and PV would overflow it, negative-price slots
+        are still kept (the income is pure profit)."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+        )
+        prices = [0.05] * 7 + [-0.46, -0.30, -0.20] + [0.05] * 4 + [0.10] * 4 + [0.15] * 6
+        state = default_state(
+            battery_soc_pct=29.0,  # plenty of headroom
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(65.0),
+            pv_forecast_remaining=64.7,
+            pv_forecast_today=65.0,
+            pv_actual_today_kwh=0.3,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 7}
+        neg_charged = charges & neg_slots
+        assert len(neg_charged) == len(neg_slots), (
+            f"With headroom, all negative-price slots should still charge: "
+            f"got {len(neg_charged)} of {len(neg_slots)}"
         )

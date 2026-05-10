@@ -490,14 +490,31 @@ def _validate_schedule_soc(
         surplus = pv_per_slot - cons
         if surplus > 0:
             pv_surplus_total += surplus
-    pv_fills_battery = pv_surplus_total >= (battery_capacity - current_kwh) * 0.9
+    # pv_surplus_total is logged when a negative-price slot is kept due
+    # to PV-caused overflow.  The actual exemption check is per-slot
+    # (violation_pv_caused) below.
+
+    # PV-overflow exemption only applies when the battery has real room
+    # to fill.  When current_kwh is already at/near capacity, the exemption
+    # would preserve negative-price slots that the inverter can't actually
+    # execute (BMS rejects charging a full battery), producing phantom
+    # schedule entries.
+    pv_fills_battery = (
+        current_kwh < battery_capacity * 0.95
+        and pv_surplus_total >= (battery_capacity - current_kwh) * 0.9
+    )
 
     max_iterations = len(charge_slots) + len(discharge_slots) + 1
 
     for _ in range(max_iterations):
         violation_slot: int | None = None
         violation_type: str | None = None  # "low" or "high"
-        discharge_seen = False  # track if a discharge happened before violation
+        # Whether the charge action at the violation slot is wasted: when
+        # the battery is already at capacity entering a charge slot, the
+        # inverter can't physically store any of the grid energy.  Such
+        # phantom slots must be dropped regardless of price.
+        violation_charge_wasted = False
+        discharge_seen = False
 
         soc = current_kwh
         for slot_idx, _ in remaining:
@@ -510,39 +527,61 @@ def _validate_schedule_soc(
             else:
                 cons = consumption_per_slot
             delta = pv_per_slot - cons
+            charge_contribution = 0.0
             if slot_idx in charge_slots:
                 if inverter_max_power_kw > 0:
                     grid_kw = min(safe_power_kw or energy_per_slot / (minutes_per_slot / 60.0),
                                   max(0.0, inverter_max_power_kw - pv_kwh * pv_confidence))
-                    delta += grid_kw * (minutes_per_slot / 60.0) * efficiency
+                    charge_contribution = grid_kw * (minutes_per_slot / 60.0) * efficiency
                 else:
-                    delta += energy_per_slot * efficiency
+                    charge_contribution = energy_per_slot * efficiency
+                delta += charge_contribution
             if slot_idx in discharge_slots:
                 delta -= energy_per_slot
                 discharge_seen = True
 
-            soc = soc + delta
+            soc_before = soc
+            soc_ideal = soc + delta
 
-            # Check bounds BEFORE clamping — charging a full battery wastes
-            # energy, discharging an empty one is impossible.
-            if soc < min_kwh - 0.01:
-                # If no discharge happened before this point, the low SOC
-                # is inherent (battery starts below reserve/min) — not
-                # caused by any scheduled discharge.  Clamp and continue
-                # rather than pruning unrelated future discharge slots.
+            # Low-bound check: SOC dipping below min is always a violation.
+            if soc_ideal < min_kwh - 0.01:
                 if not discharge_seen:
-                    soc = max(0.0, min(battery_capacity, soc))
+                    soc = max(0.0, min(battery_capacity, soc_ideal))
                     continue
                 violation_slot = slot_idx
                 violation_type = "low"
                 break
-            if soc > battery_capacity + 0.01:
+            if soc_ideal > battery_capacity + 0.01:
+                # Determine causality.  If PV alone (no charge action)
+                # would also overflow at this slot, the natural BMS
+                # behaviour is to spill the excess — clamp soc and keep
+                # simulating to detect any genuine charge-caused issues
+                # at later slots (e.g., a phantom charge during clamped
+                # hours that would otherwise be missed).
+                soc_no_charge = soc_before + (delta - charge_contribution)
+                pv_alone_overflows = soc_no_charge > battery_capacity + 0.01
+                if pv_alone_overflows:
+                    # Phantom charge: action present on already-full battery.
+                    # Drop regardless of price — the energy can't land.
+                    if (charge_contribution > 0
+                            and soc_before >= battery_capacity - 0.01):
+                        violation_charge_wasted = True
+                        violation_slot = slot_idx
+                        violation_type = "high"
+                        break
+                    # PV-only spill: clamp and continue simulating.
+                    soc = battery_capacity
+                    continue
+                # Charge action contributes to / causes overflow.
+                if (charge_contribution > 0
+                        and soc_before >= battery_capacity - 0.01):
+                    violation_charge_wasted = True
                 violation_slot = slot_idx
                 violation_type = "high"
                 break
 
-            # Clamp to physical limits for subsequent slot calculations
-            soc = max(0.0, min(battery_capacity, soc))
+            # Clamp for next iteration
+            soc = max(0.0, min(battery_capacity, soc_ideal))
 
         if violation_slot is None:
             break  # Schedule is valid
@@ -580,10 +619,14 @@ def _validate_schedule_soc(
                 ]
             if not candidates:
                 # Only negative-price slots remain.  If PV alone would
-                # fill the battery, the overflow is PV-caused — pruning
-                # negative-price slots won't prevent it, and the income
-                # from charging at negative prices is pure profit.
-                if pv_fills_battery:
+                # fill the battery (and the battery has room to fill),
+                # the overflow is PV-caused — pruning negative-price
+                # slots won't prevent it, and the income from charging
+                # at negative prices is pure profit.
+                # EXCEPTION: when the violation slot's charge action is
+                # wasted (battery was already at capacity entering it),
+                # the negative-price slot is phantom — drop it anyway.
+                if pv_fills_battery and not violation_charge_wasted:
                     _LOGGER.debug(
                         "SOC validation: keeping negative-price charge slots — "
                         "PV surplus (%.1f kWh) fills battery anyway",
@@ -858,6 +901,34 @@ def _compute_tomorrow_schedule(
     pv_hourly_tomorrow: dict[int, float] = {}
     for h in daylight_hours:
         pv_hourly_tomorrow[h] = pv_per_daylight_hour
+
+    # Validate tomorrow's charge slots: drop any that would overflow.
+    # Without this, a negative or near-zero-price slot picked by the
+    # unified selector ends up scheduled even when SOC is already pegged
+    # at 100% from PV — a phantom "charge" the inverter can't execute.
+    if charge_indices:
+        consumption_per_slot_t = config.consumption_est_kwh / num_slots
+        validated_charge_t, _ = _validate_schedule_soc(
+            remaining, set(charge_indices), set(),
+            midnight_kwh, consumption_per_slot_t,
+            pv_hourly_tomorrow, minutes_per_slot, 1.0,
+            config.battery_capacity_kwh, min_kwh,
+            energy_per_slot, config.efficiency,
+            consumption_hourly_kwh=state.consumption_hourly_kwh,
+            inverter_max_power_kw=config.inverter_max_power_kw,
+            safe_power_kw=config.safe_power_kw,
+        )
+        dropped_t = [i for i in charge_indices if i not in validated_charge_t]
+        for idx in dropped_t:
+            scheduled.pop(idx, None)
+            charge_indices.discard(idx)
+        if dropped_t:
+            _LOGGER.info(
+                "Tomorrow schedule: dropped %d charge slot(s) that would "
+                "overflow battery (midnight_kwh=%.1f, capacity=%.1f): %s",
+                len(dropped_t), midnight_kwh, config.battery_capacity_kwh,
+                sorted(dropped_t),
+            )
 
     # Sell slots (to_grid or both mode)
     if config.grid_mode in ("to_grid", "both"):
