@@ -143,6 +143,8 @@ This prevents the SOC prediction from assuming unrealistic charge rates
 | battery_cycle_cost_eur_kwh | 0.0 | Wear cost; added to min sell price |
 | optimization_priority | "cost" | cost / longevity / self_consumption |
 | block_export_on_negative_price | True | Skip sell scheduling at p < 0 |
+| charge_to_full_on_negative_price | False | Schedule every p<0 slot (revenue at p<0); accepts forced PV curtailment |
+| discharge_to_make_room_for_negative_price | False | Pre-emptively discharge before p<0 PV windows so PV can fill the battery |
 
 The coordinator applies a SOH factor to nominal `battery_capacity_kwh`
 before constructing `EMSConfig` — ems.py treats the capacity as
@@ -260,6 +262,49 @@ max_today_slots = floor(headroom / effective_per_slot)
 # SOC validation prunes only when PV alone wouldn't fill the battery.
 ```
 
+### Negative-Price Strategies (charge_to_full / discharge_to_make_room)
+
+Two orthogonal opt-in flags that change how negative-price slots are
+handled.  Both are off by default and compose with all grid modes
+(from_grid, to_grid, both).
+
+**`charge_to_full_on_negative_price`** — acts *during* p<0 slots
+- In `_schedule_from_grid` / `_schedule_both`, after the normal
+  cheapest-slot selection, every negative-price slot in the remaining
+  window is added to the charge set (deduplicated).
+- `_validate_schedule_soc` is called with `keep_all_negative_charges=True`.
+  When set, negative-price slots are exempt from overflow pruning even
+  when PV alone wouldn't fill the battery (the legacy `pv_fills_battery`
+  exemption is broadened to "all negatives").
+- Phantom-charge slots (battery already at capacity entering the slot)
+  are kept too — the inverter may try to charge and the BMS will gate
+  it.  No harm; the schedule reflects user intent.
+- Trade-off: the user accepts some forced PV curtailment in exchange
+  for guaranteed revenue at every p<0 slot.
+
+**`discharge_to_make_room_for_negative_price`** — acts *before* p<0 slots
+- New helper `_select_discharges_for_pv_headroom` runs after charge
+  selection.  Walks the SOC trajectory forward; whenever a negative-
+  price slot with PV surplus would overflow the battery, schedules
+  discharge in the *most expensive* earlier positive-price slot to
+  create headroom.
+- Validity: SOC must never drop below the absolute `min_kwh` floor
+  (hardware safety), and end-of-day SOC must remain >= reserve_target
+  (overnight coverage).  Temporary dips below reserve during the day
+  are allowed — the negative-window PV will refill the battery.
+- Works in `from_grid` mode (which normally never discharges) as well
+  as `to_grid` / `both`.  In `both` mode, the make-room discharges
+  are merged with the regular sell-side selection (sells take
+  precedence on conflicting slots).
+
+**Composition**: when both flags are on, make-room discharges are
+scheduled before negative windows, then charge slots fire during the
+negatives.  Net effect: maximum profit on negative-price days
+(discharge at peak + buy at p<0 + PV fills the cleared battery).
+
+Exposed as off/on select entities (`HA_FelicitySpecialModeSelect`)
+in the UI.
+
 ---
 
 ## Safe Power Management (coordinator.py:1077-1193)
@@ -331,6 +376,15 @@ Fetches `energy_state` history from HA API (throttled 60s), shows what actually 
 | max_amperage_per_phase | number | 10-63 A | 16 | Grid current limit |
 | voltage_level | number | 48-60 V | 58 | Charge voltage setpoint |
 | discharge_min_voltage | number | 48-55 V | 50 | Discharge voltage floor |
+| charge_to_full_on_negative_price | select | off/on | off | Charge at every p<0 slot (revenue) |
+| discharge_to_make_room_for_negative_price | select | off/on | off | Pre-discharge before p<0 PV windows |
+
+All `HA_FelicityInternalNumber` configuration entities render as
+input boxes (`NumberMode.BOX`) so users can type precise values.
+Sliders are awkward for fractional / fine-grained settings like
+`efficiency_factor` (step 0.01) or `arbitrage_price_delta` (step
+0.01 €/kWh).  Pass `mode=NumberMode.SLIDER` to the constructor for
+entities that benefit from scrubbing.
 
 ### Key Sensor Entities
 

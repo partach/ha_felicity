@@ -676,6 +676,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             block_export_on_negative_price=opts.get(
                 "block_export_on_negative_price", True
             ),
+            charge_to_full_on_negative_price=opts.get(
+                "charge_to_full_on_negative_price", "off"
+            ) == "on",
+            discharge_to_make_room_for_negative_price=opts.get(
+                "discharge_to_make_room_for_negative_price", "off"
+            ) == "on",
         )
 
         state = ems_module.EMSState(

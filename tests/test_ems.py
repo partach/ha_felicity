@@ -3562,3 +3562,349 @@ class TestTomorrowFullBatteryNoPhantomCharge:
             f"With headroom, all negative-price slots should still charge: "
             f"got {len(neg_charged)} of {len(neg_slots)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test: Negative-price strategies (charge_to_full / discharge_to_make_room)
+# ---------------------------------------------------------------------------
+
+class TestChargeToFullOnNegativePrice:
+    """charge_to_full_on_negative_price: schedule every p<0 slot, even if
+    SOC validation would otherwise prune it because PV alone wouldn't fill
+    the battery (i.e., accepting forced PV curtailment / export risk)."""
+
+    def _prices_with_negatives(self, n_slots: int = 24) -> list[float]:
+        # 0..6 mild positive, 7..9 deeply negative, 10..23 positive ramp.
+        p = [0.10] * n_slots
+        for i in (7, 8, 9):
+            p[i] = -0.20
+        for i in range(10, n_slots):
+            p[i] = 0.05 + 0.01 * (i - 10)
+        return p
+
+    def test_negative_slots_kept_with_flag(self):
+        """With the flag ON, all negative slots are scheduled even when
+        the battery starts near full and PV alone wouldn't fill it."""
+        prices = self._prices_with_negatives(24)
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=20.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=5.0,
+            consumption_est_kwh=10.0,
+            charge_to_full_on_negative_price=True,
+        )
+        state = default_state(
+            battery_soc_pct=85.0,  # nearly full — would normally prune negs
+            slot_prices_today=prices,
+            pv_hourly_kwh={},  # no PV
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=6,
+        )
+        result = calculate_schedule(config, state)
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 6}
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        assert neg_slots.issubset(charges), (
+            f"All negative slots {sorted(neg_slots)} should be charged with "
+            f"the flag on; got {sorted(charges)}"
+        )
+
+    def test_negative_slots_pruned_without_flag(self):
+        """Baseline: without the flag and no PV-fills-battery exemption,
+        negative-price slots that would overflow are pruned."""
+        prices = self._prices_with_negatives(24)
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=20.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=5.0,
+            consumption_est_kwh=10.0,
+            charge_to_full_on_negative_price=False,
+        )
+        state = default_state(
+            battery_soc_pct=95.0,  # essentially full
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=6,
+        )
+        result = calculate_schedule(config, state)
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 6}
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        # Without the flag, the battery is too full — most negative slots get pruned
+        assert len(charges & neg_slots) < len(neg_slots), (
+            f"Without flag, near-full battery should prune some negative slots; "
+            f"got all {len(charges & neg_slots)}/{len(neg_slots)} kept"
+        )
+
+    def test_flag_in_both_mode(self):
+        """The flag applies to both mode as well — all negatives kept."""
+        prices = self._prices_with_negatives(24)
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=10.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=5.0,
+            charge_to_full_on_negative_price=True,
+        )
+        state = default_state(
+            battery_soc_pct=85.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=6,
+        )
+        result = calculate_schedule(config, state)
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 6}
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        assert neg_slots.issubset(charges)
+
+    def test_flag_off_keeps_legacy_behavior(self):
+        """With flag OFF, existing PV-fills-battery exemption still applies."""
+        prices = self._prices_with_negatives(24)
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            charge_to_full_on_negative_price=False,
+        )
+        # Large PV that will fill the battery — exemption keeps neg slots.
+        state = default_state(
+            battery_soc_pct=80.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(40.0),
+            pv_forecast_remaining=25.0,
+            pv_forecast_today=40.0,
+            pv_actual_today_kwh=15.0,
+            current_hour=6,
+        )
+        result = calculate_schedule(config, state)
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 6}
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        # PV-fills-battery exemption should keep most negatives
+        assert len(charges & neg_slots) >= 1
+
+
+class TestDischargeToMakeRoomForNegativePrice:
+    """discharge_to_make_room_for_negative_price: pre-emptively discharge
+    in earlier positive-price slots so the battery has headroom to absorb
+    PV during negative-price windows (avoiding forced grid export at
+    penalty rates)."""
+
+    def test_no_discharge_without_flag(self):
+        """Baseline: with flag OFF, from_grid mode never schedules discharge."""
+        # PV mostly during a negative-price window; battery starts near full.
+        prices = [0.20] * 11 + [-0.10] * 4 + [0.20] * 9  # negatives at 11-14
+        # PV concentrated at hours 11-14 (negative window).
+        pv_hourly = {11: 8.0, 12: 8.0, 13: 8.0, 14: 8.0}
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=20.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=4.0,
+            discharge_to_make_room_for_negative_price=False,
+        )
+        state = default_state(
+            battery_soc_pct=90.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv_hourly,
+            pv_forecast_remaining=32.0,
+            pv_forecast_today=32.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        discharges = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+        assert discharges == [], (
+            f"from_grid mode without flag should never discharge; got {discharges}"
+        )
+
+    def test_discharge_scheduled_with_flag(self):
+        """With flag ON, discharge slots appear before negative-price PV window."""
+        prices = [0.20] * 11 + [-0.10] * 4 + [0.20] * 9  # negatives at 11-14
+        pv_hourly = {11: 8.0, 12: 8.0, 13: 8.0, 14: 8.0}
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=20.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=4.0,
+            discharge_to_make_room_for_negative_price=True,
+        )
+        state = default_state(
+            battery_soc_pct=90.0,  # near full — needs to make room
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv_hourly,
+            pv_forecast_remaining=32.0,
+            pv_forecast_today=32.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        discharges = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+        assert len(discharges) > 0, (
+            "Expected at least one pre-emptive discharge slot when battery "
+            "is near-full and a negative-price PV window is coming"
+        )
+        # All discharges should be in positive-price slots BEFORE the negative window
+        first_neg = 11
+        for d in discharges:
+            assert d < first_neg, f"discharge {d} should be before neg window at {first_neg}"
+            assert prices[d] > 0, f"discharge {d} should be at positive price, got {prices[d]}"
+
+    def test_no_discharge_when_battery_has_room(self):
+        """When battery has plenty of headroom, no pre-emptive discharge needed."""
+        prices = [0.20] * 11 + [-0.10] * 4 + [0.20] * 9
+        pv_hourly = {11: 8.0, 12: 8.0, 13: 8.0, 14: 8.0}
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=30.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=20.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=10.0,
+            discharge_to_make_room_for_negative_price=True,
+        )
+        state = default_state(
+            battery_soc_pct=30.0,  # plenty of headroom
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv_hourly,
+            pv_forecast_remaining=32.0,
+            pv_forecast_today=32.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        discharges = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+        # Battery can fully absorb the PV — no make-room needed
+        assert discharges == [], (
+            f"No discharge needed when battery has headroom; got {discharges}"
+        )
+
+    def test_no_discharge_without_pv(self):
+        """No PV during negative window = no overflow risk = no discharge."""
+        prices = [0.20] * 11 + [-0.10] * 4 + [0.20] * 9
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            discharge_to_make_room_for_negative_price=True,
+        )
+        state = default_state(
+            battery_soc_pct=90.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={},  # no PV
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=0.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        discharges = [k for k, v in result.scheduled_slots.items() if v == "discharge"]
+        assert discharges == [], (
+            f"No PV = no overflow risk = no pre-emptive discharge; got {discharges}"
+        )
+
+    def test_respects_reserve_target(self):
+        """Pre-emptive discharge must not push SOC below reserve target."""
+        prices = [0.20] * 11 + [-0.10] * 4 + [0.20] * 9
+        pv_hourly = {11: 8.0, 12: 8.0, 13: 8.0, 14: 8.0}
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=20.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=4.0,
+            reserve_target_pct=60.0,  # high reserve floor
+            discharge_to_make_room_for_negative_price=True,
+        )
+        state = default_state(
+            battery_soc_pct=70.0,  # just above reserve
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv_hourly,
+            pv_forecast_remaining=32.0,
+            pv_forecast_today=32.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        # Walk SOC forward and check reserve is never violated by pre-emptive discharge
+        soc_kwh = (state.battery_soc_pct / 100.0) * config.battery_capacity_kwh
+        reserve_kwh = (config.reserve_target_pct / 100.0) * config.battery_capacity_kwh
+        energy_per_slot = config.safe_power_kw  # 1h slots
+        num_slots = len(prices)
+        for i in range(state.current_hour, num_slots):
+            pv = pv_hourly.get(i, 0.0)
+            cons = config.consumption_est_kwh / num_slots
+            delta = pv - cons
+            action = result.scheduled_slots.get(i)
+            if action == "discharge":
+                delta -= energy_per_slot
+                # Must not push SOC below reserve at any time during/after discharge
+                assert (soc_kwh + delta) >= reserve_kwh - 0.05, (
+                    f"Pre-emptive discharge at slot {i} would push SOC below "
+                    f"reserve {reserve_kwh:.2f} (would reach {soc_kwh + delta:.2f})"
+                )
+            soc_kwh = max(0.0, min(config.battery_capacity_kwh, soc_kwh + delta))
+
+
+class TestNegativePriceStrategiesComposable:
+    """Both flags can be enabled together — they don't conflict."""
+
+    def test_both_flags_together(self):
+        """charge_to_full + discharge_to_make_room work together: discharge
+        before the window creates space, then we charge at the negatives."""
+        # 24 slots. Negatives at 11-14, PV during 10-15, battery near full.
+        prices = [0.20] * 11 + [-0.10] * 4 + [0.20] * 9
+        pv_hourly = {10: 6.0, 11: 8.0, 12: 8.0, 13: 8.0, 14: 8.0, 15: 6.0}
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=20.0,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=4.0,
+            charge_to_full_on_negative_price=True,
+            discharge_to_make_room_for_negative_price=True,
+        )
+        state = default_state(
+            battery_soc_pct=90.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv_hourly,
+            pv_forecast_remaining=44.0,
+            pv_forecast_today=44.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=7,
+        )
+        result = calculate_schedule(config, state)
+        charges = {k for k, v in result.scheduled_slots.items() if v == "charge"}
+        discharges = {k for k, v in result.scheduled_slots.items() if v == "discharge"}
+        neg_slots = {i for i, p in enumerate(prices) if p < 0 and i >= 7}
+        # All negatives scheduled as charge (charge_to_full)
+        assert neg_slots.issubset(charges), (
+            f"Both flags on: all neg slots {sorted(neg_slots)} should be charged; "
+            f"got {sorted(charges)}"
+        )
+        # Some discharge before the negative window (make_room)
+        early_discharges = {d for d in discharges if d < 11}
+        assert early_discharges, (
+            "Both flags on: expected pre-emptive discharges before the "
+            "negative window; got none"
+        )
