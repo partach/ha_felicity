@@ -503,6 +503,7 @@ REGISTER_SETS_TREX_TEN = {
             "pv_generated_energy_year",
             "battery_charged_energy_day",
             "battery_discharged_energy_day",
+            "load_consumption_energy_day",
         }
         and "_secondary" not in key  # ← Excludes duplicates!
     },
