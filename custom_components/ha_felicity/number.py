@@ -256,7 +256,13 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
         self.async_write_ha_state()
 
 class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
-    """Generic internal number entity for user-configurable options (sliders)."""
+    """Generic internal number entity for user-configurable options.
+
+    Renders as an input box (NumberMode.BOX) so users can type precise
+    values — sliders are awkward for fractional / fine-grained settings
+    like efficiency factor or arbitrage price delta.  Sliders elsewhere
+    (Power Level, Price Threshold) keep the slider for quick scrubbing.
+    """
 
     def __init__(
         self,
@@ -272,6 +278,7 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         device_class: str | None = None,
         dynamic_range: bool = False,
         default_value: float | None = None,
+        mode: NumberMode = NumberMode.BOX,
     ):
         super().__init__(coordinator)
         self._entry = entry
@@ -284,10 +291,10 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         self._attr_native_max_value = max_val
         self._attr_native_step = step
         self._dynamic_range = dynamic_range
-        
+
         if unit:
             self._attr_native_unit_of_measurement = unit
-        self._attr_mode = NumberMode.SLIDER
+        self._attr_mode = mode
         self._attr_entity_category = EntityCategory.CONFIG
 
         if icon:

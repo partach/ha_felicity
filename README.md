@@ -6,6 +6,8 @@
 [![HACS validated](https://img.shields.io/badge/HACS-validated-41BDF5?style=flat-square)](https://github.com/hacs/integration)
 
 Felicity inverter home assistant integration for easy setup and use of the device (via [Modbus](https://www.se.com/us/en/faqs/FA168406/)).
+Additionally includes a full Energy Management System to Buy and Sell electricity on the best moments and guards maximum power use to save guard against overcurrent.
+With the right settings the software makes sure you pay the best energy prices or use no grid if not needed.
 
 For this integration to work you need to have a wired modbus connection to your inverter either [via this USB dongle](https://www.amazon.nl/Industrial-Converter-Lightningproof-Resettable-Protection/dp/B0B87YJLJQ?source=ps-sl-shoppingads-lpcontext&ref_=fplfs&psc=1&smid=A2FQD9ZIAONBLW) or via something [like this](https://www.kiwi-electronics.com/nl/rs485-to-rj45-ethernet-tcp-ip-to-serial-rail-mount-support-20109?country=NL&utm_term=20109&gad_source=1&gad_campaignid=19763718639&gbraid=0AAAAADuMvucKntnrNZrVkZAHDgps81zYC&gclid=Cj0KCQiAx8PKBhD1ARIsAKsmGbeFZaWC_S38eFyu1NtZ0SP4zyLWwMWG70BRz6Ur1nmBymMCxvSR1_kaAmR9EALw_wcB).
 Currently supports IVGM / TREX types: 
@@ -58,8 +60,10 @@ It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA1
 The 3 possible ways are explained in the picture below. At the moment the last part always requires a RS485 connection to the inverter.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-connect.png" width="600"/>
-  <br><em>Ways to connect the inverter</em>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/modbus_location_trex10k.png" width="400"/>
+  <br><em>Ways to connect the inverter and TREX10k modbus location</em>
 </p>
+NOTE: when using the USR-D164 wifi module you need to put Pack Interval to 100 (20 causes packet loss)
 
 ## Installation options
 The T-REX 5 and 10K series with HP or HL (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3) can be selected with selecting
@@ -142,16 +146,18 @@ For example if you have a maximum of 16A per group, set the value to 16A. The in
 (by decreasing the user requested power level, controlled via rule 1 via the integration).
 It will keep monitorning this and will increase the battery loading to requested power levels if the amperage becomes lower.
 
-## Using the card
+## Using the cards
 After installation of the integration you need to first reboot HA.
-The card will be automatically installed and registered by the integration on start up.
+The cards will be automatically installed and registered by the integration on start up.
 To use the card in your dashboard, go to you dashboard, edit, choose `Add card`.
-Choose `Manual`
-Add first line: `type: custom:felicity-inverter-card`
+They can be found at the bottom of the list.
+If they are not visible you can choose `Manual` as card type.
+Add first line: `type: custom:felicity-inverter-card` for the inverter card and `type: custom:felicity-ems-card` for the EMS card.
 Then choose the `visual editor` to continue.
-From the `Device` dropdown chose your felicity inverter install.
+From the `Device` dropdown chose your felicity inverter integration installed.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card-expl.png" width="600"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/ems_ui_explanation.png" width="600"/>
   <br><em>Card usage explained</em>
 </p>
 
