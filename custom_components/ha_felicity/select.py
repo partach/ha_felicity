@@ -83,6 +83,30 @@ async def async_setup_entry(
         )
     )
 
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="charge_to_full_on_negative_price",
+            select_options=["off", "on"],
+            name="Charge to Full on Negative Price",
+            icon="mdi:battery-arrow-up",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="discharge_to_make_room_for_negative_price",
+            select_options=["off", "on"],
+            name="Discharge to Make Room for Negative Price",
+            icon="mdi:battery-arrow-down",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
     # Tie all entities to the device
     for entity in entities:
         entity._attr_device_info = device_info
