@@ -86,6 +86,11 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "forecast_entity_tomorrow": self._user_input.get("forecast_entity_tomorrow"),
             "consumption_override_entity": self._user_input.get("consumption_override_entity"),
             "price_mode": self._user_input.get("price_mode", "manual"),
+            "max_amperage_per_phase": self._user_input.get("max_amperage_per_phase", 16),
+            "safe_power_management": self._user_input.get("safe_power_management", "auto"),
+            "battery_cycle_cost_eur_kwh": self._user_input.get("battery_cycle_cost_eur_kwh", 0.0),
+            "optimization_priority": self._user_input.get("optimization_priority", "cost"),
+            "block_export_on_negative_price": self._user_input.get("block_export_on_negative_price", True),
         }
     
     @staticmethod

@@ -49,7 +49,8 @@ async def async_setup_entry(
             min_val=1,
             max_val=10,
             step=1,
-            icon="mdi:currency-eur"
+            icon="mdi:currency-eur",
+            default_value=5,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -61,7 +62,8 @@ async def async_setup_entry(
                 entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL), 10
             ),
             step=0.5,
-            icon="mdi:battery-plus-variant"
+            icon="mdi:battery-plus-variant",
+            default_value=5,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -69,10 +71,11 @@ async def async_setup_entry(
             option_key="voltage_level",
             name="Voltage Level",
             min_val=50,
-            max_val=58, # to check of battery checking mechanism works.
+            max_val=58,
             step=1,
             icon="mdi:gauge",
-            dynamic_range=True
+            dynamic_range=True,
+            default_value=58,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -83,7 +86,8 @@ async def async_setup_entry(
             max_val=55,
             step=1,
             icon="mdi:gauge-low",
-            dynamic_range=True
+            dynamic_range=True,
+            default_value=50,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -95,7 +99,8 @@ async def async_setup_entry(
             step=1,
             unit="%",
             icon="mdi:battery-charging-100",
-            device_class="battery"
+            device_class="battery",
+            default_value=100,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -107,7 +112,8 @@ async def async_setup_entry(
             step=1,
             unit="%",
             icon="mdi:battery-charging-20",
-            device_class="battery"
+            device_class="battery",
+            default_value=20,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -119,7 +125,8 @@ async def async_setup_entry(
             step=1,
             unit="A",
             icon="mdi:sine-wave",
-            device_class="current"
+            device_class="current",
+            default_value=16,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -131,7 +138,8 @@ async def async_setup_entry(
             step=1,
             unit="kWh",
             icon="mdi:battery-heart-variant",
-            device_class="energy"
+            device_class="energy",
+            default_value=10,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -142,6 +150,7 @@ async def async_setup_entry(
             max_val=1.0,
             step=0.01,
             icon="mdi:percent-circle-outline",
+            default_value=0.90,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -153,7 +162,8 @@ async def async_setup_entry(
             step=0.5,
             unit="kWh",
             icon="mdi:home-lightning-bolt",
-            device_class="energy"
+            device_class="energy",
+            default_value=10,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -267,11 +277,13 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         icon: str | None = None,
         device_class: str | None = None,
         dynamic_range: bool = False,
+        default_value: float | None = None,
         mode: NumberMode = NumberMode.BOX,
     ):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
+        self._default_value = default_value if default_value is not None else min_val
 
         self._attr_name = f"{entry.title} {name}"
         self._attr_unique_id = f"{entry.entry_id}_{option_key}"
@@ -293,7 +305,10 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
     @property
     def native_value(self) -> float | None:
         """Return current value from persisted options."""
-        return self._entry.options.get(self._option_key)
+        val = self._entry.options.get(self._option_key)
+        if val is None:
+            return self._default_value
+        return val
     
     @callback
     def _handle_coordinator_update(self) -> None:

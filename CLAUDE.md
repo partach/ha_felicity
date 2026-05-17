@@ -607,6 +607,19 @@ prices, PV forecast, deficit, overrides, power) — when unchanged
 AND we're still in the same slot, the algorithm is not re-run.
 Recomputed on slot boundaries.  Cuts CPU on the 10-second tick.
 
+#### C5. Number Entity Default Values — IMPLEMENTED
+`HA_FelicityInternalNumber` now accepts a `default_value` parameter.
+When an option key is missing from `entry.options` (new installation
+or upgrade that predates the option), `native_value` returns the
+default instead of `None`.  HA renders `None` as greyed-out /
+unavailable — this caused `max_amperage_per_phase` (and potentially
+other entities) to be unusable on fresh installs.
+`_get_default_options()` in `config_flow.py` now includes all option
+keys (`max_amperage_per_phase`, `safe_power_management`,
+`battery_cycle_cost_eur_kwh`, `optimization_priority`,
+`block_export_on_negative_price`) so new installations get them
+written at setup time.
+
 ### Deferred Items (Need Separate Iteration)
 
 These were flagged in the same review but require larger changes
@@ -651,7 +664,7 @@ specific time windows.
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (146 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (148 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -675,6 +688,13 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Both-mode sell with charge energy (low PV confidence)
 - Integration tests: real-world TREX-5/10/25/50 scenarios
 - Tomorrow schedule computation and SOC trajectory
+- Urgent recovery charging (SOC below discharge_min)
+- Battery cycle cost in profitability filter
+- Optimization priority (longevity, self_consumption)
+- Block export on negative price
+- PV confidence EMA smoothing
+- PV forecast fallback
+- Phantom charge prevention (tomorrow schedule, full battery)
 
 **Not tested**: coordinator.py runtime logic (requires HA mocking). This is a gap — when the coordinator diverges from ems.py, tests won't catch it.
 
