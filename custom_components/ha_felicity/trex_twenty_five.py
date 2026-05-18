@@ -692,6 +692,8 @@ REGISTER_SETS_TREX_TWENTY_FIVE = {
             "phase_a_home_load_power", "phase_b_home_load_power", "phase_c_home_load_power",
             "generator_frequency", "grid_frequency", "load_frequency",
             "homeload_day_cost_energy",
+            "pv1_day_energy", "pv2_day_energy", "pv3_day_energy", "pv4_day_energy",
+            "generator_day_cost_energy", "microinverter_day_cost_energy",
         }
     },
     "basic_plus": {
