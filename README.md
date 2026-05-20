@@ -87,6 +87,8 @@ This can be done via configuration when the intallation is succesfull (device fo
 ## Configuration
 After successfull install the integration can be configured at any time with a few settings. See picture on top for location of the gear icon
 - Update interval (the frequency of refresh of data). For the T-REX 5-10k models keep it on 10 sec minimum due to small baud rate.
+- Setting up Nordpool (For energy prices). Use the HACS version, NOT the default version. (HACS version has 15 min slot information). You need to setup Nordpool for your energy supplier, see the web for examples.
+- Solar Forecast for today and tomorrow. Install an integration that predicts solar power. It should support a Today and Tomorrow sensor showing total expected amount (you need to configure the solar forecast right).
 - Monetary override. Nordpool is supported by default but also other monetary integrations as Tibber. The format is that it needs a sensor with attributes about min, max, avg price
 If you want use Tibber enter in the override fied: `sensor.tibber_electricity_price` where electricity_price is the sensor with attributes (avg, min, max) and 'tibber' how you named the integration.
 The Felicity integration looks for a variaty of avg_price like fields as attributes and if it finds in the the override sensor, uses that as needed price information. If no information is found, 
@@ -115,7 +117,7 @@ Note1:
 Note2: The Operating mode **must be set (by user) to Economic mode**. The Energy management feature will not engage in any other mode (Like General).
 
 During setup or with config setting (gear symbol in hub/device overview) you can add a 'Monetary' Home Assistant Device.
-Examples are the Nordpool integration or Tibber. Look at the Nordpool integration details on how to set that up (not covered here).
+Examples are the Nordpool integration (HACS version only, not default) or Another. Look at the HACS Nordpool integration details on how to set that up (not covered here).
 During first setup or during run-time configuration (device gear symbol) it will display a list of installed Monetary integrations to chose from.
 Currently Nordpool and Tibber (via Norpool override field in config) are tested to work.
 
@@ -132,13 +134,14 @@ Example: Max price = 0.30 Euro, Min Price = 0.20 Euro and Avergage Price = 0.25 
 When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0.25.
 
 **The Grid Mode setting**:
- * If `Grid Mode` <em>(From-grid, To-Grid, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro
- * If `Grid Mode` <em>(From-grid, To-Grid, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro
+ * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro
+ * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro
 **Additional variables** are `Battery Charge Max Level` and `Battery Charge Min Level`.
  * In `From Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Max Level`
  * In `To Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Min Level`
+ * In `Both` it will sell and charge the battery optimally to make the least amount of cost / use the grid as less as possible
 
-IMPORTANT: The integration is depedent on the Monetary Integration to contiously supply the data.
+IMPORTANT: The integration is depedent on the Monetary Integration and Solar Forecast Integration to contiously supply the data.
 
 ## Dynamic Power Management
 The integration also supports Dynamic Power Management. After instalation, via configuration entities (see above picture), you can set the maximum amperage of your home electricity setup.
