@@ -134,8 +134,8 @@ Example: Max price = 0.30 Euro, Min Price = 0.20 Euro and Avergage Price = 0.25 
 When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0.25.
 
 **The Grid Mode setting**:
- * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro
- * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro
+ * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro (as per given example)
+ * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro (as per given example)
 **Additional variables** are `Battery Charge Max Level` and `Battery Charge Min Level`.
  * In `From Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Max Level`
  * In `To Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Min Level`
