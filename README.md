@@ -89,7 +89,7 @@ After successfull install the integration can be configured at any time with a f
 - Update interval (the frequency of refresh of data). For the T-REX 5-10k models keep it on 10 sec minimum due to small baud rate.
 - Setting up Nordpool (For energy prices). Use the HACS version, NOT the default version. (HACS version has 15 min slot information). You need to setup Nordpool for your energy supplier, see the web for examples.
 - Solar Forecast for today and tomorrow. Install an integration that predicts solar power. It should support a Today and Tomorrow sensor showing total expected amount (you need to configure the solar forecast right).
-- Monetary override. Nordpool is supported by default but also other monetary integrations as Tibber. The format is that it needs a sensor with attributes about min, max, avg price
+- Monetary override. If you use Nordpool (recommended) leave this empty! Nordpool is supported by default but also other monetary integrations as Tibber. The format is that it needs a sensor with attributes about min, max, avg price
 If you want use Tibber enter in the override fied: `sensor.tibber_electricity_price` where electricity_price is the sensor with attributes (avg, min, max) and 'tibber' how you named the integration.
 The Felicity integration looks for a variaty of avg_price like fields as attributes and if it finds in the the override sensor, uses that as needed price information. If no information is found, 
 the price information remains unavailable. 
