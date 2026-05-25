@@ -442,6 +442,17 @@ hour slot. This was especially painful at midnight when stale
 `state.state` still reports the previous day's stale total, the coordinator
 falls back to the filtered hourly sum.
 
+### 8. Midnight should not force inverter to idle
+The day-rollover block in `_async_update_data` used to unconditionally
+call `_transition_to_state("idle")` and then skip the normal cycle for
+that tick.  This cancelled valid charge/discharge actions that should
+continue across midnight (e.g., a customer selling overnight to clear
+the battery before negative-midday PV refills it next day).  The block
+now does only the bookkeeping (yesterday deficit, daily consumption,
+SOC history reset, slot overrides rotation) and falls through to the
+normal cycle, which re-determines the desired state and only writes a
+transition if the state actually changes.
+
 ---
 
 ## Algorithm Assessment and Improvement Recommendations
