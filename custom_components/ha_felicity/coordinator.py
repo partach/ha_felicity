@@ -1674,84 +1674,92 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Initialize consumption store on first run
                             await self._init_consumption_store()
 
-                            # Midnight reset
+                            # Midnight bookkeeping (once per day change)
                             now = datetime.now()
                             if self._current_day != now.day:
-                                _LOGGER.info("New day detected — resetting energy state")
+                                _LOGGER.info(
+                                    "New day detected — running midnight bookkeeping"
+                                )
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
                                 self.battery_soc = battery_soc
-                                # Record deficit before resetting (for next-day compensation)
+                                # Record deficit before rolling over (for next-day compensation)
                                 self._calculate_yesterday_deficit(battery_soc)
                                 # Record daily consumption for rolling average
                                 await self._record_daily_consumption()
-                                await self._transition_to_state("idle")
-                                self._current_energy_state = None
                                 self._soc_history = {}
                                 self._last_recorded_slot = -1
                                 self._current_day = now.day
 
                                 # Propagate tomorrow's slot overrides → today
                                 await self._rotate_slot_overrides()
-                            else:
-                                # Normal cycle: retrieve data, calculate, determine state
-                                self._retrieve_slot_prices(price_state)
-                                self._retrieve_pv_forecast()
+                                # Do NOT force-idle the inverter here.  A discharge
+                                # that's valid at 23:59 is usually still valid at
+                                # 00:01 (e.g., high evening price extending into
+                                # early morning, or a customer selling overnight
+                                # before negative-midday PV refills the battery).
+                                # The normal cycle below re-determines state from
+                                # current prices and only writes a transition if
+                                # the state actually changes.
 
-                                battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
-                                self.battery_soc = battery_soc
-                                self._record_soc_snapshot(battery_soc)
-                                # Modbus read succeeded — refresh staleness ts (#6)
-                                self._last_modbus_success_ts = time.time()
-                                # Cycle counting + SOH update (#13)
-                                self._track_cycle_throughput(battery_soc)
+                            # Normal cycle: retrieve data, calculate, determine state
+                            self._retrieve_slot_prices(price_state)
+                            self._retrieve_pv_forecast()
 
-                                # In auto mode, run the schedule optimizer
-                                if price_mode == "auto":
-                                    self._calculate_schedule(battery_soc)
-                                    # Schedule may have updated self.price_threshold
-                                    new_data["price_threshold"] = self.price_threshold
+                            battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
+                            self.battery_soc = battery_soc
+                            self._record_soc_snapshot(battery_soc)
+                            # Modbus read succeeded — refresh staleness ts (#6)
+                            self._last_modbus_success_ts = time.time()
+                            # Cycle counting + SOH update (#13)
+                            self._track_cycle_throughput(battery_soc)
 
-                                # Always calculate available info (visible in both modes)
-                                self._calculate_available_info(battery_soc)
+                            # In auto mode, run the schedule optimizer
+                            if price_mode == "auto":
+                                self._calculate_schedule(battery_soc)
+                                # Schedule may have updated self.price_threshold
+                                new_data["price_threshold"] = self.price_threshold
 
-                                # Update new_data with all results
-                                new_data["pv_forecast_today"] = self.pv_forecast_today
-                                new_data["pv_forecast_remaining"] = self.pv_forecast_remaining
-                                new_data["pv_forecast_tomorrow"] = self.pv_forecast_tomorrow
-                                new_data["cheap_slots_remaining"] = self.cheap_slots_remaining
-                                new_data["grid_energy_planned"] = self.grid_energy_planned
-                                new_data["schedule_status"] = self.schedule_status
-                                new_data["available_slots_at_threshold"] = self.available_slots_at_threshold
-                                new_data["available_energy_capacity"] = self.available_energy_capacity
-                                new_data["charge_likelihood"] = self.charge_likelihood
-                                new_data["weekly_avg_consumption"] = self.weekly_avg_consumption
+                            # Always calculate available info (visible in both modes)
+                            self._calculate_available_info(battery_soc)
 
-                                desired_state = self._determine_energy_state(battery_soc)
+                            # Update new_data with all results
+                            new_data["pv_forecast_today"] = self.pv_forecast_today
+                            new_data["pv_forecast_remaining"] = self.pv_forecast_remaining
+                            new_data["pv_forecast_tomorrow"] = self.pv_forecast_tomorrow
+                            new_data["cheap_slots_remaining"] = self.cheap_slots_remaining
+                            new_data["grid_energy_planned"] = self.grid_energy_planned
+                            new_data["schedule_status"] = self.schedule_status
+                            new_data["available_slots_at_threshold"] = self.available_slots_at_threshold
+                            new_data["available_energy_capacity"] = self.available_energy_capacity
+                            new_data["charge_likelihood"] = self.charge_likelihood
+                            new_data["weekly_avg_consumption"] = self.weekly_avg_consumption
 
-                                # Anti-conflict guard: don't export while the house is importing
-                                # (e.g. EV charging pulls from grid while we'd be selling battery — wasteful)
-                                if desired_state == "discharging":
-                                    grid_power = None
-                                    if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
-                                        grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
-                                    if grid_power is not None and grid_power > 200:  # importing >200W from grid
-                                        _LOGGER.info(
-                                            "Anti-conflict: suppressing discharge — grid importing %.0fW "
-                                            "(would sell battery while buying from grid)",
-                                            grid_power,
-                                        )
-                                        desired_state = "idle"
+                            desired_state = self._determine_energy_state(battery_soc)
 
-                                if desired_state != self._current_energy_state:
-                                    success = await self._transition_to_state(desired_state)
-                                    if success:
-                                        self._current_energy_state = desired_state
-                                        self._last_state_change = now
-                                    else:
-                                        _LOGGER.warning(
-                                            "State transition to %s failed — will retry next cycle (inverter may still be in %s)",
-                                            desired_state, self._current_energy_state,
-                                        )
+                            # Anti-conflict guard: don't export while the house is importing
+                            # (e.g. EV charging pulls from grid while we'd be selling battery — wasteful)
+                            if desired_state == "discharging":
+                                grid_power = None
+                                if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
+                                    grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
+                                if grid_power is not None and grid_power > 200:  # importing >200W from grid
+                                    _LOGGER.info(
+                                        "Anti-conflict: suppressing discharge — grid importing %.0fW "
+                                        "(would sell battery while buying from grid)",
+                                        grid_power,
+                                    )
+                                    desired_state = "idle"
+
+                            if desired_state != self._current_energy_state:
+                                success = await self._transition_to_state(desired_state)
+                                if success:
+                                    self._current_energy_state = desired_state
+                                    self._last_state_change = now
+                                else:
+                                    _LOGGER.warning(
+                                        "State transition to %s failed — will retry next cycle (inverter may still be in %s)",
+                                        desired_state, self._current_energy_state,
+                                    )
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",
