@@ -587,6 +587,49 @@ class FelicityEMSCard extends LitElement {
       this._simResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
     }
 
+    // When using backend schedule, recompute counts from the authoritative
+    // slot data so the textual counters (X charge / Y sell / Z kWh planned)
+    // match the colored bars.  Without this, simResult's stale 0 values
+    // from the client-side simulation would win over backend reality.
+    if (useBackendSchedule) {
+      const displayedSlots = this._simResult.slots;
+      const sim = this._getAttr("schedule_status", "sim_params") || {};
+      const granMin = this._getAttr("schedule_status", "slot_granularity_min")
+        || Math.round((24 * 60) / displayedSlots.length);
+      const slotDur = granMin / 60;
+      const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
+      const powerKw = Math.max(1, safeMaxPower / 1000);
+      const eff = sim.efficiency || 0.90;
+      const effectivePerSlot = powerKw * slotDur * eff;
+      const energyPerSlot = powerKw * slotDur;
+
+      const chargeCount = displayedSlots.filter(s => s.action === "charge").length;
+      const dischargeCount = displayedSlots.filter(s => s.action === "discharge").length;
+      const plannedChargeKwh = chargeCount * effectivePerSlot;
+      const plannedDischargeKwh = dischargeCount * energyPerSlot;
+
+      // Also recompute tomorrow counts from backend's slot_schedule_tomorrow
+      // so the today-view's "tomorrow" summary stays consistent.
+      let tomorrowChargeCount = this._simResult.tomorrowChargeCount;
+      let tomorrowPlanned = this._simResult.tomorrowPlanned;
+      if (tomorrowSlotData?.some(s => s.action != null)) {
+        tomorrowChargeCount = tomorrowSlotData.filter(s => s.action === "charge").length;
+        const tmrDischargeCount = tomorrowSlotData.filter(s => s.action === "discharge").length;
+        tomorrowPlanned = tomorrowChargeCount * effectivePerSlot + tmrDischargeCount * energyPerSlot;
+      }
+
+      this._simResult = {
+        ...this._simResult,
+        chargeCount,
+        dischargeCount,
+        plannedChargeKwh,
+        plannedDischargeKwh,
+        planned: Math.round((plannedChargeKwh + plannedDischargeKwh) * 100) / 100,
+        tomorrowChargeCount,
+        tomorrowPlanned,
+      };
+    }
+
     // Manual override or auto-switch to tomorrow when no actions remain
     const hasTomorrow = tomorrowSlotData?.length > 0;
     let showTomorrow;
