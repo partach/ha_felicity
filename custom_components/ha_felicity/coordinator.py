@@ -143,6 +143,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # transient state that shouldn't survive a mode change.
         self._last_grid_mode: str | None = None
 
+        # Anti-conflict hysteresis: count consecutive ticks of grid import
+        # over the small-spike threshold.  Suppress discharge only when
+        # the import is sustained (≥2 ticks ~ 30s) OR very large (>2 kW).
+        # Without this filter a kettle/microwave/EV-start spike causes the
+        # inverter to flip discharge → idle → discharge every ~16 seconds.
+        self._anticonflict_import_ticks: int = 0
+        self._anticonflict_suppress_until_ts: float = 0.0
+
     @property
     def pv_actual_today_kwh(self) -> float | None:
         """Return actual PV energy generated today in kWh from inverter registers.
@@ -1736,19 +1744,73 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             desired_state = self._determine_energy_state(battery_soc)
 
-                            # Anti-conflict guard: don't export while the house is importing
-                            # (e.g. EV charging pulls from grid while we'd be selling battery — wasteful)
+                            # Anti-conflict guard: don't export while the house is
+                            # importing (e.g. EV charging pulls from grid while we'd
+                            # be selling battery — wasteful round-trip).  Uses
+                            # hysteresis to avoid flipping discharge → idle → discharge
+                            # on transient load spikes (kettle, microwave, EV start):
+                            #   - small/moderate import (200-2000W) must persist for
+                            #     ≥ANTICONFLICT_MIN_TICKS consecutive cycles
+                            #   - large import (>2000W) suppresses immediately
+                            #   - once suppression ends, hold a cooldown window
+                            #     before allowing re-suppression
+                            ANTICONFLICT_SOFT_THRESHOLD_W = 200
+                            ANTICONFLICT_HARD_THRESHOLD_W = 2000
+                            ANTICONFLICT_MIN_TICKS = 2
+                            ANTICONFLICT_COOLDOWN_S = 60
+                            grid_power = None
                             if desired_state == "discharging":
-                                grid_power = None
                                 if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
                                     grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
-                                if grid_power is not None and grid_power > 200:  # importing >200W from grid
-                                    _LOGGER.info(
-                                        "Anti-conflict: suppressing discharge — grid importing %.0fW "
-                                        "(would sell battery while buying from grid)",
-                                        grid_power,
-                                    )
-                                    desired_state = "idle"
+                                if grid_power is not None and grid_power > ANTICONFLICT_SOFT_THRESHOLD_W:
+                                    self._anticonflict_import_ticks += 1
+                                    in_cooldown = time.time() < self._anticonflict_suppress_until_ts
+                                    sustained = self._anticonflict_import_ticks >= ANTICONFLICT_MIN_TICKS
+                                    large = grid_power > ANTICONFLICT_HARD_THRESHOLD_W
+                                    if (sustained or large) and not in_cooldown:
+                                        _LOGGER.info(
+                                            "Anti-conflict: suppressing discharge — grid importing "
+                                            "%.0fW (sustained=%d ticks, large=%s) — would sell "
+                                            "battery while buying from grid",
+                                            grid_power, self._anticonflict_import_ticks, large,
+                                        )
+                                        desired_state = "idle"
+                                        self._anticonflict_suppress_until_ts = (
+                                            time.time() + ANTICONFLICT_COOLDOWN_S
+                                        )
+                                    else:
+                                        _LOGGER.debug(
+                                            "Anti-conflict: tolerating brief import %.0fW "
+                                            "(tick %d/%d, cooldown=%s) — keeping discharge",
+                                            grid_power,
+                                            self._anticonflict_import_ticks,
+                                            ANTICONFLICT_MIN_TICKS,
+                                            in_cooldown,
+                                        )
+                                else:
+                                    if self._anticonflict_import_ticks > 0:
+                                        _LOGGER.debug(
+                                            "Anti-conflict: import cleared (was %d ticks), "
+                                            "grid_power=%.0fW",
+                                            self._anticonflict_import_ticks,
+                                            grid_power if grid_power is not None else 0,
+                                        )
+                                    self._anticonflict_import_ticks = 0
+                            else:
+                                # Not trying to discharge — reset the counter so a
+                                # past spike doesn't carry over into the next
+                                # discharge window.
+                                self._anticonflict_import_ticks = 0
+
+                            _LOGGER.debug(
+                                "State decision: desired=%s, current=%s, soc=%s%%, "
+                                "price=%s, threshold=%s, grid_power=%s",
+                                desired_state, self._current_energy_state,
+                                f"{battery_soc:.1f}" if battery_soc is not None else "?",
+                                f"{self.current_price:.4f}" if self.current_price is not None else "?",
+                                f"{self.price_threshold:.4f}" if self.price_threshold is not None else "?",
+                                f"{grid_power:.0f}W" if grid_power is not None else "?",
+                            )
 
                             if desired_state != self._current_energy_state:
                                 success = await self._transition_to_state(desired_state)
