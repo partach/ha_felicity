@@ -427,8 +427,22 @@ The confidence factor can drop to 0.1 early in the day on partially cloudy morni
 ### 4. Consumption Estimate Sensitivity
 The algorithm uses consumption_est/24 for hourly drain — assumes flat consumption. Houses with evening peaks (cooking, heating) may see under-predicted evening drain.
 
-### 5. Anti-Conflict Guard Only Checks Instantaneous Power
-The 200W grid import check (suppress discharge when importing) triggers on instantaneous reading. Short spikes (kettle, microwave) can briefly suppress profitable discharge.
+### 5. Anti-Conflict Guard Hysteresis — IMPLEMENTED
+Previously the 200W grid import check suppressed discharge on a single
+tick, causing flipper behaviour (discharge → idle → discharge every
+~16s) on short load spikes (kettle, microwave, EV start).  Two writes
+per flip is brutal on the inverter and customers notice.
+
+Now uses thresholded hysteresis:
+- Small/moderate import (200–2000W) must persist for ≥ 2 consecutive
+  cycles (≈ 32s) before suppression triggers.
+- Large import (> 2000W) suppresses immediately (genuine sustained
+  draw like EV charging or oven preheat).
+- After suppression ends, a 60-second cooldown blocks re-suppression
+  so the inverter stabilises before the next decision.
+- Each cycle now logs the grid_power + state decision at DEBUG level
+  so the flipper pattern is easy to spot in retrospect:
+  `State decision: desired=X, current=Y, soc=%, price=, threshold=, grid_power=W`
 
 ### 6. Generator-Port Solar Workaround
 TREX-25/50 with micro-inverters on the generator port need special handling. PV registers read 0, falling back to generator_day_cost_energy. Both backend and frontend handle this but it's fragile.
