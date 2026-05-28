@@ -89,6 +89,24 @@ The integration controls the inverter via **Economic Rule 1** Modbus registers. 
 2. Every 10 seconds, the coordinator checks if the current slot is in the schedule
 3. If the desired state differs from current state, it writes registers
 
+**Rule 1 registers written**: `econ_rule_1_enable` (0/1/2), `_voltage`,
+`_soc`, `_power`, `_start_day`, `_stop_day`.  **NOT written**:
+`econ_rule_1_start_time`, `_stop_time`, `_effective_week`.  If those are
+restricted on the inverter, it silently ignores our enable command when
+the current time/weekday is outside the window — the EMS plans to act,
+writes the register, and nothing happens.
+
+**Rule 1 window warning** (`coordinator._check_rule1_window_conflict`):
+runs every cycle.  Builds the set of intended action slots (auto mode:
+`scheduled_slots` + tomorrow; manual mode: today's remaining slots
+crossing the threshold in the active direction) and checks each against
+the rule 1 time-of-day window and effective-weekday mask read back from
+the inverter.  `start_time == stop_time` is treated as "all day"; a full
+0x7F mask as "all days".  Any mismatch is exposed as the
+`rule1_window_warning` attribute on `schedule_status` and rendered as a
+banner in the EMS card.  Weekday bit mapping: inverter bit0=Sunday..
+bit6=Saturday, mapped from Python via `isoweekday() % 7`.
+
 **Charge deferral** (`coordinator._determine_energy_state`): when the current
 slot is flagged `charge` but a later scheduled charge slot has a cheaper
 price (non-negative slots only), execution returns `idle` instead. The next

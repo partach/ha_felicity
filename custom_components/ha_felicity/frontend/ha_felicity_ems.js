@@ -1595,6 +1595,11 @@ class FelicityEMSCard extends LitElement {
     const safeMaxPower = this._getNumericState("safe_max_power");
     const dailyConsumptionEst = this._getNumericState("daily_consumption_estimate");
 
+    // Economic Rule 1 window mismatch warning (integration doesn't write
+    // rule 1 start/stop time or weekday — a restricted window silently
+    // blocks the EMS).
+    const rule1Warning = this._getAttr("schedule_status", "rule1_window_warning");
+
     // Battery SOC bars (10 segments)
     const socPct = batterySoc ?? 0;
     const filledBars = Math.round(socPct / 10);
@@ -1615,6 +1620,24 @@ class FelicityEMSCard extends LitElement {
             <span class="badge schedule-${scheduleStatus}">${scheduleStatus.replace(/_/g, ' ')}</span>
           </div>
         </div>
+
+        ${rule1Warning && rule1Warning.conflict ? html`
+          <div class="rule1-warning">
+            <span class="rule1-warning-icon">⚠️</span>
+            <span class="rule1-warning-text">
+              ${rule1Warning.affected_slots} scheduled slot(s) fall outside the
+              inverter's Economic Rule 1 window
+              ${rule1Warning.time_violation
+                ? html`(active ${rule1Warning.rule1_start_time}–${rule1Warning.rule1_stop_time})`
+                : ""}
+              ${rule1Warning.weekday_violation
+                ? html`(days: ${(rule1Warning.rule1_effective_days || []).join(", ") || "none"})`
+                : ""}.
+              The inverter will ignore charge/discharge outside this window —
+              adjust Rule 1 Start/Stop Time and Effective Week on the inverter.
+            </span>
+          </div>
+        ` : ""}
 
         <div class="card-content">
           <!-- Price & State summary -->
@@ -1887,6 +1910,28 @@ class FelicityEMSCard extends LitElement {
         align-items: center;
         padding: 10px 16px 8px;
         border-bottom: 1px solid var(--divider-color);
+      }
+
+      /* Economic Rule 1 window mismatch warning */
+      .rule1-warning {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: 8px 12px 0;
+        padding: 8px 12px;
+        background: rgba(255, 152, 0, 0.12);
+        border: 1px solid #FF9800;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        line-height: 1.3;
+        color: var(--primary-text-color);
+      }
+      .rule1-warning-icon {
+        flex: 0 0 auto;
+        font-size: 1rem;
+      }
+      .rule1-warning-text {
+        flex: 1 1 auto;
       }
 
       /* Battery SOC indicator */

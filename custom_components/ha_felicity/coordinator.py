@@ -119,6 +119,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._tomorrow_scheduled_slots: dict[int, str] = {}
         self._backend_soc_trajectory_tomorrow: list[float] = []
 
+        # Economic Rule 1 window warning.  The integration writes rule 1's
+        # enable/voltage/soc/power/date registers but NOT its time-of-day
+        # window or effective-weekday mask.  If those are restricted on the
+        # inverter, it silently ignores our enable command outside the
+        # window.  This holds a dict describing any conflict (or None).
+        self.rule1_window_warning: dict | None = None
+
         # Always-visible slot info (regardless of price_mode)
         self.available_slots_at_threshold: int = 0
         self._available_total_with_tomorrow: int = 0
@@ -835,6 +842,147 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.pv_hourly_kwh, self.pv_actual_today_kwh,
             now.hour, now.minute,
         )
+
+    _WEEKDAY_NAMES = [
+        "Sunday", "Monday", "Tuesday", "Wednesday",
+        "Thursday", "Friday", "Saturday",
+    ]
+
+    def _check_rule1_window_conflict(self) -> dict | None:
+        """Check whether the planned schedule falls outside Economic Rule 1's
+        time-of-day window or effective-weekday mask.
+
+        The integration drives the inverter through rule 1 but only writes
+        enable/voltage/soc/power/start_day/stop_day — it leaves the rule's
+        start_time, stop_time and effective_week as configured on the
+        inverter.  If those are restrictive, the inverter silently ignores
+        our enable command when the current time/weekday is outside the
+        window: the EMS plans to act, writes the register, and nothing
+        happens.  This surfaces that mismatch as a UI warning.
+
+        Returns a dict describing the conflict, or None when everything the
+        EMS plans falls inside the rule 1 window (or the registers can't be
+        read).
+        """
+        data = self.data or {}
+        start_raw = data.get("econ_rule_1_start_time")
+        stop_raw = data.get("econ_rule_1_stop_time")
+        week_raw = data.get("econ_rule_1_effective_week")
+
+        # Can't evaluate without the window registers (e.g. not in this
+        # model's register set or not yet read).
+        if start_raw is None or stop_raw is None or week_raw is None:
+            return None
+
+        start_min = (start_raw >> 8) * 60 + (start_raw & 0xFF)
+        stop_min = (stop_raw >> 8) * 60 + (stop_raw & 0xFF)
+        week_mask = int(week_raw) & 0x7F
+
+        # start == stop is the inverter's "all day" convention (no time
+        # restriction).  A full week mask means no weekday restriction.
+        full_day = start_min == stop_min
+        all_days = week_mask == 0x7F
+
+        # Nothing to warn about when both dimensions are unrestricted.
+        if full_day and all_days:
+            return None
+
+        def time_ok(slot_min: float) -> bool:
+            if full_day:
+                return True
+            if start_min < stop_min:
+                return start_min <= slot_min < stop_min
+            # Window spans midnight (e.g. 22:00 → 06:00).
+            return slot_min >= start_min or slot_min < stop_min
+
+        def weekday_ok(d) -> bool:
+            if all_days:
+                return True
+            # Inverter mask: bit0=Sunday .. bit6=Saturday.
+            # Python isoweekday(): Mon=1 .. Sun=7 → Sun maps to 0.
+            bit = d.isoweekday() % 7
+            return bool(week_mask & (1 << bit))
+
+        opts = self.config_entry.options
+        grid_mode = opts.get("grid_mode", "off")
+        if grid_mode == "off":
+            return None
+
+        num_slots = len(self.slot_prices_today) if self.slot_prices_today else 96
+        minutes_per_slot = (24 * 60) / num_slots
+        now = datetime.now()
+        today = now.date()
+        tomorrow = today + timedelta(days=1)
+
+        # Build the set of slot indices the EMS intends to act on.
+        #  - auto mode: the optimizer's scheduled_slots (today + tomorrow)
+        #  - manual mode: slots crossing the threshold in the active
+        #    direction (charge below / discharge above), today only —
+        #    only future slots matter since past ones already happened.
+        price_mode = opts.get("price_mode", "manual")
+        today_slots: dict[int, str] = {}
+        tomorrow_slots: dict[int, str] = {}
+        if price_mode == "auto":
+            today_slots = dict(self.scheduled_slots or {})
+            tomorrow_slots = dict(self._tomorrow_scheduled_slots or {})
+        elif self.price_threshold is not None and self.slot_prices_today:
+            current_slot = min(
+                int((now.hour * 60 + now.minute) / minutes_per_slot),
+                num_slots - 1,
+            )
+            for idx in range(current_slot, num_slots):
+                price = self.slot_prices_today[idx]
+                if price is None:
+                    continue
+                if grid_mode in ("from_grid", "both") and price < self.price_threshold:
+                    today_slots[idx] = "charge"
+                elif grid_mode in ("to_grid", "both") and price > self.price_threshold:
+                    today_slots[idx] = "discharge"
+
+        affected = 0
+        time_violation = False
+        weekday_violation = False
+
+        for day_date, slots in (
+            (today, today_slots),
+            (tomorrow, tomorrow_slots),
+        ):
+            wd_ok = weekday_ok(day_date)
+            for idx in slots:
+                slot_min = idx * minutes_per_slot
+                tm_ok = time_ok(slot_min)
+                if not (wd_ok and tm_ok):
+                    affected += 1
+                    if not tm_ok:
+                        time_violation = True
+                    if not wd_ok:
+                        weekday_violation = True
+
+        if affected == 0:
+            return None
+
+        enabled_days = [
+            self._WEEKDAY_NAMES[i] for i in range(7) if week_mask & (1 << i)
+        ]
+        warning = {
+            "conflict": True,
+            "affected_slots": affected,
+            "time_violation": time_violation,
+            "weekday_violation": weekday_violation,
+            "rule1_start_time": f"{start_raw >> 8:02d}:{start_raw & 0xFF:02d}",
+            "rule1_stop_time": f"{stop_raw >> 8:02d}:{stop_raw & 0xFF:02d}",
+            "rule1_effective_days": enabled_days,
+        }
+        _LOGGER.warning(
+            "Economic Rule 1 window mismatch: %d scheduled slot(s) fall "
+            "outside the inverter's rule 1 window (time %s-%s, days %s). "
+            "The inverter will ignore charge/discharge commands outside "
+            "this window. Adjust the rule 1 Start/Stop Time and Effective "
+            "Week on the inverter, or the schedule won't execute.",
+            affected, warning["rule1_start_time"], warning["rule1_stop_time"],
+            ", ".join(enabled_days) or "none",
+        )
+        return warning
 
     def _get_consumption_estimate(self) -> float:
         """Get best available daily consumption estimate.
@@ -1729,6 +1877,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             # Always calculate available info (visible in both modes)
                             self._calculate_available_info(battery_soc)
+
+                            # Warn if the planned schedule falls outside the
+                            # inverter's Economic Rule 1 time/weekday window
+                            # (we don't write those registers, so the inverter
+                            # would silently ignore our enable command there).
+                            self.rule1_window_warning = self._check_rule1_window_conflict()
 
                             # Update new_data with all results
                             new_data["pv_forecast_today"] = self.pv_forecast_today
