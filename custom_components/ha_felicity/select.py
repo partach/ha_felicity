@@ -107,6 +107,36 @@ async def async_setup_entry(
         )
     )
 
+    # Rule 1 time-window auto management: on "auto" the integration writes
+    # start_time=00:00 and stop_time=23:59 (Felicity's 24h convention) so
+    # the rule never gates the schedule on time of day.
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="rule1_time_window",
+            select_options=["manual", "auto"],
+            name="Rule 1 Time Window",
+            icon="mdi:clock-outline",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
+    # Rule 1 weekday-mask auto management: on "auto" the integration writes
+    # effective_week=0x7F (all 7 days) so the rule never gates the schedule
+    # on day of week.
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="rule1_weekday",
+            select_options=["manual", "auto"],
+            name="Rule 1 Weekday",
+            icon="mdi:calendar-week",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
     # Tie all entities to the device
     for entity in entities:
         entity._attr_device_info = device_info

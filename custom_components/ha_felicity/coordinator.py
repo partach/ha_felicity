@@ -1643,6 +1643,57 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
         return True
 
+    async def _apply_rule1_auto_settings(self) -> None:
+        """If rule 1 auto settings are enabled, ensure the inverter's
+        time-window and weekday-mask match the auto defaults.
+
+        Writes only when the current register value doesn't match the
+        target — so this is safe to call on every state activation.
+        Felicity's 24-hour convention is start=00:00, stop=23:59 (the
+        firmware doesn't accept stop=00:00 or stop=24:00).
+        """
+        opts = self.config_entry.options
+
+        if opts.get("rule1_time_window", "manual") == "auto":
+            target_start = 0                       # 00:00
+            target_stop = (23 << 8) | 59           # 23:59 (Felicity 24h)
+            current_start = self.data.get("econ_rule_1_start_time")
+            current_stop = self.data.get("econ_rule_1_stop_time")
+            if current_start != target_start:
+                ok = await self.TypeSpecificHandler.write_type_specific_register(
+                    "econ_rule_1_start_time", target_start
+                )
+                if ok:
+                    self.data["econ_rule_1_start_time"] = target_start
+                    _LOGGER.info(
+                        "Rule 1 auto: wrote start_time=00:00 (was %s)",
+                        current_start,
+                    )
+            if current_stop != target_stop:
+                ok = await self.TypeSpecificHandler.write_type_specific_register(
+                    "econ_rule_1_stop_time", target_stop
+                )
+                if ok:
+                    self.data["econ_rule_1_stop_time"] = target_stop
+                    _LOGGER.info(
+                        "Rule 1 auto: wrote stop_time=23:59 (was %s)",
+                        current_stop,
+                    )
+
+        if opts.get("rule1_weekday", "manual") == "auto":
+            target_week = 0x7F  # all 7 days enabled (bit0=Sun..bit6=Sat)
+            current_week = self.data.get("econ_rule_1_effective_week")
+            if current_week != target_week:
+                ok = await self.TypeSpecificHandler.write_type_specific_register(
+                    "econ_rule_1_effective_week", target_week
+                )
+                if ok:
+                    self.data["econ_rule_1_effective_week"] = target_week
+                    _LOGGER.info(
+                        "Rule 1 auto: wrote effective_week=all days (was 0x%02X)",
+                        current_week if isinstance(current_week, int) else 0,
+                    )
+
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
@@ -1878,10 +1929,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Always calculate available info (visible in both modes)
                             self._calculate_available_info(battery_soc)
 
+                            # Apply rule 1 time-window / weekday auto settings
+                            # if enabled.  Writes are idempotent — only happens
+                            # when the register doesn't already match the target.
+                            await self._apply_rule1_auto_settings()
+
                             # Warn if the planned schedule falls outside the
                             # inverter's Economic Rule 1 time/weekday window
-                            # (we don't write those registers, so the inverter
-                            # would silently ignore our enable command there).
+                            # (we don't write those registers in manual mode,
+                            # so the inverter would silently ignore our enable
+                            # command there).
                             self.rule1_window_warning = self._check_rule1_window_conflict()
 
                             # Update new_data with all results

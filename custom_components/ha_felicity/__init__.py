@@ -193,6 +193,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "safe_power_management": "auto",
         "charge_to_full_on_negative_price": "off",
         "discharge_to_make_room_for_negative_price": "off",
+        "rule1_time_window": "manual",
+        "rule1_weekday": "manual",
         CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
         "update_interval": 10,
     }
