@@ -89,12 +89,24 @@ The integration controls the inverter via **Economic Rule 1** Modbus registers. 
 2. Every 10 seconds, the coordinator checks if the current slot is in the schedule
 3. If the desired state differs from current state, it writes registers
 
-**Rule 1 registers written**: `econ_rule_1_enable` (0/1/2), `_voltage`,
-`_soc`, `_power`, `_start_day`, `_stop_day`.  **NOT written**:
-`econ_rule_1_start_time`, `_stop_time`, `_effective_week`.  If those are
-restricted on the inverter, it silently ignores our enable command when
-the current time/weekday is outside the window — the EMS plans to act,
-writes the register, and nothing happens.
+**Rule 1 registers always written by `_transition_to_state`**:
+`econ_rule_1_enable` (0/1/2), `_voltage`, `_soc`, `_power`, `_start_day`,
+`_stop_day`.
+
+**Rule 1 registers written only when auto mode is enabled** (via
+`_apply_rule1_auto_settings`, called every cycle, idempotent — only
+writes when the register already differs from the target):
+- `rule1_time_window=auto` → `econ_rule_1_start_time=00:00`,
+  `econ_rule_1_stop_time=23:59` (Felicity's 24-hour convention; the
+  firmware doesn't accept stop=00:00 or stop=24:00).
+- `rule1_weekday=auto` → `econ_rule_1_effective_week=0x7F` (all 7 days).
+
+Both default to `manual` so the integration doesn't touch user-set
+values unless they explicitly opt in.  When still on `manual` and the
+inverter's rule 1 window is restrictive, the inverter silently ignores
+the enable command outside the window — the EMS plans to act, writes
+the register, and nothing happens.  The `rule1_window_warning` check
+surfaces this in the EMS card.
 
 **Rule 1 window warning** (`coordinator._check_rule1_window_conflict`):
 runs every cycle.  Builds the set of intended action slots (auto mode:
@@ -396,6 +408,8 @@ Fetches `energy_state` history from HA API (throttled 60s), shows what actually 
 | discharge_min_voltage | number | 48-55 V | 50 | Discharge voltage floor |
 | charge_to_full_on_negative_price | select | off/on | off | Charge at every p<0 slot (revenue) |
 | discharge_to_make_room_for_negative_price | select | off/on | off | Pre-discharge before p<0 PV windows |
+| rule1_time_window | select | manual/auto | manual | Auto writes rule 1 start=00:00, stop=23:59 |
+| rule1_weekday | select | manual/auto | manual | Auto writes rule 1 effective_week=all days |
 
 All `HA_FelicityInternalNumber` configuration entities render as
 input boxes (`NumberMode.BOX`) so users can type precise values.
