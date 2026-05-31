@@ -365,9 +365,23 @@ Also detects external changes (user adjusting via inverter app).
 - Battery indicator (10-segment, color-coded by SOC)
 - Price chart (canvas) — bars per slot, colored by action
 - SOC trajectory line (blue dotted)
-- Threshold line (red dashed)
+- Reserve target line (red dashed) — computed reserve floor as SOC%
+- Threshold line (yellow dashed)
 - PV stats (actual, remaining, forecast today, forecast tomorrow)
 - Schedule stats (charge/discharge counts, planned kWh, reserve)
+
+### Tomorrow PV-Only Preview
+When tomorrow's prices are not yet available (typically before ~13:00)
+but a PV forecast exists, the Tomorrow tab is enabled with a solar-only
+preview instead of being greyed out.  Shows:
+- Warm-yellow PV production bars (kWh per slot, distributed 06-18h)
+- Baseline SOC trajectory (PV + consumption, no grid actions)
+- Reserve target line — user can immediately see whether solar alone
+  keeps the battery above overnight reserve
+- Banner: "Without grid actions · Prices expected ~13:00"
+- No price axis, no charge/discharge actions, no slot click overrides
+When prices arrive the tab automatically switches to the full schedule
+view with all normal features.
 
 ### Interactive Controls
 - Grid Mode dropdown (off/from_grid/to_grid/both)

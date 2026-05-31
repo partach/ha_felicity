@@ -552,6 +552,24 @@ class FelicityEMSCard extends LitElement {
       tomorrowSlotData = this._getRawPriceSlots("tomorrow");
     }
 
+    // When tomorrow prices are not available but a PV forecast exists,
+    // build synthetic slot data so the Tomorrow tab can show a solar-only
+    // preview with SOC trajectory (no price axis, no charge/discharge actions).
+    const pvTomorrowKwh = this._getNumericState("pv_forecast_tomorrow") || 0;
+    const tomorrowPvOnly = (!tomorrowSlotData || !tomorrowSlotData.length) && pvTomorrowKwh > 0;
+    if (tomorrowPvOnly) {
+      const numSlotsToday = todaySlotData?.length || 24;
+      tomorrowSlotData = [];
+      const daylightHours = 12;
+      const pvPerDaylightSlot = pvTomorrowKwh / (daylightHours * (numSlotsToday / 24));
+      for (let i = 0; i < numSlotsToday; i++) {
+        const hour = (i * granularity) / 60;
+        const pvKwh = (hour >= 6 && hour < 18) ? pvPerDaylightSlot : 0;
+        tomorrowSlotData.push({ slot: i, price: null, action: null, pvKwh });
+      }
+    }
+    this._tomorrowPvOnly = tomorrowPvOnly;
+
     // Determine which data to show: today or tomorrow (fallback)
     const now = new Date();
     const currentSlotIdx = Math.floor((now.getHours() * 60 + now.getMinutes()) / granularity);
@@ -644,7 +662,12 @@ class FelicityEMSCard extends LitElement {
     // Keep today's sim for unified stats (tomorrowChargeCount, tomorrowPlanned)
     this._todaySimResult = this._simResult;
     let displayData, displayThreshold;
-    if (showTomorrow) {
+    if (showTomorrow && tomorrowPvOnly) {
+      // PV-only preview: no prices, no actions — just solar forecast + SOC
+      displayData = tomorrowSlotData;
+      displayThreshold = null;
+      this._simResult = { slots: tomorrowSlotData, chargeCount: 0, dischargeCount: 0, planned: 0, threshold: null };
+    } else if (showTomorrow) {
       const useBackendTomorrow = !hasSliderOverrides && tomorrowSlotData?.some(s => s.action != null);
       if (useBackendTomorrow) {
         // Backend is authoritative — use its schedule directly
@@ -696,7 +719,9 @@ class FelicityEMSCard extends LitElement {
     // Update the timeline label
     const label = this.shadowRoot?.querySelector(".timeline-label");
     if (label) {
-      label.textContent = showTomorrow ? "Tomorrow\u2019s Forecast" : "Today\u2019s Schedule";
+      label.textContent = showTomorrow
+        ? (tomorrowPvOnly ? "Tomorrow \u2014 Solar Forecast Only" : "Tomorrow\u2019s Forecast")
+        : "Today\u2019s Schedule";
     }
 
     // Update toggle button active states
@@ -735,6 +760,9 @@ class FelicityEMSCard extends LitElement {
     const chartH = h - marginTop - marginBottom;
     const barW = Math.max(1, (w - marginLeft - marginRight) / numSlots);
 
+    // PV-only mode: draw PV production bars instead of price bars
+    const isPvOnlyView = showTomorrow && tomorrowPvOnly;
+
     // Find price range — add padding below minimum so bars at the lowest
     // price still have visible height (otherwise they're clipped to 0px).
     const prices = displayData.map((s) => s.price).filter((p) => p != null);
@@ -746,6 +774,12 @@ class FelicityEMSCard extends LitElement {
     const minPrice = rawMin - rawRange * 0.05;
     const range = maxPrice - minPrice || 0.01;
 
+    // PV-only range for bar heights (kWh per slot)
+    let pvBarMax = 0;
+    if (isPvOnlyView) {
+      pvBarMax = Math.max(...displayData.map(s => s.pvKwh || 0), 0.01);
+    }
+
     // Current time marker (only for today view)
     const currentSlot = showTomorrow ? -1 : currentSlotIdx;
 
@@ -753,9 +787,20 @@ class FelicityEMSCard extends LitElement {
     for (let i = 0; i < numSlots; i++) {
       const slot = displayData[i];
       const x = marginLeft + i * barW;
+
+      let barH, y;
+      if (isPvOnlyView) {
+        const pvVal = slot.pvKwh || 0;
+        barH = (pvVal / pvBarMax) * chartH;
+        y = marginTop + chartH - barH;
+        ctx.fillStyle = pvVal > 0 ? "rgba(255, 213, 79, 0.7)" : "rgba(100, 140, 200, 0.15)";
+        ctx.fillRect(x + 0.5, y, Math.max(1, barW - 1), barH);
+        continue;
+      }
+
       const price = slot.price ?? 0;
-      const barH = ((price - minPrice) / range) * chartH;
-      const y = marginTop + chartH - barH;
+      barH = ((price - minPrice) / range) * chartH;
+      y = marginTop + chartH - barH;
 
       if (showTomorrow) {
         // Tomorrow: color by simulated action
@@ -820,7 +865,7 @@ class FelicityEMSCard extends LitElement {
 
     // Threshold line: use simulated threshold, fall back to entity value
     const threshold = displayThreshold ?? this._getNumericState("price_threshold");
-    if (threshold != null && threshold >= minPrice && threshold <= maxPrice) {
+    if (!isPvOnlyView && threshold != null && threshold >= minPrice && threshold <= maxPrice) {
       const thresholdY = marginTop + chartH - ((threshold - minPrice) / range) * chartH;
       ctx.strokeStyle = "#a8a209";
       ctx.lineWidth = 1.5;
@@ -838,7 +883,7 @@ class FelicityEMSCard extends LitElement {
     }
 
     // Zero line (if negative prices exist)
-    if (minPrice < 0) {
+    if (!isPvOnlyView && minPrice < 0) {
       const zeroY = marginTop + chartH - ((0 - minPrice) / range) * chartH;
       ctx.strokeStyle = "rgba(236, 210, 17, 0.88)";
       ctx.lineWidth = 0.5;
@@ -849,7 +894,7 @@ class FelicityEMSCard extends LitElement {
     }
 
     // Lowest-price indicator line + label (only meaningful when strictly above the axis floor)
-    if (prices.length && actualMinPrice > minPrice + 1e-6) {
+    if (!isPvOnlyView && prices.length && actualMinPrice > minPrice + 1e-6) {
       const minY = marginTop + chartH - ((actualMinPrice - minPrice) / range) * chartH;
       ctx.strokeStyle = "rgba(76, 175, 80, 0.75)";
       ctx.lineWidth = 1;
@@ -933,12 +978,59 @@ class FelicityEMSCard extends LitElement {
       ctx.fillText("50%", rightEdge, mid50Y + 3);
     }
 
-    // Y-axis labels (price)
+    // Reserve target line (red dashed) — shows the minimum SOC the EMS
+    // aims to maintain.  Especially useful in PV-only preview to see
+    // whether solar alone keeps the battery above the overnight reserve.
+    const simR2 = this._getAttr("schedule_status", "sim_params") || {};
+    const battCap = simR2.battery_capacity_kwh || 10;
+    const dischMinPct = simR2.battery_discharge_min_pct ?? 20;
+    const reserveKwhVal = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
+    const userReservePct = simR2.reserve_target_pct ?? 0;
+    let reserveShowPct;
+    if (userReservePct > 0) {
+      reserveShowPct = userReservePct;
+    } else if (reserveKwhVal > 0 && battCap > 0) {
+      const minKwh = (dischMinPct / 100) * battCap;
+      reserveShowPct = ((minKwh + reserveKwhVal) / battCap) * 100;
+    } else {
+      reserveShowPct = dischMinPct;
+    }
+    if (socTrajectory && socTrajectory.length > 1 && reserveShowPct > 0 && reserveShowPct < 100) {
+      const toY = (soc) => marginTop + chartH - ((soc - 0) / 100) * chartH;
+      const reserveY = toY(reserveShowPct);
+      ctx.strokeStyle = "rgba(244, 67, 54, 0.6)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 3]);
+      ctx.beginPath();
+      ctx.moveTo(marginLeft, reserveY);
+      ctx.lineTo(w - marginRight, reserveY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(244, 67, 54, 0.8)";
+      ctx.font = "9px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(`${Math.round(reserveShowPct)}% reserve`, marginLeft + 3, reserveY - 3);
+    }
+
+    // PV-only banner: inform user this is a solar-only preview
+    if (isPvOnlyView) {
+      ctx.fillStyle = "rgba(255, 213, 79, 0.9)";
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Without grid actions · Prices expected ~13:00", w / 2, marginTop + 14);
+    }
+
+    // Y-axis labels
     ctx.fillStyle = getComputedStyle(this).getPropertyValue("--secondary-text-color") || "#e7d91d";
     ctx.font = "9px sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(maxPrice.toFixed(2), marginLeft - 2, marginTop + 8);
-    ctx.fillText(minPrice.toFixed(2), marginLeft - 2, marginTop + chartH);
+    if (isPvOnlyView) {
+      ctx.fillText(`${pvBarMax.toFixed(1)} kWh`, marginLeft - 2, marginTop + 8);
+      ctx.fillText("0", marginLeft - 2, marginTop + chartH);
+    } else {
+      ctx.fillText(maxPrice.toFixed(2), marginLeft - 2, marginTop + 8);
+      ctx.fillText(minPrice.toFixed(2), marginLeft - 2, marginTop + chartH);
+    }
 
     // X-axis hour labels
     ctx.textAlign = "center";
@@ -960,7 +1052,7 @@ class FelicityEMSCard extends LitElement {
     const legendX = w - marginRight - 5;
     const textColor = getComputedStyle(this).getPropertyValue("--primary-text-color") || "#fff";
 
-    // SOC legend (orange dashed line)
+    // SOC legend (dashed line)
     let lx = legendX;
     ctx.strokeStyle = "#1dbfe7";
     ctx.lineWidth = 2;
@@ -973,26 +1065,35 @@ class FelicityEMSCard extends LitElement {
     ctx.fillStyle = textColor;
     ctx.fillText("SOC", lx - 52 + 34, 9);
 
-    // Charge legend
-    lx -= 55;
-    ctx.fillStyle = "#4CAF50";
-    ctx.fillRect(lx - 55, 2, 8, 8);
-    ctx.fillStyle = textColor;
-    ctx.fillText("charge", lx - 58 + 40, 9);
-
-    // Sell legend
-    lx -= 60;
-    ctx.fillStyle = "#FF9800";
-    ctx.fillRect(lx - 55, 2, 8, 8);
-    ctx.fillStyle = textColor;
-    ctx.fillText("sell", lx - 58 + 30, 9);
-
-    if (showTomorrow) {
+    if (isPvOnlyView) {
+      // PV forecast legend
       lx -= 55;
-      ctx.fillStyle = "rgba(100, 140, 200, 0.35)";
+      ctx.fillStyle = "rgba(255, 213, 79, 0.7)";
       ctx.fillRect(lx - 55, 2, 8, 8);
       ctx.fillStyle = textColor;
-      ctx.fillText("idle", lx - 58 + 30, 9);
+      ctx.fillText("solar", lx - 58 + 32, 9);
+    } else {
+      // Charge legend
+      lx -= 55;
+      ctx.fillStyle = "#4CAF50";
+      ctx.fillRect(lx - 55, 2, 8, 8);
+      ctx.fillStyle = textColor;
+      ctx.fillText("charge", lx - 58 + 40, 9);
+
+      // Sell legend
+      lx -= 60;
+      ctx.fillStyle = "#FF9800";
+      ctx.fillRect(lx - 55, 2, 8, 8);
+      ctx.fillStyle = textColor;
+      ctx.fillText("sell", lx - 58 + 30, 9);
+
+      if (showTomorrow) {
+        lx -= 55;
+        ctx.fillStyle = "rgba(100, 140, 200, 0.35)";
+        ctx.fillRect(lx - 55, 2, 8, 8);
+        ctx.fillStyle = textColor;
+        ctx.fillText("idle", lx - 58 + 30, 9);
+      }
     }
   }
 
@@ -1381,6 +1482,7 @@ class FelicityEMSCard extends LitElement {
 
     const gridMode = this._simOverrides.gridMode ?? this._getState("grid_mode") ?? "off";
     if (gridMode === "off") return;
+    if (this._tomorrowPvOnly && this._showingTomorrow) return;
 
     // Determine which slot was clicked using same layout as _drawSlotTimeline
     const day = this._showingTomorrow ? "tomorrow" : "today";
