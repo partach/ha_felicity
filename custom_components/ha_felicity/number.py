@@ -175,6 +175,7 @@ async def async_setup_entry(
             step=5,
             unit="%",
             icon="mdi:battery-lock",
+            default_value=0,
         ),
         HA_FelicityInternalNumber(
             coordinator,
@@ -186,6 +187,19 @@ async def async_setup_entry(
             step=0.01,
             unit="€/kWh",
             icon="mdi:cash-multiple",
+            default_value=0.0,
+        ),
+        HA_FelicityInternalNumber(
+            coordinator,
+            entry,
+            option_key="battery_cycle_cost_eur_kwh",
+            name="Battery Cycle Cost",
+            min_val=0,
+            max_val=0.50,
+            step=0.01,
+            unit="€/kWh",
+            icon="mdi:battery-clock",
+            default_value=0.0,
         ),
     ])
 

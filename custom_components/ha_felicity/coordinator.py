@@ -688,9 +688,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             arbitrage_price_delta=opts.get("arbitrage_price_delta", 0.0),
             battery_cycle_cost_eur_kwh=opts.get("battery_cycle_cost_eur_kwh", 0.0),
             optimization_priority=opts.get("optimization_priority", "cost"),
-            block_export_on_negative_price=opts.get(
-                "block_export_on_negative_price", True
-            ),
+            block_export_on_negative_price=str(
+                opts.get("block_export_on_negative_price", "on")
+            ).lower() not in ("off", "false", "0"),
             charge_to_full_on_negative_price=opts.get(
                 "charge_to_full_on_negative_price", "off"
             ) == "on",

@@ -90,7 +90,7 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "safe_power_management": self._user_input.get("safe_power_management", "auto"),
             "battery_cycle_cost_eur_kwh": self._user_input.get("battery_cycle_cost_eur_kwh", 0.0),
             "optimization_priority": self._user_input.get("optimization_priority", "cost"),
-            "block_export_on_negative_price": self._user_input.get("block_export_on_negative_price", True),
+            "block_export_on_negative_price": self._user_input.get("block_export_on_negative_price", "on"),
         }
     
     @staticmethod

@@ -87,6 +87,30 @@ async def async_setup_entry(
         HA_FelicitySpecialModeSelect(
             coordinator=coordinator,
             entry=entry,
+            option_key="optimization_priority",
+            select_options=["cost", "longevity", "self_consumption"],
+            name="Optimization Priority",
+            icon="mdi:scale-balance",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="block_export_on_negative_price",
+            select_options=["on", "off"],
+            name="Block Export On Negative Price",
+            icon="mdi:transmission-tower-export",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
             option_key="charge_to_full_on_negative_price",
             select_options=["off", "on"],
             name="Charge to Full on Negative Price",
@@ -107,9 +131,6 @@ async def async_setup_entry(
         )
     )
 
-    # Rule 1 time-window auto management: on "auto" the integration writes
-    # start_time=00:00 and stop_time=23:59 (Felicity's 24h convention) so
-    # the rule never gates the schedule on time of day.
     entities.append(
         HA_FelicitySpecialModeSelect(
             coordinator=coordinator,
@@ -122,9 +143,6 @@ async def async_setup_entry(
         )
     )
 
-    # Rule 1 weekday-mask auto management: on "auto" the integration writes
-    # effective_week=0x7F (all 7 days) so the rule never gates the schedule
-    # on day of week.
     entities.append(
         HA_FelicitySpecialModeSelect(
             coordinator=coordinator,
