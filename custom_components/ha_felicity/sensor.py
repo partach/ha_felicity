@@ -192,6 +192,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             },
             "soc_history": self.coordinator._soc_history,
             "slot_overrides": self.coordinator.slot_overrides if self.coordinator.slot_overrides else {},
+            "rule1_window_warning": self.coordinator.rule1_window_warning,
         }
 
 

@@ -41,6 +41,17 @@ class EMSConfig:
     # (DE/NL) penalise feed-in at negative prices.  When True, sell slots
     # at p < 0 are blocked even in to_grid / both modes.
     block_export_on_negative_price: bool = True
+    # Negative-price strategies (orthogonal to grid_mode).
+    # charge_to_full_on_negative_price: extend charging beyond reserve
+    # target up to battery_charge_max during negative-price slots, even if
+    # PV alone wouldn't fill the battery.  Each grid-charged kWh is revenue
+    # (paid to consume); user accepts that some PV may need to be curtailed.
+    charge_to_full_on_negative_price: bool = False
+    # discharge_to_make_room_for_negative_price: schedule pre-emptive
+    # discharges before negative-price PV windows so the battery has room
+    # to absorb the PV (avoiding forced grid export at penalty rates).
+    # Discharge only happens in positive-price hours.
+    discharge_to_make_room_for_negative_price: bool = False
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -459,6 +470,7 @@ def _validate_schedule_soc(
     inverter_max_power_kw: float = 0.0,
     safe_power_kw: float = 0.0,
     consumption_hourly_kwh: dict[int, float] | None = None,
+    keep_all_negative_charges: bool = False,
 ) -> tuple[set[int], set[int]]:
     """Validate schedule by simulating SOC at every slot, pruning violations.
 
@@ -466,6 +478,13 @@ def _validate_schedule_soc(
     battery_capacity] at every time slot.  If a discharge would cause SOC to
     dip below min, it is removed (least valuable first).  If a charge would
     push SOC above capacity, it is removed (most expensive first).
+
+    When keep_all_negative_charges is True, negative-price charge slots are
+    never pruned for overflow (except phantom-charge slots where the battery
+    is already at capacity entering the slot — those can't physically execute
+    regardless of price).  Used by the charge_to_full_on_negative_price
+    strategy: user has opted to charge during all negative slots, accepting
+    that some PV may be curtailed.
 
     Returns pruned (charge_slots, discharge_slots).
     """
@@ -560,6 +579,16 @@ def _validate_schedule_soc(
                 # hours that would otherwise be missed).
                 soc_no_charge = soc_before + (delta - charge_contribution)
                 pv_alone_overflows = soc_no_charge > battery_capacity + 0.01
+                slot_price = price_of.get(slot_idx, 0.0)
+                # User opted into charge_to_full_on_negative_price: treat
+                # phantom negative-price slots as harmless (the inverter
+                # may try to charge but BMS will gate it).  Skip phantom
+                # marking and just clamp soc, so the slot stays scheduled.
+                if (keep_all_negative_charges
+                        and charge_contribution > 0
+                        and slot_price < 0):
+                    soc = battery_capacity
+                    continue
                 if pv_alone_overflows:
                     # Phantom charge: action present on already-full battery.
                     # Drop regardless of price — the energy can't land.
@@ -633,6 +662,16 @@ def _validate_schedule_soc(
                         pv_surplus_total,
                     )
                     break
+                # User opted into charge_to_full_on_negative_price: keep
+                # negative-price slots even when PV alone wouldn't fill
+                # the battery.  Some PV may be curtailed but the user has
+                # explicitly chosen this trade-off (revenue at p<0 slots).
+                if keep_all_negative_charges and not violation_charge_wasted:
+                    _LOGGER.debug(
+                        "SOC validation: keeping negative-price charge slots "
+                        "(charge_to_full_on_negative_price=True)",
+                    )
+                    break
                 candidates = [
                     s for s in charge_slots
                     if s <= violation_slot
@@ -651,6 +690,159 @@ def _validate_schedule_soc(
             )
 
     return charge_slots, discharge_slots
+
+
+def _select_discharges_for_pv_headroom(
+    remaining: list[tuple[int, float]],
+    current_kwh: float,
+    scheduled_charge: set[int],
+    config: EMSConfig,
+    state: EMSState,
+    minutes_per_slot: float,
+    pv_confidence: float,
+    reserve_target: float,
+) -> set[int]:
+    """Pre-emptively discharge before negative-price PV windows.
+
+    Used by the discharge_to_make_room_for_negative_price strategy.  Walks
+    forward through remaining slots simulating SOC.  Whenever a negative-
+    price slot with PV surplus would overflow the battery, schedules
+    discharge in the most expensive positive-price earlier slots (which
+    aren't already charge slots) to create headroom.
+
+    Discharges may temporarily dip SOC below reserve_target during the
+    day (the negative-window PV will refill it), but must never violate
+    the absolute discharge_min floor, and end-of-day SOC after all
+    simulation must remain >= reserve_target so overnight is covered.
+
+    Returns set of slot indices to discharge.
+    """
+    discharge: set[int] = set()
+    if not state.pv_hourly_kwh or not remaining:
+        return discharge
+
+    max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
+    min_kwh_floor = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
+    energy_per_slot = config.safe_power_kw * (minutes_per_slot / 60.0)
+    cons_per_slot_default = config.consumption_est_kwh / max(1, len(state.slot_prices_today or []))
+    if cons_per_slot_default <= 0:
+        cons_per_slot_default = config.consumption_est_kwh * (minutes_per_slot / 60.0) / 24.0
+
+    def _slot_cons(hour: int) -> float:
+        if state.consumption_hourly_kwh and hour in state.consumption_hourly_kwh:
+            return state.consumption_hourly_kwh[hour] * (minutes_per_slot / 60.0)
+        return cons_per_slot_default
+
+    def _slot_pv(hour: int) -> float:
+        return (state.pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence * (minutes_per_slot / 60.0)
+
+    def _project_soc(extra_discharge: set[int]) -> tuple[dict[int, float], float, float]:
+        """Project SOC entering each slot given current schedule + extra discharges.
+
+        Returns (per_slot_entering, soc_at_end, min_soc_observed).
+        """
+        soc = current_kwh
+        per_slot: dict[int, float] = {}
+        min_soc = soc
+        for idx, _ in remaining:
+            per_slot[idx] = soc
+            hour = int((idx * minutes_per_slot) / 60)
+            pv = _slot_pv(hour)
+            cons = _slot_cons(hour)
+            delta = pv - cons
+            if idx in scheduled_charge:
+                pv_kw_rate = (state.pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+                grid_kw = min(config.safe_power_kw,
+                              max(0.0, config.inverter_max_power_kw - pv_kw_rate))
+                delta += grid_kw * (minutes_per_slot / 60.0) * config.efficiency
+            if idx in (discharge | extra_discharge):
+                delta -= energy_per_slot
+            soc_raw = soc + delta  # before clamp — captures true dip
+            min_soc = min(min_soc, soc_raw)
+            soc = max(0.0, min(max_battery_kwh, soc_raw))
+        return per_slot, soc, min_soc
+
+    # Iterate (bounded) until no more overflow at negative+PV slots is reducible.
+    max_passes = len(remaining)
+    for _ in range(max_passes):
+        soc_in, _, _ = _project_soc(set())
+        # Find the FIRST negative-price slot with PV surplus that would overflow.
+        target_idx: int | None = None
+        for idx, price in remaining:
+            if price is None or price >= 0:
+                continue
+            hour = int((idx * minutes_per_slot) / 60)
+            pv = _slot_pv(hour)
+            cons = _slot_cons(hour)
+            if pv <= cons:
+                continue
+            # SOC at end of this slot if no discharge added
+            soc_end = soc_in[idx] + (pv - cons)
+            if idx in scheduled_charge:
+                pv_kw_rate = (state.pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+                grid_kw = min(config.safe_power_kw,
+                              max(0.0, config.inverter_max_power_kw - pv_kw_rate))
+                soc_end += grid_kw * (minutes_per_slot / 60.0) * config.efficiency
+            if soc_end > max_battery_kwh + 0.01:
+                target_idx = idx
+                break
+        if target_idx is None:
+            break
+
+        # Find earlier positive-price slots, not already charge/discharge, that
+        # we can discharge in.  Prefer the MOST expensive (highest revenue).
+        candidates = [
+            (idx, p) for idx, p in remaining
+            if idx < target_idx
+            and p is not None and p > 0
+            and idx not in scheduled_charge
+            and idx not in discharge
+        ]
+        if not candidates:
+            break
+        candidates.sort(key=lambda x: -x[1])  # most expensive first
+
+        added_this_pass = False
+        for cand_idx, _ in candidates:
+            # A discharge is acceptable when:
+            #  - SOC never drops below the absolute min_kwh floor at any
+            #    point in the simulation (hardware safety);
+            #  - end-of-day SOC remains >= reserve_target (overnight
+            #    self-consumption protection).
+            # Temporary dips below reserve_target during the day are OK
+            # because the negative-window PV refills the battery.
+            _, soc_end_day, soc_min_observed = _project_soc({cand_idx})
+            if soc_min_observed < min_kwh_floor - 0.01:
+                continue
+            if soc_end_day < reserve_target - 0.01:
+                continue
+            discharge.add(cand_idx)
+            added_this_pass = True
+            # Did this resolve the overflow at target_idx?
+            new_soc, _, _ = _project_soc(set())
+            hour = int((target_idx * minutes_per_slot) / 60)
+            pv = _slot_pv(hour)
+            cons = _slot_cons(hour)
+            soc_end = new_soc[target_idx] + (pv - cons)
+            if target_idx in scheduled_charge:
+                pv_kw_rate = (state.pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+                grid_kw = min(config.safe_power_kw,
+                              max(0.0, config.inverter_max_power_kw - pv_kw_rate))
+                soc_end += grid_kw * (minutes_per_slot / 60.0) * config.efficiency
+            if soc_end <= max_battery_kwh + 0.01:
+                break
+            # else: keep adding more discharge slots
+        if not added_this_pass:
+            break
+
+    if discharge:
+        _LOGGER.info(
+            "Make-room discharge: added %d slot(s) before negative-price PV "
+            "window(s): %s (current=%.1f kWh, max=%.1f kWh, reserve=%.1f kWh)",
+            len(discharge), sorted(discharge), current_kwh, max_battery_kwh,
+            reserve_target,
+        )
+    return discharge
 
 
 def select_unified_charge_slots(
@@ -1257,7 +1449,20 @@ def _schedule_from_grid(
     result.tomorrow_planned_slots = len(tomorrow_slots)
     result.tomorrow_planned_kwh = tomorrow_charge_kwh
 
-    if not selected:
+    # charge_to_full_on_negative_price: when any negative-price slot
+    # exists in the remaining window, ensure ALL of them get scheduled by
+    # adding them to the selection (deduplicated).  The user has opted to
+    # charge at every p<0 slot for the revenue, accepting potential PV
+    # curtailment.  SOC validation will keep these slots even if they'd
+    # otherwise overflow (see keep_all_negative_charges below).
+    if config.charge_to_full_on_negative_price:
+        selected_indices = {idx for idx, _ in selected}
+        for idx, price in remaining:
+            if price is not None and price < 0 and idx not in selected_indices:
+                selected.append((idx, price))
+                selected_indices.add(idx)
+
+    if not selected and not config.discharge_to_make_room_for_negative_price:
         result.status = "no_action_needed"
         return result
 
@@ -1272,15 +1477,29 @@ def _schedule_from_grid(
         consumption_hourly_kwh=state.consumption_hourly_kwh,
         inverter_max_power_kw=config.inverter_max_power_kw,
         safe_power_kw=config.safe_power_kw,
+        keep_all_negative_charges=config.charge_to_full_on_negative_price,
     )
     selected = [(idx, p) for idx, p in selected if idx in validated_charge]
 
-    if not selected:
+    # discharge_to_make_room_for_negative_price: in from_grid mode we
+    # normally don't discharge.  When this opt-in is enabled, schedule
+    # pre-emptive discharges before negative-price + PV windows so PV
+    # can fill the battery without forced grid export at penalty rates.
+    discharge_for_headroom: set[int] = set()
+    if config.discharge_to_make_room_for_negative_price:
+        discharge_for_headroom = _select_discharges_for_pv_headroom(
+            remaining, current_kwh, set(validated_charge),
+            config, state, minutes_per_slot, pv_confidence, reserve_target,
+        )
+
+    if not selected and not discharge_for_headroom:
         result.status = "no_action_needed"
         return result
 
     result.scheduled_slots = {s[0]: "charge" for s in selected}
-    result.cheap_slots_remaining = len(result.scheduled_slots)
+    for idx in discharge_for_headroom:
+        result.scheduled_slots[idx] = "discharge"
+    result.cheap_slots_remaining = len(selected)
     result.grid_energy_planned = round(len(selected) * effective_per_slot, 2)
 
     if selected:
@@ -1548,6 +1767,16 @@ def _schedule_both(
     sorted_expensive = sorted(available_for_sell, key=lambda x: -x[1])
     sell_selected = sorted_expensive[:sell_needed]
 
+    # charge_to_full_on_negative_price: ensure ALL negative-price slots
+    # are charged (in addition to the cheapest selection above).  Sell
+    # slots already exclude charge indices.
+    if config.charge_to_full_on_negative_price:
+        existing = {idx for idx, _ in charge_slots}
+        for idx, price in remaining:
+            if price is not None and price < 0 and idx not in existing:
+                charge_slots.append((idx, price))
+                existing.add(idx)
+
     # Per-slot SOC validation: ensure combined schedule respects battery bounds
     charge_set = {s[0] for s in charge_slots}
     discharge_set = {s[0] for s in sell_selected}
@@ -1560,15 +1789,33 @@ def _schedule_both(
         consumption_hourly_kwh=state.consumption_hourly_kwh,
         inverter_max_power_kw=config.inverter_max_power_kw,
         safe_power_kw=config.safe_power_kw,
+        keep_all_negative_charges=config.charge_to_full_on_negative_price,
     )
     charge_slots = [(idx, p) for idx, p in charge_slots if idx in validated_charge]
     sell_selected = [(idx, p) for idx, p in sell_selected if idx in validated_discharge]
+
+    # discharge_to_make_room_for_negative_price: add pre-emptive discharges
+    # before negative-price PV windows.  Both mode may already have sell
+    # slots — merge them; sell slots take precedence (higher revenue) when
+    # the same slot index would appear twice.
+    discharge_for_headroom: set[int] = set()
+    if config.discharge_to_make_room_for_negative_price:
+        existing_discharge = {idx for idx, _ in sell_selected}
+        existing_charge = {idx for idx, _ in charge_slots}
+        candidate = _select_discharges_for_pv_headroom(
+            remaining, current_kwh,
+            existing_charge,
+            config, state, minutes_per_slot, pv_confidence, reserve_target,
+        )
+        discharge_for_headroom = candidate - existing_discharge - existing_charge
 
     result.scheduled_slots = {}
     for s in charge_slots:
         result.scheduled_slots[s[0]] = "charge"
     for s in sell_selected:
         result.scheduled_slots[s[0]] = "discharge"
+    for idx in discharge_for_headroom:
+        result.scheduled_slots[idx] = "discharge"
 
     result.cheap_slots_remaining = len(charge_slots)
     charge_energy = round(len(charge_slots) * effective_per_slot, 2) if charge_slots else 0

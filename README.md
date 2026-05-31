@@ -6,6 +6,8 @@
 [![HACS validated](https://img.shields.io/badge/HACS-validated-41BDF5?style=flat-square)](https://github.com/hacs/integration)
 
 Felicity inverter home assistant integration for easy setup and use of the device (via [Modbus](https://www.se.com/us/en/faqs/FA168406/)).
+Additionally includes a full Energy Management System to Buy and Sell electricity on the best moments and guards maximum power use to save guard against overcurrent.
+With the right settings the software makes sure you pay the best energy prices or use no grid if not needed.
 
 For this integration to work you need to have a wired modbus connection to your inverter either [via this USB dongle](https://www.amazon.nl/Industrial-Converter-Lightningproof-Resettable-Protection/dp/B0B87YJLJQ?source=ps-sl-shoppingads-lpcontext&ref_=fplfs&psc=1&smid=A2FQD9ZIAONBLW) or via something [like this](https://www.kiwi-electronics.com/nl/rs485-to-rj45-ethernet-tcp-ip-to-serial-rail-mount-support-20109?country=NL&utm_term=20109&gad_source=1&gad_campaignid=19763718639&gbraid=0AAAAADuMvucKntnrNZrVkZAHDgps81zYC&gclid=Cj0KCQiAx8PKBhD1ARIsAKsmGbeFZaWC_S38eFyu1NtZ0SP4zyLWwMWG70BRz6Ur1nmBymMCxvSR1_kaAmR9EALw_wcB).
 Currently supports IVGM / TREX types: 
@@ -58,8 +60,10 @@ It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA1
 The 3 possible ways are explained in the picture below. At the moment the last part always requires a RS485 connection to the inverter.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-connect.png" width="600"/>
-  <br><em>Ways to connect the inverter</em>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/modbus_location_trex10k.png" width="400"/>
+  <br><em>Ways to connect the inverter and TREX10k modbus location</em>
 </p>
+NOTE: when using the USR-D164 wifi module you need to put Pack Interval to 100 (20 causes packet loss)
 
 ## Installation options
 The T-REX 5 and 10K series with HP or HL (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3) can be selected with selecting
@@ -83,7 +87,9 @@ This can be done via configuration when the intallation is succesfull (device fo
 ## Configuration
 After successfull install the integration can be configured at any time with a few settings. See picture on top for location of the gear icon
 - Update interval (the frequency of refresh of data). For the T-REX 5-10k models keep it on 10 sec minimum due to small baud rate.
-- Monetary override. Nordpool is supported by default but also other monetary integrations as Tibber. The format is that it needs a sensor with attributes about min, max, avg price
+- Setting up Nordpool (For energy prices). Use the HACS version, NOT the default version. (HACS version has 15 min slot information). You need to setup Nordpool for your energy supplier, see the web for examples.
+- Solar Forecast for today and tomorrow. Install an integration that predicts solar power. It should support a Today and Tomorrow sensor showing total expected amount (you need to configure the solar forecast right).
+- Monetary override. If you use Nordpool (recommended) leave this empty! Nordpool is supported by default but also other monetary integrations as Tibber. The format is that it needs a sensor with attributes about min, max, avg price
 If you want use Tibber enter in the override fied: `sensor.tibber_electricity_price` where electricity_price is the sensor with attributes (avg, min, max) and 'tibber' how you named the integration.
 The Felicity integration looks for a variaty of avg_price like fields as attributes and if it finds in the the override sensor, uses that as needed price information. If no information is found, 
 the price information remains unavailable. 
@@ -111,7 +117,7 @@ Note1:
 Note2: The Operating mode **must be set (by user) to Economic mode**. The Energy management feature will not engage in any other mode (Like General).
 
 During setup or with config setting (gear symbol in hub/device overview) you can add a 'Monetary' Home Assistant Device.
-Examples are the Nordpool integration or Tibber. Look at the Nordpool integration details on how to set that up (not covered here).
+Examples are the Nordpool integration (HACS version only, not default) or Another. Look at the HACS Nordpool integration details on how to set that up (not covered here).
 During first setup or during run-time configuration (device gear symbol) it will display a list of installed Monetary integrations to chose from.
 Currently Nordpool and Tibber (via Norpool override field in config) are tested to work.
 
@@ -128,13 +134,14 @@ Example: Max price = 0.30 Euro, Min Price = 0.20 Euro and Avergage Price = 0.25 
 When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0.25.
 
 **The Grid Mode setting**:
- * If `Grid Mode` <em>(From-grid, To-Grid, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro
- * If `Grid Mode` <em>(From-grid, To-Grid, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro
+ * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro (as per given example)
+ * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro (as per given example)
 **Additional variables** are `Battery Charge Max Level` and `Battery Charge Min Level`.
  * In `From Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Max Level`
  * In `To Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Min Level`
+ * In `Both` it will sell and charge the battery optimally to make the least amount of cost / use the grid as less as possible
 
-IMPORTANT: The integration is depedent on the Monetary Integration to contiously supply the data.
+IMPORTANT: The integration is depedent on the Monetary Integration and Solar Forecast Integration to contiously supply the data.
 
 ## Dynamic Power Management
 The integration also supports Dynamic Power Management. After instalation, via configuration entities (see above picture), you can set the maximum amperage of your home electricity setup.
@@ -142,16 +149,18 @@ For example if you have a maximum of 16A per group, set the value to 16A. The in
 (by decreasing the user requested power level, controlled via rule 1 via the integration).
 It will keep monitorning this and will increase the battery loading to requested power levels if the amperage becomes lower.
 
-## Using the card
+## Using the cards
 After installation of the integration you need to first reboot HA.
-The card will be automatically installed and registered by the integration on start up.
+The cards will be automatically installed and registered by the integration on start up.
 To use the card in your dashboard, go to you dashboard, edit, choose `Add card`.
-Choose `Manual`
-Add first line: `type: custom:felicity-inverter-card`
+They can be found at the bottom of the list.
+If they are not visible you can choose `Manual` as card type.
+Add first line: `type: custom:felicity-inverter-card` for the inverter card and `type: custom:felicity-ems-card` for the EMS card.
 Then choose the `visual editor` to continue.
-From the `Device` dropdown chose your felicity inverter install.
+From the `Device` dropdown chose your felicity inverter integration installed.
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-card-expl.png" width="600"/>
+  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/ems_ui_explanation.png" width="600"/>
   <br><em>Card usage explained</em>
 </p>
 

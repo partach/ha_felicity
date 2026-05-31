@@ -197,6 +197,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "battery_cycle_cost_eur_kwh": 0.0,
         "optimization_priority": "cost",
         "block_export_on_negative_price": "on",
+        "charge_to_full_on_negative_price": "off",
+        "discharge_to_make_room_for_negative_price": "off",
+        "rule1_time_window": "manual",
+        "rule1_weekday": "manual",
         CONF_REGISTER_SET: DEFAULT_REGISTER_SET,
         "update_interval": 10,
     }

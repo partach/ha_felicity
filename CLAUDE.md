@@ -89,6 +89,36 @@ The integration controls the inverter via **Economic Rule 1** Modbus registers. 
 2. Every 10 seconds, the coordinator checks if the current slot is in the schedule
 3. If the desired state differs from current state, it writes registers
 
+**Rule 1 registers always written by `_transition_to_state`**:
+`econ_rule_1_enable` (0/1/2), `_voltage`, `_soc`, `_power`, `_start_day`,
+`_stop_day`.
+
+**Rule 1 registers written only when auto mode is enabled** (via
+`_apply_rule1_auto_settings`, called every cycle, idempotent — only
+writes when the register already differs from the target):
+- `rule1_time_window=auto` → `econ_rule_1_start_time=00:00`,
+  `econ_rule_1_stop_time=23:59` (Felicity's 24-hour convention; the
+  firmware doesn't accept stop=00:00 or stop=24:00).
+- `rule1_weekday=auto` → `econ_rule_1_effective_week=0x7F` (all 7 days).
+
+Both default to `manual` so the integration doesn't touch user-set
+values unless they explicitly opt in.  When still on `manual` and the
+inverter's rule 1 window is restrictive, the inverter silently ignores
+the enable command outside the window — the EMS plans to act, writes
+the register, and nothing happens.  The `rule1_window_warning` check
+surfaces this in the EMS card.
+
+**Rule 1 window warning** (`coordinator._check_rule1_window_conflict`):
+runs every cycle.  Builds the set of intended action slots (auto mode:
+`scheduled_slots` + tomorrow; manual mode: today's remaining slots
+crossing the threshold in the active direction) and checks each against
+the rule 1 time-of-day window and effective-weekday mask read back from
+the inverter.  `start_time == stop_time` is treated as "all day"; a full
+0x7F mask as "all days".  Any mismatch is exposed as the
+`rule1_window_warning` attribute on `schedule_status` and rendered as a
+banner in the EMS card.  Weekday bit mapping: inverter bit0=Sunday..
+bit6=Saturday, mapped from Python via `isoweekday() % 7`.
+
 **Charge deferral** (`coordinator._determine_energy_state`): when the current
 slot is flagged `charge` but a later scheduled charge slot has a cheaper
 price (non-negative slots only), execution returns `idle` instead. The next
@@ -150,6 +180,8 @@ This prevents the SOC prediction from assuming unrealistic charge rates
 | battery_cycle_cost_eur_kwh | 0.0 | Wear cost; added to min sell price |
 | optimization_priority | "cost" | cost / longevity / self_consumption |
 | block_export_on_negative_price | True | Skip sell scheduling at p < 0 |
+| charge_to_full_on_negative_price | False | Schedule every p<0 slot (revenue at p<0); accepts forced PV curtailment |
+| discharge_to_make_room_for_negative_price | False | Pre-emptively discharge before p<0 PV windows so PV can fill the battery |
 
 The coordinator applies a SOH factor to nominal `battery_capacity_kwh`
 before constructing `EMSConfig` — ems.py treats the capacity as
@@ -267,6 +299,49 @@ max_today_slots = floor(headroom / effective_per_slot)
 # SOC validation prunes only when PV alone wouldn't fill the battery.
 ```
 
+### Negative-Price Strategies (charge_to_full / discharge_to_make_room)
+
+Two orthogonal opt-in flags that change how negative-price slots are
+handled.  Both are off by default and compose with all grid modes
+(from_grid, to_grid, both).
+
+**`charge_to_full_on_negative_price`** — acts *during* p<0 slots
+- In `_schedule_from_grid` / `_schedule_both`, after the normal
+  cheapest-slot selection, every negative-price slot in the remaining
+  window is added to the charge set (deduplicated).
+- `_validate_schedule_soc` is called with `keep_all_negative_charges=True`.
+  When set, negative-price slots are exempt from overflow pruning even
+  when PV alone wouldn't fill the battery (the legacy `pv_fills_battery`
+  exemption is broadened to "all negatives").
+- Phantom-charge slots (battery already at capacity entering the slot)
+  are kept too — the inverter may try to charge and the BMS will gate
+  it.  No harm; the schedule reflects user intent.
+- Trade-off: the user accepts some forced PV curtailment in exchange
+  for guaranteed revenue at every p<0 slot.
+
+**`discharge_to_make_room_for_negative_price`** — acts *before* p<0 slots
+- New helper `_select_discharges_for_pv_headroom` runs after charge
+  selection.  Walks the SOC trajectory forward; whenever a negative-
+  price slot with PV surplus would overflow the battery, schedules
+  discharge in the *most expensive* earlier positive-price slot to
+  create headroom.
+- Validity: SOC must never drop below the absolute `min_kwh` floor
+  (hardware safety), and end-of-day SOC must remain >= reserve_target
+  (overnight coverage).  Temporary dips below reserve during the day
+  are allowed — the negative-window PV will refill the battery.
+- Works in `from_grid` mode (which normally never discharges) as well
+  as `to_grid` / `both`.  In `both` mode, the make-room discharges
+  are merged with the regular sell-side selection (sells take
+  precedence on conflicting slots).
+
+**Composition**: when both flags are on, make-room discharges are
+scheduled before negative windows, then charge slots fire during the
+negatives.  Net effect: maximum profit on negative-price days
+(discharge at peak + buy at p<0 + PV fills the cleared battery).
+
+Exposed as off/on select entities (`HA_FelicitySpecialModeSelect`)
+in the UI.
+
 ---
 
 ## Safe Power Management (coordinator.py `_check_safe_power`, ~1307-1424)
@@ -341,6 +416,17 @@ Fetches `energy_state` history from HA API (throttled 60s), shows what actually 
 | max_amperage_per_phase | number | 10-63 A | 16 | Grid current limit |
 | voltage_level | number | 48-60 V | 58 | Charge voltage setpoint |
 | discharge_min_voltage | number | 48-55 V | 50 | Discharge voltage floor |
+| charge_to_full_on_negative_price | select | off/on | off | Charge at every p<0 slot (revenue) |
+| discharge_to_make_room_for_negative_price | select | off/on | off | Pre-discharge before p<0 PV windows |
+| rule1_time_window | select | manual/auto | manual | Auto writes rule 1 start=00:00, stop=23:59 |
+| rule1_weekday | select | manual/auto | manual | Auto writes rule 1 effective_week=all days |
+
+All `HA_FelicityInternalNumber` configuration entities render as
+input boxes (`NumberMode.BOX`) so users can type precise values.
+Sliders are awkward for fractional / fine-grained settings like
+`efficiency_factor` (step 0.01) or `arbitrage_price_delta` (step
+0.01 €/kWh).  Pass `mode=NumberMode.SLIDER` to the constructor for
+entities that benefit from scrubbing.
 
 ### Key Sensor Entities
 
@@ -383,8 +469,22 @@ The confidence factor can drop to 0.1 early in the day on partially cloudy morni
 ### 4. Consumption Estimate Sensitivity
 The algorithm uses consumption_est/24 for hourly drain — assumes flat consumption. Houses with evening peaks (cooking, heating) may see under-predicted evening drain.
 
-### 5. Anti-Conflict Guard Only Checks Instantaneous Power
-The 200W grid import check (suppress discharge when importing) triggers on instantaneous reading. Short spikes (kettle, microwave) can briefly suppress profitable discharge.
+### 5. Anti-Conflict Guard Hysteresis — IMPLEMENTED
+Previously the 200W grid import check suppressed discharge on a single
+tick, causing flipper behaviour (discharge → idle → discharge every
+~16s) on short load spikes (kettle, microwave, EV start).  Two writes
+per flip is brutal on the inverter and customers notice.
+
+Now uses thresholded hysteresis:
+- Small/moderate import (200–2000W) must persist for ≥ 2 consecutive
+  cycles (≈ 32s) before suppression triggers.
+- Large import (> 2000W) suppresses immediately (genuine sustained
+  draw like EV charging or oven preheat).
+- After suppression ends, a 60-second cooldown blocks re-suppression
+  so the inverter stabilises before the next decision.
+- Each cycle now logs the grid_power + state decision at DEBUG level
+  so the flipper pattern is easy to spot in retrospect:
+  `State decision: desired=X, current=Y, soc=%, price=, threshold=, grid_power=W`
 
 ### 6. Generator-Port Solar Workaround
 TREX-25/50 with micro-inverters on the generator port need special handling. PV registers read 0, falling back to generator_day_cost_energy. Both backend and frontend handle this but it's fragile.
@@ -397,6 +497,17 @@ hour slot. This was especially painful at midnight when stale
 `state.state` combined with hour-merged buckets broke the schedule. When
 `state.state` still reports the previous day's stale total, the coordinator
 falls back to the filtered hourly sum.
+
+### 8. Midnight should not force inverter to idle
+The day-rollover block in `_async_update_data` used to unconditionally
+call `_transition_to_state("idle")` and then skip the normal cycle for
+that tick.  This cancelled valid charge/discharge actions that should
+continue across midnight (e.g., a customer selling overnight to clear
+the battery before negative-midday PV refills it next day).  The block
+now does only the bookkeeping (yesterday deficit, daily consumption,
+SOC history reset, slot overrides rotation) and falls through to the
+normal cycle, which re-determines the desired state and only writes a
+transition if the state actually changes.
 
 ---
 

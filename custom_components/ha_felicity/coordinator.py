@@ -119,6 +119,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._tomorrow_scheduled_slots: dict[int, str] = {}
         self._backend_soc_trajectory_tomorrow: list[float] = []
 
+        # Economic Rule 1 window warning.  The integration writes rule 1's
+        # enable/voltage/soc/power/date registers but NOT its time-of-day
+        # window or effective-weekday mask.  If those are restricted on the
+        # inverter, it silently ignores our enable command outside the
+        # window.  This holds a dict describing any conflict (or None).
+        self.rule1_window_warning: dict | None = None
+
         # Always-visible slot info (regardless of price_mode)
         self.available_slots_at_threshold: int = 0
         self._available_total_with_tomorrow: int = 0
@@ -142,6 +149,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Grid-mode change tracking (#10).  Detect transitions to reset
         # transient state that shouldn't survive a mode change.
         self._last_grid_mode: str | None = None
+
+        # Anti-conflict hysteresis: count consecutive ticks of grid import
+        # over the small-spike threshold.  Suppress discharge only when
+        # the import is sustained (≥2 ticks ~ 30s) OR very large (>2 kW).
+        # Without this filter a kettle/microwave/EV-start spike causes the
+        # inverter to flip discharge → idle → discharge every ~16 seconds.
+        self._anticonflict_import_ticks: int = 0
+        self._anticonflict_suppress_until_ts: float = 0.0
 
     @property
     def pv_actual_today_kwh(self) -> float | None:
@@ -676,6 +691,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             block_export_on_negative_price=str(
                 opts.get("block_export_on_negative_price", "on")
             ).lower() not in ("off", "false", "0"),
+            charge_to_full_on_negative_price=opts.get(
+                "charge_to_full_on_negative_price", "off"
+            ) == "on",
+            discharge_to_make_room_for_negative_price=opts.get(
+                "discharge_to_make_room_for_negative_price", "off"
+            ) == "on",
         )
 
         state = ems_module.EMSState(
@@ -821,6 +842,147 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.pv_hourly_kwh, self.pv_actual_today_kwh,
             now.hour, now.minute,
         )
+
+    _WEEKDAY_NAMES = [
+        "Sunday", "Monday", "Tuesday", "Wednesday",
+        "Thursday", "Friday", "Saturday",
+    ]
+
+    def _check_rule1_window_conflict(self) -> dict | None:
+        """Check whether the planned schedule falls outside Economic Rule 1's
+        time-of-day window or effective-weekday mask.
+
+        The integration drives the inverter through rule 1 but only writes
+        enable/voltage/soc/power/start_day/stop_day — it leaves the rule's
+        start_time, stop_time and effective_week as configured on the
+        inverter.  If those are restrictive, the inverter silently ignores
+        our enable command when the current time/weekday is outside the
+        window: the EMS plans to act, writes the register, and nothing
+        happens.  This surfaces that mismatch as a UI warning.
+
+        Returns a dict describing the conflict, or None when everything the
+        EMS plans falls inside the rule 1 window (or the registers can't be
+        read).
+        """
+        data = self.data or {}
+        start_raw = data.get("econ_rule_1_start_time")
+        stop_raw = data.get("econ_rule_1_stop_time")
+        week_raw = data.get("econ_rule_1_effective_week")
+
+        # Can't evaluate without the window registers (e.g. not in this
+        # model's register set or not yet read).
+        if start_raw is None or stop_raw is None or week_raw is None:
+            return None
+
+        start_min = (start_raw >> 8) * 60 + (start_raw & 0xFF)
+        stop_min = (stop_raw >> 8) * 60 + (stop_raw & 0xFF)
+        week_mask = int(week_raw) & 0x7F
+
+        # start == stop is the inverter's "all day" convention (no time
+        # restriction).  A full week mask means no weekday restriction.
+        full_day = start_min == stop_min
+        all_days = week_mask == 0x7F
+
+        # Nothing to warn about when both dimensions are unrestricted.
+        if full_day and all_days:
+            return None
+
+        def time_ok(slot_min: float) -> bool:
+            if full_day:
+                return True
+            if start_min < stop_min:
+                return start_min <= slot_min < stop_min
+            # Window spans midnight (e.g. 22:00 → 06:00).
+            return slot_min >= start_min or slot_min < stop_min
+
+        def weekday_ok(d) -> bool:
+            if all_days:
+                return True
+            # Inverter mask: bit0=Sunday .. bit6=Saturday.
+            # Python isoweekday(): Mon=1 .. Sun=7 → Sun maps to 0.
+            bit = d.isoweekday() % 7
+            return bool(week_mask & (1 << bit))
+
+        opts = self.config_entry.options
+        grid_mode = opts.get("grid_mode", "off")
+        if grid_mode == "off":
+            return None
+
+        num_slots = len(self.slot_prices_today) if self.slot_prices_today else 96
+        minutes_per_slot = (24 * 60) / num_slots
+        now = datetime.now()
+        today = now.date()
+        tomorrow = today + timedelta(days=1)
+
+        # Build the set of slot indices the EMS intends to act on.
+        #  - auto mode: the optimizer's scheduled_slots (today + tomorrow)
+        #  - manual mode: slots crossing the threshold in the active
+        #    direction (charge below / discharge above), today only —
+        #    only future slots matter since past ones already happened.
+        price_mode = opts.get("price_mode", "manual")
+        today_slots: dict[int, str] = {}
+        tomorrow_slots: dict[int, str] = {}
+        if price_mode == "auto":
+            today_slots = dict(self.scheduled_slots or {})
+            tomorrow_slots = dict(self._tomorrow_scheduled_slots or {})
+        elif self.price_threshold is not None and self.slot_prices_today:
+            current_slot = min(
+                int((now.hour * 60 + now.minute) / minutes_per_slot),
+                num_slots - 1,
+            )
+            for idx in range(current_slot, num_slots):
+                price = self.slot_prices_today[idx]
+                if price is None:
+                    continue
+                if grid_mode in ("from_grid", "both") and price < self.price_threshold:
+                    today_slots[idx] = "charge"
+                elif grid_mode in ("to_grid", "both") and price > self.price_threshold:
+                    today_slots[idx] = "discharge"
+
+        affected = 0
+        time_violation = False
+        weekday_violation = False
+
+        for day_date, slots in (
+            (today, today_slots),
+            (tomorrow, tomorrow_slots),
+        ):
+            wd_ok = weekday_ok(day_date)
+            for idx in slots:
+                slot_min = idx * minutes_per_slot
+                tm_ok = time_ok(slot_min)
+                if not (wd_ok and tm_ok):
+                    affected += 1
+                    if not tm_ok:
+                        time_violation = True
+                    if not wd_ok:
+                        weekday_violation = True
+
+        if affected == 0:
+            return None
+
+        enabled_days = [
+            self._WEEKDAY_NAMES[i] for i in range(7) if week_mask & (1 << i)
+        ]
+        warning = {
+            "conflict": True,
+            "affected_slots": affected,
+            "time_violation": time_violation,
+            "weekday_violation": weekday_violation,
+            "rule1_start_time": f"{start_raw >> 8:02d}:{start_raw & 0xFF:02d}",
+            "rule1_stop_time": f"{stop_raw >> 8:02d}:{stop_raw & 0xFF:02d}",
+            "rule1_effective_days": enabled_days,
+        }
+        _LOGGER.warning(
+            "Economic Rule 1 window mismatch: %d scheduled slot(s) fall "
+            "outside the inverter's rule 1 window (time %s-%s, days %s). "
+            "The inverter will ignore charge/discharge commands outside "
+            "this window. Adjust the rule 1 Start/Stop Time and Effective "
+            "Week on the inverter, or the schedule won't execute.",
+            affected, warning["rule1_start_time"], warning["rule1_stop_time"],
+            ", ".join(enabled_days) or "none",
+        )
+        return warning
 
     def _get_consumption_estimate(self) -> float:
         """Get best available daily consumption estimate.
@@ -1481,6 +1643,57 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
         return True
 
+    async def _apply_rule1_auto_settings(self) -> None:
+        """If rule 1 auto settings are enabled, ensure the inverter's
+        time-window and weekday-mask match the auto defaults.
+
+        Writes only when the current register value doesn't match the
+        target — so this is safe to call on every state activation.
+        Felicity's 24-hour convention is start=00:00, stop=23:59 (the
+        firmware doesn't accept stop=00:00 or stop=24:00).
+        """
+        opts = self.config_entry.options
+
+        if opts.get("rule1_time_window", "manual") == "auto":
+            target_start = 0                       # 00:00
+            target_stop = (23 << 8) | 59           # 23:59 (Felicity 24h)
+            current_start = self.data.get("econ_rule_1_start_time")
+            current_stop = self.data.get("econ_rule_1_stop_time")
+            if current_start != target_start:
+                ok = await self.TypeSpecificHandler.write_type_specific_register(
+                    "econ_rule_1_start_time", target_start
+                )
+                if ok:
+                    self.data["econ_rule_1_start_time"] = target_start
+                    _LOGGER.info(
+                        "Rule 1 auto: wrote start_time=00:00 (was %s)",
+                        current_start,
+                    )
+            if current_stop != target_stop:
+                ok = await self.TypeSpecificHandler.write_type_specific_register(
+                    "econ_rule_1_stop_time", target_stop
+                )
+                if ok:
+                    self.data["econ_rule_1_stop_time"] = target_stop
+                    _LOGGER.info(
+                        "Rule 1 auto: wrote stop_time=23:59 (was %s)",
+                        current_stop,
+                    )
+
+        if opts.get("rule1_weekday", "manual") == "auto":
+            target_week = 0x7F  # all 7 days enabled (bit0=Sun..bit6=Sat)
+            current_week = self.data.get("econ_rule_1_effective_week")
+            if current_week != target_week:
+                ok = await self.TypeSpecificHandler.write_type_specific_register(
+                    "econ_rule_1_effective_week", target_week
+                )
+                if ok:
+                    self.data["econ_rule_1_effective_week"] = target_week
+                    _LOGGER.info(
+                        "Rule 1 auto: wrote effective_week=all days (was 0x%02X)",
+                        current_week if isinstance(current_week, int) else 0,
+                    )
+
     
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
@@ -1668,84 +1881,158 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Initialize consumption store on first run
                             await self._init_consumption_store()
 
-                            # Midnight reset
+                            # Midnight bookkeeping (once per day change)
                             now = datetime.now()
                             if self._current_day != now.day:
-                                _LOGGER.info("New day detected — resetting energy state")
+                                _LOGGER.info(
+                                    "New day detected — running midnight bookkeeping"
+                                )
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
                                 self.battery_soc = battery_soc
-                                # Record deficit before resetting (for next-day compensation)
+                                # Record deficit before rolling over (for next-day compensation)
                                 self._calculate_yesterday_deficit(battery_soc)
                                 # Record daily consumption for rolling average
                                 await self._record_daily_consumption()
-                                await self._transition_to_state("idle")
-                                self._current_energy_state = None
                                 self._soc_history = {}
                                 self._last_recorded_slot = -1
                                 self._current_day = now.day
 
                                 # Propagate tomorrow's slot overrides → today
                                 await self._rotate_slot_overrides()
-                            else:
-                                # Normal cycle: retrieve data, calculate, determine state
-                                self._retrieve_slot_prices(price_state)
-                                self._retrieve_pv_forecast()
+                                # Do NOT force-idle the inverter here.  A discharge
+                                # that's valid at 23:59 is usually still valid at
+                                # 00:01 (e.g., high evening price extending into
+                                # early morning, or a customer selling overnight
+                                # before negative-midday PV refills the battery).
+                                # The normal cycle below re-determines state from
+                                # current prices and only writes a transition if
+                                # the state actually changes.
 
-                                battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
-                                self.battery_soc = battery_soc
-                                self._record_soc_snapshot(battery_soc)
-                                # Modbus read succeeded — refresh staleness ts (#6)
-                                self._last_modbus_success_ts = time.time()
-                                # Cycle counting + SOH update (#13)
-                                self._track_cycle_throughput(battery_soc)
+                            # Normal cycle: retrieve data, calculate, determine state
+                            self._retrieve_slot_prices(price_state)
+                            self._retrieve_pv_forecast()
 
-                                # In auto mode, run the schedule optimizer
-                                if price_mode == "auto":
-                                    self._calculate_schedule(battery_soc)
-                                    # Schedule may have updated self.price_threshold
-                                    new_data["price_threshold"] = self.price_threshold
+                            battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
+                            self.battery_soc = battery_soc
+                            self._record_soc_snapshot(battery_soc)
+                            # Modbus read succeeded — refresh staleness ts (#6)
+                            self._last_modbus_success_ts = time.time()
+                            # Cycle counting + SOH update (#13)
+                            self._track_cycle_throughput(battery_soc)
 
-                                # Always calculate available info (visible in both modes)
-                                self._calculate_available_info(battery_soc)
+                            # In auto mode, run the schedule optimizer
+                            if price_mode == "auto":
+                                self._calculate_schedule(battery_soc)
+                                # Schedule may have updated self.price_threshold
+                                new_data["price_threshold"] = self.price_threshold
 
-                                # Update new_data with all results
-                                new_data["pv_forecast_today"] = self.pv_forecast_today
-                                new_data["pv_forecast_remaining"] = self.pv_forecast_remaining
-                                new_data["pv_forecast_tomorrow"] = self.pv_forecast_tomorrow
-                                new_data["cheap_slots_remaining"] = self.cheap_slots_remaining
-                                new_data["grid_energy_planned"] = self.grid_energy_planned
-                                new_data["schedule_status"] = self.schedule_status
-                                new_data["available_slots_at_threshold"] = self.available_slots_at_threshold
-                                new_data["available_energy_capacity"] = self.available_energy_capacity
-                                new_data["charge_likelihood"] = self.charge_likelihood
-                                new_data["weekly_avg_consumption"] = self.weekly_avg_consumption
+                            # Always calculate available info (visible in both modes)
+                            self._calculate_available_info(battery_soc)
 
-                                desired_state = self._determine_energy_state(battery_soc)
+                            # Apply rule 1 time-window / weekday auto settings
+                            # if enabled.  Writes are idempotent — only happens
+                            # when the register doesn't already match the target.
+                            await self._apply_rule1_auto_settings()
 
-                                # Anti-conflict guard: don't export while the house is importing
-                                # (e.g. EV charging pulls from grid while we'd be selling battery — wasteful)
-                                if desired_state == "discharging":
-                                    grid_power = None
-                                    if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
-                                        grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
-                                    if grid_power is not None and grid_power > 200:  # importing >200W from grid
+                            # Warn if the planned schedule falls outside the
+                            # inverter's Economic Rule 1 time/weekday window
+                            # (we don't write those registers in manual mode,
+                            # so the inverter would silently ignore our enable
+                            # command there).
+                            self.rule1_window_warning = self._check_rule1_window_conflict()
+
+                            # Update new_data with all results
+                            new_data["pv_forecast_today"] = self.pv_forecast_today
+                            new_data["pv_forecast_remaining"] = self.pv_forecast_remaining
+                            new_data["pv_forecast_tomorrow"] = self.pv_forecast_tomorrow
+                            new_data["cheap_slots_remaining"] = self.cheap_slots_remaining
+                            new_data["grid_energy_planned"] = self.grid_energy_planned
+                            new_data["schedule_status"] = self.schedule_status
+                            new_data["available_slots_at_threshold"] = self.available_slots_at_threshold
+                            new_data["available_energy_capacity"] = self.available_energy_capacity
+                            new_data["charge_likelihood"] = self.charge_likelihood
+                            new_data["weekly_avg_consumption"] = self.weekly_avg_consumption
+
+                            desired_state = self._determine_energy_state(battery_soc)
+
+                            # Anti-conflict guard: don't export while the house is
+                            # importing (e.g. EV charging pulls from grid while we'd
+                            # be selling battery — wasteful round-trip).  Uses
+                            # hysteresis to avoid flipping discharge → idle → discharge
+                            # on transient load spikes (kettle, microwave, EV start):
+                            #   - small/moderate import (200-2000W) must persist for
+                            #     ≥ANTICONFLICT_MIN_TICKS consecutive cycles
+                            #   - large import (>2000W) suppresses immediately
+                            #   - once suppression ends, hold a cooldown window
+                            #     before allowing re-suppression
+                            ANTICONFLICT_SOFT_THRESHOLD_W = 200
+                            ANTICONFLICT_HARD_THRESHOLD_W = 2000
+                            ANTICONFLICT_MIN_TICKS = 2
+                            ANTICONFLICT_COOLDOWN_S = 60
+                            grid_power = None
+                            if desired_state == "discharging":
+                                if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
+                                    grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
+                                if grid_power is not None and grid_power > ANTICONFLICT_SOFT_THRESHOLD_W:
+                                    self._anticonflict_import_ticks += 1
+                                    in_cooldown = time.time() < self._anticonflict_suppress_until_ts
+                                    sustained = self._anticonflict_import_ticks >= ANTICONFLICT_MIN_TICKS
+                                    large = grid_power > ANTICONFLICT_HARD_THRESHOLD_W
+                                    if (sustained or large) and not in_cooldown:
                                         _LOGGER.info(
-                                            "Anti-conflict: suppressing discharge — grid importing %.0fW "
-                                            "(would sell battery while buying from grid)",
-                                            grid_power,
+                                            "Anti-conflict: suppressing discharge — grid importing "
+                                            "%.0fW (sustained=%d ticks, large=%s) — would sell "
+                                            "battery while buying from grid",
+                                            grid_power, self._anticonflict_import_ticks, large,
                                         )
                                         desired_state = "idle"
-
-                                if desired_state != self._current_energy_state:
-                                    success = await self._transition_to_state(desired_state)
-                                    if success:
-                                        self._current_energy_state = desired_state
-                                        self._last_state_change = now
-                                    else:
-                                        _LOGGER.warning(
-                                            "State transition to %s failed — will retry next cycle (inverter may still be in %s)",
-                                            desired_state, self._current_energy_state,
+                                        self._anticonflict_suppress_until_ts = (
+                                            time.time() + ANTICONFLICT_COOLDOWN_S
                                         )
+                                    else:
+                                        _LOGGER.debug(
+                                            "Anti-conflict: tolerating brief import %.0fW "
+                                            "(tick %d/%d, cooldown=%s) — keeping discharge",
+                                            grid_power,
+                                            self._anticonflict_import_ticks,
+                                            ANTICONFLICT_MIN_TICKS,
+                                            in_cooldown,
+                                        )
+                                else:
+                                    if self._anticonflict_import_ticks > 0:
+                                        _LOGGER.debug(
+                                            "Anti-conflict: import cleared (was %d ticks), "
+                                            "grid_power=%.0fW",
+                                            self._anticonflict_import_ticks,
+                                            grid_power if grid_power is not None else 0,
+                                        )
+                                    self._anticonflict_import_ticks = 0
+                            else:
+                                # Not trying to discharge — reset the counter so a
+                                # past spike doesn't carry over into the next
+                                # discharge window.
+                                self._anticonflict_import_ticks = 0
+
+                            _LOGGER.debug(
+                                "State decision: desired=%s, current=%s, soc=%s%%, "
+                                "price=%s, threshold=%s, grid_power=%s",
+                                desired_state, self._current_energy_state,
+                                f"{battery_soc:.1f}" if battery_soc is not None else "?",
+                                f"{self.current_price:.4f}" if self.current_price is not None else "?",
+                                f"{self.price_threshold:.4f}" if self.price_threshold is not None else "?",
+                                f"{grid_power:.0f}W" if grid_power is not None else "?",
+                            )
+
+                            if desired_state != self._current_energy_state:
+                                success = await self._transition_to_state(desired_state)
+                                if success:
+                                    self._current_energy_state = desired_state
+                                    self._last_state_change = now
+                                else:
+                                    _LOGGER.warning(
+                                        "State transition to %s failed — will retry next cycle (inverter may still be in %s)",
+                                        desired_state, self._current_energy_state,
+                                    )
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",

@@ -587,6 +587,49 @@ class FelicityEMSCard extends LitElement {
       this._simResult = useBackendSchedule ? { ...simResult, slots: todaySlotData } : simResult;
     }
 
+    // When using backend schedule, recompute counts from the authoritative
+    // slot data so the textual counters (X charge / Y sell / Z kWh planned)
+    // match the colored bars.  Without this, simResult's stale 0 values
+    // from the client-side simulation would win over backend reality.
+    if (useBackendSchedule) {
+      const displayedSlots = this._simResult.slots;
+      const sim = this._getAttr("schedule_status", "sim_params") || {};
+      const granMin = this._getAttr("schedule_status", "slot_granularity_min")
+        || Math.round((24 * 60) / displayedSlots.length);
+      const slotDur = granMin / 60;
+      const safeMaxPower = this._getNumericState("safe_max_power") || 5000;
+      const powerKw = Math.max(1, safeMaxPower / 1000);
+      const eff = sim.efficiency || 0.90;
+      const effectivePerSlot = powerKw * slotDur * eff;
+      const energyPerSlot = powerKw * slotDur;
+
+      const chargeCount = displayedSlots.filter(s => s.action === "charge").length;
+      const dischargeCount = displayedSlots.filter(s => s.action === "discharge").length;
+      const plannedChargeKwh = chargeCount * effectivePerSlot;
+      const plannedDischargeKwh = dischargeCount * energyPerSlot;
+
+      // Also recompute tomorrow counts from backend's slot_schedule_tomorrow
+      // so the today-view's "tomorrow" summary stays consistent.
+      let tomorrowChargeCount = this._simResult.tomorrowChargeCount;
+      let tomorrowPlanned = this._simResult.tomorrowPlanned;
+      if (tomorrowSlotData?.some(s => s.action != null)) {
+        tomorrowChargeCount = tomorrowSlotData.filter(s => s.action === "charge").length;
+        const tmrDischargeCount = tomorrowSlotData.filter(s => s.action === "discharge").length;
+        tomorrowPlanned = tomorrowChargeCount * effectivePerSlot + tmrDischargeCount * energyPerSlot;
+      }
+
+      this._simResult = {
+        ...this._simResult,
+        chargeCount,
+        dischargeCount,
+        plannedChargeKwh,
+        plannedDischargeKwh,
+        planned: Math.round((plannedChargeKwh + plannedDischargeKwh) * 100) / 100,
+        tomorrowChargeCount,
+        tomorrowPlanned,
+      };
+    }
+
     // Manual override or auto-switch to tomorrow when no actions remain
     const hasTomorrow = tomorrowSlotData?.length > 0;
     let showTomorrow;
@@ -1552,6 +1595,11 @@ class FelicityEMSCard extends LitElement {
     const safeMaxPower = this._getNumericState("safe_max_power");
     const dailyConsumptionEst = this._getNumericState("daily_consumption_estimate");
 
+    // Economic Rule 1 window mismatch warning (integration doesn't write
+    // rule 1 start/stop time or weekday — a restricted window silently
+    // blocks the EMS).
+    const rule1Warning = this._getAttr("schedule_status", "rule1_window_warning");
+
     // Battery SOC bars (10 segments)
     const socPct = batterySoc ?? 0;
     const filledBars = Math.round(socPct / 10);
@@ -1572,6 +1620,24 @@ class FelicityEMSCard extends LitElement {
             <span class="badge schedule-${scheduleStatus}">${scheduleStatus.replace(/_/g, ' ')}</span>
           </div>
         </div>
+
+        ${rule1Warning && rule1Warning.conflict ? html`
+          <div class="rule1-warning">
+            <span class="rule1-warning-icon">⚠️</span>
+            <span class="rule1-warning-text">
+              ${rule1Warning.affected_slots} scheduled slot(s) fall outside the
+              inverter's Economic Rule 1 window
+              ${rule1Warning.time_violation
+                ? html`(active ${rule1Warning.rule1_start_time}–${rule1Warning.rule1_stop_time})`
+                : ""}
+              ${rule1Warning.weekday_violation
+                ? html`(days: ${(rule1Warning.rule1_effective_days || []).join(", ") || "none"})`
+                : ""}.
+              The inverter will ignore charge/discharge outside this window —
+              adjust Rule 1 Start/Stop Time and Effective Week on the inverter.
+            </span>
+          </div>
+        ` : ""}
 
         <div class="card-content">
           <!-- Price & State summary -->
@@ -1844,6 +1910,28 @@ class FelicityEMSCard extends LitElement {
         align-items: center;
         padding: 10px 16px 8px;
         border-bottom: 1px solid var(--divider-color);
+      }
+
+      /* Economic Rule 1 window mismatch warning */
+      .rule1-warning {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: 8px 12px 0;
+        padding: 8px 12px;
+        background: rgba(255, 152, 0, 0.12);
+        border: 1px solid #FF9800;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        line-height: 1.3;
+        color: var(--primary-text-color);
+      }
+      .rule1-warning-icon {
+        flex: 0 0 auto;
+        font-size: 1rem;
+      }
+      .rule1-warning-text {
+        flex: 1 1 auto;
       }
 
       /* Battery SOC indicator */

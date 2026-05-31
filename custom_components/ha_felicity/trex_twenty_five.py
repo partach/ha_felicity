@@ -690,7 +690,10 @@ REGISTER_SETS_TREX_TWENTY_FIVE = {
             "inverter_time", "econ_rule_1", "econ_rule_2", "econ_rule_3",
             "econ_rule_4", "econ_rule_5", "econ_rule_6", "alarm_codes", "fault_codes",
             "phase_a_home_load_power", "phase_b_home_load_power", "phase_c_home_load_power",
-            "generator_frequency", "grid_frequency", "load_frequency"
+            "generator_frequency", "grid_frequency", "load_frequency",
+            "homeload_day_cost_energy",
+            "pv1_day_energy", "pv2_day_energy", "pv3_day_energy", "pv4_day_energy",
+            "generator_day_cost_energy", "microinverter_day_cost_energy",
         }
     },
     "basic_plus": {
