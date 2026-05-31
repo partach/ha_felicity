@@ -97,13 +97,20 @@ the cheapest scheduled slot. This compensates for deficit shrinking as PV
 confidence recovers mid-day — without it, early expensive slots would
 execute while later cheaper slots got dropped from a re-plan.
 
-### State Transitions (coordinator.py:1195-1231)
+### State Transitions (coordinator.py `_transition_to_state`, ~1425-1482)
 
 | State | econ_rule_1_enable | Voltage | SOC | Power |
 |---|---|---|---|---|
 | charging | 1 | voltage_level (default 58V) | charge_max (default 100%) | safe_max_power (W) |
-| discharging | 2 | discharge_min_voltage (default 50V) | discharge_min (default 20%) | safe_max_power (W) |
+| discharging | 2 | discharge_min_voltage (default 50V) | discharge floor (see below) | safe_max_power (W) |
 | idle | 0 | *(not written)* | *(not written)* | *(not written)* |
+
+**Discharge SOC floor**: in auto mode (grid_mode active) the discharging
+SOC register is written from the *computed* `_reserve_target_pct`
+(the planned reserve target), not the raw `battery_discharge_min_level`.
+This makes the inverter's hardware floor match the schedule's intended
+reserve rather than the absolute minimum. When the EMS is off it falls
+back to the user's `discharge_min` setting.
 
 ### Model Differences
 
@@ -262,7 +269,7 @@ max_today_slots = floor(headroom / effective_per_slot)
 
 ---
 
-## Safe Power Management (coordinator.py:1077-1193)
+## Safe Power Management (coordinator.py `_check_safe_power`, ~1307-1424)
 
 Monitors grid current per phase and adjusts inverter power:
 
@@ -323,11 +330,14 @@ Fetches `energy_state` history from HA API (throttled 60s), shows what actually 
 | price_threshold_level | number | 1-10 | 5 | Manual price level |
 | battery_charge_max_level | number | 30-100% | 100 | Max SOC for charging |
 | battery_discharge_min_level | number | 10-70% | 20 | Min SOC for discharging |
-| battery_capacity_kwh | number | 1-100 kWh | 10 | Usable battery capacity |
+| battery_capacity_kwh | number | 1-200 kWh | 10 | Usable battery capacity |
 | efficiency_factor | number | 0.70-1.00 | 0.90 | Round-trip efficiency |
-| daily_consumption_estimate | number | 0-100 kWh | 10 | Fallback consumption |
+| daily_consumption_estimate | number | 0-120 kWh | 10 | Fallback consumption |
 | reserve_target_pct | number | 0-100% | 0 | Fixed reserve floor (0=dynamic) |
 | arbitrage_price_delta | number | 0-0.50 €/kWh | 0 | Price spread for full charge |
+| battery_cycle_cost_eur_kwh | number | 0-0.50 €/kWh | 0 | Battery wear cost (profitability filter) |
+| optimization_priority | select | cost/longevity/self_consumption | cost | Multi-objective strategy |
+| block_export_on_negative_price | select | on/off | on | Skip sell scheduling at p < 0 |
 | max_amperage_per_phase | number | 10-63 A | 16 | Grid current limit |
 | voltage_level | number | 48-60 V | 58 | Charge voltage setpoint |
 | discharge_min_voltage | number | 48-55 V | 50 | Discharge voltage floor |
@@ -564,7 +574,23 @@ other entities) to be unusable on fresh installs.
 keys (`max_amperage_per_phase`, `safe_power_management`,
 `battery_cycle_cost_eur_kwh`, `optimization_priority`,
 `block_export_on_negative_price`) so new installations get them
-written at setup time.
+written at setup time.  The migration block `defaults_to_set` in
+`__init__.py` (runs on every `async_setup_entry`) mirrors the same
+keys so *existing* installs upgrading to a newer version backfill
+missing options too.
+
+#### C6. UI Entities for Multi-Objective Knobs — IMPLEMENTED
+The three knobs added in the lifecycle overhaul previously had no UI
+control — they lived only in `entry.options` defaults and could not be
+changed by the user.  They now have entities:
+- `battery_cycle_cost_eur_kwh` → number (0-0.50 €/kWh, number.py)
+- `optimization_priority` → select (cost/longevity/self_consumption, select.py)
+- `block_export_on_negative_price` → select (on/off, select.py)
+
+Because `block_export_on_negative_price` is stored as a string ("on"/"off")
+by the select but consumed as a bool by `EMSConfig`, the coordinator
+converts it: `str(opts.get(..., "on")).lower() not in ("off","false","0")`.
+This also tolerates the legacy bool value from earlier installs.
 
 ### Deferred Items (Need Separate Iteration)
 
