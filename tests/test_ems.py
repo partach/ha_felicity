@@ -2996,6 +2996,46 @@ class TestTomorrowScheduleIntegration:
                 f"Tomorrow SOC at slot {i} is {soc}%, below min {min_allowed}%"
             )
 
+    def test_tomorrow_to_grid_high_soc_strong_pv_sells(self):
+        """Tomorrow in to_grid mode with a full battery + strong PV sells.
+
+        Regression: tomorrow's sell validation used the overnight
+        reserve_target as the per-slot SOC floor, while today uses the
+        absolute discharge_min.  Because the trajectory dips toward the
+        target during the day before PV refills it, every evening sell was
+        rejected -- tomorrow showed 0 sells while today (validated against
+        discharge_min) kept its sells.  The fix validates tomorrow's sells
+        against min_kwh; reserve_target still sizes how much is sellable.
+        """
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=60.0,
+            battery_charge_max_pct=100.0,
+            battery_discharge_min_pct=35.0,
+            consumption_est_kwh=38.5,
+            safe_power_kw=8.0,
+            efficiency=0.95,
+        )
+        tomorrow = [0.20] * 24
+        for h in (18, 19, 20, 21):
+            tomorrow[h] = 0.50
+        state = default_state(
+            battery_soc_pct=98.0,
+            slot_prices_today=[0.20] * 24,
+            slot_prices_tomorrow=tomorrow,
+            pv_hourly_kwh=make_pv_hourly(45.0, sunrise=8, sunset=17),
+            pv_forecast_tomorrow=45.0,
+            current_hour=20,
+        )
+        result = calculate_schedule(config, state)
+        sells = [k for k, v in result.tomorrow_scheduled_slots.items()
+                 if v == "discharge"]
+        assert len(sells) > 0, (
+            "Expected tomorrow to schedule sells with full battery + strong PV"
+        )
+        # End-of-day SOC must still respect the overnight reserve target.
+        assert result.tomorrow_soc_trajectory[-1] >= 35.0
+
 
 class TestInherentLowSOCValidation:
     """Tests that SOC validation doesn't falsely prune sell slots when
