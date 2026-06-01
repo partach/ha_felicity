@@ -203,6 +203,59 @@ async def async_setup_entry(
         ),
     ])
 
+    # Flexible load number entities
+    for i in range(1, 4):
+        label = "EV Charger / Load 1" if i == 1 else f"Flexible Load {i}"
+        icon = "mdi:ev-station" if i == 1 else "mdi:power-plug-outline"
+        entities.append(
+            HA_FelicityInternalNumber(
+                coordinator, entry,
+                option_key=f"flexible_load_{i}_power_kw",
+                name=f"{label} Power",
+                min_val=0.5, max_val=25, step=0.1,
+                unit="kW", icon=icon,
+                default_value=3.7 if i == 1 else 2.0,
+            )
+        )
+        entities.append(
+            HA_FelicityInternalNumber(
+                coordinator, entry,
+                option_key=f"flexible_load_{i}_priority",
+                name=f"{label} Shed Priority",
+                min_val=1, max_val=3, step=1,
+                icon="mdi:sort-numeric-ascending",
+                default_value=i,
+            )
+        )
+
+    # EV charger (load 1) specific settings
+    entities.extend([
+        HA_FelicityInternalNumber(
+            coordinator, entry,
+            option_key="flexible_load_1_phases",
+            name="EV Charger Phases",
+            min_val=1, max_val=3, step=1,
+            icon="mdi:sine-wave",
+            default_value=1,
+        ),
+        HA_FelicityInternalNumber(
+            coordinator, entry,
+            option_key="flexible_load_1_voltage",
+            name="EV Charger Voltage",
+            min_val=110, max_val=400, step=10,
+            unit="V", icon="mdi:flash",
+            default_value=230,
+        ),
+        HA_FelicityInternalNumber(
+            coordinator, entry,
+            option_key="flexible_load_1_default_current",
+            name="EV Charger Default Current",
+            min_val=6, max_val=32, step=1,
+            unit="A", icon="mdi:current-ac",
+            default_value=16,
+        ),
+    ])
+
     # Tie all entities to the device
     for entity in entities:
         entity._attr_device_info = device_info

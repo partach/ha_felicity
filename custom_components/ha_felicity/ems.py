@@ -9,8 +9,43 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import List
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class FlexibleLoadConfig:
+    """Configuration for a single flexible load (EV charger, boiler, etc.)."""
+
+    enabled: bool = False
+    name: str = ""
+    switch_entity: str = ""
+    rated_power_kw: float = 0.0
+    priority: int = 1  # 1=shed first, 3=shed last
+    # EV charger extras (slot 1 only)
+    current_entity: str = ""  # entity to set current (number/select)
+    current_steps: list[int] = field(default_factory=list)  # e.g. [6,10,13,16,20,25]
+    phases: int = 1
+    voltage: int = 230
+    default_current: int = 16
+
+    @property
+    def is_ev_charger(self) -> bool:
+        return bool(self.current_entity and self.current_steps)
+
+    def power_at_current(self, amps: int) -> float:
+        """Calculate kW at a given current step."""
+        return amps * self.voltage * self.phases / 1000.0
+
+    def nearest_step_for_power(self, target_kw: float) -> int | None:
+        """Find the highest current step that stays at or below target_kw."""
+        if not self.current_steps:
+            return None
+        for step in sorted(self.current_steps, reverse=True):
+            if self.power_at_current(step) <= target_kw + 0.01:
+                return step
+        return self.current_steps[0]  # minimum step
 
 
 @dataclass
@@ -52,6 +87,9 @@ class EMSConfig:
     # to absorb the PV (avoiding forced grid export at penalty rates).
     # Discharge only happens in positive-price hours.
     discharge_to_make_room_for_negative_price: bool = False
+    # Flexible loads (EV charger, boiler, etc.) — up to 3 controllable loads.
+    # Scheduled into cheap/surplus slots alongside battery actions.
+    flexible_loads: list[FlexibleLoadConfig] = field(default_factory=list)
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -100,6 +138,8 @@ class ScheduleResult:
     soc_trajectory: list[float] = field(default_factory=list)
     tomorrow_scheduled_slots: dict[int, str] = field(default_factory=dict)
     tomorrow_soc_trajectory: list[float] = field(default_factory=list)
+    # Flexible load schedules: {load_index: {slot_idx: True}}
+    load_slots: dict[int, dict[int, bool]] = field(default_factory=dict)
 
 
 @dataclass
@@ -845,6 +885,54 @@ def _select_discharges_for_pv_headroom(
     return discharge
 
 
+def _schedule_flexible_loads(
+    loads: list[FlexibleLoadConfig],
+    remaining: list[tuple[int, float]],
+    scheduled_slots: dict[int, str],
+    price_threshold: float | None,
+    pv_surplus_slots: set[int] | None = None,
+) -> dict[int, dict[int, bool]]:
+    """Schedule flexible loads into cheap or PV-surplus slots.
+
+    Overlay approach: loads piggyback on the same cheap-slot logic as
+    the battery.  A load is scheduled when the slot price is at or below
+    the threshold, OR the slot has PV surplus.  Loads don't affect the
+    battery schedule — they're additive consumption.
+
+    Returns {load_index: {slot_idx: True}} for each active slot.
+    """
+    if not loads:
+        return {}
+
+    result: dict[int, dict[int, bool]] = {}
+    active_loads = [(i, ld) for i, ld in enumerate(loads) if ld.enabled and ld.switch_entity]
+    if not active_loads:
+        return result
+
+    sorted_by_price = sorted(remaining, key=lambda x: x[1])
+    pv_surplus = pv_surplus_slots or set()
+
+    for load_idx, load in active_loads:
+        load_schedule: dict[int, bool] = {}
+        for slot_idx, price in sorted_by_price:
+            is_cheap = price_threshold is not None and price <= price_threshold
+            is_pv_surplus = slot_idx in pv_surplus
+            is_negative = price < 0
+            already_charging = scheduled_slots.get(slot_idx) == "charge"
+            if is_cheap or is_pv_surplus or is_negative or already_charging:
+                load_schedule[slot_idx] = True
+
+        if load_schedule:
+            result[load_idx] = load_schedule
+            _LOGGER.debug(
+                "Flexible load '%s' scheduled for %d slots",
+                load.name or f"load_{load_idx + 1}",
+                len(load_schedule),
+            )
+
+    return result
+
+
 def select_unified_charge_slots(
     remaining_today: list[tuple[int, float]],
     energy_deficit: float,
@@ -1370,6 +1458,25 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         )
         result.tomorrow_scheduled_slots = tmr_slots
         result.tomorrow_soc_trajectory = tmr_traj
+
+    # Schedule flexible loads into cheap / PV-surplus slots
+    active_loads = [ld for ld in config.flexible_loads if ld.enabled]
+    if active_loads:
+        pv_surplus_set = set()
+        if state.pv_hourly_kwh:
+            cons_per_hour = config.consumption_est_kwh / 24.0
+            for slot_idx, _ in remaining:
+                hr = int((slot_idx * minutes_per_slot) / 60) % 24
+                pv_hr = state.pv_hourly_kwh.get(hr, 0.0)
+                if pv_hr > cons_per_hour:
+                    pv_surplus_set.add(slot_idx)
+        result.load_slots = _schedule_flexible_loads(
+            config.flexible_loads,
+            remaining,
+            result.scheduled_slots,
+            result.price_threshold,
+            pv_surplus_set,
+        )
 
     return result
 

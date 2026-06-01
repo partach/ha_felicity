@@ -159,6 +159,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._anticonflict_import_ticks: int = 0
         self._anticonflict_suppress_until_ts: float = 0.0
 
+        # Flexible load state tracking
+        self._flex_load_states: dict[int, bool] = {}  # {load_idx: on/off}
+        self._flex_load_current_step: int | None = None
+        self._flex_load_scheduled: dict[int, dict[int, bool]] = {}  # from ScheduleResult.load_slots
+        self._ev_boost_until_ts: float = 0.0  # epoch ts — EV override active when now < this
+
     @property
     def pv_actual_today_kwh(self) -> float | None:
         """Return actual PV energy generated today in kWh from inverter registers.
@@ -700,6 +706,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             discharge_to_make_room_for_negative_price=opts.get(
                 "discharge_to_make_room_for_negative_price", "off"
             ) == "on",
+            flexible_loads=self._build_flex_load_configs(),
         )
 
         state = ems_module.EMSState(
@@ -825,6 +832,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._backend_soc_trajectory = result.soc_trajectory
         self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots
         self._backend_soc_trajectory_tomorrow = result.tomorrow_soc_trajectory
+        self._flex_load_scheduled = result.load_slots
 
         if result.price_threshold is not None:
             self.price_threshold = result.price_threshold
@@ -986,6 +994,192 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             ", ".join(enabled_days) or "none",
         )
         return warning
+
+    # ── Flexible load helpers ────────────────────────────────────
+
+    def _build_flex_load_configs(self) -> list:
+        """Build FlexibleLoadConfig objects from entry.options."""
+        opts = self.config_entry.options
+        loads = []
+        for n in range(1, 4):
+            prefix = f"flexible_load_{n}_"
+            enabled = str(opts.get(f"{prefix}enabled", "off")).lower() not in ("off", "false", "0")
+            if not enabled:
+                continue
+            steps_str = opts.get(f"{prefix}current_steps", "") if n == 1 else ""
+            steps = []
+            if steps_str:
+                steps = [int(s.strip()) for s in str(steps_str).split(",") if s.strip().isdigit()]
+            loads.append(ems_module.FlexibleLoadConfig(
+                enabled=True,
+                name=opts.get(f"{prefix}name", "") or f"Load {n}",
+                switch_entity=opts.get(f"{prefix}switch_entity", ""),
+                rated_power_kw=float(opts.get(f"{prefix}power_kw", 2.0)),
+                priority=int(opts.get(f"{prefix}priority", n)),
+                current_entity=opts.get(f"{prefix}current_entity", "") if n == 1 else "",
+                current_steps=steps,
+                phases=int(opts.get(f"{prefix}phases", 1)) if n == 1 else 1,
+                voltage=int(opts.get(f"{prefix}voltage", 230)) if n == 1 else 230,
+                default_current=int(opts.get(f"{prefix}default_current", 16)) if n == 1 else 16,
+            ))
+        return loads
+
+    @property
+    def ev_boost_active(self) -> bool:
+        return time.time() < self._ev_boost_until_ts
+
+    @property
+    def ev_boost_remaining_min(self) -> int:
+        if not self.ev_boost_active:
+            return 0
+        return max(0, int((self._ev_boost_until_ts - time.time()) / 60))
+
+    def ev_boost_add_hour(self) -> None:
+        """Add 1 hour to the EV boost override timer."""
+        now = time.time()
+        base = max(now, self._ev_boost_until_ts)
+        self._ev_boost_until_ts = base + 3600
+        remaining = int((self._ev_boost_until_ts - now) / 60)
+        _LOGGER.info("EV Boost: +1h → %d min remaining", remaining)
+
+    def ev_boost_cancel(self) -> None:
+        """Cancel the EV boost override."""
+        self._ev_boost_until_ts = 0.0
+        _LOGGER.info("EV Boost cancelled")
+
+    async def _actuate_flex_loads(self) -> None:
+        """Turn flexible loads on/off based on current schedule slot."""
+        loads = self._build_flex_load_configs()
+        ev_boost = self.ev_boost_active
+
+        # EV Boost override: force EV charger (first EV-capable load) on at max
+        if ev_boost:
+            for load_idx, load in enumerate(loads):
+                if load.is_ev_charger:
+                    if not self._flex_load_states.get(load_idx, False):
+                        await self._set_flex_load(load_idx, True, load)
+                        max_step = max(load.current_steps)
+                        await self._set_ev_charger_current(load, max_step)
+                    break
+
+        if not self._flex_load_scheduled and not ev_boost:
+            for load_idx, is_on in list(self._flex_load_states.items()):
+                if is_on:
+                    await self._set_flex_load(load_idx, False)
+            return
+
+        slot_idx = self._current_slot_index()
+        if slot_idx is None:
+            return
+
+        for load_idx, load in enumerate(loads):
+            # EV boost overrides schedule for the EV charger
+            if ev_boost and load.is_ev_charger:
+                continue  # already handled above
+
+            should_be_on = slot_idx in self._flex_load_scheduled.get(load_idx, {})
+            currently_on = self._flex_load_states.get(load_idx, False)
+
+            if should_be_on != currently_on:
+                await self._set_flex_load(load_idx, should_be_on, load)
+
+            if should_be_on and load.is_ev_charger and not currently_on:
+                await self._set_ev_charger_current(load, load.default_current)
+
+    async def _set_flex_load(self, load_idx: int, turn_on: bool,
+                             load: "ems_module.FlexibleLoadConfig | None" = None) -> None:
+        """Turn a flexible load on or off via its switch entity."""
+        if load is None:
+            loads = self._build_flex_load_configs()
+            if load_idx >= len(loads):
+                return
+            load = loads[load_idx]
+        if not load.switch_entity:
+            return
+        domain = load.switch_entity.split(".")[0]
+        service = "turn_on" if turn_on else "turn_off"
+        try:
+            await self.hass.services.async_call(
+                domain, service, {"entity_id": load.switch_entity}
+            )
+            self._flex_load_states[load_idx] = turn_on
+            _LOGGER.info(
+                "Flex load '%s': %s via %s",
+                load.name, service, load.switch_entity,
+            )
+        except Exception as err:
+            _LOGGER.error("Failed to %s flex load '%s': %s", service, load.name, err)
+
+    async def _set_ev_charger_current(self, load: "ems_module.FlexibleLoadConfig",
+                                       target_amps: int) -> None:
+        """Set EV charger current to the nearest available step."""
+        if not load.current_entity or not load.current_steps:
+            return
+        step = load.nearest_step_for_power(load.power_at_current(target_amps))
+        if step is None:
+            return
+        domain = load.current_entity.split(".")[0]
+        try:
+            if domain in ("select", "input_select"):
+                await self.hass.services.async_call(
+                    domain, "select_option",
+                    {"entity_id": load.current_entity, "option": str(step)},
+                )
+            else:
+                await self.hass.services.async_call(
+                    domain, "set_value",
+                    {"entity_id": load.current_entity, "value": step},
+                )
+            self._flex_load_current_step = step
+            _LOGGER.info("EV charger current → %dA via %s", step, load.current_entity)
+        except Exception as err:
+            _LOGGER.error("Failed to set EV charger current: %s", err)
+
+    async def _safe_power_shed_loads(self, current_amps: float, max_amps: float) -> bool:
+        """Shed flexible loads to reduce grid current.
+
+        Priority chain (one action per tick to let current settle):
+        1. EV charger: step down current
+        2. Binary loads: shed by priority (highest number = shed first)
+        Returns True if any action was taken.
+        """
+        loads = self._build_flex_load_configs()
+        active = [(i, ld) for i, ld in enumerate(loads)
+                  if self._flex_load_states.get(i, False)]
+        if not active:
+            return False
+
+        # Step 1: EV current step-down
+        for idx, ld in active:
+            if ld.is_ev_charger and self._flex_load_current_step:
+                steps = sorted(ld.current_steps)
+                try:
+                    pos = steps.index(self._flex_load_current_step)
+                except ValueError:
+                    pos = -1
+                if pos > 0:
+                    new_step = steps[pos - 1]
+                    _LOGGER.warning(
+                        "Safe power: EV current %dA → %dA (grid %.1fA / %dA max)",
+                        self._flex_load_current_step, new_step, current_amps, max_amps,
+                    )
+                    await self._set_ev_charger_current(ld, new_step)
+                    return True
+
+        # Step 2: Shed binary loads (highest priority number = least important first)
+        # During EV boost, don't shed the EV charger — it's user-requested
+        active.sort(key=lambda x: -x[1].priority)
+        for idx, ld in active:
+            if ld.is_ev_charger and self.ev_boost_active:
+                continue
+            _LOGGER.warning(
+                "Safe power: shedding load '%s' (priority %d, grid %.1fA / %dA max)",
+                ld.name, ld.priority, current_amps, max_amps,
+            )
+            await self._set_flex_load(idx, False, ld)
+            return True
+
+        return False
 
     def _get_consumption_estimate(self) -> float:
         """Get best available daily consumption estimate.
@@ -1554,8 +1748,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             else:
                 _LOGGER.debug("No grid current — keeping current level %d", base_level)
         elif max_current > max_amperage * 0.95:
-            safe_level = max(1, base_level - 2)
-            _LOGGER.warning("High current %.1fA — reducing to level %d", max_current, safe_level)
+            # Try shedding flexible loads first before reducing battery power
+            load_shed = await self._safe_power_shed_loads(max_current, max_amperage)
+            if not load_shed:
+                safe_level = max(1, base_level - 2)
+                _LOGGER.warning("High current %.1fA — reducing to level %d", max_current, safe_level)
         elif max_current > max_amperage * 0.8:
             safe_level = max(1, base_level - 1)
             _LOGGER.info("Moderate current %.1fA — reducing to level %d", max_current, safe_level)
@@ -2056,6 +2253,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             else:
                 self.current_price = None
                 self.price_threshold = None
+
+            # Actuate flexible loads based on current schedule slot
+            await self._actuate_flex_loads()
 
             return new_data
 

@@ -91,6 +91,27 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "battery_cycle_cost_eur_kwh": self._user_input.get("battery_cycle_cost_eur_kwh", 0.0),
             "optimization_priority": self._user_input.get("optimization_priority", "cost"),
             "block_export_on_negative_price": self._user_input.get("block_export_on_negative_price", "on"),
+            # Flexible loads (1-3)
+            "flexible_load_1_enabled": "off",
+            "flexible_load_1_name": "",
+            "flexible_load_1_switch_entity": "",
+            "flexible_load_1_power_kw": 3.7,
+            "flexible_load_1_priority": 1,
+            "flexible_load_1_current_entity": "",
+            "flexible_load_1_current_steps": "",
+            "flexible_load_1_phases": 1,
+            "flexible_load_1_voltage": 230,
+            "flexible_load_1_default_current": 16,
+            "flexible_load_2_enabled": "off",
+            "flexible_load_2_name": "",
+            "flexible_load_2_switch_entity": "",
+            "flexible_load_2_power_kw": 2.0,
+            "flexible_load_2_priority": 2,
+            "flexible_load_3_enabled": "off",
+            "flexible_load_3_name": "",
+            "flexible_load_3_switch_entity": "",
+            "flexible_load_3_power_kw": 2.0,
+            "flexible_load_3_priority": 3,
         }
     
     @staticmethod

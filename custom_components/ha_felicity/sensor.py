@@ -194,6 +194,23 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "soc_history": self.coordinator._soc_history,
             "slot_overrides": self.coordinator.slot_overrides if self.coordinator.slot_overrides else {},
             "rule1_window_warning": self.coordinator.rule1_window_warning,
+            "flex_load_schedule": {
+                str(k): list(v.keys())
+                for k, v in (self.coordinator._flex_load_scheduled or {}).items()
+            },
+            "flex_load_states": dict(self.coordinator._flex_load_states),
+            "flex_load_configs": [
+                {
+                    "index": i,
+                    "name": ld.name,
+                    "power_kw": ld.rated_power_kw,
+                    "priority": ld.priority,
+                    "is_ev": ld.is_ev_charger,
+                }
+                for i, ld in enumerate(self.coordinator._build_flex_load_configs())
+            ],
+            "ev_boost_active": self.coordinator.ev_boost_active,
+            "ev_boost_remaining_min": self.coordinator.ev_boost_remaining_min,
         }
 
 

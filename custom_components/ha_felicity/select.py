@@ -155,6 +155,23 @@ async def async_setup_entry(
         )
     )
 
+    # Flexible load enable selects
+    for i in range(1, 4):
+        label = f"Flexible Load {i}"
+        if i == 1:
+            label = "EV Charger / Load 1"
+        entities.append(
+            HA_FelicitySpecialModeSelect(
+                coordinator=coordinator,
+                entry=entry,
+                option_key=f"flexible_load_{i}_enabled",
+                select_options=["off", "on"],
+                name=f"{label} Enabled",
+                icon="mdi:ev-station" if i == 1 else "mdi:power-plug-outline",
+                entity_category=EntityCategory.CONFIG,
+            )
+        )
+
     # Tie all entities to the device
     for entity in entities:
         entity._attr_device_info = device_info
