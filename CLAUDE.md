@@ -459,6 +459,32 @@ select.select_option).
 - `flex_load_schedule`, `flex_load_states`, `flex_load_configs` in
   `schedule_status` attributes
 
+### EV Boost Override
+
+One-press "+1 hour" override that forces the EV charger on at maximum
+current, regardless of the EMS schedule.  Designed for "I need to leave
+soon" scenarios.
+
+**Buttons** (`button.py`):
+- `HA_FelicityEVBoostButton` — each press adds +1h from
+  `max(now, current_boost_end)`, so presses stack.
+- `HA_FelicityEVBoostCancelButton` — immediately cancels any active boost.
+
+**Coordinator behaviour** (`coordinator.py`):
+- `_ev_boost_until_ts`: epoch timestamp; 0 = inactive.
+- `ev_boost_active` / `ev_boost_remaining_min`: exposed as
+  `schedule_status` attributes for the frontend.
+- During boost, `_actuate_flex_loads()` forces the EV charger on at
+  max current (last step in `current_steps`), overriding the normal
+  flex-load schedule.
+- `_safe_power_shed_loads()` can still step down the EV current during
+  a boost (grid safety), but will not fully shed the EV charger.
+- Boost expires automatically when `now >= _ev_boost_until_ts`.
+
+**Frontend** (`ha_felicity_ems.js`):
+- Cyan banner above the chart: "EV Boost active — Xh Ym remaining"
+- Auto-refreshes every minute while boost is active.
+
 ---
 
 ## Entity Reference

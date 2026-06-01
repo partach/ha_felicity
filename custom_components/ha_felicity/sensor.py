@@ -209,6 +209,8 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                 }
                 for i, ld in enumerate(self.coordinator._build_flex_load_configs())
             ],
+            "ev_boost_active": self.coordinator.ev_boost_active,
+            "ev_boost_remaining_min": self.coordinator.ev_boost_remaining_min,
         }
 
 

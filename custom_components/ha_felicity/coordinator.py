@@ -163,6 +163,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._flex_load_states: dict[int, bool] = {}  # {load_idx: on/off}
         self._flex_load_current_step: int | None = None
         self._flex_load_scheduled: dict[int, dict[int, bool]] = {}  # from ScheduleResult.load_slots
+        self._ev_boost_until_ts: float = 0.0  # epoch ts — EV override active when now < this
 
     @property
     def pv_actual_today_kwh(self) -> float | None:
@@ -1023,10 +1024,45 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             ))
         return loads
 
+    @property
+    def ev_boost_active(self) -> bool:
+        return time.time() < self._ev_boost_until_ts
+
+    @property
+    def ev_boost_remaining_min(self) -> int:
+        if not self.ev_boost_active:
+            return 0
+        return max(0, int((self._ev_boost_until_ts - time.time()) / 60))
+
+    def ev_boost_add_hour(self) -> None:
+        """Add 1 hour to the EV boost override timer."""
+        now = time.time()
+        base = max(now, self._ev_boost_until_ts)
+        self._ev_boost_until_ts = base + 3600
+        remaining = int((self._ev_boost_until_ts - now) / 60)
+        _LOGGER.info("EV Boost: +1h → %d min remaining", remaining)
+
+    def ev_boost_cancel(self) -> None:
+        """Cancel the EV boost override."""
+        self._ev_boost_until_ts = 0.0
+        _LOGGER.info("EV Boost cancelled")
+
     async def _actuate_flex_loads(self) -> None:
         """Turn flexible loads on/off based on current schedule slot."""
-        if not self._flex_load_scheduled:
-            # Turn off any loads that were on
+        loads = self._build_flex_load_configs()
+        ev_boost = self.ev_boost_active
+
+        # EV Boost override: force EV charger (first EV-capable load) on at max
+        if ev_boost:
+            for load_idx, load in enumerate(loads):
+                if load.is_ev_charger:
+                    if not self._flex_load_states.get(load_idx, False):
+                        await self._set_flex_load(load_idx, True, load)
+                        max_step = max(load.current_steps)
+                        await self._set_ev_charger_current(load, max_step)
+                    break
+
+        if not self._flex_load_scheduled and not ev_boost:
             for load_idx, is_on in list(self._flex_load_states.items()):
                 if is_on:
                     await self._set_flex_load(load_idx, False)
@@ -1036,15 +1072,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if slot_idx is None:
             return
 
-        loads = self._build_flex_load_configs()
         for load_idx, load in enumerate(loads):
+            # EV boost overrides schedule for the EV charger
+            if ev_boost and load.is_ev_charger:
+                continue  # already handled above
+
             should_be_on = slot_idx in self._flex_load_scheduled.get(load_idx, {})
             currently_on = self._flex_load_states.get(load_idx, False)
 
             if should_be_on != currently_on:
                 await self._set_flex_load(load_idx, should_be_on, load)
 
-            # EV charger: set current step when turning on
             if should_be_on and load.is_ev_charger and not currently_on:
                 await self._set_ev_charger_current(load, load.default_current)
 
@@ -1129,8 +1167,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     return True
 
         # Step 2: Shed binary loads (highest priority number = least important first)
+        # During EV boost, don't shed the EV charger — it's user-requested
         active.sort(key=lambda x: -x[1].priority)
         for idx, ld in active:
+            if ld.is_ev_charger and self.ev_boost_active:
+                continue
             _LOGGER.warning(
                 "Safe power: shedding load '%s' (priority %d, grid %.1fA / %dA max)",
                 ld.name, ld.priority, current_amps, max_amps,

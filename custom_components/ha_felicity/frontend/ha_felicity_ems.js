@@ -1696,6 +1696,13 @@ class FelicityEMSCard extends LitElement {
     const flexLoadConfigs = this._getAttr("schedule_status", "flex_load_configs") || [];
     const flexLoadStates = this._getAttr("schedule_status", "flex_load_states") || {};
     const activeLoadCount = Object.values(flexLoadStates).filter(v => v).length;
+    const evBoostActive = this._getAttr("schedule_status", "ev_boost_active") || false;
+    const evBoostMin = this._getAttr("schedule_status", "ev_boost_remaining_min") || 0;
+    const evBoostHours = Math.floor(evBoostMin / 60);
+    const evBoostMins = evBoostMin % 60;
+    const evBoostText = evBoostMin > 0
+      ? `${evBoostHours > 0 ? `${evBoostHours}h ` : ""}${evBoostMins}m remaining`
+      : "";
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
@@ -1788,6 +1795,13 @@ class FelicityEMSCard extends LitElement {
               The inverter will ignore charge/discharge outside this window —
               adjust Rule 1 Start/Stop Time and Effective Week on the inverter.
             </span>
+          </div>
+        ` : ""}
+
+        ${evBoostActive ? html`
+          <div class="ev-boost-banner">
+            <ha-icon icon="mdi:ev-station"></ha-icon>
+            <span>EV Boost active — ${evBoostText}</span>
           </div>
         ` : ""}
 
@@ -2090,6 +2104,22 @@ class FelicityEMSCard extends LitElement {
       }
       .rule1-warning-text {
         flex: 1 1 auto;
+      }
+      .ev-boost-banner {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 12px 0;
+        padding: 8px 12px;
+        background: rgba(0, 188, 212, 0.15);
+        border: 1px solid #00BCD4;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        font-weight: 500;
+        color: #00BCD4;
+      }
+      .ev-boost-banner ha-icon {
+        --mdc-icon-size: 18px;
       }
 
       /* Battery SOC indicator */
