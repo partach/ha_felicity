@@ -560,7 +560,8 @@ class FelicityEMSCard extends LitElement {
     if (tomorrowPvOnly) {
       const numSlotsToday = todaySlotData?.length || 24;
       tomorrowSlotData = [];
-      const pvHourlyTmr = sim.pv_hourly_kwh_tomorrow || {};
+      const simEarly = this._getAttr("schedule_status", "sim_params") || {};
+      const pvHourlyTmr = simEarly.pv_hourly_kwh_tomorrow || {};
       const hasHourlyData = Object.keys(pvHourlyTmr).length > 0;
       const slotsPerHour = numSlotsToday / 24;
       for (let i = 0; i < numSlotsToday; i++) {
