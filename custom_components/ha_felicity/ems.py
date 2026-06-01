@@ -1158,14 +1158,21 @@ def _compute_tomorrow_schedule(
             sell_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
             sell_selected = available[:sell_needed]
 
-            # SOC validation — use synthesized PV hourly for tomorrow
+            # SOC validation — use synthesized PV hourly for tomorrow.
+            # Validate against the absolute discharge_min floor (min_kwh),
+            # NOT the overnight reserve_target.  The reserve_target is an
+            # end-of-day goal that already sized `sellable` above; using it
+            # as the per-slot floor would reject any sell that briefly dips
+            # SOC below the target during the day (which PV later refills) —
+            # the same asymmetry that made tomorrow drop every sell while
+            # today (validated against min_kwh) kept them.
             consumption_per_slot = config.consumption_est_kwh / num_slots
             discharge_set = {s[0] for s in sell_selected}
             _, validated_discharge = _validate_schedule_soc(
                 remaining, charge_indices, discharge_set,
                 midnight_kwh, consumption_per_slot,
                 pv_hourly_tomorrow, minutes_per_slot, 1.0,
-                config.battery_capacity_kwh, reserve_target,
+                config.battery_capacity_kwh, min_kwh,
                 energy_per_slot, config.efficiency,
                 consumption_hourly_kwh=state.consumption_hourly_kwh,
                 inverter_max_power_kw=config.inverter_max_power_kw,

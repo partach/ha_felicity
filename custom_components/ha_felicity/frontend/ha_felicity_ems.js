@@ -978,9 +978,11 @@ class FelicityEMSCard extends LitElement {
       ctx.fillText("50%", rightEdge, mid50Y + 3);
     }
 
-    // Reserve target line (red dashed) — shows the minimum SOC the EMS
-    // aims to maintain.  Especially useful in PV-only preview to see
-    // whether solar alone keeps the battery above the overnight reserve.
+    // Reserve target line (light-purple dashed) — shows the SOC the EMS
+    // aims to have by sunset to survive the night.  NOTE: this is an
+    // overnight TARGET, not an all-day hard floor — the SOC is allowed to
+    // dip below it during the day (down to discharge_min) because PV
+    // refills the battery.  Most meaningful in the evening/overnight.
     const simR2 = this._getAttr("schedule_status", "sim_params") || {};
     const battCap = simR2.battery_capacity_kwh || 10;
     const dischMinPct = simR2.battery_discharge_min_pct ?? 20;
@@ -998,7 +1000,7 @@ class FelicityEMSCard extends LitElement {
     if (socTrajectory && socTrajectory.length > 1 && reserveShowPct > 0 && reserveShowPct < 100) {
       const toY = (soc) => marginTop + chartH - ((soc - 0) / 100) * chartH;
       const reserveY = toY(reserveShowPct);
-      ctx.strokeStyle = "rgba(244, 67, 54, 0.6)";
+      ctx.strokeStyle = "rgba(186, 145, 255, 0.75)";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 3]);
       ctx.beginPath();
@@ -1006,10 +1008,10 @@ class FelicityEMSCard extends LitElement {
       ctx.lineTo(w - marginRight, reserveY);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(244, 67, 54, 0.8)";
+      ctx.fillStyle = "rgba(186, 145, 255, 0.95)";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "left";
-      ctx.fillText(`${Math.round(reserveShowPct)}% reserve`, marginLeft + 3, reserveY - 3);
+      ctx.fillText(`${Math.round(reserveShowPct)}% night target`, marginLeft + 3, reserveY - 3);
     }
 
     // PV-only banner: inform user this is a solar-only preview
@@ -1064,6 +1066,19 @@ class FelicityEMSCard extends LitElement {
     ctx.setLineDash([]);
     ctx.fillStyle = textColor;
     ctx.fillText("SOC", lx - 52 + 34, 9);
+
+    // Reserve / night-target legend (purple dashed line)
+    lx -= 58;
+    ctx.strokeStyle = "rgba(186, 145, 255, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 2]);
+    ctx.beginPath();
+    ctx.moveTo(lx - 52, 6);
+    ctx.lineTo(lx - 38, 6);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = textColor;
+    ctx.fillText("night", lx - 52 + 38, 9);
 
     if (isPvOnlyView) {
       // PV forecast legend
@@ -1796,8 +1811,8 @@ class FelicityEMSCard extends LitElement {
               <span>${this._fmt(gridPlanned, 1)} kWh planned</span>
             </div>
             <div class="stat">
-              <ha-icon icon="mdi:shield-sun"></ha-icon>
-              <span>${this._fmt(reserve, 1)} kWh reserve</span>
+              <ha-icon icon="mdi:weather-night"></ha-icon>
+              <span>${this._fmt(reserve, 1)} kWh overnight need</span>
             </div>
           </div>
 

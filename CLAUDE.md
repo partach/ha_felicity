@@ -761,7 +761,7 @@ specific time windows.
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (148 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (159 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
