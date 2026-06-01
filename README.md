@@ -31,18 +31,23 @@ Letters are in the type indication like  T-REX-**10**K**H**P**3**G01
 
 ## Features
 - No need for any yaml configuration!
-- Includes support for dynamic load/offload to grid!!
+- Full Energy Management System (EMS) with automatic charge/discharge scheduling based on electricity prices
+- Two-day optimization — uses tomorrow's prices when available for smarter scheduling
+- Solar-first approach — dynamic reserve target charges only what's needed for overnight
+- Flexible load control — schedule up to 3 loads (EV charger, boiler, pool pump) during cheap/solar hours
+- EV Boost override — one-press +1h button to force EV charging when you need to leave soon
+- Dynamic power management — automatic overcurrent protection with per-phase monitoring
+- Negative price strategies — profit from negative electricity prices with configurable charge/discharge behavior
 - Serial and TCP Modbus support
 - USB/Serial port selection via dropdown
 - Customizable communication settings
 - Customizable registers (basic, basic plus, full). No need to clutter your entities with unwanted registers
-- Hassle free use of the device
-- Combined registers into meaningfull data (no raw unusable values)
-- Multiple hubs supported, ability to add multiple inverters.
-- configurable refresh speeds for modbus
+- Combined registers into meaningful data (no raw unusable values)
+- Multiple hubs supported, ability to add multiple inverters
+- Configurable refresh speeds for modbus
 - Optimized modbus loading
 - Automations possible, read and write on modbus!
-- Very easy and straight forward!
+- EMS dashboard card with interactive price chart, SOC trajectory, and live slider preview
 
 ## Installation
 Options:
@@ -105,49 +110,152 @@ The integration is to be used at own risk.
   <em>Runtime Settings</em>
 </p>
 
-## Dynamic Energy Managment
-Note1: 
- * the integration uses internal **Econ Rule 1** for this. 
- * Rule 1 will be activated and controlled by the integration. Make sure the settings in there are inline with the intended use!
-   **Weekdays, Time Start and Time Stop will not be set by the integration**. The user has to set those to a default usefull for them.
- * The integration wil set: The date on Today (on 5/10k series if not idle), Voltage depending on charge and setting in integration <br>
- (for exampl 58/460 depending on high/low voltage) and discharge but can be overwritten, SOC on configured setting (max battery / min battery, see below)
- * Settings affected differ per type selected in the installation (5/10k series or 25/50k series)
+## Dynamic Energy Management (EMS)
 
-Note2: The Operating mode **must be set (by user) to Economic mode**. The Energy management feature will not engage in any other mode (Like General).
+The integration includes a full Energy Management System that optimizes battery charge and discharge based on electricity prices, solar forecasts, and consumption patterns. It automatically selects the cheapest hours to charge and the most expensive hours to sell, with two-day look-ahead when tomorrow's prices are available.
 
-During setup or with config setting (gear symbol in hub/device overview) you can add a 'Monetary' Home Assistant Device.
-Examples are the Nordpool integration (HACS version only, not default) or Another. Look at the HACS Nordpool integration details on how to set that up (not covered here).
-During first setup or during run-time configuration (device gear symbol) it will display a list of installed Monetary integrations to chose from.
-Currently Nordpool and Tibber (via Norpool override field in config) are tested to work.
+**Important notes:**
+ * The integration uses internal **Econ Rule 1** for this.
+ * The Operating mode **must be set (by user) to Economic mode**. The EMS will not engage in any other mode (like General).
+ * Settings affected differ per model selected during installation (5/10K series or 25/50K series).
 
-<p align="center">
-  <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity%20config4.png" width="1000"/>
-  <br>
-  <em>Dynamic Energy Management and other Settings of the integration</em>
-</p>
-The operation is pretty straightforward. (Maybe further version will support more algorithms)
-Use `Price Threshold Level (1-10)` To set the desired price point level. (It can take about 10 sec. for the integration to calculate that into a **Base-Threshold-Price**)
-Based on settings the unit will either engage when The Actual Current Price is above Base-Threshold-Price or below.
+During setup or via configuration (gear symbol in hub/device overview) you add a Monetary integration.
+Nordpool (HACS version, not the default) and Tibber are tested to work. See their respective documentation for setup.
 
-Example: Max price = 0.30 Euro, Min Price = 0.20 Euro and Avergage Price = 0.25 Euro (collected via Nordpool or Tibber)
-When setting the `Price Threshold Level to 5` the Base-Threshold-Price will be 0.25.
+### Core Settings
 
-**The Grid Mode setting**:
- * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to From-grid it will allow use of grid power when actual price is <=0.25 Euro (as per given example)
- * If `Grid Mode` <em>(From-grid, To-Grid, Both, Off)</em> is set to To-grid it will allow Battery power to go to grid power when actual price is >=0.25 Euro (as per given example)
-**Additional variables** are `Battery Charge Max Level` and `Battery Charge Min Level`.
- * In `From Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Max Level`
- * In `To Grid mode` it will stop when `Actual Battery Capacity` reaches `Battery Charge Min Level`
- * In `Both` it will sell and charge the battery optimally to make the least amount of cost / use the grid as less as possible
+All EMS settings are available as configuration entities on the device. You can find them in the device page under "Configuration".
 
-IMPORTANT: The integration is depedent on the Monetary Integration and Solar Forecast Integration to contiously supply the data.
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| **Grid Mode** | off / from_grid / to_grid / both | off | Main EMS switch. Controls whether the integration buys from grid, sells to grid, both, or is disabled. |
+| **Price Mode** | manual / auto | manual | In `manual` mode, the price threshold is set by the Price Threshold Level slider. In `auto` mode, the threshold is calculated automatically based on price distribution. |
+| **Price Threshold Level** | 1 - 10 | 5 | Sets the price level at which the EMS decides to charge or discharge. Level 5 corresponds to the average price. Lower values = only charge at very cheap prices. |
+| **Power Level** | 1 - max kW (model dependent) | 5 | The charge/discharge power limit in kW. The EMS will not exceed this power when charging or discharging the battery. |
+| **Battery Charge Max Level** | 30 - 100 % | 100 | Maximum SOC the EMS will charge to. Useful for battery longevity (e.g., set to 80%). |
+| **Battery Discharge Min Level** | 10 - 70 % | 20 | Minimum SOC floor. The EMS will not discharge below this level. |
+
+**Grid Mode explained:**
+ * **from_grid** — Charges the battery from the grid when the price is below the threshold.
+ * **to_grid** — Discharges the battery to the grid when the price is above the threshold.
+ * **both** — Does both: charges at cheap hours, sells at expensive hours. Includes a profitability filter to ensure every sold kWh covers the round-trip losses.
+ * **off** — EMS is disabled. The inverter operates normally without grid scheduling.
+
+### Battery & Efficiency Settings
+
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| **Battery Capacity** | 1 - 200 kWh | 10 | Your usable battery capacity. The integration automatically adjusts this for battery health (SOH) over time. |
+| **Battery Efficiency Factor** | 0.70 - 1.00 | 0.90 | Single-direction efficiency. Round-trip efficiency is this value squared (e.g., 0.90 = 81% round-trip). Used to calculate whether selling energy is profitable after losses. |
+| **Daily Consumption Estimate** | 0 - 120 kWh | 10 | Fallback daily consumption estimate. If the integration has 7+ days of history, it uses the actual rolling average instead. |
+
+### Reserve Target
+
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| **Reserve Target** | 0 - 100 % | 0 | Controls how much battery reserve to keep for overnight. **0 = dynamic** (recommended): the EMS automatically calculates how much energy is needed to survive the night based on your consumption pattern and sunset/sunrise times. Any value > 0 sets a fixed minimum SOC floor. |
+
+The dynamic reserve target is the key to the EMS's solar-first approach: it charges only what is needed to get through the night, leaving room for solar to fill the battery during the day.
+
+### Advanced Optimization Settings
+
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| **Optimization Priority** | cost / longevity / self_consumption | cost | **cost**: minimize grid spend. **longevity**: adds a minimum cycle cost (0.05 €/kWh) to protect battery life. **self_consumption**: increases the overnight reserve by 25% to keep more solar energy for self-use. |
+| **Arbitrage Price Delta** | 0 - 0.50 €/kWh | 0 | When the price spread (max - min) exceeds this value, the EMS charges to full capacity instead of just the reserve target. Set to 0 to disable. Useful in markets with large price swings. |
+| **Battery Cycle Cost** | 0 - 0.50 €/kWh | 0 | Estimated cost per kWh of battery wear. Added to the minimum sell price in the profitability filter. If you know your battery cost per cycle, enter it here to prevent unprofitable trading. |
+
+### Negative Price Settings
+
+These settings control behavior during negative electricity prices (when you get paid to consume energy).
+
+| Setting | Options | Default | Description |
+|---|---|---|---|
+| **Block Export on Negative Price** | on / off | on | When `on`, prevents the EMS from scheduling battery discharge (sell) during negative price hours. Selling at negative prices means you pay the grid to take your energy. |
+| **Charge to Full on Negative Price** | off / on | off | When `on`, schedules charging at every negative-price slot regardless of the reserve target. You get paid to consume grid energy, so filling the battery is profitable. Trade-off: may cause PV curtailment if the battery is full when solar peaks. |
+| **Discharge to Make Room for Negative Price** | off / on | off | When `on`, pre-emptively discharges the battery at the most expensive positive-price slots before a negative-price window. This creates headroom so PV + grid charging during the negative-price window can fill the battery. |
+
+### Inverter Rule 1 Settings
+
+The EMS controls the inverter via Economic Rule 1 registers. By default the integration does not modify the Rule 1 time window or weekday settings on the inverter — you manage those yourself. If you want the integration to handle them automatically:
+
+| Setting | Options | Default | Description |
+|---|---|---|---|
+| **Rule 1 Time Window** | manual / auto | manual | `auto` sets the Rule 1 start/stop time to 00:00–23:59 (full day). If left on `manual`, make sure your inverter's Rule 1 time window covers the hours the EMS needs to operate, or actions will be silently ignored. |
+| **Rule 1 Weekday** | manual / auto | manual | `auto` enables Rule 1 for all 7 days. If left on `manual`, make sure all needed weekdays are enabled on the inverter. |
+
+If the EMS detects that scheduled actions fall outside the inverter's Rule 1 window, a warning banner appears on the EMS card.
+
+### Voltage Settings
+
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| **Voltage Level** | 48 - 60 V (LV) / 300 - 448 V (HV) | 58 | Charge voltage setpoint written to the inverter during charging. Automatically adjusts range based on detected battery system. |
+| **Discharge Min Voltage** | 48 - 55 V (LV) / 300 - 448 V (HV) | 50 | Discharge voltage floor written to the inverter during discharging. |
 
 ## Dynamic Power Management
-The integration also supports Dynamic Power Management. After instalation, via configuration entities (see above picture), you can set the maximum amperage of your home electricity setup.
-For example if you have a maximum of 16A per group, set the value to 16A. The integration will then make sure the battery loading will be dialed back if the amperage becomes to high.
-(by decreasing the user requested power level, controlled via rule 1 via the integration).
-It will keep monitorning this and will increase the battery loading to requested power levels if the amperage becomes lower.
+
+The integration monitors grid current per phase and automatically adjusts inverter power to prevent overcurrent.
+
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| **Safe Power Management** | auto / on / off | auto | `auto`: activates when grid_mode is not `off`. `on`: always active. `off`: disabled. |
+| **Max Amperage Per Phase** | 10 - 63 A | 16 | Your home's maximum amperage per phase. Set this to match your main breaker rating. |
+
+How it works:
+- **> 95% of max amperage**: Emergency — reduces power by 2 kW immediately.
+- **> 80% of max amperage**: Caution — reduces power by 1 kW.
+- **< 70% of max amperage**: Recovery — gradually restores power back to your Power Level setting.
+- When flexible loads are configured, the priority chain is: EV charger current step-down first, then binary load shedding, then battery power reduction as last resort.
+
+## Flexible Load Control
+
+The integration can manage up to 3 controllable loads (EV charger, boiler, pool pump, etc.). Loads are automatically scheduled during cheap, negative-price, and PV-surplus hours — the same slots the EMS identifies as optimal for the battery.
+
+### Configuring Loads
+
+Each load has the following settings available as configuration entities on the device:
+
+| Setting | Load 1 (EV) | Load 2-3 | Description |
+|---|---|---|---|
+| **Enabled** (select: off/on) | yes | yes | Enable or disable the load slot. |
+| **Name** (text) | yes | yes | A friendly name for the load (e.g., "Boiler", "Pool Pump"). |
+| **Switch Entity** (text) | yes | yes | The Home Assistant entity ID of the switch that controls this load (e.g., `switch.ev_charger`). |
+| **Power** (number: 0.5-25 kW) | yes (default 3.7) | yes (default 2.0) | Rated power of the load. Used for safe power calculations. |
+| **Shed Priority** (number: 1-3) | yes (default 1) | yes (default 2/3) | Priority for load shedding during overcurrent. Higher number = shed first. |
+
+**Load 1** has additional EV charger settings:
+
+| Setting | Range | Default | Description |
+|---|---|---|---|
+| **Current Entity** (text) | — | — | Entity ID for setting the EV charger current (e.g., `number.ev_charger_current`). |
+| **Current Steps** (text) | — | — | Comma-separated list of available current steps in Amps (e.g., `6,10,13,16,20,25`). |
+| **Phases** (number) | 1 - 3 | 1 | Number of phases the EV charger uses. |
+| **Voltage** (number) | 110 - 400 V | 230 | Voltage of the EV charger connection. |
+| **Default Current** (number) | 6 - 32 A | 16 | Default charging current when the load is activated. |
+
+### How Load Scheduling Works
+
+Loads are scheduled as an overlay on the battery schedule — they activate during:
+- **Cheap price slots** (price below threshold)
+- **Negative price slots** (you get paid to consume)
+- **PV surplus slots** (hourly solar > hourly consumption)
+- **Battery charge slots** (already identified as cheap)
+
+The loads don't affect the battery schedule itself. They are additive consumption.
+
+In the EMS card, scheduled loads appear as a cyan strip at the bottom of the price bars. The stats row shows how many loads are active.
+
+### EV Boost Override
+
+For situations where you need to charge your car urgently (e.g., you need to leave soon), the integration provides an **EV Boost** button.
+
+- **EV Boost +1h** — Each press adds 1 hour to the boost timer. Presses stack, so pressing 3 times gives you a 3-hour boost.
+- **EV Boost Cancel** — Immediately cancels any active boost.
+
+During a boost, the EV charger is forced on at maximum current regardless of the EMS schedule. The Safe Power Management system can still step down the current if grid amperage is too high, but it will not fully shut off the EV charger.
+
+The EMS card shows a cyan banner with a countdown when a boost is active.
 
 ## Using the cards
 After installation of the integration you need to first reboot HA.
