@@ -1634,13 +1634,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             )
             return False
         if new_state != "idle":
-            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_soc", soc_limit)
-            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_start_day", date_16bit)
-            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_stop_day", date_16bit)
-            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_voltage", voltage_level)
-            # next one was moved to checking safe power level and no longer used.. but for the new inverter we need to write power level when going from idle
-            target_watts = int(round(self.safe_max_power * 1000))
-            await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
+            for reg, val in [
+                ("econ_rule_1_soc", soc_limit),
+                ("econ_rule_1_start_day", date_16bit),
+                ("econ_rule_1_stop_day", date_16bit),
+                ("econ_rule_1_voltage", voltage_level),
+                ("econ_rule_1_power", int(round(self.safe_max_power * 1000))),
+            ]:
+                ok = await self.TypeSpecificHandler.write_type_specific_register(reg, val)
+                if not ok:
+                    _LOGGER.warning("Failed to write %s=%s during %s transition", reg, val, new_state)
         return True
 
     async def _apply_rule1_auto_settings(self) -> None:
@@ -1735,10 +1738,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         }
 
         # Add kWh for all Wh registers
-        for key, value in self.data.items():
-            info_key = self.register_map.get(key, {})
-            if info_key.get("unit") == "Wh" and value is not None:
-                info[f"{key}_kwh"] = round(value / 1000.0, 3)
+        if self.data:
+            for key, value in self.data.items():
+                info_key = self.register_map.get(key, {})
+                if info_key.get("unit") == "Wh" and value is not None:
+                    info[f"{key}_kwh"] = round(value / 1000.0, 3)
         return info
         
 
