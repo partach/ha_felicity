@@ -1652,6 +1652,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         Felicity's 24-hour convention is start=00:00, stop=23:59 (the
         firmware doesn't accept stop=00:00 or stop=24:00).
         """
+        if not self.data:
+            return
+
         opts = self.config_entry.options
 
         if opts.get("rule1_time_window", "manual") == "auto":
