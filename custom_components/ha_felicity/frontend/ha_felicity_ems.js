@@ -560,11 +560,18 @@ class FelicityEMSCard extends LitElement {
     if (tomorrowPvOnly) {
       const numSlotsToday = todaySlotData?.length || 24;
       tomorrowSlotData = [];
-      const daylightHours = 12;
-      const pvPerDaylightSlot = pvTomorrowKwh / (daylightHours * (numSlotsToday / 24));
+      const pvHourlyTmr = sim.pv_hourly_kwh_tomorrow || {};
+      const hasHourlyData = Object.keys(pvHourlyTmr).length > 0;
+      const slotsPerHour = numSlotsToday / 24;
       for (let i = 0; i < numSlotsToday; i++) {
-        const hour = (i * granularity) / 60;
-        const pvKwh = (hour >= 6 && hour < 18) ? pvPerDaylightSlot : 0;
+        const hour = Math.floor((i * granularity) / 60);
+        let pvKwh = 0;
+        if (hasHourlyData) {
+          pvKwh = (pvHourlyTmr[hour] ?? pvHourlyTmr[String(hour)] ?? 0) / slotsPerHour;
+        } else {
+          // Fallback: distribute evenly across 05–21 (summer-safe)
+          if (hour >= 5 && hour < 21) pvKwh = pvTomorrowKwh / (16 * slotsPerHour);
+        }
         tomorrowSlotData.push({ slot: i, price: null, action: null, pvKwh });
       }
     }
@@ -793,7 +800,7 @@ class FelicityEMSCard extends LitElement {
         const pvVal = slot.pvKwh || 0;
         barH = (pvVal / pvBarMax) * chartH;
         y = marginTop + chartH - barH;
-        ctx.fillStyle = pvVal > 0 ? "rgba(255, 213, 79, 0.7)" : "rgba(100, 140, 200, 0.15)";
+        ctx.fillStyle = pvVal > 0 ? "rgba(255, 223, 120, 0.55)" : "rgba(100, 140, 200, 0.15)";
         ctx.fillRect(x + 0.5, y, Math.max(1, barW - 1), barH);
         continue;
       }
@@ -1016,7 +1023,7 @@ class FelicityEMSCard extends LitElement {
 
     // PV-only banner: inform user this is a solar-only preview
     if (isPvOnlyView) {
-      ctx.fillStyle = "rgba(255, 213, 79, 0.9)";
+      ctx.fillStyle = "rgba(255, 223, 120, 0.9)";
       ctx.font = "bold 11px sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("Without grid actions · Prices expected ~13:00", w / 2, marginTop + 14);
@@ -1083,7 +1090,7 @@ class FelicityEMSCard extends LitElement {
     if (isPvOnlyView) {
       // PV forecast legend
       lx -= 55;
-      ctx.fillStyle = "rgba(255, 213, 79, 0.7)";
+      ctx.fillStyle = "rgba(255, 223, 120, 0.55)";
       ctx.fillRect(lx - 55, 2, 8, 8);
       ctx.fillStyle = textColor;
       ctx.fillText("solar", lx - 58 + 32, 9);
@@ -1272,12 +1279,13 @@ class FelicityEMSCard extends LitElement {
         // that would push SOC below reserve_target. Matches backend
         // _validate_schedule_soc behavior.
         const consumptionProfile = sim.consumption_hourly_profile || null;
-        const pvHourlyTmr = null; // TODO: tomorrow hourly PV not available yet
+        const pvHourlyTmr = sim.pv_hourly_kwh_tomorrow || null;
+        const hasHourlyTmr = pvHourlyTmr && Object.keys(pvHourlyTmr).length > 0;
         const pvFallbackTotal = pvTomorrow;
         const daylightSlots = [];
         for (let ii = 0; ii < numSlots; ii++) {
-          const hr = (ii * granularity) / 60;
-          if (hr >= 6 && hr < 18) daylightSlots.push(ii);
+          const hr = Math.floor((ii * granularity) / 60);
+          if (hr >= 5 && hr < 21) daylightSlots.push(ii);
         }
         const pvPerDaylightSlot = daylightSlots.length > 0 ? pvFallbackTotal / daylightSlots.length : 0;
         const daylightSet = new Set(daylightSlots);
@@ -1294,7 +1302,9 @@ class FelicityEMSCard extends LitElement {
             const cons = consumptionProfile
               ? ((consumptionProfile[hr] ?? consumptionProfile[String(hr)] ?? (consumption / 24)) * slotDuration)
               : (consumption / 24) * slotDuration;
-            const pv = daylightSet.has(ii) ? pvPerDaylightSlot : 0;
+            const pv = hasHourlyTmr
+              ? ((pvHourlyTmr[hr] ?? pvHourlyTmr[String(hr)] ?? 0) * slotDuration)
+              : (daylightSet.has(ii) ? pvPerDaylightSlot : 0);
             const pvKwRate = slotDuration > 0 ? pv / slotDuration : 0;
             let delta = pv - cons;
             if (chargeSet.has(ii)) {
@@ -1373,9 +1383,11 @@ class FelicityEMSCard extends LitElement {
     // PV production per slot — use per-hour data when available (matches backend)
     // Apply pv_confidence from backend to scale forecast on cloudy days
     const pvConfidence = (!showTomorrow && sim.pv_confidence != null) ? sim.pv_confidence : 1.0;
-    const pvHourlyRaw = (!showTomorrow && sim.pv_hourly_kwh) ? sim.pv_hourly_kwh : null;
+    const pvHourlyRaw = showTomorrow
+      ? (sim.pv_hourly_kwh_tomorrow || null)
+      : (sim.pv_hourly_kwh || null);
     const pvHourly = (pvHourlyRaw && Object.keys(pvHourlyRaw).length > 0) ? pvHourlyRaw : null;
-    // Fallback for tomorrow or when hourly data unavailable: distribute total across 6–18
+    // Fallback when hourly data unavailable: distribute total across 05–21
     let pvFallbackPerSlot = 0;
     const pvFallbackSlotSet = new Set();
     if (!pvHourly) {
@@ -1384,8 +1396,8 @@ class FelicityEMSCard extends LitElement {
         : (this._getNumericState("pv_forecast_remaining") || 0);
       const daylightSlots = [];
       for (let i = 0; i < numSlots; i++) {
-        const hour = (i * granularity) / 60;
-        if (hour >= 6 && hour < 18) daylightSlots.push(i);
+        const hour = Math.floor((i * granularity) / 60);
+        if (hour >= 5 && hour < 21) daylightSlots.push(i);
       }
       pvFallbackPerSlot = daylightSlots.length > 0 ? pvTotal / daylightSlots.length : 0;
       daylightSlots.forEach(s => pvFallbackSlotSet.add(s));

@@ -91,6 +91,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.pv_forecast_remaining: float | None = None
         self.pv_forecast_tomorrow: float | None = None
         self.pv_hourly_kwh: dict[int, float] = {}  # {hour: kwh} from forecast entity
+        self.pv_hourly_kwh_tomorrow: dict[int, float] = {}  # tomorrow's hourly PV
         self.scheduled_slots: dict[int, str] = {}  # {slot_idx: "charge" | "discharge"}
         self.slot_overrides: dict = config_entry.options.get("slot_overrides", {})  # manual overrides from card, persisted in entry.options
         self.cheap_slots_remaining: int = 0
@@ -495,9 +496,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         now = datetime.now()
         today_date = now.date()
+        tomorrow_date = today_date + timedelta(days=1)
         attrs = state.attributes or {}
         remaining = None
         hourly_kwh: dict[int, float] = {}
+        hourly_kwh_tomorrow: dict[int, float] = {}
 
         # Try Forecast.Solar (wh_hours) or Solcast (detailedHourly) hourly breakdown
         wh_data = attrs.get("wh_hours") or attrs.get("detailedHourly")
@@ -508,11 +511,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     ts = self._parse_forecast_time(ts_str)
                     if ts:
                         wh_val = float(value)
-                        # Only accumulate entries for today — otherwise a
-                        # multi-day forecast pollutes the hour buckets with
-                        # tomorrow's/day-after's values (same hour, different day).
                         if ts.date() == today_date:
                             hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + wh_val / 1000.0
+                        elif ts.date() == tomorrow_date:
+                            hourly_kwh_tomorrow[ts.hour] = hourly_kwh_tomorrow.get(ts.hour, 0.0) + wh_val / 1000.0
                         if ts >= now:
                             remaining_wh += wh_val
                 remaining = remaining_wh / 1000.0
@@ -520,6 +522,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Could not parse forecast hourly data: %s", err)
 
         self.pv_hourly_kwh = hourly_kwh
+        self.pv_hourly_kwh_tomorrow = hourly_kwh_tomorrow
 
         # Derive today's total from the (date-filtered) hourly data.  This
         # recovers the correct forecast when the entity's state attribute is
