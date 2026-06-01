@@ -406,6 +406,61 @@ Fetches `energy_state` history from HA API (throttled 60s), shows what actually 
 
 ---
 
+## Flexible Load Control
+
+Up to 3 controllable loads (EV charger, boiler, pool pump, etc.) can be
+managed by the EMS.  Each load has an enable toggle, switch entity, rated
+power, and shed priority.  Load slot 1 has additional EV charger support
+(current stepping).
+
+### Architecture
+
+Loads use an **overlay** approach — they're scheduled into the same cheap /
+negative-price / PV-surplus slots as the battery, but they don't affect the
+battery schedule itself.  They're additive consumption.
+
+**Scheduling**: `_schedule_flexible_loads()` in `ems.py` activates loads
+during:
+- Slots where price ≤ threshold (cheap)
+- Negative-price slots
+- PV-surplus slots (hourly PV > hourly consumption)
+- Battery charge slots (already identified as cheap)
+
+**Actuation**: `coordinator._actuate_flex_loads()` runs every 10s cycle,
+turning loads on/off via `hass.services.async_call` (switch.turn_on/off).
+EV charger current is set via its current_entity (number.set_value or
+select.select_option).
+
+**Safe power priority chain** (in `_check_safe_power`):
+1. EV charger current step-down (one step per tick)
+2. Binary load shed (highest priority number = shed first)
+3. Battery power reduction (existing behavior, last resort)
+
+### Configuration (per load)
+
+| Option | Type | Load 1 | Load 2-3 |
+|--------|------|--------|----------|
+| `flexible_load_N_enabled` | select (off/on) | yes | yes |
+| `flexible_load_N_name` | text | yes | yes |
+| `flexible_load_N_switch_entity` | text (entity ID) | yes | yes |
+| `flexible_load_N_power_kw` | number (0.5-25 kW) | yes | yes |
+| `flexible_load_N_priority` | number (1-3) | yes | yes |
+| `flexible_load_1_current_entity` | text (entity ID) | EV only | — |
+| `flexible_load_1_current_steps` | text ("6,10,13,16,20,25") | EV only | — |
+| `flexible_load_1_phases` | number (1-3) | EV only | — |
+| `flexible_load_1_voltage` | number (110-400V) | EV only | — |
+| `flexible_load_1_default_current` | number (6-32A) | EV only | — |
+
+### Frontend
+
+- Cyan strip at bottom of bars where loads are scheduled
+- "loads" entry in legend (only when loads configured)
+- "N/M loads active" stat in the stats row
+- `flex_load_schedule`, `flex_load_states`, `flex_load_configs` in
+  `schedule_status` attributes
+
+---
+
 ## Entity Reference
 
 ### Configuration Entities (stored in entry.options)
@@ -744,24 +799,21 @@ simulation entirely (slider preview becomes a backend round-trip,
 duplication risk, same drift pattern as before refactor #A).
 Needs UX discussion before action.
 
-#### #11 EV / Heat Pump / Smart-Appliance Coordination
-A modern EMS orchestrates flexible loads (EV charging, heat pumps,
-water heaters) alongside the battery.  A heat pump with thermal
-mass is essentially a "thermal battery" that can shift consumption
-to cheap hours.
-**Why deferred**: requires new entity contracts (which heat
-pump?  which EV charger?), control logic to set their schedules,
-and a model of their constraints (min/max power, thermal lag,
-SOC-equivalent).  Each integration would be its own design.
-A reasonable starting point would be a `flexible_load_kw` config
-that the algorithm adds to the consumption estimate during
-specific time windows.
+#### #11 EV / Heat Pump / Smart-Appliance Coordination — IMPLEMENTED (v1)
+3 configurable flexible load slots with enable toggle, switch entity,
+rated power, shed priority.  Load 1 has EV charger extras (current
+stepping, phases, voltage).  Overlay scheduling into cheap/negative/
+PV-surplus slots.  Safe-power priority chain: EV step-down → load
+shed → battery reduction.  See "Flexible Load Control" section above.
+**Future iterations**: deadline-aware EV scheduling (departure time +
+target SOC), thermal mass modelling for heat pumps, co-optimization
+in the solver (loads as decision variables, not just overlays).
 
 ---
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (159 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (167 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -792,6 +844,8 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - PV confidence EMA smoothing
 - PV forecast fallback
 - Phantom charge prevention (tomorrow schedule, full battery)
+- Flexible load scheduling (cheap, negative, PV surplus, disabled, multi-load)
+- EV charger current step helpers (power calculation, nearest step)
 
 **Not tested**: coordinator.py runtime logic (requires HA mocking). This is a gap — when the coordinator diverges from ems.py, tests won't catch it.
 

@@ -36,6 +36,7 @@ _spec.loader.exec_module(ems)
 EMSConfig = ems.EMSConfig
 EMSState = ems.EMSState
 ScheduleResult = ems.ScheduleResult
+FlexibleLoadConfig = ems.FlexibleLoadConfig
 calculate_self_consumption_reserve = ems.calculate_self_consumption_reserve
 calculate_net_pv_surplus = ems.calculate_net_pv_surplus
 select_unified_charge_slots = ems.select_unified_charge_slots
@@ -3948,3 +3949,210 @@ class TestNegativePriceStrategiesComposable:
             "Both flags on: expected pre-emptive discharges before the "
             "negative window; got none"
         )
+
+
+class TestFlexibleLoadScheduling:
+    """Tests for flexible load scheduling in the EMS."""
+
+    def _make_prices(self, n=24, base=0.15, cheap_hours=None, negative_hours=None):
+        """Generate price list with optional cheap/negative hours."""
+        prices = [base] * n
+        for h in (cheap_hours or []):
+            if h < n:
+                prices[h] = 0.05
+        for h in (negative_hours or []):
+            if h < n:
+                prices[h] = -0.02
+        return prices
+
+    def test_no_loads_no_load_slots(self):
+        """Without flexible loads, load_slots should be empty."""
+        config = EMSConfig(grid_mode="from_grid")
+        state = EMSState(
+            battery_soc_pct=50,
+            slot_prices_today=self._make_prices(),
+            current_hour=8,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.load_slots == {}
+
+    def test_load_scheduled_during_cheap_slots(self):
+        """A flexible load should be scheduled during cheap/charge slots."""
+        load = FlexibleLoadConfig(
+            enabled=True,
+            name="Boiler",
+            switch_entity="switch.boiler",
+            rated_power_kw=2.0,
+            priority=1,
+        )
+        prices = self._make_prices(cheap_hours=[2, 3, 4, 5])
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            safe_power_kw=5,
+            flexible_loads=[load],
+        )
+        state = EMSState(
+            battery_soc_pct=50,
+            slot_prices_today=prices,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert 0 in result.load_slots, "Load should have schedule entries"
+        load_0_slots = result.load_slots[0]
+        # Cheap slots (2-5) should be in the load schedule
+        for s in [2, 3, 4, 5]:
+            assert s in load_0_slots, f"Cheap slot {s} should have load scheduled"
+
+    def test_load_scheduled_during_negative_price(self):
+        """Loads should always run during negative-price slots."""
+        load = FlexibleLoadConfig(
+            enabled=True,
+            name="EV",
+            switch_entity="switch.ev_charger",
+            rated_power_kw=7.0,
+            priority=1,
+        )
+        prices = self._make_prices(negative_hours=[10, 11, 12])
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            safe_power_kw=5,
+            flexible_loads=[load],
+        )
+        state = EMSState(
+            battery_soc_pct=50,
+            slot_prices_today=prices,
+            current_hour=8,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert 0 in result.load_slots
+        for s in [10, 11, 12]:
+            assert s in result.load_slots[0], f"Negative slot {s} should have load"
+
+    def test_disabled_load_not_scheduled(self):
+        """A disabled load should not appear in load_slots."""
+        load = FlexibleLoadConfig(
+            enabled=False,
+            name="Boiler",
+            switch_entity="switch.boiler",
+            rated_power_kw=2.0,
+        )
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            safe_power_kw=5,
+            flexible_loads=[load],
+        )
+        state = EMSState(
+            battery_soc_pct=50,
+            slot_prices_today=self._make_prices(cheap_hours=[2, 3]),
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.load_slots == {}
+
+    def test_multiple_loads_all_scheduled(self):
+        """Multiple enabled loads should all be scheduled independently."""
+        loads = [
+            FlexibleLoadConfig(enabled=True, name="EV", switch_entity="switch.ev",
+                               rated_power_kw=7.0, priority=1),
+            FlexibleLoadConfig(enabled=True, name="Boiler", switch_entity="switch.boiler",
+                               rated_power_kw=2.0, priority=2),
+            FlexibleLoadConfig(enabled=False, name="Pool", switch_entity="switch.pool",
+                               rated_power_kw=1.5, priority=3),
+        ]
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            safe_power_kw=5,
+            flexible_loads=loads,
+        )
+        state = EMSState(
+            battery_soc_pct=50,
+            slot_prices_today=self._make_prices(cheap_hours=[2, 3]),
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert 0 in result.load_slots, "First enabled load should be scheduled"
+        assert 1 in result.load_slots, "Second enabled load should be scheduled"
+        assert 2 not in result.load_slots, "Disabled load should not be scheduled"
+
+    def test_ev_charger_current_steps(self):
+        """Test EV charger FlexibleLoadConfig helpers."""
+        ev = FlexibleLoadConfig(
+            enabled=True,
+            name="EV",
+            switch_entity="switch.ev",
+            current_entity="number.ev_current",
+            current_steps=[6, 10, 13, 16, 20, 25],
+            phases=3,
+            voltage=230,
+            default_current=16,
+        )
+        assert ev.is_ev_charger
+        # 16A × 230V × 3 phases = 11.04 kW
+        assert abs(ev.power_at_current(16) - 11.04) < 0.01
+        # 6A × 230V × 3 = 4.14 kW
+        assert abs(ev.power_at_current(6) - 4.14) < 0.01
+        # Nearest step for 8 kW target → 10A (10×230×3=6.9kW ≤ 8kW)
+        assert ev.nearest_step_for_power(8.0) == 10
+        # Nearest step for 15 kW target → 20A (20×230×3=13.8kW ≤ 15kW)
+        assert ev.nearest_step_for_power(15.0) == 20
+        # Nearest step for 1 kW target → 6A (minimum)
+        assert ev.nearest_step_for_power(1.0) == 6
+
+    def test_load_scheduled_during_pv_surplus(self):
+        """Loads should run during PV surplus slots."""
+        load = FlexibleLoadConfig(
+            enabled=True,
+            name="Boiler",
+            switch_entity="switch.boiler",
+            rated_power_kw=2.0,
+            priority=1,
+        )
+        pv_hourly = {h: 5.0 for h in range(9, 16)}  # 5 kWh/hr from 9-15
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            safe_power_kw=5,
+            consumption_est_kwh=10.0,
+            flexible_loads=[load],
+        )
+        state = EMSState(
+            battery_soc_pct=80,
+            slot_prices_today=self._make_prices(),  # all same price (no cheap slots)
+            pv_hourly_kwh=pv_hourly,
+            pv_forecast_today=35.0,
+            pv_forecast_remaining=25.0,
+            current_hour=8,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert 0 in result.load_slots
+        # PV surplus hours (9-15) should have load scheduled
+        for s in range(9, 15):
+            assert s in result.load_slots[0], f"PV surplus slot {s} should have load"
+
+    def test_grid_mode_off_no_load_schedule(self):
+        """When grid_mode is off, loads should not be scheduled."""
+        load = FlexibleLoadConfig(
+            enabled=True, name="Boiler", switch_entity="switch.boiler",
+            rated_power_kw=2.0,
+        )
+        config = EMSConfig(
+            grid_mode="off",
+            flexible_loads=[load],
+        )
+        state = EMSState(
+            battery_soc_pct=50,
+            slot_prices_today=self._make_prices(),
+            current_hour=8,
+        )
+        result = calculate_schedule(config, state)
+        assert result.load_slots == {}

@@ -852,6 +852,15 @@ class FelicityEMSCard extends LitElement {
         ctx.strokeRect(x, marginTop, barW, chartH);
       }
 
+      // Flexible load indicator: cyan strip at bottom of bar
+      const flexSchedule = this._getAttr("schedule_status", "flex_load_schedule") || {};
+      const loadAtSlot = flexSchedule[String(i)];
+      if (loadAtSlot && loadAtSlot.length > 0 && !isPvOnlyView) {
+        const stripH = Math.max(3, Math.min(5, barH * 0.12));
+        ctx.fillStyle = "rgba(0, 188, 212, 0.8)";
+        ctx.fillRect(x + 0.5, marginTop + chartH - stripH, Math.max(1, barW - 1), stripH);
+      }
+
       // Override slot indicator: white dashed border
       const day = showTomorrow ? "tomorrow" : "today";
       const overrideAction = this._slotOverrides?.[day]?.[i];
@@ -1109,6 +1118,16 @@ class FelicityEMSCard extends LitElement {
       ctx.fillRect(lx - 55, 2, 8, 8);
       ctx.fillStyle = textColor;
       ctx.fillText("sell", lx - 58 + 30, 9);
+
+      // Loads legend (only show if any flex loads configured)
+      const flexConfigs = this._getAttr("schedule_status", "flex_load_configs") || [];
+      if (flexConfigs.length > 0) {
+        lx -= 55;
+        ctx.fillStyle = "rgba(0, 188, 212, 0.8)";
+        ctx.fillRect(lx - 55, 2, 8, 8);
+        ctx.fillStyle = textColor;
+        ctx.fillText("loads", lx - 58 + 35, 9);
+      }
 
       if (showTomorrow) {
         lx -= 55;
@@ -1674,6 +1693,9 @@ class FelicityEMSCard extends LitElement {
     const todayPlanned = (todaySimR?.planned ?? this._getAttr("schedule_status", "grid_energy_planned_kwh")) || 0;
     const tomorrowPlannedKwh = (todaySimR?.tomorrowPlanned ?? this._getAttr("schedule_status", "tomorrow_planned_kwh")) || 0;
     const gridPlanned = todayPlanned + tomorrowPlannedKwh;
+    const flexLoadConfigs = this._getAttr("schedule_status", "flex_load_configs") || [];
+    const flexLoadStates = this._getAttr("schedule_status", "flex_load_states") || {};
+    const activeLoadCount = Object.values(flexLoadStates).filter(v => v).length;
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
@@ -1827,6 +1849,12 @@ class FelicityEMSCard extends LitElement {
               <ha-icon icon="mdi:weather-night"></ha-icon>
               <span>${this._fmt(reserve, 1)} kWh overnight need</span>
             </div>
+            ${flexLoadConfigs.length > 0 ? html`
+            <div class="stat">
+              <ha-icon icon="mdi:power-plug-outline"></ha-icon>
+              <span>${activeLoadCount}/${flexLoadConfigs.length} loads active</span>
+            </div>
+            ` : ""}
           </div>
 
           <!-- PV Actual & Forecast -->
