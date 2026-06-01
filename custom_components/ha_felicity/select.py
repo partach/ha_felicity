@@ -155,7 +155,8 @@ async def async_setup_entry(
         )
     )
 
-    # Flexible load enable selects
+    # Flexible load enable selects. Gated on a switch entity being assigned
+    # to the load (assigned via the options flow).
     for i in range(1, 4):
         label = f"Flexible Load {i}"
         if i == 1:
@@ -169,6 +170,7 @@ async def async_setup_entry(
                 name=f"{label} Enabled",
                 icon="mdi:ev-station" if i == 1 else "mdi:power-plug-outline",
                 entity_category=EntityCategory.CONFIG,
+                requires_option=f"flexible_load_{i}_switch_entity",
             )
         )
 
@@ -309,18 +311,27 @@ class HA_FelicitySpecialModeSelect(CoordinatorEntity, SelectEntity):
         name: str,
         icon: str | None = None,
         entity_category: EntityCategory | None = EntityCategory.CONFIG,
+        requires_option: str | None = None,
     ):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
         self._select_options = select_options
+        self._requires_option = requires_option
         self._attr_unique_id = f"{entry.entry_id}_{option_key}"
         self._attr_name = f"{entry.title} {name}"
         self._attr_options = select_options
         if icon:
             self._attr_icon = icon
         if entity_category:
-            self._attr_entity_category = entity_category        
+            self._attr_entity_category = entity_category
+
+    @property
+    def available(self) -> bool:
+        """Disabled until the load's prerequisite entity is assigned."""
+        if self._requires_option and not self._entry.options.get(self._requires_option):
+            return False
+        return super().available
 
     @property
     def current_option(self) -> str:

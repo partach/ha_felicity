@@ -29,26 +29,26 @@ async def async_setup_entry(
 
     entities = []
 
-    # Flexible load entity ID inputs
+    # Flexible load text inputs. Entity assignments (switch / current entity)
+    # are configured via the integration's options flow (gear icon), like the
+    # price and solar-forecast entities — not here. These remaining text
+    # fields are gated on a switch entity being assigned to the load.
     load_defs = [
         (1, "EV Charger / Load 1", [
-            ("switch_entity", "Switch Entity", "mdi:ev-station"),
-            ("current_entity", "Current Entity", "mdi:current-ac"),
-            ("current_steps", "Current Steps (e.g. 6,10,13,16,20,25)", "mdi:format-list-numbered"),
-            ("name", "Name", "mdi:label-outline"),
+            ("name", "Name", "mdi:label-outline", "flexible_load_1_switch_entity"),
+            ("current_steps", "Current Steps (e.g. 6,10,13,16,20,25)",
+             "mdi:format-list-numbered", "flexible_load_1_current_entity"),
         ]),
         (2, "Flexible Load 2", [
-            ("switch_entity", "Switch Entity", "mdi:power-plug-outline"),
-            ("name", "Name", "mdi:label-outline"),
+            ("name", "Name", "mdi:label-outline", "flexible_load_2_switch_entity"),
         ]),
         (3, "Flexible Load 3", [
-            ("switch_entity", "Switch Entity", "mdi:power-plug-outline"),
-            ("name", "Name", "mdi:label-outline"),
+            ("name", "Name", "mdi:label-outline", "flexible_load_3_switch_entity"),
         ]),
     ]
 
     for load_num, load_label, fields in load_defs:
-        for field_key, field_name, icon in fields:
+        for field_key, field_name, icon, requires_option in fields:
             entities.append(
                 HA_FelicityConfigText(
                     coordinator=coordinator,
@@ -56,6 +56,7 @@ async def async_setup_entry(
                     option_key=f"flexible_load_{load_num}_{field_key}",
                     name=f"{load_label} {field_name}",
                     icon=icon,
+                    requires_option=requires_option,
                 )
             )
 
@@ -77,15 +78,24 @@ class HA_FelicityConfigText(CoordinatorEntity, TextEntity):
         option_key: str,
         name: str,
         icon: str | None = None,
+        requires_option: str | None = None,
     ):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
+        self._requires_option = requires_option
         self._attr_unique_id = f"{entry.entry_id}_{option_key}"
         self._attr_name = f"{entry.title} {name}"
         self._attr_native_max = 255
         if icon:
             self._attr_icon = icon
+
+    @property
+    def available(self) -> bool:
+        """Disabled until the load's prerequisite entity is assigned."""
+        if self._requires_option and not self._entry.options.get(self._requires_option):
+            return False
+        return super().available
 
     @property
     def native_value(self) -> str | None:

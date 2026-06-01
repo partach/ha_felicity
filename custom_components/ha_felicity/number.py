@@ -203,10 +203,12 @@ async def async_setup_entry(
         ),
     ])
 
-    # Flexible load number entities
+    # Flexible load number entities. Gated on a switch entity being assigned
+    # to the load (assigned via the options flow).
     for i in range(1, 4):
         label = "EV Charger / Load 1" if i == 1 else f"Flexible Load {i}"
         icon = "mdi:ev-station" if i == 1 else "mdi:power-plug-outline"
+        switch_key = f"flexible_load_{i}_switch_entity"
         entities.append(
             HA_FelicityInternalNumber(
                 coordinator, entry,
@@ -215,6 +217,7 @@ async def async_setup_entry(
                 min_val=0.5, max_val=25, step=0.1,
                 unit="kW", icon=icon,
                 default_value=3.7 if i == 1 else 2.0,
+                requires_option=switch_key,
             )
         )
         entities.append(
@@ -225,10 +228,12 @@ async def async_setup_entry(
                 min_val=1, max_val=3, step=1,
                 icon="mdi:sort-numeric-ascending",
                 default_value=i,
+                requires_option=switch_key,
             )
         )
 
-    # EV charger (load 1) specific settings
+    # EV charger (load 1) specific settings — gated on the current entity
+    # being assigned (current stepping only applies to a dimmable charger).
     entities.extend([
         HA_FelicityInternalNumber(
             coordinator, entry,
@@ -237,6 +242,7 @@ async def async_setup_entry(
             min_val=1, max_val=3, step=1,
             icon="mdi:sine-wave",
             default_value=1,
+            requires_option="flexible_load_1_current_entity",
         ),
         HA_FelicityInternalNumber(
             coordinator, entry,
@@ -245,6 +251,7 @@ async def async_setup_entry(
             min_val=110, max_val=400, step=10,
             unit="V", icon="mdi:flash",
             default_value=230,
+            requires_option="flexible_load_1_current_entity",
         ),
         HA_FelicityInternalNumber(
             coordinator, entry,
@@ -253,6 +260,7 @@ async def async_setup_entry(
             min_val=6, max_val=32, step=1,
             unit="A", icon="mdi:current-ac",
             default_value=16,
+            requires_option="flexible_load_1_current_entity",
         ),
     ])
 
@@ -346,10 +354,12 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
         dynamic_range: bool = False,
         default_value: float | None = None,
         mode: NumberMode = NumberMode.BOX,
+        requires_option: str | None = None,
     ):
         super().__init__(coordinator)
         self._entry = entry
         self._option_key = option_key
+        self._requires_option = requires_option
         self._default_value = default_value if default_value is not None else min_val
 
         self._attr_name = f"{entry.title} {name}"
@@ -368,6 +378,13 @@ class HA_FelicityInternalNumber(CoordinatorEntity, NumberEntity):
             self._attr_icon = icon
         if device_class:
             self._attr_device_class = device_class
+
+    @property
+    def available(self) -> bool:
+        """Disabled until the load's prerequisite entity is assigned."""
+        if self._requires_option and not self._entry.options.get(self._requires_option):
+            return False
+        return super().available
 
     @property
     def native_value(self) -> float | None:

@@ -420,6 +420,10 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
             current_forecast = my_options.get("forecast_entity")
             current_forecast_tomorrow = my_options.get("forecast_entity_tomorrow")
             current_consumption_override = my_options.get("consumption_override_entity")
+            current_fl1_switch = my_options.get("flexible_load_1_switch_entity")
+            current_fl1_current = my_options.get("flexible_load_1_current_entity")
+            current_fl2_switch = my_options.get("flexible_load_2_switch_entity")
+            current_fl3_switch = my_options.get("flexible_load_3_switch_entity")
         except Exception:
             _LOGGER.exception("Error with options")
 
@@ -506,6 +510,52 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
                             domain="sensor",
+                            multiple=False,
+                        )
+                    )
+                ),
+                # Flexible load entity assignments. Assigning a switch entity
+                # enables the load's other configuration entities on the device.
+                vol.Optional(
+                    "flexible_load_1_switch_entity",
+                    default=current_fl1_switch or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["switch", "input_boolean", "light"],
+                            multiple=False,
+                        )
+                    )
+                ),
+                vol.Optional(
+                    "flexible_load_1_current_entity",
+                    default=current_fl1_current or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["number", "select", "input_number", "input_select"],
+                            multiple=False,
+                        )
+                    )
+                ),
+                vol.Optional(
+                    "flexible_load_2_switch_entity",
+                    default=current_fl2_switch or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["switch", "input_boolean", "light"],
+                            multiple=False,
+                        )
+                    )
+                ),
+                vol.Optional(
+                    "flexible_load_3_switch_entity",
+                    default=current_fl3_switch or None
+                ): vol.Maybe(
+                    selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain=["switch", "input_boolean", "light"],
                             multiple=False,
                         )
                     )
