@@ -45,8 +45,16 @@ class HA_FelicityEVBoostButton(CoordinatorEntity, ButtonEntity):
 
     def __init__(self, coordinator: HA_FelicityCoordinator, entry: ConfigEntry):
         super().__init__(coordinator)
+        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_ev_boost"
         self._attr_name = f"{entry.title} EV Boost +1h"
+
+    @property
+    def available(self) -> bool:
+        """Only available when an EV charger current entity is assigned."""
+        if not self._entry.options.get("flexible_load_1_current_entity"):
+            return False
+        return super().available
 
     async def async_press(self) -> None:
         self.coordinator.ev_boost_add_hour()
@@ -62,8 +70,16 @@ class HA_FelicityEVBoostCancelButton(CoordinatorEntity, ButtonEntity):
 
     def __init__(self, coordinator: HA_FelicityCoordinator, entry: ConfigEntry):
         super().__init__(coordinator)
+        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_ev_boost_cancel"
         self._attr_name = f"{entry.title} EV Boost Cancel"
+
+    @property
+    def available(self) -> bool:
+        """Only available when an EV charger current entity is assigned."""
+        if not self._entry.options.get("flexible_load_1_current_entity"):
+            return False
+        return super().available
 
     async def async_press(self) -> None:
         self.coordinator.ev_boost_cancel()
