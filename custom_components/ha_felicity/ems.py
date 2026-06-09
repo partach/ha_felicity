@@ -1310,6 +1310,19 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
 
     if config.grid_mode == "off" or not state.slot_prices_today:
         result.status = "off" if config.grid_mode == "off" else "no_price_data"
+        # Even with the scheduler disabled (grid_mode off) or without price
+        # data, expose the overnight reserve and reserve-target % so the
+        # frontend's "night target" line and "overnight need" stat stay
+        # meaningful.  These depend only on consumption + PV daylight window,
+        # not on the price-based scheduling that the early return skips.
+        reserve_kwh = calculate_self_consumption_reserve(
+            config.consumption_est_kwh, state.pv_hourly_kwh)
+        result.self_consumption_reserve = round(reserve_kwh, 2)
+        if config.battery_capacity_kwh > 0:
+            reserve_target = _compute_reserve_target(config, reserve_kwh)
+            result.reserve_target_pct = round(
+                (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
+            )
         return result
 
     prices = state.slot_prices_today

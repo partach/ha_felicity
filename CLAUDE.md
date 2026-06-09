@@ -206,6 +206,17 @@ Example: 60 kWh battery, 35% min, 38.5 kWh/d consumption, sunset 19:00, sunrise 
 - overnight = (38.5/24) × 12h = 19.25 kWh → rounds to ~19.3 kWh
 - reserve_target = 21 + 19.3 = 40.3 kWh (~67% of 60 kWh)
 
+**Reserve exposed even when scheduler is disabled**: `calculate_schedule`
+short-circuits when `grid_mode == "off"` (or no price data), but it still
+computes `self_consumption_reserve` and `reserve_target_pct` before the
+early return. Otherwise the frontend's "night target" line and "overnight
+need" stat would collapse to the bare discharge-min floor (the line would
+read e.g. "35% night target" — just Min SOC — instead of the true dynamic
+target). The card also has a client-side fallback (`_overnightReserveKwh`,
+mirroring `calculate_self_consumption_reserve`) that kicks in when the
+backend value is 0 — relevant in `price_mode = manual`, where the optimizer
+isn't run at all.
+
 ### Deficit Calculation (all modes)
 
 ```python

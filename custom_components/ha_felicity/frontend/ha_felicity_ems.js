@@ -178,6 +178,28 @@ class FelicityEMSCard extends LitElement {
     return Number(val).toFixed(decimals);
   }
 
+  // Mirror of ems.calculate_self_consumption_reserve(). Used as a client-side
+  // fallback for the "night target" line and "overnight need" stat when the
+  // backend hasn't computed self_consumption_reserve (e.g. price_mode manual,
+  // where the schedule optimizer doesn't run). Returns kWh needed overnight.
+  _overnightReserveKwh(consumptionEst, pvHourly) {
+    const consumptionPerHour = (consumptionEst || 0) / 24.0;
+    let sunsetHour = 19;
+    let sunriseHour = 7;
+    if (pvHourly) {
+      const pvHours = Object.entries(pvHourly)
+        .filter(([, kwh]) => parseFloat(kwh) > 0.1)
+        .map(([h]) => parseInt(h, 10))
+        .filter((h) => !isNaN(h));
+      if (pvHours.length) {
+        sunsetHour = Math.max(...pvHours) + 1;
+        sunriseHour = Math.min(...pvHours);
+      }
+    }
+    const overnightHours = (24 - sunsetHour) + sunriseHour;
+    return consumptionPerHour * overnightHours;
+  }
+
   // ── Client-side schedule simulation ──────────────────────────
   // Mirrors coordinator._calculate_schedule logic for live preview
 
@@ -1003,7 +1025,13 @@ class FelicityEMSCard extends LitElement {
     const simR2 = this._getAttr("schedule_status", "sim_params") || {};
     const battCap = simR2.battery_capacity_kwh || 10;
     const dischMinPct = simR2.battery_discharge_min_pct ?? 20;
-    const reserveKwhVal = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
+    let reserveKwhVal = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
+    if (reserveKwhVal <= 0) {
+      // Backend value unavailable (e.g. price_mode manual) — compute it
+      // client-side so the night-target line stays meaningful in all modes.
+      reserveKwhVal = this._overnightReserveKwh(
+        simR2.consumption_est_kwh, simR2.pv_hourly_kwh || null);
+    }
     const userReservePct = simR2.reserve_target_pct ?? 0;
     let reserveShowPct;
     if (userReservePct > 0) {
@@ -1748,8 +1776,15 @@ class FelicityEMSCard extends LitElement {
         pvActualToday = altEnergy;
       }
     }
-    const reserve = this._getAttr("schedule_status", "self_consumption_reserve")
+    let reserve = this._getAttr("schedule_status", "self_consumption_reserve")
       ?? this._getAttr("energy_state", "self_consumption_reserve");
+    if (!(parseFloat(reserve) > 0)) {
+      // Backend value unavailable (e.g. price_mode manual) — compute the
+      // overnight need client-side so the stat matches the night-target line.
+      const simR = this._getAttr("schedule_status", "sim_params") || {};
+      reserve = this._overnightReserveKwh(
+        simR.consumption_est_kwh, simR.pv_hourly_kwh || null);
+    }
     const weeklyConsumption = this._getNumericState("weekly_avg_consumption");
     const safeMaxPower = this._getNumericState("safe_max_power");
     const dailyConsumptionEst = this._getNumericState("daily_consumption_estimate");
