@@ -12,33 +12,33 @@ These are the user-configurable parameters. Every calculation in the algorithm t
 
 | Setting | Range | Default | How It's Used |
 |---|---|---|---|
-| **battery_capacity_kwh** | 1-100 kWh | 10 | The total usable battery size. All kWh calculations scale from this: `current_kwh = SOC% * capacity`. A wrong value here corrupts every decision. |
+| **battery_capacity_kwh** | 1-200 kWh | 10 | The total usable battery size. All kWh calculations scale from this: `current_kwh = SOC% * capacity`. The integration multiplies nominal capacity by a SOH factor (see Section 12) to get the effective value — ems.py treats it as already-effective. A wrong value here corrupts every decision. |
 | **battery_charge_max_level** | 30-100% | 100% | The SOC ceiling. The scheduler won't charge above this, and the inverter register is set to this value during charging. Lowering it (e.g., 90%) preserves battery longevity but reduces available storage. |
 | **battery_discharge_min_level** | 10-70% | 20% | The SOC hard floor. In **manual mode**, this is written directly to the inverter Modbus register as the discharge limit. In **auto mode**, the inverter register is set to the higher `reserve_target` instead (see below), with `discharge_min_level` serving as the absolute backstop that the reserve target can never go below. |
-| **efficiency_factor** | 0.70-1.00 | 0.90 | Single-direction charging efficiency. Round-trip = efficiency^2 (default 0.81). Affects: how much grid energy actually reaches the battery (`effective_per_slot = power * hours * efficiency`), the profitability filter in "both" mode (`min_sell_price = buy_price / efficiency^2`), and how much sellable energy can be extracted (`sellable * efficiency`). A too-high value (e.g., 0.95) makes the system overestimate what's available, leading to deeper drain. |
+| **efficiency_factor** | 0.70-1.00 | 0.90 | Single-direction charging efficiency. Round-trip = efficiency² (default 0.81). Affects: how much grid energy actually reaches the battery (`effective_per_slot = power * hours * efficiency`), the profitability filter in "both" mode (`min_sell_price = buy_price / efficiency²`), and how much sellable energy can be extracted (`sellable * efficiency`). A too-high value (e.g., 0.95) makes the system overestimate what's available, leading to deeper drain. |
 
 ### Voltage Settings (Inverter Protection)
 
 | Setting | Range | Default | How It's Used |
 |---|---|---|---|
-| **voltage_level** | 48-60V | 58V | Written to the inverter when entering **charge** state. This is the target charge voltage -- the inverter's constant-voltage phase begins here. Higher values charge fuller but stress the battery more. |
-| **discharge_min_voltage** | 48-55V | 50V | Written to the inverter when entering **discharge** state. This is the voltage floor below which the inverter stops discharging. Protects battery cells from over-discharge damage. Lower values extract more energy but reduce battery lifespan. |
+| **voltage_level** | 48-60V (LV) / 300-448V (HV) | 58V | Written to the inverter when entering **charge** state. This is the target charge voltage — the inverter's constant-voltage phase begins here. Higher values charge fuller but stress the battery more. Range auto-adjusts based on detected battery system. |
+| **discharge_min_voltage** | 48-55V (LV) / 300-448V (HV) | 50V | Written to the inverter when entering **discharge** state. This is the voltage floor below which the inverter stops discharging. Protects battery cells from over-discharge damage. |
 
-These voltage settings are **not used by the scheduling algorithm** -- they are pure inverter protection parameters written to Modbus registers during state transitions. The algorithm works in SOC percentages and kWh; the voltages are the inverter's own safety layer.
+These voltage settings are **not used by the scheduling algorithm** — they are pure inverter protection parameters written to Modbus registers during state transitions. The algorithm works in SOC percentages and kWh; the voltages are the inverter's own safety layer.
 
 ### Reserve & Self-Consumption
 
 | Setting | Range | Default | How It's Used |
 |---|---|---|---|
-| **reserve_target_pct** | 0-100% | 0 (dynamic) | Controls how much battery to keep for self-consumption. **When 0** (default): the reserve is calculated dynamically as `discharge_min + overnight_consumption`. **When > 0**: uses this fixed percentage as the floor (e.g., 50% means always keep at least half the battery). Increasing this is the most direct way to prevent the battery draining too low in "both" mode -- it raises the bar that the scheduler plans around. |
-| **daily_consumption_estimate** | 0-100 kWh | 10 | Fallback when no 7-day average is available. Used to estimate overnight drain, hourly consumption, and deficit calculations. |
+| **reserve_target_pct** | 0-100% | 0 (dynamic) | Controls how much battery to keep for self-consumption. **When 0** (default): the reserve is calculated dynamically as `discharge_min + overnight_consumption`. **When > 0**: uses this fixed percentage as the floor (e.g., 50% means always keep at least half the battery). Increasing this is the most direct way to prevent the battery draining too low in "both" mode — it raises the bar that the scheduler plans around. |
+| **daily_consumption_estimate** | 0-120 kWh | 10 | Fallback when no 7-day average is available. Used to estimate overnight drain, hourly consumption, and deficit calculations. |
 
 ### Power & Grid
 
 | Setting | Range | Default | How It's Used |
 |---|---|---|---|
-| **power_level** | 1-10 kW | 5 | Base charge/discharge power. Determines energy per slot: `energy_per_slot = power * slot_hours`. Higher = fewer slots needed but more grid stress. |
-| **safe_power_management** | auto/on/off | auto | When active, monitors grid amperage per phase and reduces power to prevent overload (see Section on Safe Power). The actual power used may be lower than `power_level`. |
+| **power_level** | 1 - max kW (model dependent) | 5 | Base charge/discharge power. Determines energy per slot: `energy_per_slot = power * slot_hours`. Higher = fewer slots needed but more grid stress. Model limits: TREX-5 = 5 kW, TREX-10 = 10 kW, TREX-25 = 25 kW, TREX-50 = 50 kW. |
+| **safe_power_management** | auto/on/off | auto | When active, monitors grid amperage per phase and reduces power to prevent overload (see Section 9). The actual power used may be lower than `power_level`. |
 | **max_amperage_per_phase** | 10-63A | 16A | Grid current limit for safe power management. |
 
 ### Pricing & Arbitrage
@@ -48,18 +48,50 @@ These voltage settings are **not used by the scheduling algorithm** -- they are 
 | **grid_mode** | off/from_grid/to_grid/both | off | The master switch. Determines which algorithm runs. "off" = no grid interaction. |
 | **price_mode** | manual/auto | manual | "manual" uses a price threshold (level 1-10); "auto" uses the optimizer to pick slots. All algorithm logic described in this document runs in "auto" mode. |
 | **price_threshold_level** | 1-10 | 5 | Manual mode only: maps to a price point between min and max. Slots below this charge, above this sell. |
-| **arbitrage_price_delta** | 0-0.50 EUR/kWh | 0 | **Both mode only.** When > 0 and the day's price spread (max - min) exceeds this threshold, the algorithm switches from conservative "charge to reserve" to aggressive "charge to 100% and sell everything above reserve". **This is the biggest amplifier of aggressive selling.** Set to 0 to disable. When active, it maximizes both charge and discharge slot counts, leaving thinner margins for error. |
+| **arbitrage_price_delta** | 0-0.50 EUR/kWh | 0 | **Both mode only.** When > 0 and the day's price spread (max - min) exceeds this threshold, the algorithm switches from conservative "charge to reserve" to aggressive "charge to 100% and sell everything above reserve". **This is the biggest amplifier of aggressive selling.** Set to 0 to disable. |
+
+### Optimization & Lifecycle
+
+| Setting | Range | Default | How It's Used |
+|---|---|---|---|
+| **optimization_priority** | cost/longevity/self_consumption | cost | Multi-objective strategy. **cost**: minimizes grid spend (default). **longevity**: enforces a minimum 0.05 EUR/kWh cycle cost floor regardless of the `battery_cycle_cost` setting — fewer cycles, longer battery life. **self_consumption**: multiplies the dynamic overnight reserve by 1.25×, keeping more PV-stored energy for self-use instead of selling. |
+| **battery_cycle_cost_eur_kwh** | 0-0.50 EUR/kWh | 0 | Estimated cost per kWh of battery wear. Added to the minimum sell price in the profitability filter: `min_sell_price = (buy_price + cycle_cost) / efficiency²`. If you know your battery cost per cycle, enter it here to prevent unprofitable trading. When `optimization_priority = longevity`, this is raised to at least 0.05 EUR/kWh. |
+
+### Negative-Price Strategies
+
+These three settings control behavior during negative electricity prices (when you get paid to consume energy). They are orthogonal to `grid_mode` and compose with all modes.
+
+| Setting | Options | Default | How It's Used |
+|---|---|---|---|
+| **block_export_on_negative_price** | on/off | on | When `on`, prevents the EMS from scheduling battery discharge (sell) during negative price hours. Selling at negative prices means paying the grid to take your energy. Acts as a sell-price floor of 0.0 EUR/kWh. |
+| **charge_to_full_on_negative_price** | off/on | off | When `on`, adds every negative-price slot to the charge schedule regardless of the reserve target or headroom cap. Phantom-charge slots (battery already full) are kept too — the inverter/BMS will gate it. The user accepts some forced PV curtailment in exchange for guaranteed revenue at every negative-price slot. |
+| **discharge_to_make_room_for_negative_price** | off/on | off | When `on`, pre-emptively discharges at the most expensive positive-price slots before a negative-price PV window to create headroom. This allows PV + grid charging during the negative window to fill the cleared battery. Works even in `from_grid` mode (which normally never discharges). SOC must never drop below `discharge_min_pct` and end-of-day SOC must remain >= `reserve_target`. |
+
+### Inverter Rule 1 Control
+
+| Setting | Options | Default | How It's Used |
+|---|---|---|---|
+| **rule1_time_window** | manual/auto | manual | `auto` writes Rule 1 start=00:00, stop=23:59 every cycle. When `manual`, the user manages the inverter's Rule 1 time window — if it's too restrictive, the EMS plans actions the inverter silently ignores. |
+| **rule1_weekday** | manual/auto | manual | `auto` writes Rule 1 effective_week=0x7F (all 7 days) every cycle. |
+
+If scheduled actions fall outside the inverter's Rule 1 window, the integration detects this and surfaces a `rule1_window_warning` banner on the EMS card.
 
 ### How These Settings Interact
 
 The settings form a hierarchy of constraints:
 
 ```
+optimization_priority  -->  Modifies cycle cost floor and reserve multiplier
+        |
+        v
 arbitrage_price_delta  -->  Determines charging target (reserve vs full)
         |
         v
 reserve_target_pct  -->  The floor for scheduling AND runtime discharge (auto mode)
         |                  Written to inverter register when discharging
+        v
+battery_cycle_cost  -->  Raises min sell price (profitability filter)
+        |
         v
 efficiency_factor  -->  How much energy is actually usable (scales everything)
         |                  Sellable energy further reduced by 15% safety margin
@@ -83,14 +115,14 @@ Every 10 seconds, the coordinator gathers these inputs and feeds them to the sch
 | **Electricity prices (today)** | Nordpool entity | Slot-by-slot price array (24, 48, or 96 slots/day) |
 | **Electricity prices (tomorrow)** | Nordpool entity (available ~13:00) | Two-day unified optimization |
 | **Battery SOC** | Inverter Modbus register | Current energy in battery (converted to kWh) |
-| **PV forecast today** | Forecast entity (e.g., Solcast) | Total expected solar kWh today |
+| **PV forecast today** | Forecast entity (e.g., Forecast.Solar, Solcast) | Total expected solar kWh today |
 | **PV forecast remaining** | Forecast entity | Solar kWh still expected today |
 | **PV forecast tomorrow** | Forecast entity | Tomorrow's expected solar |
-| **PV hourly breakdown** | Forecast entity `wh_hours` | Per-hour solar production curve |
+| **PV hourly breakdown** | Forecast entity `wh_hours` | Per-hour solar production curve (filtered by date) |
 | **PV actual today** | Inverter register (`pv_day_cost_energy`) | kWh actually produced so far |
 | **Consumption estimate** | 7-day rolling average, or user-set fallback | Expected daily household consumption |
 | **Consumption hourly profile** | 7-day HA recorder history | Per-hour average consumption pattern |
-| **Yesterday's deficit** | Stored from previous day | Carried-over shortfall |
+| **Yesterday's deficit** | Stored from previous day | Carried-over shortfall (reset on grid_mode change) |
 
 ### Derived Values
 
@@ -102,17 +134,20 @@ current_kwh = (battery_soc_pct / 100) * battery_capacity_kwh
 ```
 
 #### PV Confidence Factor
-Compares actual production to forecast to detect cloudy days:
+Compares actual production to forecast to detect cloudy days. Uses a two-window approach with EMA smoothing:
 ```
 cumulative_confidence = actual_produced / expected_by_now
 window_confidence = (actual - expected_before_3h_window) / expected_in_3h_window
 raw_confidence = max(cumulative, window)
-confidence = blend(1.0, raw_confidence, evidence_weight)
+confidence = EMA(previous_confidence, raw_confidence, alpha=0.3)
 ```
 - `evidence_weight` ramps from 0 to 1 as expected production reaches 20% of daily total (or 3 kWh minimum)
 - Early morning: confidence stays near 1.0 (not enough data to judge)
 - Cloudy morning + sunny afternoon: window confidence recovers even if cumulative is low
+- EMA smoothing (alpha=0.3) dampens single-hour weather oscillations
 - Clamped to [0.1, 1.0]
+
+**Forecast.solar fallback**: when the forecast service is unavailable, a rough daylight-extrapolation from today's actual production is used so the algorithm doesn't default to PV=0 and over-aggressively grid-charge.
 
 #### Net PV Surplus
 Only counts hours where solar exceeds consumption (the battery can only charge from surplus):
@@ -126,7 +161,7 @@ for each remaining hour:
 Hours where consumption exceeds PV contribute zero (the shortfall drains the battery but can't be "banked" as surplus).
 
 #### Reserve Target
-The battery level the algorithm tries to protect. This is NOT `discharge_min` -- it's higher:
+The battery level the algorithm tries to protect. This is NOT `discharge_min` — it's higher:
 
 **Dynamic mode** (reserve_target_pct = 0, the default):
 ```
@@ -136,18 +171,22 @@ reserve_target = discharge_min_kwh + overnight_reserve
 ```
 Sunset/sunrise are derived from the PV hourly profile (last/first hour with >0.1 kWh).
 
+When `optimization_priority = self_consumption`, the overnight reserve is multiplied by 1.25× to keep more PV energy for self-use.
+
 **Fixed mode** (reserve_target_pct > 0):
 ```
 reserve_target = max(reserve_target_pct * capacity, discharge_min_kwh)
 ```
 
-**Example**: 10 kWh battery, 20% discharge min, 10 kWh/day consumption, sunset 19:00, sunrise 07:00
-- discharge_min_kwh = 2.0 kWh
-- overnight = (10/24) * 12 = 5.0 kWh
-- reserve_target = 2.0 + 5.0 = 7.0 kWh (70% of battery)
+**Example**: 60 kWh battery, 35% discharge min, 38.5 kWh/day consumption, sunset 19:00, sunrise 07:00
+- discharge_min_kwh = 21.0 kWh
+- overnight = (38.5/24) × 12 = 19.3 kWh
+- reserve_target = 21.0 + 19.3 = 40.3 kWh (67% of battery)
+
+**Important**: The reserve target is always computed, even when `grid_mode = off` or there's no price data. The frontend's "night target" line and "overnight need" stat read these values to show the user how much battery is needed for overnight, regardless of whether the scheduler is active.
 
 #### SOC Trajectory Projection
-Simulates battery level forward through every remaining slot, assuming NO charge/discharge actions -- just PV production minus consumption:
+Simulates battery level forward through every remaining slot, assuming NO charge/discharge actions — just PV production minus consumption:
 ```
 for each remaining slot:
     pv_this_slot = hourly_pv[hour] * confidence * (slot_minutes / 60)
@@ -155,6 +194,13 @@ for each remaining slot:
     projected_soc += pv_this_slot - consumption_this_slot
     track min_projected and max_projected
 ```
+
+When calculating the charge energy per slot, the inverter's maximum power caps the grid contribution:
+```
+grid_kw = min(safe_power_kw, max(0, inverter_max_power_kw - pv_kw))
+```
+This prevents the SOC prediction from assuming unrealistic charge rates (e.g., 8 kW grid + 7 kW PV = 15 kW on a 10 kW inverter).
+
 This gives:
 - `min_projected`: lowest SOC the battery will hit if we do nothing
 - `max_projected`: highest SOC the battery will reach (usually midday from solar)
@@ -208,7 +254,7 @@ All negative-price slots are always selected (you get PAID to charge).
 headroom = max(0, max_battery_kwh - current_kwh - net_pv_surplus)
 max_today_slots = floor(headroom / effective_per_slot)
 ```
-Excess today slots are replaced with tomorrow slots when possible.
+Excess today slots are replaced with tomorrow slots when possible. Negative-price slots pass through the headroom cap (they are profitable to consume).
 
 **Bridge safety**: If tomorrow slots were selected, ensures the battery survives until tomorrow's first charge slot:
 ```
@@ -220,12 +266,29 @@ if projected_at_charge < discharge_min_kwh:
     swap expensive tomorrow slots for cheap today slots
 ```
 
+**Charge-to-full on negative price**: When `charge_to_full_on_negative_price = on`, every negative-price slot in the remaining window is added to the charge set after normal selection (deduplicated).
+
 ### Step 3: SOC Validation
 
-Simulates the battery forward through every slot WITH the selected charge actions. If any charge slot would push SOC above battery capacity, it's removed (most expensive first). This prevents wasting energy charging an already-full battery.
+Simulates the battery forward through every slot WITH the selected charge actions. If any charge slot would push SOC above battery capacity, it's removed (most expensive first).
+
+**Phantom-charge detection**: When a charge slot starts with the battery already at capacity (SOC >= capacity - 0.01 kWh), the slot is dropped regardless of price — the inverter physically cannot store the energy. Exception: when `charge_to_full_on_negative_price = on`, phantom-charge slots are kept (user explicitly accepts this).
+
+**PV-caused overflow**: When PV alone would fill the battery (surplus >= 90% of remaining capacity), negative-price slots are preserved even during overflow — the overflow is PV-caused, not grid-caused, and the negative-price income is pure profit. When PV alone is insufficient, negative-price charge slots are pruned to prevent forced grid export at penalty rates.
+
+### Step 4: Discharge-to-Make-Room (Optional)
+
+When `discharge_to_make_room_for_negative_price = on`, a post-processing step runs after charge selection. It walks the SOC trajectory forward; whenever a negative-price slot with PV surplus would overflow the battery, it schedules discharge in the **most expensive earlier positive-price slot** to create headroom.
+
+Constraints:
+- SOC must never drop below `discharge_min_pct` (hardware safety)
+- End-of-day SOC must remain >= `reserve_target` (overnight coverage)
+- Temporary dips below reserve during the day are allowed — the negative-window PV will refill the battery
+
+This is the only way `from_grid` mode can schedule discharge slots.
 
 ### Result
-A set of slot indices marked "charge". The inverter charges during these slots and idles otherwise.
+A set of slot indices marked "charge" (and optionally "discharge" for make-room).
 
 ---
 
@@ -250,7 +313,7 @@ sorted by price descending
 select top N
 ```
 
-Only positive-price slots are considered.
+Only positive-price slots are considered. When `block_export_on_negative_price = on` (default), negative-price slots are excluded (selling at negative prices means paying the grid).
 
 ### Step 3: SOC Validation
 
@@ -263,7 +326,7 @@ A set of slot indices marked "discharge".
 
 ## 5. Mode: `both` (Buy + Sell)
 
-**Goal**: Buy cheap, sell expensive, while maintaining self-consumption reserve. This is where the aggressive selling issue occurs.
+**Goal**: Buy cheap, sell expensive, while maintaining self-consumption reserve.
 
 ### Step 1: Calculate Energy Deficit (Same as `from_grid`)
 
@@ -294,17 +357,19 @@ Uses `select_unified_charge_slots` with the (potentially inflated) deficit.
 
 ### Step 5: Select Sell Slots with Profitability Filter
 
-This is the key difference from `to_grid`. A minimum sell price ensures round-trip profitability:
+This is the key difference from `to_grid`. A minimum sell price ensures round-trip profitability, including battery wear cost:
 ```
 max_buy_price = max price among selected charge slots
-min_sell_price = max_buy_price / (efficiency * efficiency)
+min_sell_price = (max_buy_price + battery_cycle_cost) / (efficiency * efficiency)
 ```
 Only slots with `price >= min_sell_price` are eligible for selling.
 
-**Example**: If cheapest charge was at 0.05 EUR/kWh and efficiency is 0.90:
+When `block_export_on_negative_price = on` (default), negative-price slots are additionally excluded.
+
+**Example**: If cheapest charge was at 0.05 EUR/kWh, efficiency is 0.90, and cycle cost is 0.02 EUR/kWh:
 - Round-trip efficiency = 0.81
-- min_sell_price = 0.05 / 0.81 = 0.062 EUR/kWh
-- Only sell at slots priced above 0.062
+- min_sell_price = (0.05 + 0.02) / 0.81 = 0.086 EUR/kWh
+- Only sell at slots priced above 0.086
 
 Then picks the most expensive eligible slots, up to `sell_needed`.
 
@@ -360,6 +425,20 @@ The schedule is recalculated periodically. Every 10 seconds, the coordinator:
 4. Determines desired state (charging/discharging/idle)
 5. If state differs from current, writes Modbus registers
 
+### Skip-Recalc Optimization
+
+A hash of the schedule inputs (prices, SOC, PV forecast, deficit, overrides, power) is computed each cycle. When the hash and the current slot index are both unchanged from the previous cycle, the expensive schedule recalculation is skipped entirely. The hash resets on grid_mode changes.
+
+### Slot Override Validation
+
+Users can manually override slot actions via the EMS card (click a slot to force charge/discharge/idle). After merging overrides into the schedule, the full merged schedule is re-validated through `_validate_schedule_soc`. Manually-added charge slots that would overflow the battery, or discharge slots that would drain below reserve, are dropped with a log entry — this prevents users from setting up infeasible schedules.
+
+### Charge Deferral (Cheapest-First Execution)
+
+When the current slot is a scheduled charge slot, the EMS checks whether a later scheduled charge slot has a cheaper price (by at least 1¢/kWh). If so, and the battery SOC is above the reserve target, the current slot is deferred (state = idle). The next 10-second cycle re-evaluates, so charging naturally shifts to the cheapest scheduled slot. This compensates for the deficit shrinking as PV confidence recovers mid-day — without it, early expensive slots would execute while later cheaper slots get dropped from a re-plan.
+
+**Stall prevention**: Never defers when SOC is at or below `reserve_target` (battery needs charging now, regardless of price). Negative-price slots are exempt from deferral.
+
 ### State Transitions (What Gets Written to the Inverter)
 
 | State | econ_rule_1_enable | SOC limit | Voltage | Power |
@@ -371,6 +450,8 @@ The schedule is recalculated periodically. Every 10 seconds, the coordinator:
 
 In auto mode, the inverter's SOC floor register is set to the computed `reserve_target_pct` rather than `discharge_min_level`. This means the inverter hardware itself enforces the same floor the schedule was planned around, even if the coordinator's polling cycle is delayed.
 
+Secondary register writes (SOC, voltage, power, date) that fail are logged as warnings instead of silently ignored.
+
 ### SOC Boundary Enforcement in `_determine_energy_state`
 
 Before entering a state:
@@ -380,9 +461,115 @@ Before entering a state:
 
 If SOC hits the limit mid-slot, the state transitions to idle on the next 10-second cycle.
 
+### Anti-Conflict Guard (Discharge Hysteresis)
+
+Prevents discharge during grid import (e.g., EV charging pulls from grid while the battery is selling — a wasteful round-trip). Uses three-tier hysteresis to avoid flipper behavior:
+
+| Condition | Action |
+|---|---|
+| Small/moderate import (200–2000W) | Must persist ≥ 2 consecutive cycles (~20s) before suppression |
+| Large import (> 2000W) | Suppresses immediately (genuine sustained draw) |
+| After suppression ends | 60-second cooldown blocks re-suppression |
+
+This prevents the inverter from flipping between discharge → idle → discharge every ~16s on short load spikes (kettle, microwave, EV startup).
+
+### Midnight Rollover
+
+The day-rollover block resets yesterday deficit, daily consumption, SOC history, and rotates slot overrides — but does NOT force the inverter to idle. The normal cycle re-determines the desired state, so valid charge/discharge actions continue across midnight (e.g., a customer selling overnight to clear the battery before negative-midday PV).
+
+### Modbus Staleness Guard
+
+If the last successful Modbus read was more than a configurable threshold ago, the scheduler refuses to re-plan — it keeps the last valid schedule rather than making decisions on stale data.
+
 ---
 
-## 8. Design Notes
+## 8. Rule 1 Window Conflict Detection
+
+Every cycle, `_check_rule1_window_conflict` compares the set of intended action slots against the inverter's Economic Rule 1 time window (start_time, stop_time) and effective weekday mask.
+
+- `start_time == stop_time` is treated as "all day"
+- A full 0x7F weekday mask means "all days"
+- Weekday mapping: inverter bit0=Sunday..bit6=Saturday, mapped from Python `isoweekday() % 7`
+
+Any mismatch produces a `rule1_window_warning` attribute on `schedule_status`, rendered as a banner in the EMS card. This prevents the silent failure where the EMS plans to act, writes the register, but the inverter ignores it because the action falls outside its configured Rule 1 window.
+
+---
+
+## 9. Safe Power Management
+
+Monitors grid current per phase and adjusts inverter power to prevent overcurrent. The priority chain has been extended with flexible load shedding:
+
+| Priority | Action | Detail |
+|---|---|---|
+| **1st** | EV charger current step-down | Reduce one current step at a time (e.g., 25A → 20A → 16A). One step per 10-second cycle to avoid oscillation. |
+| **2nd** | Binary load shedding | Turn off active flexible loads in shed-priority order — highest number sheds first (3 before 2 before 1). One load per cycle. |
+| **3rd** | Battery power reduction | Reduce charge/discharge power by 1-2 kW. Last resort. |
+
+| Grid Condition | Response |
+|---|---|
+| > 95% of max amperage | Emergency — reduces by 2 kW immediately |
+| > 80% of max amperage | Caution — reduces by 1 kW |
+| < 70% of max amperage | Recovery — restores by 1 kW (up to Power Level) |
+| Current = 0 | Jumps to full Power Level |
+
+Recovery works in reverse: loads are restored one per cycle in reverse priority order, and battery power is increased back toward the user's Power Level.
+
+---
+
+## 10. Flexible Load Control
+
+Up to 3 controllable loads (EV charger, boiler, pool pump) can be managed by the EMS. Loads are assigned in the integration options flow (entity picker dropdowns for switch and current entities).
+
+### Scheduling
+
+`_schedule_flexible_loads()` in ems.py activates loads as an overlay on the battery schedule — they don't affect the battery plan itself. Each enabled load with a switch entity is scheduled into slots matching any of:
+
+- **Price below threshold** (cheap)
+- **Negative-price slots** (paid to consume)
+- **PV surplus slots** (hourly solar > hourly consumption)
+- **Battery charge slots** (already identified as cheap)
+
+### Actuation
+
+`_actuate_flex_loads()` runs every 10-second cycle. For each load, it compares `should_be_on` (load scheduled for current slot?) with the current state and calls `switch.turn_on` / `switch.turn_off` via HA services.
+
+For the EV charger (load 1), when turning on, the current is set to `default_current` via the assigned current entity (`number.set_value` or `select.select_option`).
+
+### EV Boost Override
+
+A one-press "+1 hour" override that forces the EV charger on at maximum current regardless of the EMS schedule:
+
+- **EV Boost +1h button**: Each press adds 1 hour from `max(now, current_boost_end)`, so presses stack.
+- **EV Boost Cancel button**: Immediately cancels any active boost.
+
+During a boost:
+1. Charger is forced on at max current (highest step in `current_steps`).
+2. Normal schedule is bypassed for the charger.
+3. Safe Power Management can still step down current but will NOT fully shed the charger.
+4. Boost expires automatically when the timer runs out.
+
+---
+
+## 11. SOC History and SOH Tracking
+
+### SOC History
+
+The coordinator records battery SOC at each slot boundary in `_soc_history`. The frontend draws a solid line for actual past SOC and a dotted line for the projected future trajectory.
+
+### Cycle Counting and SOH Estimation
+
+`_track_cycle_throughput()` accumulates positive/negative SOC deltas (kWh) each cycle, with a 0.5% jitter floor to filter noise.
+
+```
+equivalent_full_cycles = min(total_charged_kwh, total_discharged_kwh) / battery_capacity_kwh
+SOH = max(0.80, 1.0 - cycles × 5e-5)
+```
+
+This is a conservative LFP degradation curve. The SOH factor multiplies the nominal `battery_capacity_kwh` before EMSConfig is constructed — ems.py treats the capacity as already-effective. Persisted in the consumption store so it survives restarts.
+
+---
+
+## 12. Design Notes
 
 ### Sellable Energy Safety Margin
 
@@ -411,9 +598,16 @@ When `arbitrage_price_delta > 0` and the day's price spread exceeds it, the syst
 - Increasing `reserve_target_pct` to keep a larger buffer
 - Both changes can be combined
 
+### Negative-Price Strategy Composition
+
+When both `charge_to_full_on_negative_price` and `discharge_to_make_room_for_negative_price` are on:
+1. Make-room discharges are scheduled before negative windows (sell at peak)
+2. Charge slots fire during the negative windows (paid to consume)
+3. Net effect: maximum profit on negative-price days (discharge at peak + buy at negative + PV fills the cleared battery)
+
 ---
 
-## 9. Summary Decision Flowchart
+## 13. Summary Decision Flowchart
 
 ```
 START (every 10 seconds)
@@ -422,31 +616,61 @@ START (every 10 seconds)
 Read battery SOC, prices, PV, consumption
   │
   ▼
-grid_mode == "off"? ──yes──▶ IDLE
+Input hash unchanged AND same slot? ──yes──▶ Skip recalc, use cached schedule
   │ no
   ▼
-Recalculate schedule (periodically)
+grid_mode == "off"? ──yes──▶ Compute reserve (informational) → IDLE
+  │ no
+  ▼
+Recalculate schedule
   │
   ├── from_grid: deficit = max(snapshot, predictive) + carryover
   │     pick cheapest slots to cover deficit
+  │     + make-room discharges (if enabled)
   │
   ├── to_grid: sellable = (peak_soc - reserve) * efficiency * 0.85
   │     pick most expensive slots
   │
   └── both: deficit + sellable with profitability filter
-        charge cheap, sell expensive
+  │     charge cheap, sell expensive
+  │     cycle cost raises min sell price
+  │
+  ▼
+Negative-price post-processing
+  │ charge_to_full → add all p<0 to charge set
+  │ discharge_to_make_room → pre-discharge before p<0 PV windows
+  │
+  ▼
+SOC validation (prune infeasible slots)
+  │ phantom-charge detection
+  │ PV-overflow exemption for negatives
+  │
+  ▼
+Merge slot overrides → re-validate
+  │
+  ▼
+Schedule flexible loads (overlay on cheap/negative/PV-surplus slots)
   │
   ▼
 Current slot in schedule?
   │
-  ├── charge slot & SOC < charge_max ──▶ CHARGING
+  ├── charge slot → defer if cheaper slot later? → CHARGING or IDLE
   │     inverter SOC register = charge_max
   │
-  ├── discharge slot & SOC > reserve_target ──▶ DISCHARGING
+  ├── discharge slot & SOC > reserve_target → anti-conflict check → DISCHARGING or IDLE
   │     inverter SOC register = reserve_target (auto) or discharge_min (manual)
   │
-  └── not in schedule ──▶ IDLE
+  └── not in schedule → IDLE
+  │
+  ▼
+Actuate flexible loads (on/off based on slot schedule, EV boost override)
+  │
+  ▼
+Safe power check (EV step-down → load shed → battery power reduction)
   │
   ▼
 Write Modbus registers if state changed
+  │
+  ▼
+Check Rule 1 window conflict → surface warning if needed
 ```
