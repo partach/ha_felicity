@@ -525,17 +525,14 @@ class TestCalculateSchedule:
     def test_grid_mode_off_still_reports_reserve(self):
         """Grid mode off should still expose the overnight reserve + target %.
 
-        The frontend's "night target" line and "overnight need" stat read
-        these even when the scheduler is disabled, so they must be populated
-        rather than left at the 0.0 default.
+        The frontend's 'night target' line and 'overnight need' stat read
+        these even when the scheduler is disabled.
         """
         config = default_config(grid_mode="off")
         state = default_state()
         result = calculate_schedule(config, state)
         assert result.status == "off"
-        # 38.5 kWh/d consumption + a real PV daylight window → non-zero need.
         assert result.self_consumption_reserve > 0
-        # Reserve target % must exceed the bare discharge-min floor (20%).
         assert result.reserve_target_pct > config.battery_discharge_min_pct
 
     def test_no_price_data_still_reports_reserve(self):
