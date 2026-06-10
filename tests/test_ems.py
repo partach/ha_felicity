@@ -4177,3 +4177,269 @@ class TestFlexibleLoadScheduling:
         )
         result = calculate_schedule(config, state)
         assert result.load_slots == {}
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: consistency audit fixes (June 2026)
+# ---------------------------------------------------------------------------
+
+class TestInverterCapSingleConfidence:
+    """PV confidence must be applied to PV exactly once in the
+    inverter-max grid power cap (was applied twice: once when computing
+    pv_kwh, again inside the cap formula)."""
+
+    def test_validation_cap_uses_confidence_once(self):
+        """With low confidence, the cap must subtract the confidence-scaled
+        PV once.  Double application under-subtracts PV, overestimating
+        the grid contribution and pruning charge slots that actually fit.
+
+        At hour 12, PV forecast 8 kWh/h, confidence 0.5:
+          correct cap:  grid = 10 - 8*0.5       = 6 kW
+          double-conf:  grid = 10 - 8*0.5*0.5   = 8 kW  (2 kW too much)
+        Starting at 0.1 kWh: 0.1 + 4.0(pv) - 0.2(cons) + 6.0 =  9.9 → fits
+        With the bug:        0.1 + 4.0      - 0.2       + 8.0 = 11.9 → pruned
+        """
+        validated_charge, _ = _validate_schedule_soc(
+            remaining=[(12, 0.05)],
+            charge_slots={12},
+            discharge_slots=set(),
+            current_kwh=0.1,
+            consumption_per_slot=0.2,
+            pv_hourly_kwh={12: 8.0},
+            minutes_per_slot=60.0,
+            pv_confidence=0.5,
+            battery_capacity=10.0,
+            min_kwh=0.0,
+            energy_per_slot=10.0,
+            efficiency=1.0,
+            inverter_max_power_kw=10.0,
+            safe_power_kw=10.0,
+        )
+        assert 12 in validated_charge, (
+            "charge slot pruned — inverter cap is double-applying confidence"
+        )
+
+    def test_trajectory_cap_uses_confidence_once(self):
+        """SOC trajectory grid contribution = min(safe, max - pv*conf)."""
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=100.0,
+            battery_discharge_min_pct=5.0,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=0.0,
+        )
+        # All PV in hour 12 (8 kWh), actuals indicate 50% confidence.
+        # Force the charge slot at hour 12 via slot pricing: hour 12 is
+        # the only cheap slot.
+        prices = [0.50] * 24
+        prices[12] = 0.01
+        state = default_state(
+            battery_soc_pct=10.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh={h: 8.0 if h == 12 else 0.0 for h in range(24)},
+            pv_forecast_today=8.0,
+            pv_forecast_remaining=8.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=11,
+            current_minute=0,
+        )
+        traj = ems._compute_scheduled_soc_trajectory(
+            prices=prices,
+            num_slots=24,
+            minutes_per_slot=60.0,
+            current_kwh=10.0,
+            current_slot=11,
+            scheduled_slots={12: "charge"},
+            config=config,
+            state=state,
+        )
+        # SOC entering slot 13 minus SOC entering slot 12 = pv*conf + grid_cap
+        conf = ems._calculate_pv_confidence(
+            state.pv_hourly_kwh, state.pv_actual_today_kwh,
+            state.current_hour, state.current_minute,
+        )
+        pv_scaled = 8.0 * conf
+        expected_grid = min(10.0, max(0.0, 10.0 - pv_scaled))
+        delta_kwh = (traj[13] - traj[12]) / 100.0 * 100.0  # SOC% on 100 kWh = kWh
+        assert delta_kwh == pytest.approx(pv_scaled + expected_grid * config.efficiency, abs=0.2)
+
+
+class TestBlockExportOff:
+    """block_export_on_negative_price=False must allow negative-price
+    sells (previously the flag was dead — always blocked)."""
+
+    def test_to_grid_flag_off_allows_negative_sells(self):
+        prices = [-0.10] * 24  # every slot negative
+        config = default_config(
+            grid_mode="to_grid",
+            block_export_on_negative_price=False,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=10.0,
+            reserve_target_pct=15.0,
+        )
+        state = default_state(
+            battery_soc_pct=95.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(30.0),
+            pv_forecast_remaining=15.0,
+            pv_actual_today_kwh=15.0,
+        )
+        result = calculate_schedule(config, state)
+        discharges = [i for i, a in result.scheduled_slots.items() if a == "discharge"]
+        assert discharges, "flag off must allow selling at negative prices"
+
+    def test_to_grid_flag_on_blocks_negative_sells(self):
+        prices = [-0.10] * 24
+        config = default_config(
+            grid_mode="to_grid",
+            block_export_on_negative_price=True,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=10.0,
+            reserve_target_pct=15.0,
+        )
+        state = default_state(battery_soc_pct=95.0, slot_prices_today=prices)
+        result = calculate_schedule(config, state)
+        discharges = [i for i, a in result.scheduled_slots.items() if a == "discharge"]
+        assert not discharges, "flag on must block negative-price sells"
+
+    def test_both_mode_prefers_charging_over_negative_sells(self):
+        """In both mode, negative-price slots are claimed by the charge
+        side (getting paid to charge always beats paying to sell), so the
+        flag never produces negative sells there — by design."""
+        prices = [-0.10] * 24
+        config = default_config(
+            grid_mode="both",
+            block_export_on_negative_price=False,
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=10.0,
+            reserve_target_pct=15.0,
+        )
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(30.0),
+        )
+        result = calculate_schedule(config, state)
+        charges = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        discharges = [i for i, a in result.scheduled_slots.items() if a == "discharge"]
+        assert charges, "negative slots should be claimed as charges"
+        assert not discharges, "no negative sells when charging pays better"
+
+
+class TestTomorrowReserveSettings:
+    """The tomorrow-deficit inside unified slot selection must honour
+    reserve_target_pct and the self_consumption boost, like today's."""
+
+    def test_fixed_reserve_raises_tomorrow_deficit(self):
+        common = dict(
+            remaining_today=[(22, 0.30), (23, 0.31)],
+            energy_deficit=0.0,
+            effective_per_slot=4.5,
+            battery_capacity=60.0,
+            discharge_min_pct=20.0,
+            consumption_est=20.0,
+            efficiency=0.90,
+            energy_per_slot=5.0,
+            current_kwh=20.0,
+            net_pv=0.0,
+            charge_max_pct=100.0,
+            slot_prices_tomorrow=[0.05] * 24,
+            pv_forecast_tomorrow=0.0,
+            current_hour=22,
+        )
+        _, tmr_default, _ = select_unified_charge_slots(**common)
+        _, tmr_fixed, _ = select_unified_charge_slots(
+            **common, reserve_target_pct=80.0)
+        # 80% fixed reserve (48 kWh) demands far more tomorrow charging
+        # than the dynamic reserve (12 + ~10 kWh).
+        assert len(tmr_fixed) > len(tmr_default)
+
+    def test_self_consumption_priority_raises_tomorrow_deficit(self):
+        common = dict(
+            remaining_today=[(22, 0.30), (23, 0.31)],
+            energy_deficit=0.0,
+            effective_per_slot=4.5,
+            battery_capacity=60.0,
+            discharge_min_pct=20.0,
+            consumption_est=38.5,
+            efficiency=0.90,
+            energy_per_slot=5.0,
+            current_kwh=15.0,
+            net_pv=0.0,
+            charge_max_pct=100.0,
+            slot_prices_tomorrow=[0.05] * 24,
+            pv_forecast_tomorrow=0.0,
+            current_hour=22,
+        )
+        _, tmr_cost, _ = select_unified_charge_slots(
+            **common, optimization_priority="cost")
+        _, tmr_sc, _ = select_unified_charge_slots(
+            **common, optimization_priority="self_consumption")
+        assert len(tmr_sc) >= len(tmr_cost)
+
+
+class TestMakeRoomCoValidation:
+    """In both mode, make-room discharges must account for already-selected
+    sell slots — combined drain must not breach the hardware floor."""
+
+    def test_combined_drain_respects_hardware_floor(self):
+        # Negative-price PV window at 12-14, expensive evening sells.
+        prices = [0.20] * 24
+        for h in (12, 13, 14):
+            prices[h] = -0.10
+        for h in (8, 9, 10):
+            prices[h] = 0.45  # expensive morning: make-room candidates
+        config = default_config(
+            grid_mode="both",
+            discharge_to_make_room_for_negative_price=True,
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20.0,  # floor 4 kWh
+            safe_power_kw=5.0,
+            consumption_est_kwh=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=60.0,  # 12 kWh
+            slot_prices_today=prices,
+            pv_hourly_kwh={12: 6.0, 13: 6.0, 14: 6.0},
+            pv_forecast_today=18.0,
+            pv_forecast_remaining=18.0,
+            pv_actual_today_kwh=0.0,
+            current_hour=6,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        # Simulate the resulting schedule: SOC must never go below the
+        # 4 kWh hardware floor.
+        soc = 12.0
+        min_seen = soc
+        for i in range(6, 24):
+            pv = state.pv_hourly_kwh.get(i, 0.0)
+            cons = 10.0 / 24.0
+            delta = pv - cons
+            action = result.scheduled_slots.get(i)
+            if action == "charge":
+                delta += min(5.0, max(0.0, config.inverter_max_power_kw - pv)) * 0.9
+            elif action == "discharge":
+                delta -= 5.0
+            soc = soc + delta
+            min_seen = min(min_seen, soc)
+            soc = max(0.0, min(20.0, soc))
+        assert min_seen >= 4.0 - 1.0, (
+            f"combined sells + make-room drained to {min_seen:.1f} kWh "
+            f"(floor 4.0): {result.scheduled_slots}"
+        )
+
+
+class TestAvailableInfoTotalWithTomorrow:
+    """AvailableInfo must expose the two-day slot count separately."""
+
+    def test_total_with_tomorrow_field(self):
+        config = default_config(grid_mode="from_grid")
+        state = default_state(
+            slot_prices_today=[0.10] * 24,
+            slot_prices_tomorrow=[0.10] * 24,
+        )
+        info = calculate_available_info(config, state, price_threshold=0.20)
+        assert info.available_total_with_tomorrow > info.available_slots
+        assert info.available_total_with_tomorrow == info.available_slots + 24

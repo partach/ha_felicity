@@ -139,6 +139,21 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                     "action": action,
                 })
 
+        # Flex load schedule keyed by SLOT (the card draws a strip per bar):
+        # {slot_index: [load indices active in that slot]}.  The coordinator
+        # stores it keyed by load ({load_index: {slot: True}}).
+        flex_slot_map: dict[str, list[int]] = {}
+        for load_idx, slots in (self.coordinator._flex_load_scheduled or {}).items():
+            for slot in slots:
+                flex_slot_map.setdefault(str(slot), []).append(load_idx)
+
+        # Effective capacity (nominal × SOH) — what the scheduler actually
+        # plans with.  The client-side simulation must use the same value
+        # or its SOC/headroom math drifts as the battery ages.
+        nominal_capacity = opts.get("battery_capacity_kwh", 10) or 10
+        soh_factor = getattr(self.coordinator, "_battery_soh_factor", 1.0)
+        effective_capacity = round(nominal_capacity * soh_factor, 2)
+
         # Build tomorrow's slot data with backend-computed actions
         tomorrow_slot_data = []
         tomorrow_prices = self.coordinator.slot_prices_tomorrow
@@ -174,10 +189,12 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "slot_schedule_tomorrow": tomorrow_slot_data,
             # Simulation parameters for client-side schedule preview
             "sim_params": {
-                "battery_capacity_kwh": opts.get("battery_capacity_kwh", 10),
+                "battery_capacity_kwh": effective_capacity,
+                "battery_soh_factor": soh_factor,
                 "battery_charge_max_pct": opts.get("battery_charge_max_level", 100),
                 "battery_discharge_min_pct": opts.get("battery_discharge_min_level", 20),
                 "reserve_target_pct": opts.get("reserve_target_pct", 0),
+                "backend_reserve_target_pct": self.coordinator._reserve_target_pct,
                 "arbitrage_price_delta": opts.get("arbitrage_price_delta", 0.0),
                 "efficiency": opts.get("efficiency_factor", 0.90),
                 "battery_soc_pct": self.coordinator.battery_soc,
@@ -194,10 +211,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "soc_history": self.coordinator._soc_history,
             "slot_overrides": self.coordinator.slot_overrides if self.coordinator.slot_overrides else {},
             "rule1_window_warning": self.coordinator.rule1_window_warning,
-            "flex_load_schedule": {
-                str(k): list(v.keys())
-                for k, v in (self.coordinator._flex_load_scheduled or {}).items()
-            },
+            "flex_load_schedule": flex_slot_map,
             "flex_load_states": dict(self.coordinator._flex_load_states),
             "flex_load_configs": [
                 {

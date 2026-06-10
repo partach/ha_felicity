@@ -106,11 +106,16 @@ class EMSState:
     pv_forecast_today: float | None = None
     pv_forecast_tomorrow: float | None = None
     pv_actual_today_kwh: float | None = None
+    # Real per-hour PV forecast for tomorrow ({hour: kWh}).  When absent,
+    # the tomorrow schedule synthesizes a flat daylight distribution from
+    # pv_forecast_tomorrow.
+    pv_hourly_kwh_tomorrow: dict[int, float] | None = None
     consumption_hourly_kwh: dict[int, float] | None = None  # {hour: avg_kwh} from 7-day profile
     # Previous-tick PV confidence for EMA smoothing.  None on first call.
     previous_pv_confidence: float | None = None
-    # Last successful Modbus read timestamp (epoch seconds).  When stale
-    # (older than the configured threshold), the algorithm refuses to plan.
+    # Last successful Modbus read timestamp (epoch seconds).  Informational —
+    # the staleness check lives in the coordinator, which refuses to re-plan
+    # when reads have failed for too long.
     last_modbus_read_ts: float | None = None
     # Fallback PV total for today when forecast.solar is unavailable.
     # Coordinator sets this from the 7-day rolling average of actual daily
@@ -146,6 +151,7 @@ class AvailableInfo:
     """Output of the available slots / charge likelihood calculation."""
 
     available_slots: int = 0
+    available_total_with_tomorrow: int = 0
     available_energy_capacity: float = 0.0
     charge_likelihood: str = "no_data"
 
@@ -482,8 +488,9 @@ def _compute_scheduled_soc_trajectory(
         delta = pv_per_slot - cons
         action = scheduled_slots.get(i)
         if action == "charge":
+            # pv_kwh is already confidence-scaled (see above).
             grid_kw = min(config.safe_power_kw,
-                          max(0.0, config.inverter_max_power_kw - pv_kwh * pv_confidence))
+                          max(0.0, config.inverter_max_power_kw - pv_kwh))
             delta += grid_kw * (minutes_per_slot / 60.0) * config.efficiency
         elif action == "discharge" and soc > min_kwh:
             delta -= min(energy_per_slot, soc - min_kwh)
@@ -588,8 +595,9 @@ def _validate_schedule_soc(
             charge_contribution = 0.0
             if slot_idx in charge_slots:
                 if inverter_max_power_kw > 0:
+                    # pv_kwh is already confidence-scaled (see above).
                     grid_kw = min(safe_power_kw or energy_per_slot / (minutes_per_slot / 60.0),
-                                  max(0.0, inverter_max_power_kw - pv_kwh * pv_confidence))
+                                  max(0.0, inverter_max_power_kw - pv_kwh))
                     charge_contribution = grid_kw * (minutes_per_slot / 60.0) * efficiency
                 else:
                     charge_contribution = energy_per_slot * efficiency
@@ -740,6 +748,7 @@ def _select_discharges_for_pv_headroom(
     minutes_per_slot: float,
     pv_confidence: float,
     reserve_target: float,
+    scheduled_discharge: set[int] | None = None,
 ) -> set[int]:
     """Pre-emptively discharge before negative-price PV windows.
 
@@ -757,6 +766,7 @@ def _select_discharges_for_pv_headroom(
     Returns set of slot indices to discharge.
     """
     discharge: set[int] = set()
+    existing_discharge = scheduled_discharge or set()
     if not state.pv_hourly_kwh or not remaining:
         return discharge
 
@@ -794,7 +804,7 @@ def _select_discharges_for_pv_headroom(
                 grid_kw = min(config.safe_power_kw,
                               max(0.0, config.inverter_max_power_kw - pv_kw_rate))
                 delta += grid_kw * (minutes_per_slot / 60.0) * config.efficiency
-            if idx in (discharge | extra_discharge):
+            if idx in discharge or idx in extra_discharge or idx in existing_discharge:
                 delta -= energy_per_slot
             soc_raw = soc + delta  # before clamp — captures true dip
             min_soc = min(min_soc, soc_raw)
@@ -836,6 +846,7 @@ def _select_discharges_for_pv_headroom(
             and p is not None and p > 0
             and idx not in scheduled_charge
             and idx not in discharge
+            and idx not in existing_discharge
         ]
         if not candidates:
             break
@@ -948,8 +959,15 @@ def select_unified_charge_slots(
     pv_forecast_tomorrow: float | None = None,
     pv_hourly_kwh: dict[int, float] | None = None,
     current_hour: int = 12,
+    reserve_target_pct: float = 0.0,
+    optimization_priority: str = "cost",
 ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], float]:
     """Select charge slots from a unified today+tomorrow pool.
+
+    reserve_target_pct / optimization_priority shape the *tomorrow*
+    reserve target the same way they shape today's (fixed floor and
+    self_consumption 1.25x boost), keeping the two-day deficit
+    consistent with the user's reserve settings.
 
     Returns:
         (today_selected, tomorrow_selected, tomorrow_charge_kwh)
@@ -982,7 +1000,15 @@ def select_unified_charge_slots(
             current_kwh + net_pv + today_charge - drain_to_midnight
         ))
 
-        tomorrow_reserve_target = min(battery_capacity, min_kwh + tomorrow_reserve)
+        # Mirror _compute_reserve_target: fixed floor and self_consumption
+        # boost apply to tomorrow's reserve just like today's.
+        if reserve_target_pct > 0:
+            fixed_floor = (reserve_target_pct / 100.0) * battery_capacity
+            tomorrow_reserve_target = min(battery_capacity, max(fixed_floor, min_kwh))
+        else:
+            multiplier = 1.25 if optimization_priority == "self_consumption" else 1.0
+            tomorrow_reserve_target = min(
+                battery_capacity, min_kwh + tomorrow_reserve * multiplier)
         daytime_gap = max(0.0, consumption_est - tomorrow_pv)
         # PV surplus beyond consumption will charge the battery during the day,
         # reducing the need for grid charging overnight.
@@ -1054,50 +1080,14 @@ def select_unified_charge_slots(
                 len(replacements),
             )
 
-    # --- Safety constraint: ensure battery survives until tomorrow's charging ---
-    if tomorrow_selected and tomorrow_pool and slot_prices_tomorrow:
-        min_kwh = (discharge_min_pct / 100.0) * battery_capacity
-        num_slots_tmr = len(slot_prices_tomorrow)
-        minutes_per_slot = (24 * 60) / num_slots_tmr
-
-        earliest_tmr_slot = min(s[2] for s in tomorrow_selected)
-        earliest_tmr_hour = int((earliest_tmr_slot * minutes_per_slot) / 60)
-        hours_until_tmr_charge = max(1, (24 - current_hour) + earliest_tmr_hour)
-
-        consumption_per_hour = consumption_est / 24.0
-        bridge_consumption = consumption_per_hour * hours_until_tmr_charge
-
-        today_charge_energy = len(today_selected) * effective_per_slot
-        # Clamp: the inverter stops providing house power once SOC hits
-        # min_kwh, so the battery cannot drain below that from consumption
-        # alone.  Without this clamp the bridge over-estimates the shortfall
-        # and forces expensive today slots when cheap tomorrow slots suffice.
-        raw_projected = current_kwh + net_pv + today_charge_energy - bridge_consumption
-        projected = max(min_kwh, raw_projected)
-
-        if projected < min_kwh:
-            shortfall_kwh = min_kwh - projected
-            extra_today_needed = math.ceil(shortfall_kwh / effective_per_slot)
-
-            today_selected_indices = {s[2] for s in today_selected}
-            available_today = sorted(
-                [s for s in today_pool if s[0] >= 0 and s[2] not in today_selected_indices],
-                key=lambda x: x[0],
-            )
-
-            tomorrow_by_price = sorted(tomorrow_selected, key=lambda x: -x[0])
-
-            swaps = min(extra_today_needed, len(available_today), len(tomorrow_by_price))
-            for j in range(swaps):
-                today_selected.append(available_today[j])
-                tomorrow_selected.remove(tomorrow_by_price[j])
-
-            _LOGGER.info(
-                "Unified safety: swapped %d slots today↔tomorrow "
-                "(bridge=%dh, projected=%.1f→%.1f, min=%.1f)",
-                swaps, hours_until_tmr_charge, projected,
-                projected + swaps * effective_per_slot, min_kwh,
-            )
+    # --- Bridge to tomorrow: intentionally no today↔tomorrow swap ---
+    # The inverter stops providing house power once SOC hits min_kwh and
+    # passes the house through to grid, so the battery cannot drain below
+    # the floor from consumption alone.  Forcing expensive today slots to
+    # "survive" the bridge would cost more than simply consuming from grid
+    # overnight (round-trip losses on top of the same prices).  Charging
+    # is therefore deferred to tomorrow's cheaper slots; see
+    # test_safety_swap which pins this behavior.
 
     # Convert to (slot_index, price) tuples
     today_result = [(s[2], s[0]) for s in today_selected]
@@ -1173,13 +1163,16 @@ def _compute_tomorrow_schedule(
             scheduled[idx] = "charge"
             charge_indices.add(idx)
 
-    # Synthesize hourly PV for tomorrow (distribute total across daylight 6-18)
+    # Hourly PV for tomorrow: prefer the real per-hour forecast when the
+    # coordinator supplied one; otherwise synthesize a flat daylight (6-18)
+    # distribution from the daily total.
     pv_tomorrow_total = state.pv_forecast_tomorrow or 0.0
-    daylight_hours = list(range(6, 18))
-    pv_per_daylight_hour = pv_tomorrow_total / len(daylight_hours) if daylight_hours else 0.0
-    pv_hourly_tomorrow: dict[int, float] = {}
-    for h in daylight_hours:
-        pv_hourly_tomorrow[h] = pv_per_daylight_hour
+    if state.pv_hourly_kwh_tomorrow:
+        pv_hourly_tomorrow = dict(state.pv_hourly_kwh_tomorrow)
+    else:
+        daylight_hours = list(range(6, 18))
+        pv_per_daylight_hour = pv_tomorrow_total / len(daylight_hours) if daylight_hours else 0.0
+        pv_hourly_tomorrow = {h: pv_per_daylight_hour for h in daylight_hours}
 
     # Validate tomorrow's charge slots: drop any that would overflow.
     # Without this, a negative or near-zero-price slot picked by the
@@ -1242,7 +1235,10 @@ def _compute_tomorrow_schedule(
                 available = [(i, p) for i, p in available if p >= min_sell]
 
             available.sort(key=lambda x: -x[1])
-            sell_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
+            # sellable is grid-side kWh; each discharge slot delivers
+            # energy_per_slot (battery-side) * efficiency to the grid.
+            grid_per_slot = energy_per_slot * config.efficiency
+            sell_needed = math.ceil(sellable / grid_per_slot) if grid_per_slot > 0 else 0
             sell_selected = available[:sell_needed]
 
             # SOC validation — use synthesized PV hourly for tomorrow.
@@ -1279,7 +1275,7 @@ def _compute_tomorrow_schedule(
         trajectory.append(round(pct, 1))
 
         hour = int((i * minutes_per_slot) / 60)
-        pv_kwh_rate = pv_per_daylight_hour if hour in daylight_hours else 0.0
+        pv_kwh_rate = pv_hourly_tomorrow.get(hour, 0.0)
         pv_per_slot = pv_kwh_rate * slot_duration_hours
 
         if state.consumption_hourly_kwh and hour in state.consumption_hourly_kwh:
@@ -1397,6 +1393,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         state.pv_hourly_kwh, state.pv_forecast_remaining,
         state.pv_actual_today_kwh, state.pv_forecast_today,
         state.current_hour, state.current_minute,
+        previous_pv_confidence=state.previous_pv_confidence,
     )
     energy_per_slot = config.safe_power_kw * slot_duration_hours
 
@@ -1477,11 +1474,18 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
                 pv_hr = state.pv_hourly_kwh.get(hr, 0.0)
                 if pv_hr > cons_per_hour:
                     pv_surplus_set.add(slot_idx)
+        # Flex loads need a BUY-side cheapness threshold.  result.price_threshold
+        # is the max charge price in from_grid/both-with-charges, but the MIN
+        # SELL price in to_grid (and both without charges) — using that would
+        # switch loads on for most of the day, including expensive slots.
+        charge_prices = [p for i, p in remaining
+                         if result.scheduled_slots.get(i) == "charge"]
+        flex_buy_threshold = max(charge_prices) if charge_prices else None
         result.load_slots = _schedule_flexible_loads(
             config.flexible_loads,
             remaining,
             result.scheduled_slots,
-            result.price_threshold,
+            flex_buy_threshold,
             pv_surplus_set,
         )
 
@@ -1564,6 +1568,8 @@ def _schedule_from_grid(
         pv_forecast_tomorrow=state.pv_forecast_tomorrow,
         pv_hourly_kwh=state.pv_hourly_kwh,
         current_hour=state.current_hour,
+        reserve_target_pct=config.reserve_target_pct,
+        optimization_priority=config.optimization_priority,
     )
 
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
@@ -1680,10 +1686,14 @@ def _schedule_to_grid(
         result.status = "no_action_needed"
         return result
 
-    # Filter sell candidates: strictly positive prices.  When
-    # block_export_on_negative_price is True, zero-price slots also pass
-    # through but negatives are blocked.
-    positive_slots = [(i, p) for i, p in remaining if p > 0]
+    # Filter sell candidates.  When block_export_on_negative_price is
+    # True (default), only strictly positive prices are eligible (selling
+    # at p<=0 earns nothing or costs money).  When False, the user accepts
+    # selling at any price, including negative (paying the grid).
+    if config.block_export_on_negative_price:
+        positive_slots = [(i, p) for i, p in remaining if p > 0]
+    else:
+        positive_slots = list(remaining)
 
     # Apply battery cycle wear cost: every sold kWh wears the battery.
     cycle_cost = config.battery_cycle_cost_eur_kwh
@@ -1694,7 +1704,10 @@ def _schedule_to_grid(
     if cycle_cost_per_sold_kwh > 0:
         positive_slots = [(i, p) for i, p in positive_slots if p >= cycle_cost_per_sold_kwh]
 
-    slots_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
+    # sellable is grid-side kWh; each discharge slot delivers
+    # energy_per_slot (battery-side) * efficiency to the grid.
+    grid_per_slot = energy_per_slot * config.efficiency
+    slots_needed = math.ceil(sellable / grid_per_slot) if grid_per_slot > 0 else 0
     sorted_slots = sorted(positive_slots, key=lambda x: -x[1])
     selected = sorted_slots[:slots_needed]
 
@@ -1836,6 +1849,8 @@ def _schedule_both(
         pv_forecast_tomorrow=state.pv_forecast_tomorrow,
         pv_hourly_kwh=state.pv_hourly_kwh,
         current_hour=state.current_hour,
+        reserve_target_pct=config.reserve_target_pct,
+        optimization_priority=config.optimization_priority,
     )
 
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
@@ -1857,14 +1872,16 @@ def _schedule_both(
 
     charge_slot_indices = {s[0] for s in charge_slots}
 
-    # Sell side: filter to strictly positive prices.  When
-    # block_export_on_negative_price is True (default), zero-price slots
-    # also pass through but negatives are blocked — selling at p < 0 means
-    # paying the grid to take energy.
-    sell_price_floor = 0.0 if config.block_export_on_negative_price else float("-inf")
-    non_negative_slots = [(i, p) for i, p in remaining if p > sell_price_floor]
-    available_for_sell = [(i, p) for i, p in non_negative_slots
-                         if p > 0 and i not in charge_slot_indices]
+    # Sell side: when block_export_on_negative_price is True (default),
+    # only strictly positive prices are eligible — selling at p <= 0 earns
+    # nothing or means paying the grid to take energy.  When False, the
+    # user accepts selling at any price, including negative.
+    if config.block_export_on_negative_price:
+        available_for_sell = [(i, p) for i, p in remaining
+                              if p > 0 and i not in charge_slot_indices]
+    else:
+        available_for_sell = [(i, p) for i, p in remaining
+                              if i not in charge_slot_indices]
 
     # Effective cycle wear cost per kWh sold (longevity priority increases
     # this).  Roundtrip-divided because every sold kWh required ≈1/η stored.
@@ -1884,7 +1901,10 @@ def _schedule_both(
         # (selling stored PV/yesterday's charge wears the battery too).
         available_for_sell = [(i, p) for i, p in available_for_sell if p >= cycle_cost_per_sold_kwh]
 
-    sell_needed = math.ceil(sellable / energy_per_slot) if energy_per_slot > 0 else 0
+    # sellable is grid-side kWh; each discharge slot delivers
+    # energy_per_slot (battery-side) * efficiency to the grid.
+    grid_per_slot = energy_per_slot * config.efficiency
+    sell_needed = math.ceil(sellable / grid_per_slot) if grid_per_slot > 0 else 0
     sorted_expensive = sorted(available_for_sell, key=lambda x: -x[1])
     sell_selected = sorted_expensive[:sell_needed]
 
@@ -1927,6 +1947,7 @@ def _schedule_both(
             remaining, current_kwh,
             existing_charge,
             config, state, minutes_per_slot, pv_confidence, reserve_target,
+            scheduled_discharge=existing_discharge,
         )
         discharge_for_headroom = candidate - existing_discharge - existing_charge
 
@@ -1994,6 +2015,7 @@ def calculate_available_info(
 
     info.available_slots = len(available)
     total_with_tomorrow = len(available) + tomorrow_available
+    info.available_total_with_tomorrow = total_with_tomorrow
     info.available_energy_capacity = round(total_with_tomorrow * energy_per_slot, 2)
 
     if state.battery_soc_pct is None:
@@ -2006,6 +2028,7 @@ def calculate_available_info(
         state.pv_hourly_kwh, state.pv_forecast_remaining,
         state.pv_actual_today_kwh, state.pv_forecast_today,
         state.current_hour, state.current_minute,
+        previous_pv_confidence=state.previous_pv_confidence,
     )
 
     if effective_mode == "from_grid":
