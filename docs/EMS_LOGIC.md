@@ -256,15 +256,7 @@ max_today_slots = floor(headroom / effective_per_slot)
 ```
 Excess today slots are replaced with tomorrow slots when possible. Negative-price slots pass through the headroom cap (they are profitable to consume).
 
-**Bridge safety**: If tomorrow slots were selected, ensures the battery survives until tomorrow's first charge slot:
-```
-hours_to_tomorrow_charge = (24 - current_hour) + earliest_tomorrow_charge_hour
-bridge_consumption = consumption_per_hour * hours_to_tomorrow_charge
-projected_at_charge = current_kwh + net_pv + today_charge - bridge_consumption
-
-if projected_at_charge < discharge_min_kwh:
-    swap expensive tomorrow slots for cheap today slots
-```
+**Bridge to tomorrow — intentionally no swap**: When tomorrow slots are selected and the overnight projection would dip toward the floor, the algorithm does NOT swap them for expensive today slots. The inverter switches the house to grid passthrough once SOC reaches `discharge_min_kwh`, so the battery cannot drain below the floor from consumption. Forcing today-charging to "bridge" the night would cost more than simply consuming from grid overnight (round-trip losses on top of the same prices) — charging stays deferred to tomorrow's cheaper slots.
 
 **Charge-to-full on negative price**: When `charge_to_full_on_negative_price = on`, every negative-price slot in the remaining window is added to the charge set after normal selection (deduplicated).
 
@@ -410,6 +402,8 @@ daytime_gap = max(0, consumption - tomorrow_pv)
 tomorrow_pv_surplus = max(0, tomorrow_pv - consumption)
 tomorrow_deficit = max(0, tomorrow_reserve_target + daytime_gap - projected_midnight - tomorrow_pv_surplus)
 ```
+
+The tomorrow reserve target honours the same settings as today's: a fixed `reserve_target_pct` floor when set, and the `self_consumption` priority's 1.25× overnight boost.
 
 This means if tomorrow has very cheap overnight prices, the algorithm may delay charging to tomorrow rather than buying at today's more expensive prices.
 

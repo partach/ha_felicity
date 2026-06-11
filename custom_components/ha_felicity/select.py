@@ -336,7 +336,14 @@ class HA_FelicitySpecialModeSelect(CoordinatorEntity, SelectEntity):
     @property
     def current_option(self) -> str:
         """Return the current selected option from persisted options."""
-        return self._entry.options.get(self._option_key, self._select_options[0])
+        value = self._entry.options.get(self._option_key, self._select_options[0])
+        # Normalize legacy bool values (early installs stored True/False
+        # for on/off selects) so the entity doesn't render an invalid state.
+        if isinstance(value, bool) and set(self._select_options) >= {"on", "off"}:
+            return "on" if value else "off"
+        if value not in self._select_options:
+            return self._select_options[0]
+        return value
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option and persist it."""

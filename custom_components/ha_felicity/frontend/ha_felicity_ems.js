@@ -305,7 +305,12 @@ class FelicityEMSCard extends LitElement {
       // and pick the cheapest slots from both days together.
       let tomorrowDeficit = 0;
       const tomorrowSlotData = this._tomorrowSlotData;
-      const hasTomorrow = tomorrowSlotData && tomorrowSlotData.length > 0;
+      // Only real tomorrow PRICE data forms a two-day pool.  The PV-only
+      // preview synthesizes slots with price=null — those must not inflate
+      // today's deficit (the backend computes tomorrow_deficit only when a
+      // real tomorrow price pool exists).
+      const hasTomorrow = tomorrowSlotData && tomorrowSlotData.length > 0
+        && tomorrowSlotData.some(s => s.price != null);
       if (hasTomorrow) {
         const consumption = sim.consumption_est_kwh || 10;
         const pvTmr = this._getNumericState("pv_forecast_tomorrow") || 0;
@@ -322,8 +327,12 @@ class FelicityEMSCard extends LitElement {
         const tmrReserveTarget = computeReserveTarget(minKwh, tmrReserve);
         // Daytime gap: on low-PV days battery drains during the day too
         const daytimeGap = Math.max(0, consumption - pvTmr);
-        // grid_charge >= reserve_target + daytime_gap - projected_midnight
-        const tmrShortfall = Math.max(0, tmrReserveTarget + daytimeGap - projectedMidnight);
+        // PV surplus beyond consumption charges the battery during the day,
+        // reducing overnight grid need (mirrors backend).
+        const tmrPvSurplus = Math.max(0, pvTmr - consumption);
+        // grid_charge >= reserve_target + daytime_gap - projected_midnight - pv_surplus
+        const tmrShortfall = Math.max(
+          0, tmrReserveTarget + daytimeGap - projectedMidnight - tmrPvSurplus);
         tomorrowDeficit = tmrShortfall;
       }
       const totalDeficit = deficit + tomorrowDeficit;
@@ -564,6 +573,13 @@ class FelicityEMSCard extends LitElement {
     let tomorrowSlotData = this._getAttr("schedule_status", "slot_schedule_tomorrow");
     let granularity = this._getAttr("schedule_status", "slot_granularity_min") || 60;
 
+    // Whether the slot data came from the backend scheduler.  An empty
+    // backend schedule (all actions null — e.g. solar protection dropped
+    // everything) is still authoritative; only the raw-price fallback
+    // below lacks backend actions.
+    const backendTodayData = !!(todaySlotData && todaySlotData.length);
+    const backendTomorrowData = !!(tomorrowSlotData && tomorrowSlotData.length);
+
     // Fallback: read raw prices from source Nordpool entity if schedule_status has no slot data
     if (!todaySlotData || !todaySlotData.length) {
       todaySlotData = this._getRawPriceSlots("today");
@@ -619,7 +635,7 @@ class FelicityEMSCard extends LitElement {
       && Object.keys(this._slotOverrides.today || {}).length > 0;
     const hasTomorrowSlotOverrides = this._slotOverrides
       && Object.keys(this._slotOverrides.tomorrow || {}).length > 0;
-    const useBackendSchedule = !hasSliderOverrides && todaySlotData?.some(s => s.action != null);
+    const useBackendSchedule = !hasSliderOverrides && backendTodayData;
 
     // When using backend schedule with slot overrides, overlay local overrides
     // for immediate visual feedback (backend may not have refreshed yet).
@@ -659,7 +675,7 @@ class FelicityEMSCard extends LitElement {
       // so the today-view's "tomorrow" summary stays consistent.
       let tomorrowChargeCount = this._simResult.tomorrowChargeCount;
       let tomorrowPlanned = this._simResult.tomorrowPlanned;
-      if (tomorrowSlotData?.some(s => s.action != null)) {
+      if (backendTomorrowData) {
         tomorrowChargeCount = tomorrowSlotData.filter(s => s.action === "charge").length;
         const tmrDischargeCount = tomorrowSlotData.filter(s => s.action === "discharge").length;
         tomorrowPlanned = tomorrowChargeCount * effectivePerSlot + tmrDischargeCount * energyPerSlot;
@@ -697,7 +713,7 @@ class FelicityEMSCard extends LitElement {
       displayThreshold = null;
       this._simResult = { slots: tomorrowSlotData, chargeCount: 0, dischargeCount: 0, planned: 0, threshold: null };
     } else if (showTomorrow) {
-      const useBackendTomorrow = !hasSliderOverrides && tomorrowSlotData?.some(s => s.action != null);
+      const useBackendTomorrow = !hasSliderOverrides && backendTomorrowData;
       if (useBackendTomorrow) {
         // Backend is authoritative — use its schedule directly
         const sim = this._getAttr("schedule_status", "sim_params") || {};
@@ -812,6 +828,9 @@ class FelicityEMSCard extends LitElement {
     // Current time marker (only for today view)
     const currentSlot = showTomorrow ? -1 : currentSlotIdx;
 
+    // Flexible load schedule: {slot_index: [load indices]} from the backend
+    const flexSchedule = this._getAttr("schedule_status", "flex_load_schedule") || {};
+
     // Draw bars
     for (let i = 0; i < numSlots; i++) {
       const slot = displayData[i];
@@ -874,7 +893,6 @@ class FelicityEMSCard extends LitElement {
       }
 
       // Flexible load indicator: cyan strip at bottom of bar
-      const flexSchedule = this._getAttr("schedule_status", "flex_load_schedule") || {};
       const loadAtSlot = flexSchedule[String(i)];
       if (loadAtSlot && loadAtSlot.length > 0 && !isPvOnlyView) {
         const stripH = Math.max(3, Math.min(5, barH * 0.12));
@@ -1528,10 +1546,15 @@ class FelicityEMSCard extends LitElement {
   _toggleDayView(e) {
     // Ignore clicks on the disabled tomorrow button
     if (e?.target?.classList?.contains("disabled")) return;
-    if (this._viewTomorrow) {
+    // Select the view named by the clicked button (re-clicking the
+    // active button is a no-op, not a flip).
+    const label = (e?.target?.textContent || "").trim().toLowerCase();
+    if (label === "today") {
       this._viewTomorrow = false;
-    } else {
+    } else if (label === "tomorrow") {
       this._viewTomorrow = true;
+    } else {
+      this._viewTomorrow = !this._viewTomorrow;
     }
     this._drawSlotTimeline();
     this.requestUpdate();
@@ -2034,7 +2057,8 @@ class FelicityEMSCard extends LitElement {
     if (!entity) return html``;
     const sim = this._getAttr("schedule_status", "sim_params") || {};
     const maxPower = sim.inverter_max_power_kw || 10;
-    const display = this._simOverrides.powerKw ?? parseFloat(entity.state) ?? 5;
+    const parsedPower = parseFloat(entity.state);
+    const display = this._simOverrides.powerKw ?? (isNaN(parsedPower) ? 5 : parsedPower);
 
     return html`
       <div class="control-item">
@@ -2051,7 +2075,8 @@ class FelicityEMSCard extends LitElement {
     if (!eid) return html``;
     const entity = this.hass.states[eid];
     if (!entity) return html``;
-    const display = this._simOverrides.priceLevel ?? parseInt(entity.state) ?? 5;
+    const parsedLevel = parseInt(entity.state);
+    const display = this._simOverrides.priceLevel ?? (isNaN(parsedLevel) ? 5 : parsedLevel);
 
     return html`
       <div class="control-item">

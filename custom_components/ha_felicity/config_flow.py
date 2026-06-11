@@ -91,6 +91,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "battery_cycle_cost_eur_kwh": self._user_input.get("battery_cycle_cost_eur_kwh", 0.0),
             "optimization_priority": self._user_input.get("optimization_priority", "cost"),
             "block_export_on_negative_price": self._user_input.get("block_export_on_negative_price", "on"),
+            "charge_to_full_on_negative_price": self._user_input.get("charge_to_full_on_negative_price", "off"),
+            "discharge_to_make_room_for_negative_price": self._user_input.get("discharge_to_make_room_for_negative_price", "off"),
+            "rule1_time_window": self._user_input.get("rule1_time_window", "manual"),
+            "rule1_weekday": self._user_input.get("rule1_weekday", "manual"),
             # Flexible loads (1-3)
             "flexible_load_1_enabled": "off",
             "flexible_load_1_name": "",
@@ -174,8 +178,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
                 vol.Optional(
-                    "nordpool_entity", 
-                    default=current_nordpool or None
+                    "nordpool_entity",
+                    description={"suggested_value": current_nordpool},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -405,12 +409,30 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         """Initialize options flow."""
         # self.config_entry = config_entry  # read only!! HA config fails if this is not removed!
 
+    # Optional entity pickers.  The HA frontend omits a cleared optional
+    # field from the submitted form, so absence must be treated as an
+    # explicit clear — otherwise an assigned entity can never be removed.
+    _OPTIONAL_ENTITY_KEYS = (
+        "nordpool_entity",
+        "nordpool_override",
+        "forecast_entity",
+        "forecast_entity_tomorrow",
+        "consumption_override_entity",
+        "flexible_load_1_switch_entity",
+        "flexible_load_1_current_entity",
+        "flexible_load_2_switch_entity",
+        "flexible_load_3_switch_entity",
+    )
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
-        try: 
+        try:
             my_options = dict(self.config_entry.options)
             if user_input is not None:
                 my_options.update(user_input)
+                for key in self._OPTIONAL_ENTITY_KEYS:
+                    if key not in user_input:
+                        my_options[key] = ""
                 return self.async_create_entry(title="", data=my_options)
             # Get current values from options (with defaults)
             current_register_set = my_options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)
@@ -459,8 +481,8 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Range(min=5, max=300),  # 5 seconds to 5 minutes
                 ),
                 vol.Optional(
-                    "nordpool_entity", 
-                    default=current_nordpool or None
+                    "nordpool_entity",
+                    description={"suggested_value": current_nordpool},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -472,7 +494,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     "nordpool_override",
-                    default=nordpool_override or None
+                    description={"suggested_value": nordpool_override},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -483,7 +505,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     "forecast_entity",
-                    default=current_forecast or None
+                    description={"suggested_value": current_forecast},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -494,7 +516,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     "forecast_entity_tomorrow",
-                    default=current_forecast_tomorrow or None
+                    description={"suggested_value": current_forecast_tomorrow},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -505,7 +527,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     "consumption_override_entity",
-                    default=current_consumption_override or None
+                    description={"suggested_value": current_consumption_override},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -518,7 +540,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 # enables the load's other configuration entities on the device.
                 vol.Optional(
                     "flexible_load_1_switch_entity",
-                    default=current_fl1_switch or None
+                    description={"suggested_value": current_fl1_switch},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -529,7 +551,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     "flexible_load_1_current_entity",
-                    default=current_fl1_current or None
+                    description={"suggested_value": current_fl1_current},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -540,7 +562,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     "flexible_load_2_switch_entity",
-                    default=current_fl2_switch or None
+                    description={"suggested_value": current_fl2_switch},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(
@@ -551,7 +573,7 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
                 vol.Optional(
                     "flexible_load_3_switch_entity",
-                    default=current_fl3_switch or None
+                    description={"suggested_value": current_fl3_switch},
                 ): vol.Maybe(
                     selector.EntitySelector(
                         selector.EntitySelectorConfig(

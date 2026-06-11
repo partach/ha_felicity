@@ -269,7 +269,9 @@ min_sell_price = max_buy_price / (efficiency × efficiency)
 
 ### Unified Two-Day Optimization
 
-When tomorrow's prices are available, merges today+tomorrow slots, picks cheapest from combined pool. Safety swap ensures battery survives until tomorrow's first charge slot.
+When tomorrow's prices are available, merges today+tomorrow slots, picks cheapest from combined pool. The tomorrow-side reserve target honours `reserve_target_pct` and the `self_consumption` 1.25× boost, same as today's.
+
+**Intentionally no today↔tomorrow safety swap**: the inverter switches the house to grid passthrough once SOC hits `min_kwh`, so the battery can't drain below the floor from consumption. Forcing expensive today slots to "bridge" the night would cost more than consuming from grid (round-trip losses on the same prices); charging defers to tomorrow's cheaper slots. `test_safety_swap` pins this.
 
 ### Per-Slot SOC Validation
 
@@ -809,6 +811,94 @@ by the select but consumed as a bool by `EMSConfig`, the coordinator
 converts it: `str(opts.get(..., "on")).lower() not in ("off","false","0")`.
 This also tolerates the legacy bool value from earlier installs.
 
+### Consistency Audit Fixes (June 2026)
+
+A full consistency audit (ems.py vs coordinator.py vs frontend vs config
+wiring) found and fixed:
+
+**Algorithm (ems.py)**
+- PV confidence was applied **twice** in the inverter-max grid power cap
+  (`inverter_max - pv_kwh * pv_confidence` where pv_kwh was already
+  scaled) in `_compute_scheduled_soc_trajectory` and
+  `_validate_schedule_soc` — cloudy-day trajectories overestimated grid
+  charge rate.
+- `block_export_on_negative_price=off` was dead — both `_schedule_to_grid`
+  and `_schedule_both` re-filtered `p > 0` unconditionally.  Off now
+  allows negative-price sells (in both mode negatives are still claimed
+  by the charge side first — getting paid to charge beats paying to sell).
+- Tomorrow's deficit in `select_unified_charge_slots` ignored
+  `reserve_target_pct` and the self_consumption boost — now mirrored via
+  new `reserve_target_pct`/`optimization_priority` parameters.
+- `_select_discharges_for_pv_headroom` now accepts `scheduled_discharge`
+  (the sell set) so both-mode make-room discharges are validated against
+  the combined drain (hardware floor).
+- Dead "safety swap" branch removed (clamp made it unreachable;
+  no-swap is intentional and economically correct — see Two-Day section).
+- Sell slot count now divides grid-side sellable by grid-side per-slot
+  delivery (`energy_per_slot * efficiency`) — was underselling ~10%.
+- Flex loads now get a BUY-side threshold (max charge price, or None);
+  previously in to_grid mode they received the min SELL price and
+  switched on most of the day.
+- `_compute_tomorrow_schedule` uses real `pv_hourly_kwh_tomorrow`
+  (new EMSState field, supplied by coordinator) instead of a flat
+  6-18h synthetic distribution.
+- `calculate_net_pv_surplus` / `calculate_available_info` now receive
+  `previous_pv_confidence` so all paths use the same smoothed confidence.
+- `AvailableInfo.available_total_with_tomorrow` added.
+
+**Coordinator**
+- PV-confidence EMA chain repaired: `_last_pv_confidence` stores the
+  *smoothed* value (was raw — degraded the EMA to a weak 2-tap blend).
+- Stale-data guard repaired: `_last_modbus_success_ts` only refreshes
+  when at least one register group read succeeded AND SOC parsed
+  (was unconditional — guard could never trigger).
+- Override re-validation parity: uses reserve-target floor (hardware
+  floor in make-room mode), passes `keep_all_negative_charges`, and the
+  current tick's smoothed confidence.
+- `_calculate_available_info` delegates to `ems.calculate_available_info`
+  with the SOH-scaled capacity (duplicate ~120 lines removed, fixed
+  missing self_consumption boost in charge_likelihood); duplicated
+  `_compute_reserve_target` and dead `_select_unified_charge_slots`
+  removed.
+- `_calculate_yesterday_deficit` uses SOH-scaled capacity.
+- EV boost raises current to max once per boost session even when the
+  charger was already on; a fresh press re-raises after safe-power
+  step-downs.  `_actuate_flex_loads` turns loads off (not early-return)
+  when slot context is lost.
+- Negative-price flag conversion tolerant of legacy bools.
+
+**Sensor / frontend contract**
+- `flex_load_schedule` attribute now keyed by slot
+  (`{slot: [load indices]}`) as the card expects — cyan strips rendered
+  at wrong slots before.
+- `sim_params.battery_capacity_kwh` is the SOH-scaled effective capacity
+  (+ new `battery_soh_factor`, `backend_reserve_target_pct`).
+- Card gates "backend as source of truth" on backend data *presence*
+  (an all-idle backend schedule is authoritative; was falling back to
+  client sim and painting phantom bars).
+- PV-only synthetic tomorrow slots no longer inflate the today-preview
+  deficit; client tomorrow-deficit now subtracts `tomorrow_pv_surplus`
+  (mirrors backend).
+- Day-view toggle selects the clicked tab (was flip-flopping); NaN-safe
+  slider state parsing.
+
+**Config wiring**
+- Options-flow entity pickers use `description={"suggested_value": ...}`
+  with explicit absent→clear handling — assigned entities can now be
+  unassigned (was a one-way ratchet via `default=`).
+- `_get_default_options` includes the negative-price + rule1 keys.
+- `select.py current_option` normalizes legacy bool values.
+- `number.py` nested f-string quote fixed (Python <3.12 tooling).
+
+**Known remaining (documented, deliberate)**
+- Midnight/bridge projection mixes net_pv with full consumption
+  (conservative, partially offsetting errors) — needs careful rework.
+- `_validate_schedule_soc` overflow bound is full capacity, not
+  `charge_max_pct` (PV may legitimately charge past the grid-charge
+  ceiling; modeling both bounds needs a two-limit simulation).
+- Coordinator still calls two ems privates (`_validate_schedule_soc`,
+  `_calculate_pv_confidence`) — coupling, not drift.
+
 ### Deferred Items (Need Separate Iteration)
 
 These were flagged in the same review but require larger changes
@@ -850,7 +940,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (167 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (178 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

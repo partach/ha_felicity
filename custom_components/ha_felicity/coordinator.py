@@ -164,6 +164,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._flex_load_current_step: int | None = None
         self._flex_load_scheduled: dict[int, dict[int, bool]] = {}  # from ScheduleResult.load_slots
         self._ev_boost_until_ts: float = 0.0  # epoch ts — EV override active when now < this
+        # Max current applied for the current boost session.  Applied once
+        # (not every tick) so safe-power step-downs aren't fought; reset on
+        # each boost press so a new press re-raises to max.
+        self._ev_boost_max_applied: bool = False
 
     @property
     def pv_actual_today_kwh(self) -> float | None:
@@ -594,41 +598,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.pv_hourly_kwh, self.pv_forecast_remaining,
             self.pv_actual_today_kwh, self.pv_forecast_today,
             now.hour, now.minute,
-        )
-
-    def _calculate_self_consumption_reserve(self, consumption_est: float,
-                                            num_slots: int,
-                                            remaining_slots: list[tuple[int, float]]) -> float:
-        """Calculate battery reserve needed for self-consumption overnight. Delegates to ems module."""
-        return ems_module.calculate_self_consumption_reserve(
-            consumption_est, self.pv_hourly_kwh)
-
-    def _select_unified_charge_slots(
-        self,
-        remaining_today: list[tuple[int, float]],
-        energy_deficit: float,
-        effective_per_slot: float,
-        battery_capacity: float,
-        discharge_min: float,
-        consumption_est: float,
-        efficiency: float,
-        energy_per_slot: float,
-        current_kwh: float = 0.0,
-        net_pv: float = 0.0,
-    ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], float]:
-        """Select charge slots from unified today+tomorrow pool. Delegates to ems module."""
-        charge_max_pct = self.config_entry.options.get("battery_charge_max_level", 100)
-        now = datetime.now()
-        return ems_module.select_unified_charge_slots(
-            remaining_today, energy_deficit, effective_per_slot,
-            battery_capacity, discharge_min, consumption_est,
-            efficiency, energy_per_slot,
-            current_kwh=current_kwh, net_pv=net_pv,
-            charge_max_pct=charge_max_pct,
-            slot_prices_tomorrow=self.slot_prices_tomorrow,
-            pv_forecast_tomorrow=self.pv_forecast_tomorrow,
-            pv_hourly_kwh=self.pv_hourly_kwh,
-            current_hour=now.hour,
+            previous_pv_confidence=self._last_pv_confidence,
         )
 
     def _calculate_schedule(self, battery_soc: float | None) -> None:
@@ -700,12 +670,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             block_export_on_negative_price=str(
                 opts.get("block_export_on_negative_price", "on")
             ).lower() not in ("off", "false", "0"),
-            charge_to_full_on_negative_price=opts.get(
+            charge_to_full_on_negative_price=str(opts.get(
                 "charge_to_full_on_negative_price", "off"
-            ) == "on",
-            discharge_to_make_room_for_negative_price=opts.get(
+            )).lower() in ("on", "true", "1"),
+            discharge_to_make_room_for_negative_price=str(opts.get(
                 "discharge_to_make_room_for_negative_price", "off"
-            ) == "on",
+            )).lower() in ("on", "true", "1"),
             flexible_loads=self._build_flex_load_configs(),
         )
 
@@ -718,6 +688,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             pv_forecast_today=self.pv_forecast_today,
             pv_forecast_tomorrow=self.pv_forecast_tomorrow,
             pv_actual_today_kwh=self.pv_actual_today_kwh,
+            pv_hourly_kwh_tomorrow=self.pv_hourly_kwh_tomorrow or None,
             consumption_hourly_kwh=self._hourly_consumption_profile or None,
             previous_pv_confidence=self._last_pv_confidence,
             last_modbus_read_ts=self._last_modbus_success_ts,
@@ -752,6 +723,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._last_schedule_slot_idx = current_slot_idx
 
         result = ems_module.calculate_schedule(config, state)
+
+        # Smoothed PV confidence for this tick — same EMA blend the
+        # schedule used internally (previous_confidence keeps the chain
+        # intact; storing the raw value would degrade the EMA to a weak
+        # 2-tap blend).
+        smoothed_pv_confidence = ems_module._calculate_pv_confidence(
+            self.pv_hourly_kwh, self.pv_actual_today_kwh,
+            now.hour, now.minute,
+            previous_confidence=self._last_pv_confidence,
+        )
 
         # Unpack ScheduleResult into coordinator attributes
         self.scheduled_slots = result.scheduled_slots
@@ -792,18 +773,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 }
                 current_kwh_t = (battery_soc / 100.0) * effective_capacity
                 min_kwh_t = (config.battery_discharge_min_pct / 100.0) * effective_capacity
+                # Match the main pass: discharges validate against the
+                # reserve target, not the bare hardware floor — except in
+                # make-room mode, where dips below reserve are intentional
+                # (negative-window PV refills the battery).
+                if config.discharge_to_make_room_for_negative_price:
+                    floor_t = min_kwh_t
+                else:
+                    reserve_kwh_t = (result.reserve_target_pct / 100.0) * effective_capacity
+                    floor_t = max(min_kwh_t, reserve_kwh_t)
                 consumption_per_slot_t = config.consumption_est_kwh / num_slots_t
                 energy_per_slot_t = config.safe_power_kw * (minutes_per_slot_t / 60.0)
-                pv_conf = self._last_pv_confidence or 1.0
                 validated_charge, validated_discharge = ems_module._validate_schedule_soc(
                     remaining_t, charge_set, discharge_set,
                     current_kwh_t, consumption_per_slot_t,
-                    self.pv_hourly_kwh or {}, minutes_per_slot_t, pv_conf,
-                    effective_capacity, min_kwh_t,
+                    self.pv_hourly_kwh or {}, minutes_per_slot_t,
+                    smoothed_pv_confidence,
+                    effective_capacity, floor_t,
                     energy_per_slot_t, config.efficiency,
                     consumption_hourly_kwh=self._hourly_consumption_profile or None,
                     inverter_max_power_kw=config.inverter_max_power_kw,
                     safe_power_kw=config.safe_power_kw,
+                    keep_all_negative_charges=config.charge_to_full_on_negative_price,
                 )
                 # Drop any slot rejected by validation, including overrides
                 dropped: list[int] = []
@@ -849,10 +840,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         else:
             self._last_net_pv = 0.0
 
-        self._last_pv_confidence = ems_module._calculate_pv_confidence(
-            self.pv_hourly_kwh, self.pv_actual_today_kwh,
-            now.hour, now.minute,
-        )
+        self._last_pv_confidence = smoothed_pv_confidence
 
     _WEEKDAY_NAMES = [
         "Sunday", "Monday", "Tuesday", "Wednesday",
@@ -1014,7 +1002,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 enabled=True,
                 name=opts.get(f"{prefix}name", "") or f"Load {n}",
                 switch_entity=opts.get(f"{prefix}switch_entity", ""),
-                rated_power_kw=float(opts.get(f"{prefix}power_kw", 2.0)),
+                rated_power_kw=float(opts.get(f"{prefix}power_kw", 3.7 if n == 1 else 2.0)),
                 priority=int(opts.get(f"{prefix}priority", n)),
                 current_entity=opts.get(f"{prefix}current_entity", "") if n == 1 else "",
                 current_steps=steps,
@@ -1039,12 +1027,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         now = time.time()
         base = max(now, self._ev_boost_until_ts)
         self._ev_boost_until_ts = base + 3600
+        # Re-apply max current on the next tick, even if the charger was
+        # already on (a fresh press signals urgency) or safe-power stepped
+        # the current down earlier in this boost session.
+        self._ev_boost_max_applied = False
         remaining = int((self._ev_boost_until_ts - now) / 60)
         _LOGGER.info("EV Boost: +1h → %d min remaining", remaining)
 
     def ev_boost_cancel(self) -> None:
         """Cancel the EV boost override."""
         self._ev_boost_until_ts = 0.0
+        self._ev_boost_max_applied = False
         _LOGGER.info("EV Boost cancelled")
 
     async def _actuate_flex_loads(self) -> None:
@@ -1058,9 +1051,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if load.is_ev_charger:
                     if not self._flex_load_states.get(load_idx, False):
                         await self._set_flex_load(load_idx, True, load)
-                        max_step = max(load.current_steps)
-                        await self._set_ev_charger_current(load, max_step)
+                    # Raise to max once per boost session — even when the
+                    # schedule already turned the charger on at default
+                    # current.  Not every tick, so safe-power step-downs
+                    # during the boost aren't immediately reverted.
+                    if not self._ev_boost_max_applied and load.current_steps:
+                        await self._set_ev_charger_current(load, max(load.current_steps))
+                        self._ev_boost_max_applied = True
                     break
+        else:
+            self._ev_boost_max_applied = False
 
         if not self._flex_load_scheduled and not ev_boost:
             for load_idx, is_on in list(self._flex_load_states.items()):
@@ -1070,6 +1070,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         slot_idx = self._current_slot_index()
         if slot_idx is None:
+            # No slot context (e.g., prices vanished) — switch loads off
+            # rather than leaving them stuck on (EV stays on during boost).
+            for load_idx, load in enumerate(loads):
+                if ev_boost and load.is_ev_charger:
+                    continue
+                if self._flex_load_states.get(load_idx, False):
+                    await self._set_flex_load(load_idx, False, load)
             return
 
         for load_idx, load in enumerate(loads):
@@ -1190,29 +1197,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return self.weekly_avg_consumption
         return self.config_entry.options.get("daily_consumption_estimate", 10)
 
-    @staticmethod
-    def _compute_reserve_target(
-        battery_capacity: float,
-        discharge_min: float,
-        reserve_kwh: float,
-        reserve_target_pct: float = 0,
-    ) -> float:
-        """Compute reserve target: fixed floor if reserve_target_pct > 0, else dynamic."""
-        min_kwh = (discharge_min / 100.0) * battery_capacity
-        if reserve_target_pct > 0:
-            fixed_floor = (reserve_target_pct / 100.0) * battery_capacity
-            return min(battery_capacity, max(fixed_floor, min_kwh))
-        return min(battery_capacity, min_kwh + reserve_kwh)
-
     def _calculate_available_info(self, battery_soc: float | None) -> None:
         """Calculate available slots and charge likelihood (always visible, regardless of price_mode).
 
-        Always shows informational slot counts — even when grid_mode is off.
-        When grid_mode is off, defaults to from_grid perspective (slots below threshold).
+        Delegates to ems.calculate_available_info() — same config (including
+        the SOH-scaled capacity and optimization_priority reserve boost) the
+        scheduler uses, so charge_likelihood matches the actual plan.
         """
         opts = self.config_entry.options
-        grid_mode = opts.get("grid_mode", "off")
         price_mode = opts.get("price_mode", "manual")
+
+        # Set schedule_status for manual mode (schedule optimizer only runs in auto)
+        if price_mode == "manual" and self.slot_prices_today and self.price_threshold is not None:
+            self.schedule_status = "manual"
 
         if not self.slot_prices_today or self.price_threshold is None:
             self.available_slots_at_threshold = 0
@@ -1221,105 +1218,43 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
 
         now = datetime.now()
-        prices = self.slot_prices_today
-        num_slots = len(prices)
-        minutes_per_slot = (24 * 60) / num_slots
-        current_slot = int((now.hour * 60 + now.minute) / minutes_per_slot)
-        current_slot = min(current_slot, num_slots - 1)
-        slot_duration_hours = minutes_per_slot / 60.0
-
-        remaining = [(i, prices[i]) for i in range(current_slot, num_slots) if prices[i] is not None]
-
-        # Use safe_max_power (kW scale 1-10) for realistic calculation
         safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
-        efficiency = opts.get("efficiency_factor", 0.90)
-        energy_per_slot = safe_power_kw * slot_duration_hours * efficiency
+        inverter_model = self.config_entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+        nominal_capacity = opts.get("battery_capacity_kwh", 10) or 10
 
-        # Count slots that match the current threshold
-        # When grid_mode is off, default to from_grid perspective (informational)
-        # When grid_mode is both, use from_grid perspective (charge likelihood is primary)
-        effective_mode = grid_mode if grid_mode not in ("off", "both") else "from_grid"
+        config = ems_module.EMSConfig(
+            grid_mode=opts.get("grid_mode", "off"),
+            battery_capacity_kwh=nominal_capacity * self._battery_soh_factor,
+            battery_charge_max_pct=opts.get("battery_charge_max_level", 100),
+            battery_discharge_min_pct=opts.get("battery_discharge_min_level", 20),
+            efficiency=opts.get("efficiency_factor", 0.90),
+            safe_power_kw=safe_power_kw,
+            inverter_max_power_kw=INVERTER_MAX_POWER_KW.get(inverter_model, 10),
+            consumption_est_kwh=self._get_consumption_estimate(),
+            reserve_target_pct=opts.get("reserve_target_pct", 0),
+            optimization_priority=opts.get("optimization_priority", "cost"),
+        )
+        state = ems_module.EMSState(
+            battery_soc_pct=battery_soc,
+            slot_prices_today=self.slot_prices_today,
+            slot_prices_tomorrow=self.slot_prices_tomorrow,
+            pv_hourly_kwh=self.pv_hourly_kwh or {},
+            pv_forecast_remaining=self.pv_forecast_remaining,
+            pv_forecast_today=self.pv_forecast_today,
+            pv_actual_today_kwh=self.pv_actual_today_kwh,
+            previous_pv_confidence=self._last_pv_confidence,
+            current_hour=now.hour,
+            current_minute=now.minute,
+        )
 
-        if effective_mode == "from_grid":
-            available = [s for s in remaining if s[1] <= self.price_threshold]
-        else:  # to_grid
-            available = [s for s in remaining if s[1] >= self.price_threshold]
-
-        # Include tomorrow's slots so likelihood reflects the full two-day
-        # picture the scheduler actually uses.
-        tomorrow_available = 0
-        if self.slot_prices_tomorrow:
-            for tp in self.slot_prices_tomorrow:
-                if tp is None:
-                    continue
-                if effective_mode == "from_grid" and tp <= self.price_threshold:
-                    tomorrow_available += 1
-                elif effective_mode != "from_grid" and tp >= self.price_threshold:
-                    tomorrow_available += 1
-
-        self.available_slots_at_threshold = len(available)
-        self._available_total_with_tomorrow = len(available) + tomorrow_available
-        self.available_energy_capacity = round(self._available_total_with_tomorrow * energy_per_slot, 2)
-
-        # Set schedule_status for manual mode (schedule optimizer only runs in auto)
-        if price_mode == "manual":
-            self.schedule_status = "manual"
-
-        # Determine charge likelihood
-        if battery_soc is None:
-            self.charge_likelihood = "unknown"
-            return
-
-        battery_capacity = opts.get("battery_capacity_kwh", 10)
-        discharge_min = opts.get("battery_discharge_min_level", 20)
-        reserve_target_pct_info = opts.get("reserve_target_pct", 0)
-        current_kwh = (battery_soc / 100.0) * battery_capacity
-
-        consumption_est = self._get_consumption_estimate()
-        net_pv = self._calculate_net_pv_surplus(remaining, num_slots, consumption_est)
-
-        if effective_mode == "from_grid":
-            # Mirror the solar-first strategy: target is overnight reserve, not charge_max
-            reserve_kwh = self._calculate_self_consumption_reserve(
-                consumption_est, num_slots, remaining)
-            reserve_target = self._compute_reserve_target(
-                battery_capacity, discharge_min, reserve_kwh, reserve_target_pct_info)
-            shortfall = max(0.0, reserve_target - current_kwh)
-            energy_deficit = max(0.0, shortfall - net_pv)
-
-            if grid_mode == "off":
-                # Informational only — show what WOULD happen
-                if energy_deficit <= 0:
-                    self.charge_likelihood = "idle (no deficit)"
-                elif self.available_energy_capacity >= energy_deficit:
-                    self.charge_likelihood = "idle (slots available)"
-                else:
-                    self.charge_likelihood = "idle (insufficient slots)"
-            elif energy_deficit <= 0:
-                self.charge_likelihood = "on_track"
-            else:
-                # Use scheduled energy (actual plan) if available, else threshold-based estimate
-                planned = self.grid_energy_planned or 0.0
-                capacity = max(planned, self.available_energy_capacity)
-                if capacity >= energy_deficit * 1.2:
-                    self.charge_likelihood = "on_track"
-                elif capacity >= energy_deficit:
-                    self.charge_likelihood = "tight"
-                elif capacity >= energy_deficit * 0.5:
-                    self.charge_likelihood = "at_risk"
-                else:
-                    self.charge_likelihood = "insufficient"
-        else:  # to_grid
-            min_kwh = (discharge_min / 100.0) * battery_capacity
-            sellable = max(0.0, current_kwh - min_kwh)
-            if grid_mode == "off":
-                self.charge_likelihood = "idle (sell mode info)"
-            elif sellable <= 0:
-                self.charge_likelihood = "nothing_to_sell"
-            elif self._available_total_with_tomorrow > 0:
-                self.charge_likelihood = "selling"
-            else:
-                self.charge_likelihood = "no_profitable_slots"
+        info = ems_module.calculate_available_info(
+            config, state, self.price_threshold,
+            grid_energy_planned=self.grid_energy_planned or 0.0,
+        )
+        self.available_slots_at_threshold = info.available_slots
+        self._available_total_with_tomorrow = info.available_total_with_tomorrow
+        self.available_energy_capacity = info.available_energy_capacity
+        self.charge_likelihood = info.charge_likelihood
 
     async def _init_consumption_store(self) -> None:
         """Initialize persistent storage for 7-day consumption history."""
@@ -1650,7 +1585,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self._yesterday_deficit = 0.0
             return
 
-        battery_capacity = opts.get("battery_capacity_kwh", 10)
+        nominal_capacity = opts.get("battery_capacity_kwh", 10) or 10
+        battery_capacity = nominal_capacity * self._battery_soh_factor
         charge_max = opts.get("battery_charge_max_level", 100)
 
         target_kwh = (charge_max / 100.0) * battery_capacity
@@ -1953,6 +1889,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("Cannot connect to Felicity inverter")
 
         new_data = {}
+        any_read_ok = False
 
         try:
             for group in self._address_groups:
@@ -1971,6 +1908,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
                     continue
+
+                any_read_ok = True
 
                 registers = result.registers
                 pos = 0
@@ -2122,8 +2061,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
                             self.battery_soc = battery_soc
                             self._record_soc_snapshot(battery_soc)
-                            # Modbus read succeeded — refresh staleness ts (#6)
-                            self._last_modbus_success_ts = time.time()
+                            # Refresh staleness ts (#6) only when at least one
+                            # register group actually read AND SOC parsed —
+                            # otherwise the guard could never trigger.
+                            if any_read_ok and battery_soc is not None:
+                                self._last_modbus_success_ts = time.time()
                             # Cycle counting + SOH update (#13)
                             self._track_cycle_throughput(battery_soc)
 
