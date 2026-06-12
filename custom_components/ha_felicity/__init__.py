@@ -189,7 +189,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "battery_capacity_kwh": 10,
         "efficiency_factor": 0.90,
         "daily_consumption_estimate": 10,
-        "ems_strategy": "save_money",
+        "ems_strategy": "custom",
         "price_mode": "manual",
         "safe_power_management": "auto",
         "reserve_target_pct": 0,
