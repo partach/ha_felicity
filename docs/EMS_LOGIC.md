@@ -48,7 +48,7 @@ These voltage settings are **not used by the scheduling algorithm** — they are
 | **grid_mode** | off/from_grid/to_grid/both | off | The master switch. Determines which algorithm runs. "off" = no grid interaction. |
 | **price_mode** | manual/auto | manual | "manual" uses a price threshold (level 1-10); "auto" uses the optimizer to pick slots. All algorithm logic described in this document runs in "auto" mode. |
 | **price_threshold_level** | 1-10 | 5 | Manual mode only: maps to a price point between min and max. Slots below this charge, above this sell. |
-| **arbitrage_price_delta** | 0-0.50 EUR/kWh | 0 | **Both mode only.** When > 0 and the day's price spread (max - min) exceeds this threshold, the algorithm switches from conservative "charge to reserve" to aggressive "charge to 100% and sell everything above reserve". **This is the biggest amplifier of aggressive selling.** Set to 0 to disable. |
+| **arbitrage_price_delta** | 0-0.50 EUR/kWh | 0 | **Both mode only.** The minimum buy→sell spread required to trade. When > 0: charge-to-full activates only if the day's spread (max - min) clears the delta, and every sell slot must beat the buy reference by at least the delta — below the bar, **nothing is sold**. When 0 (default): automatic profitability check (trade whenever the peak covers round-trip losses on the cheapest buy). |
 
 ### Optimization & Lifecycle
 
@@ -84,7 +84,8 @@ The settings form a hierarchy of constraints:
 optimization_priority  -->  Modifies cycle cost floor and reserve multiplier
         |
         v
-arbitrage_price_delta  -->  Determines charging target (reserve vs full)
+arbitrage_price_delta  -->  Trade trigger: charging target (reserve vs full)
+        |                  AND sell gate (sells must beat buy + delta)
         |
         v
 reserve_target_pct  -->  The floor for scheduling AND runtime discharge (auto mode)
@@ -240,12 +241,17 @@ energy_deficit = base_deficit + carryover
 
 ### Step 2: Select Cheapest Charge Slots (Unified Two-Day)
 
-The algorithm pools today's remaining slots with tomorrow's slots (if prices are known), sorts by price, and picks the cheapest ones to cover the deficit:
+The algorithm pools today's remaining slots with tomorrow's slots (if prices are known), sorts by price, and accumulates the cheapest ones until their **actually-achievable** charge energy covers the deficit:
 
 ```
-slots_needed = ceil(energy_deficit / effective_per_slot)
-effective_per_slot = safe_power_kw * slot_duration_hours * efficiency
+per-slot achievable energy:
+    grid_kw  = min(safe_power_kw, max(0, inverter_max_kw - pv_kw_at_hour))
+    slot_kwh = grid_kw * slot_duration_hours * efficiency
+
+accumulate cheapest-first until sum(slot_kwh) >= energy_deficit
 ```
+
+This is **power-aware**: with a high charge power the deficit is covered by just the few cheapest slots (the battery loads fast — no need to start early on more expensive slots), while midday slots where PV throttles or saturates the inverter count their reduced (or zero) deliverable energy. A PV-saturated slot is skipped entirely instead of being burned as a no-op "charge" slot.
 
 All negative-price slots are always selected (you get PAID to charge).
 
@@ -324,14 +330,26 @@ A set of slot indices marked "discharge".
 
 Identical logic: snapshot + predictive deficit, solar protection, yesterday carryover.
 
-### Step 2: Arbitrage Check
+### Step 2: Arbitrage Check (the trade trigger)
 
-If `arbitrage_price_delta > 0` and the price spread (max - min of remaining prices) exceeds it:
+Two regimes, depending on whether you set an explicit spread requirement:
+
+**`arbitrage_price_delta > 0`** — the delta is the explicit trade trigger:
 ```
-arbitrage_active = True
-energy_deficit = max(energy_deficit, max_battery_kwh - current_kwh - net_pv)
+if (max_remaining - min_remaining) >= arbitrage_price_delta:
+    arbitrage_active = True
+    energy_deficit = max(energy_deficit, max_battery_kwh - current_kwh - net_pv)
+else:
+    # No trading: no charge-to-full, and the sell side (Step 5) is
+    # gated at buy_reference + delta — typically zero sells.
 ```
-**This changes the goal from "charge to reserve target" to "charge to 100%".**
+**This changes the goal from "charge to reserve target" to "charge to 100%"
+— but only when the spread you demanded actually exists.**
+
+**`arbitrage_price_delta = 0`** (default) — automatic profitability check:
+arbitrage activates whenever the peak price covers round-trip losses on the
+cheapest buy (`peak >= cheapest / efficiency²`). Selling then only needs to
+clear the round-trip + cycle-cost floor per slot.
 
 ### Step 3: Calculate Sellable Energy
 
@@ -355,6 +373,12 @@ max_buy_price = max price among selected charge slots
 min_sell_price = (max_buy_price + battery_cycle_cost) / (efficiency * efficiency)
 ```
 Only slots with `price >= min_sell_price` are eligible for selling.
+
+**Arbitrage delta sell gate**: when `arbitrage_price_delta > 0`, the floor is
+raised to `max(min_sell_price, buy_reference + delta)`, where buy_reference
+is the most expensive scheduled charge slot (or the cheapest remaining price
+when nothing is scheduled to buy). A 20 ct delta with buys at 0.05 means no
+slot below 0.25 is ever sold — if no slot qualifies, nothing is sold at all.
 
 When `block_export_on_negative_price = on` (default), negative-price slots are additionally excluded.
 
@@ -587,10 +611,11 @@ In manual mode, `discharge_min_level` is used at all three layers.
 
 ### Arbitrage Mode Considerations
 
-When `arbitrage_price_delta > 0` and the day's price spread exceeds it, the system charges to full capacity and sells everything above reserve. This is inherently more aggressive than normal operation. The three protection layers above still apply, but margins are thinner. Users experiencing unwanted deep discharge should consider:
-- Setting `arbitrage_price_delta = 0` to disable arbitrage
+When the spread requirement is met (`arbitrage_price_delta > 0` and the day's spread clears it, or delta = 0 and the automatic profitability check passes), the system charges to full capacity and sells everything above reserve. This is inherently more aggressive than normal operation. The three protection layers above still apply, but margins are thinner. Users experiencing unwanted selling should consider:
+- **Raising `arbitrage_price_delta`** — it is the trade trigger: sells must beat the buy price by at least the delta, so e.g. 0.15 EUR/kWh stops all trading on narrow-spread days
+- Setting `battery_cycle_cost_eur_kwh` (or `optimization_priority = longevity`) to raise the per-slot sell floor
 - Increasing `reserve_target_pct` to keep a larger buffer
-- Both changes can be combined
+- All changes can be combined
 
 ### Negative-Price Strategy Composition
 

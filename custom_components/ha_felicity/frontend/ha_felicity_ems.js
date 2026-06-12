@@ -446,10 +446,23 @@ class FelicityEMSCard extends LitElement {
         const chargeIdxSet = new Set(result.slots.filter(s => s.action === "charge").map(s => s.slot));
         let available = remaining.filter(s => s.price > 0 && !chargeIdxSet.has(s.idx));
 
-        if (gridMode === "both" && result.chargeCount > 0) {
-          const maxBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
-          const minSell = maxBuy / roundTrip;
-          available = available.filter(s => s.price >= minSell);
+        if (gridMode === "both") {
+          let minSell = 0;
+          let refBuy = null;
+          if (result.chargeCount > 0) {
+            refBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
+            minSell = refBuy / roundTrip;
+          } else if (remaining.length) {
+            refBuy = Math.min(...remaining.map(s => s.price));
+          }
+          // Arbitrage delta sell gate (mirrors backend): each sell must beat
+          // the buy reference by at least the user's delta.
+          if (arbitrageDelta > 0 && refBuy != null) {
+            minSell = Math.max(minSell, refBuy + arbitrageDelta);
+          }
+          if (minSell > 0) {
+            available = available.filter(s => s.price >= minSell);
+          }
         }
 
         available.sort((a, b) => b.price - a.price);
@@ -1330,9 +1343,22 @@ class FelicityEMSCard extends LitElement {
       if (sellable > 0) {
         const chargeIdxSet = new Set(result.slots.filter(s => s.action === "charge").map(s => s.slot));
         let available = remaining.filter(s => s.price > 0 && !chargeIdxSet.has(s.idx));
-        if (gridMode === "both" && result.chargeCount > 0) {
-          const maxBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
-          available = available.filter(s => s.price >= maxBuy / roundTrip);
+        if (gridMode === "both") {
+          let minSell = 0;
+          let refBuy = null;
+          if (result.chargeCount > 0) {
+            refBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
+            minSell = refBuy / roundTrip;
+          } else if (remaining.length) {
+            refBuy = Math.min(...remaining.map(s => s.price));
+          }
+          // Arbitrage delta sell gate (mirrors backend)
+          if (arbitrageDelta > 0 && refBuy != null) {
+            minSell = Math.max(minSell, refBuy + arbitrageDelta);
+          }
+          if (minSell > 0) {
+            available = available.filter(s => s.price >= minSell);
+          }
         }
         available.sort((a, b) => b.price - a.price);
         const needed = energyPerSlot > 0 ? Math.ceil(sellable / energyPerSlot) : 0;

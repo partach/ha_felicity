@@ -18,6 +18,7 @@ Tests cover:
 - Various slot granularities (24, 48, 96)
 """
 
+import math
 import sys
 import os
 import importlib.util
@@ -2395,7 +2396,13 @@ class TestArbitragePriceDelta:
             assert prices[s] >= 0.30, f"Should only sell at expensive prices, got {prices[s]}"
 
     def test_no_arbitrage_when_spread_too_small(self):
-        """both mode: small price spread → normal reserve-only charging."""
+        """both mode: spread below the delta → NO trading at all.
+
+        The delta is the explicit trade trigger: it suppresses both the
+        charge-to-full deficit bump and the sell side.  This pins the fix
+        for the bug where the automatic profitability check kept selling
+        even though the user demanded a 20 ct spread.
+        """
         config = default_config(
             grid_mode="both",
             battery_capacity_kwh=60.0,
@@ -2417,22 +2424,62 @@ class TestArbitragePriceDelta:
         )
         result_delta = calculate_schedule(config, state)
 
+        sells = [k for k, v in result_delta.scheduled_slots.items() if v == "discharge"]
+        assert not sells, (
+            f"Spread 0.10 < delta 0.20: no sells should be scheduled, got {sells}"
+        )
+
         config_no_delta = default_config(
             grid_mode="both",
             battery_capacity_kwh=60.0,
             battery_discharge_min_pct=20.0,
             consumption_est_kwh=10.0,
             safe_power_kw=5.0,
-            arbitrage_price_delta=0.0,  # disabled
+            arbitrage_price_delta=0.0,  # disabled → automatic check may trade
         )
         result_no_delta = calculate_schedule(config_no_delta, state)
 
-        # With insufficient spread, behavior should be the same as no arbitrage
+        # No charge-to-full: charging may only be reserve-driven, never more
+        # aggressive than the no-delta baseline.
         charge_delta = len({k for k, v in result_delta.scheduled_slots.items() if v == "charge"})
         charge_no_delta = len({k for k, v in result_no_delta.scheduled_slots.items() if v == "charge"})
-        assert charge_delta == charge_no_delta, (
-            f"Small spread should not trigger arbitrage: delta={charge_delta}, no_delta={charge_no_delta}"
+        assert charge_delta <= charge_no_delta, (
+            f"Small spread must not charge more than baseline: delta={charge_delta}, no_delta={charge_no_delta}"
         )
+
+    def test_delta_gates_sells_at_buy_plus_delta(self):
+        """both mode: spread meets the delta → sells allowed, but every sell
+        slot must beat the buy reference by at least the delta."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            consumption_est_kwh=10.0,
+            safe_power_kw=5.0,
+            arbitrage_price_delta=0.10,
+        )
+        # Buy ~0.05, mid 0.12 (must NOT be sold: 0.05+0.10=0.15 > 0.12),
+        # peak 0.30 (sellable).  Spread 0.25 >= 0.10 → trading active.
+        prices = [0.05] * 6 + [0.12] * 6 + [0.30] * 6 + [0.12] * 6
+        state = default_state(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(5.0),
+            pv_forecast_remaining=3.0,
+            pv_forecast_today=5.0,
+            pv_actual_today_kwh=1.0,
+            current_hour=2,
+        )
+        result = calculate_schedule(config, state)
+        charge_prices = [prices[k] for k, v in result.scheduled_slots.items() if v == "charge"]
+        sell_slots = {k for k, v in result.scheduled_slots.items() if v == "discharge"}
+        assert sell_slots, "Spread 0.25 >= delta 0.10: sells should be scheduled"
+        max_buy = max(charge_prices) if charge_prices else min(prices)
+        for s in sell_slots:
+            assert prices[s] >= max_buy + 0.10, (
+                f"Sell slot {s} at {prices[s]} does not clear buy ref "
+                f"{max_buy} + delta 0.10"
+            )
 
     def test_arbitrage_zero_delta_disabled(self):
         """both mode: arbitrage_price_delta=0 means feature is disabled."""
@@ -2457,6 +2504,78 @@ class TestArbitragePriceDelta:
         result = calculate_schedule(config, state)
         # Should work normally without arbitrage feature — no error
         assert isinstance(result, ScheduleResult)
+
+
+class TestPowerAwareSlotSelection:
+    """Slot count accounts for real charge speed (max power, PV throttling).
+
+    Pins the fix for: 'starts to charge too early and is already done at
+    the cheapest points' — over-selection from a flat per-slot energy
+    assumption.
+    """
+
+    def test_high_power_needs_fewer_slots(self):
+        """10 kW on hourly slots covers a 4 kWh deficit with ONE slot —
+        only the single cheapest is selected."""
+        remaining = [(i, 0.10 + i * 0.01) for i in range(10)]
+        today, tomorrow, _ = select_unified_charge_slots(
+            remaining, 4.0, 9.0, 60.0, 20.0, 10.0, 0.9, 10.0,
+            current_kwh=20.0, net_pv=0.0,
+            safe_power_kw=10.0, inverter_max_power_kw=10.0,
+            pv_confidence=1.0, minutes_per_slot=60.0,
+        )
+        assert len(today) == 1, f"Expected 1 slot at 10 kW, got {len(today)}"
+        assert today[0][0] == 0, "Should pick the cheapest slot"
+
+    def test_pv_saturated_slot_skipped(self):
+        """A slot where PV saturates the inverter can deliver zero grid
+        charge — it must be skipped, not burned as a no-op charge slot."""
+        prices = {i: 0.20 for i in range(8, 20)}
+        prices[12] = 0.01  # cheapest, but PV = inverter max at hour 12
+        prices[13] = 0.05
+        remaining = sorted(prices.items())
+        today, _, _ = select_unified_charge_slots(
+            remaining, 4.0, 9.0, 60.0, 20.0, 10.0, 0.9, 10.0,
+            current_kwh=20.0, net_pv=0.0,
+            pv_hourly_kwh={12: 10.0},
+            safe_power_kw=10.0, inverter_max_power_kw=10.0,
+            pv_confidence=1.0, minutes_per_slot=60.0,
+        )
+        selected = {i for i, _ in today}
+        assert 12 not in selected, "PV-saturated slot must be skipped"
+        assert 13 in selected, "Next cheapest deliverable slot should be picked"
+
+    def test_pv_throttled_slot_counts_reduced_energy(self):
+        """A PV-throttled slot delivers less grid energy, so more slots are
+        needed than the flat per-slot count would suggest."""
+        prices = {i: 0.20 for i in range(8, 20)}
+        prices[12] = 0.01  # cheapest; PV 8 kW → only 2 kW grid → 1.8 kWh
+        prices[13] = 0.05
+        remaining = sorted(prices.items())
+        today, _, _ = select_unified_charge_slots(
+            remaining, 4.0, 9.0, 60.0, 20.0, 10.0, 0.9, 10.0,
+            current_kwh=20.0, net_pv=0.0,
+            pv_hourly_kwh={12: 8.0},
+            safe_power_kw=10.0, inverter_max_power_kw=10.0,
+            pv_confidence=1.0, minutes_per_slot=60.0,
+        )
+        selected = {i for i, _ in today}
+        # 1.8 kWh from slot 12 < 4 kWh deficit → slot 13 needed too
+        assert selected == {12, 13}, (
+            f"Expected throttled slot 12 plus companion 13, got {selected}"
+        )
+
+    def test_legacy_flat_behavior_without_power_params(self):
+        """Without power params the old flat ceil(deficit/per_slot) count
+        is preserved (back-compat for callers that don't pass them)."""
+        remaining = [(i, 0.10 + i * 0.01) for i in range(10)]
+        today, _, _ = select_unified_charge_slots(
+            remaining, 10.0, 4.5, 60.0, 20.0, 10.0, 0.9, 5.0,
+            current_kwh=20.0, net_pv=0.0,
+        )
+        assert len(today) == math.ceil(10.0 / 4.5), (
+            f"Flat fallback should select ceil(10/4.5)=3 slots, got {len(today)}"
+        )
 
 
 class TestInverterMaxPowerCap:

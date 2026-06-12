@@ -176,7 +176,7 @@ This prevents the SOC prediction from assuming unrealistic charge rates
 | consumption_est_kwh | 10.0 | Daily consumption (or 7-day rolling avg) |
 | yesterday_deficit_kwh | 0.0 | Carried forward from previous day; reset on grid_mode change |
 | reserve_target_pct | 0.0 | 0=dynamic, >0=fixed floor % |
-| arbitrage_price_delta | 0.0 | Price spread threshold for full charge in 'both' mode |
+| arbitrage_price_delta | 0.0 | Min buy→sell spread to trade in 'both' mode (>0 gates sells at buy+delta; 0 = automatic profitability check) |
 | battery_cycle_cost_eur_kwh | 0.0 | Wear cost; added to min sell price |
 | optimization_priority | "cost" | cost / longevity / self_consumption |
 | block_export_on_negative_price | True | Skip sell scheduling at p < 0 |
@@ -295,12 +295,29 @@ The validation simulates forward through PV-only overflows (clamping
 soc and continuing) instead of breaking on the first PV-caused
 violation, which lets it detect phantom charges later in the day.
 
-### Arbitrage Price Delta (both mode)
+### Arbitrage Price Delta (both mode) — the TRADE TRIGGER
 
-When `arbitrage_price_delta > 0` and `max_remaining_price - min_remaining_price >= delta`:
-- Charges to **full capacity** instead of just reserve target
-- Sellable energy recalculated based on full capacity
-- Profitability filter still applies
+`arbitrage_price_delta` is the explicit minimum buy→sell spread required
+to trade.  Two regimes:
+
+**delta > 0** — the delta *replaces* the automatic profitability check:
+- Charge-to-full activates only when `max_remaining - min_remaining >= delta`
+- Every sell slot must clear `buy_reference + delta`, where buy_reference =
+  the most expensive scheduled charge slot (or the cheapest remaining price
+  when nothing is scheduled to buy).  When no slot clears the bar, **no
+  sells are scheduled at all** — "don't trade unless the spread is ≥ X".
+- The round-trip + cycle-cost floor still applies on top (the gate is
+  `max(round_trip_floor, ref_buy + delta)`).
+
+**delta == 0 (default)** — automatic profitability check (legacy): trade
+whenever the peak price covers round-trip losses on the cheapest buy
+(`peak >= cheapest / efficiency²`), with the cycle-cost filter on top.
+
+History: before June 2026 the delta could only *widen* activation (the
+automatic check ran unconditionally first), so it could never suppress
+selling — users setting 20 ct were still sold at 9 ct spreads.  The
+sell-gate semantics fixed that.  Mirrored in `_compute_tomorrow_schedule`
+and in both JS sims (`_simulateSchedule`, `_simulateScheduleTomorrow`).
 
 ### Headroom Constraint
 
@@ -311,6 +328,34 @@ max_today_slots = floor(headroom / effective_per_slot)
 # Negative-price slots pass through here (profitable to consume).
 # SOC validation prunes only when PV alone wouldn't fill the battery.
 ```
+
+### Power-Aware Charge Slot Selection
+
+`select_unified_charge_slots` accumulates each candidate slot's
+*actually-achievable* grid charge energy instead of a flat
+`ceil(deficit / effective_per_slot)` count:
+
+```python
+grid_kw  = min(safe_power_kw, max(0, inverter_max_kw - pv_kw_at_hour))
+slot_kwh = grid_kw × slot_hours × efficiency
+# accumulate cheapest-first until deficit covered
+```
+
+Consequences:
+- High charge power → deficit covered by just the few cheapest slots
+  (fixes "starts charging too early, already full when the cheapest
+  slots arrive").
+- Midday slots where PV saturates the inverter deliver 0 grid kWh and
+  are **skipped** (previously they were counted as full-power slots,
+  inflating the selection).
+- PV-throttled slots count their reduced energy, so enough companions
+  are selected to actually cover the deficit.
+- Falls back to the flat count when power params aren't supplied
+  (legacy/test callers).  The tomorrow-schedule reconstruction in
+  `_compute_tomorrow_schedule` mirrors the same accumulation.
+- The JS card's client-side slider preview still uses the flat count
+  (documented divergence; backend is authoritative when no sliders
+  are active).
 
 ### Negative-Price Strategies (charge_to_full / discharge_to_make_room)
 
@@ -517,7 +562,7 @@ soon" scenarios.
 | efficiency_factor | number | 0.70-1.00 | 0.90 | Round-trip efficiency |
 | daily_consumption_estimate | number | 0-120 kWh | 10 | Fallback consumption |
 | reserve_target_pct | number | 0-100% | 0 | Fixed reserve floor (0=dynamic) |
-| arbitrage_price_delta | number | 0-0.50 €/kWh | 0 | Price spread for full charge |
+| arbitrage_price_delta | number | 0-0.50 €/kWh | 0 | Min buy→sell spread to trade (0=auto profitability) |
 | battery_cycle_cost_eur_kwh | number | 0-0.50 €/kWh | 0 | Battery wear cost (profitability filter) |
 | optimization_priority | select | cost/longevity/self_consumption | cost | Multi-objective strategy |
 | block_export_on_negative_price | select | on/off | on | Skip sell scheduling at p < 0 |
