@@ -46,6 +46,14 @@ async def async_setup_entry(
         if info.get("type") == "select_multi"
     ])
 
+    # Strategy preset — the primary user-facing control
+    entities.append(
+        HA_FelicityStrategySelect(
+            coordinator=coordinator,
+            entry=entry,
+        )
+    )
+
     # Internal configuration select entities (stored in entry.options)
     entities.append(
         HA_FelicitySpecialModeSelect(
@@ -366,4 +374,99 @@ class HA_FelicitySpecialModeSelect(CoordinatorEntity, SelectEntity):
         await self.coordinator.async_request_refresh()
 
         # Update UI
+        self.async_write_ha_state()
+
+
+# Strategy presets: each maps to a set of underlying configuration knobs.
+# Users pick a strategy; the individual knobs still exist for advanced tuning.
+STRATEGY_PRESETS = {
+    "save_money": {
+        "grid_mode": "from_grid",
+        "optimization_priority": "cost",
+        "reserve_target_pct": 0,
+        "arbitrage_price_delta": 0.0,
+        "battery_cycle_cost_eur_kwh": 0.0,
+        "block_export_on_negative_price": "on",
+        "charge_to_full_on_negative_price": "off",
+        "discharge_to_make_room_for_negative_price": "off",
+    },
+    "self_sufficiency": {
+        "grid_mode": "from_grid",
+        "optimization_priority": "self_consumption",
+        "reserve_target_pct": 0,
+        "arbitrage_price_delta": 0.0,
+        "battery_cycle_cost_eur_kwh": 0.0,
+        "block_export_on_negative_price": "on",
+        "charge_to_full_on_negative_price": "off",
+        "discharge_to_make_room_for_negative_price": "off",
+    },
+    "battery_care": {
+        "grid_mode": "from_grid",
+        "optimization_priority": "longevity",
+        "reserve_target_pct": 0,
+        "arbitrage_price_delta": 0.0,
+        "battery_cycle_cost_eur_kwh": 0.05,
+        "block_export_on_negative_price": "on",
+        "charge_to_full_on_negative_price": "off",
+        "discharge_to_make_room_for_negative_price": "off",
+    },
+    "trader": {
+        "grid_mode": "both",
+        "optimization_priority": "cost",
+        "reserve_target_pct": 0,
+        "arbitrage_price_delta": 0.0,
+        "battery_cycle_cost_eur_kwh": 0.0,
+        "block_export_on_negative_price": "on",
+        "charge_to_full_on_negative_price": "off",
+        "discharge_to_make_room_for_negative_price": "off",
+    },
+}
+
+
+class HA_FelicityStrategySelect(CoordinatorEntity, SelectEntity):
+    """Strategy preset — the primary user-facing EMS control.
+
+    Selecting a strategy auto-configures multiple underlying knobs.
+    'custom' means the user has manually tuned the knobs.
+    """
+
+    _attr_icon = "mdi:strategy"
+    _attr_entity_category = EntityCategory.CONFIG
+    _STRATEGY_OPTIONS = ["save_money", "self_sufficiency", "battery_care", "trader", "custom"]
+
+    def __init__(self, coordinator, entry: ConfigEntry):
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_ems_strategy"
+        self._attr_name = f"{entry.title} EMS Strategy"
+        self._attr_options = list(self._STRATEGY_OPTIONS)
+
+    @property
+    def current_option(self) -> str:
+        stored = self._entry.options.get("ems_strategy", "save_money")
+        if stored not in self._STRATEGY_OPTIONS:
+            return "custom"
+        return stored
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._STRATEGY_OPTIONS:
+            _LOGGER.warning("Invalid strategy '%s'", option)
+            return
+
+        updated_options = dict(self._entry.options)
+        updated_options["ems_strategy"] = option
+
+        # Apply preset knobs (skip for "custom" — keep whatever the user set)
+        preset = STRATEGY_PRESETS.get(option)
+        if preset:
+            updated_options.update(preset)
+
+        _LOGGER.info("EMS strategy set to '%s'", option)
+
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options=updated_options,
+        )
+
+        await self.coordinator.async_request_refresh()
         self.async_write_ha_state()

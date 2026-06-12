@@ -441,12 +441,40 @@ preview instead of being greyed out.  Shows:
 When prices arrive the tab automatically switches to the full schedule
 view with all normal features.
 
+### Strategy Presets
+The card shows a Strategy dropdown as the primary user-facing control.
+Selecting a strategy auto-configures the underlying knobs. Individual
+knobs remain accessible behind an "Advanced settings" toggle.
+
+| Strategy | grid_mode | optimization_priority | Notes |
+|---|---|---|---|
+| Save Money | from_grid | cost | Buy cheap grid power, no selling |
+| Self-Sufficiency | from_grid | self_consumption | Maximize PV self-use (1.25× reserve) |
+| Battery Care | from_grid | longevity | Minimize cycling (0.05 €/kWh floor) |
+| Trader | both | cost | Buy cheap, sell expensive (auto profitability) |
+| Custom | (unchanged) | (unchanged) | User manages all knobs manually |
+
+### Schedule Reason ("Why" Line)
+Below the chart, a one-line explanation of the current schedule decision
+is shown. Examples:
+- "Charging 3 slots (up to 0.120/kWh) to cover 4.2 kWh deficit"
+- "Not trading: spread 0.09 < your 0.20 minimum"
+- "Buying 2 slots (up to 0.08), selling 3 (from 0.28) — spread 0.200/kWh"
+- "Solar fills battery to 95% — no grid charging needed"
+- "EMS is off — select a strategy to start optimizing"
+
+Backend populates `schedule_reason` on `ScheduleResult`. Exposed as
+`schedule_reason` attribute on the `schedule_status` sensor. The card
+reads it from `_getAttr("schedule_status", "schedule_reason")`.
+
 ### Interactive Controls
-- Grid Mode dropdown (off/from_grid/to_grid/both)
-- Price Mode dropdown (manual/auto)
-- Max SOC / Min SOC dropdowns
-- Power Level slider (live preview)
-- Price Threshold Level slider (live preview)
+- **Strategy dropdown** (save_money/self_sufficiency/battery_care/trader/custom)
+- **Advanced settings toggle** — shows/hides:
+  - Grid Mode dropdown (off/from_grid/to_grid/both)
+  - Price Mode dropdown (manual/auto)
+  - Max SOC / Min SOC dropdowns
+  - Power Level slider (live preview)
+  - Price Threshold Level slider (live preview)
 
 ### Client-Side Simulation
 Mirrors coordinator logic for instant preview when dragging sliders. Uses `sim_params` from `schedule_status` sensor attributes.
@@ -551,6 +579,7 @@ soon" scenarios.
 
 | Entity | Type | Range | Default | Description |
 |---|---|---|---|---|
+| ems_strategy | select | save_money/self_sufficiency/battery_care/trader/custom | save_money | Strategy preset — auto-configures underlying knobs |
 | grid_mode | select | off/from_grid/to_grid/both | off | Main EMS switch |
 | price_mode | select | manual/auto | manual | Price threshold mode |
 | safe_power_management | select | auto/on/off | auto | Amperage protection |

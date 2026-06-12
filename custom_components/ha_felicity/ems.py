@@ -146,6 +146,7 @@ class ScheduleResult:
     tomorrow_planned_kwh: float = 0.0
     tomorrow_precharge: float = 0.0
     status: str = "off"
+    schedule_reason: str = ""
     soc_trajectory: list[float] = field(default_factory=list)
     tomorrow_scheduled_slots: dict[int, str] = field(default_factory=dict)
     tomorrow_soc_trajectory: list[float] = field(default_factory=list)
@@ -1394,6 +1395,10 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
 
     if config.grid_mode == "off" or not state.slot_prices_today:
         result.status = "off" if config.grid_mode == "off" else "no_price_data"
+        if config.grid_mode == "off":
+            result.schedule_reason = "EMS is off — select a strategy to start optimizing"
+        else:
+            result.schedule_reason = "Waiting for electricity price data"
         reserve_kwh = calculate_self_consumption_reserve(
             config.consumption_est_kwh, state.pv_hourly_kwh)
         result.self_consumption_reserve = round(reserve_kwh, 2)
@@ -1415,6 +1420,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
 
     if not remaining:
         result.status = "day_complete"
+        result.schedule_reason = "All price slots for today have passed"
         return result
 
     # When per-hour PV data is unavailable, synthesize from daily forecast
@@ -1684,6 +1690,17 @@ def _schedule_from_grid(
 
     if not selected and not config.discharge_to_make_room_for_negative_price:
         result.status = "no_action_needed"
+        if max_projected >= max_battery_kwh * 0.95:
+            solar_pct = (
+                max_projected / config.battery_capacity_kwh * 100
+                if config.battery_capacity_kwh > 0 else 0
+            )
+            result.schedule_reason = (
+                f"Solar fills battery to {solar_pct:.0f}%"
+                " — no grid charging needed"
+            )
+        else:
+            result.schedule_reason = "Battery reserve is met — no charging needed"
         return result
 
     # Per-slot SOC validation: ensure charge doesn't push SOC above capacity
@@ -1714,6 +1731,7 @@ def _schedule_from_grid(
 
     if not selected and not discharge_for_headroom:
         result.status = "no_action_needed"
+        result.schedule_reason = "Battery reserve is met — no charging needed"
         return result
 
     result.scheduled_slots = {s[0]: "charge" for s in selected}
@@ -1724,6 +1742,24 @@ def _schedule_from_grid(
 
     if selected:
         result.price_threshold = max(s[1] for s in selected)
+
+    # Build human-readable reason
+    deficit_kwh = energy_deficit
+    n_charge = len(selected)
+    n_discharge = len(discharge_for_headroom)
+    parts = []
+    if n_charge:
+        max_price = max(s[1] for s in selected)
+        parts.append(
+            f"Charging {n_charge} slot{'s' if n_charge != 1 else ''}"
+            f" (up to {max_price:.3f}/kWh) to cover {deficit_kwh:.1f} kWh deficit"
+        )
+    if n_discharge:
+        parts.append(
+            f"Pre-discharging {n_discharge} slot{'s' if n_discharge != 1 else ''}"
+            " to make room for negative-price solar"
+        )
+    result.schedule_reason = " · ".join(parts) if parts else ""
 
     return result
 
@@ -1777,6 +1813,9 @@ def _schedule_to_grid(
 
     if sellable <= 0:
         result.status = "no_action_needed"
+        result.schedule_reason = (
+            "Not enough stored energy above reserve to sell"
+        )
         return result
 
     # Filter sell candidates.  When block_export_on_negative_price is
@@ -1820,6 +1859,7 @@ def _schedule_to_grid(
 
     if not selected:
         result.status = "no_action_needed"
+        result.schedule_reason = "No sell slots passed validation — reserve too tight"
         return result
 
     result.scheduled_slots = {s[0]: "discharge" for s in selected}
@@ -1828,6 +1868,15 @@ def _schedule_to_grid(
 
     if selected:
         result.price_threshold = min(s[1] for s in selected)
+
+    n_sell = len(selected)
+    min_price = min(s[1] for s in selected)
+    max_price = max(s[1] for s in selected)
+    result.schedule_reason = (
+        f"Selling {n_sell} slot{'s' if n_sell != 1 else ''}"
+        f" at {min_price:.3f}–{max_price:.3f}/kWh"
+        f" ({sellable:.1f} kWh above reserve)"
+    )
 
     return result
 
@@ -2095,7 +2144,95 @@ def _schedule_both(
     elif sell_selected:
         result.price_threshold = min(s[1] for s in sell_selected)
 
+    # Build human-readable reason for the both-mode schedule decision
+    result.schedule_reason = _build_both_reason(
+        config, prices_remaining, charge_slots, sell_selected,
+        discharge_for_headroom, arbitrage_active, min_sell_price,
+        energy_deficit, sellable, round_trip_eff,
+    )
+
     return result
+
+
+def _build_both_reason(
+    config: EMSConfig,
+    prices_remaining: list[float],
+    charge_slots: list[tuple[int, float]],
+    sell_selected: list[tuple[int, float]],
+    discharge_for_headroom: set[int],
+    arbitrage_active: bool,
+    min_sell_price: float,
+    energy_deficit: float,
+    sellable: float,
+    round_trip_eff: float,
+) -> str:
+    """Build a concise human-readable explanation of the both-mode schedule."""
+    parts: list[str] = []
+    n_buy = len(charge_slots)
+    n_sell = len(sell_selected)
+    n_headroom = len(discharge_for_headroom)
+
+    if n_buy and n_sell:
+        buy_max = max(s[1] for s in charge_slots)
+        sell_min = min(s[1] for s in sell_selected)
+        spread = sell_min - buy_max
+        parts.append(
+            f"Buying {n_buy} slot{'s' if n_buy != 1 else ''}"
+            f" (up to {buy_max:.3f}), selling {n_sell}"
+            f" (from {sell_min:.3f}) — spread {spread:.3f}/kWh"
+        )
+    elif n_buy:
+        buy_max = max(s[1] for s in charge_slots)
+        parts.append(
+            f"Charging {n_buy} slot{'s' if n_buy != 1 else ''}"
+            f" to cover {energy_deficit:.1f} kWh deficit"
+        )
+        if config.arbitrage_price_delta > 0 and not arbitrage_active:
+            if prices_remaining:
+                spread = max(prices_remaining) - min(prices_remaining)
+                parts.append(
+                    f"Not trading: spread {spread:.2f}"
+                    f" < your {config.arbitrage_price_delta:.2f} minimum"
+                )
+            else:
+                parts.append("Not trading: no price spread")
+        elif not arbitrage_active:
+            if prices_remaining:
+                cheapest = min(prices_remaining)
+                most_exp = max(prices_remaining)
+                min_prof = cheapest / round_trip_eff if round_trip_eff > 0 else 0
+                parts.append(
+                    f"Not selling: best price {most_exp:.3f}"
+                    f" doesn't cover round-trip cost ({min_prof:.3f} needed)"
+                )
+            else:
+                parts.append("Not selling: no prices")
+        else:
+            parts.append(f"No profitable sell slots above {min_sell_price:.3f}")
+    elif n_sell:
+        sell_min = min(s[1] for s in sell_selected)
+        parts.append(
+            f"Selling {n_sell} slot{'s' if n_sell != 1 else ''}"
+            f" at {sell_min:.3f}+/kWh"
+            f" ({sellable:.1f} kWh above reserve)"
+        )
+    else:
+        if config.arbitrage_price_delta > 0 and prices_remaining:
+            spread = max(prices_remaining) - min(prices_remaining)
+            parts.append(
+                f"Not trading: spread {spread:.2f}"
+                f" < your {config.arbitrage_price_delta:.2f} minimum"
+            )
+        else:
+            parts.append("No action needed — reserve met, no profitable trade")
+
+    if n_headroom:
+        parts.append(
+            f"Pre-discharging {n_headroom} slot{'s' if n_headroom != 1 else ''}"
+            " for negative-price solar headroom"
+        )
+
+    return " · ".join(parts)
 
 
 def calculate_available_info(

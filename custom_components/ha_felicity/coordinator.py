@@ -97,6 +97,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.cheap_slots_remaining: int = 0
         self.grid_energy_planned: float = 0.0
         self.schedule_status: str = "unknown"
+        self.schedule_reason: str = ""
 
         # Consumption tracking & persistent storage
         self.consumption_override_entity = consumption_override_entity
@@ -638,6 +639,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 time.time() - self._last_modbus_success_ts,
             )
             self.schedule_status = "stale_data"
+            self.schedule_reason = "Inverter communication lost — using last known state"
             return
 
         # Use safe_max_power (kW scale 1-10) for realistic slot energy, fallback to power_level
@@ -820,6 +822,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.tomorrow_planned_slots = result.tomorrow_planned_slots
         self.tomorrow_planned_kwh = result.tomorrow_planned_kwh
         self.schedule_status = result.status
+        self.schedule_reason = result.schedule_reason
         self._backend_soc_trajectory = result.soc_trajectory
         self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots
         self._backend_soc_trajectory_tomorrow = result.tomorrow_soc_trajectory
@@ -1210,6 +1213,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Set schedule_status for manual mode (schedule optimizer only runs in auto)
         if price_mode == "manual" and self.slot_prices_today and self.price_threshold is not None:
             self.schedule_status = "manual"
+            self.schedule_reason = "Manual mode — schedule follows price threshold"
 
         if not self.slot_prices_today or self.price_threshold is None:
             self.available_slots_at_threshold = 0

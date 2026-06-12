@@ -4562,3 +4562,119 @@ class TestAvailableInfoTotalWithTomorrow:
         info = calculate_available_info(config, state, price_threshold=0.20)
         assert info.available_total_with_tomorrow > info.available_slots
         assert info.available_total_with_tomorrow == info.available_slots + 24
+
+
+# ---------------------------------------------------------------------------
+# Test: Schedule Reason ("why" line)
+# ---------------------------------------------------------------------------
+
+class TestScheduleReason:
+    """Tests that schedule_reason is populated with a human-readable explanation."""
+
+    def test_reason_off(self):
+        config = default_config(grid_mode="off")
+        state = default_state()
+        result = calculate_schedule(config, state)
+        assert "off" in result.schedule_reason.lower() or "strategy" in result.schedule_reason.lower()
+
+    def test_reason_no_price_data(self):
+        config = default_config(grid_mode="from_grid")
+        state = default_state(slot_prices_today=None)
+        result = calculate_schedule(config, state)
+        assert "price" in result.schedule_reason.lower()
+
+    def test_reason_from_grid_solar_fills(self):
+        """When solar fills battery, reason should mention solar."""
+        config = default_config(grid_mode="from_grid", battery_capacity_kwh=20.0)
+        state = default_state(
+            battery_soc_pct=50.0,
+            pv_hourly_kwh=make_pv_hourly(40.0),
+            pv_forecast_remaining=20.0,
+            pv_forecast_today=40.0,
+        )
+        result = calculate_schedule(config, state)
+        assert "solar" in result.schedule_reason.lower() or "no" in result.schedule_reason.lower()
+
+    def test_reason_from_grid_charging(self):
+        """When charging is needed, reason should mention slots and deficit."""
+        config = default_config(grid_mode="from_grid")
+        state = default_state(
+            battery_soc_pct=30.0,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0,
+            pv_forecast_today=0,
+            pv_actual_today_kwh=0,
+        )
+        result = calculate_schedule(config, state)
+        assert len(result.scheduled_slots) > 0
+        assert "charg" in result.schedule_reason.lower()
+
+    def test_reason_to_grid_selling(self):
+        """When selling, reason mentions sell slots."""
+        config = default_config(
+            grid_mode="to_grid",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=10.0,
+            consumption_est_kwh=5.0,
+        )
+        prices = [0.30] * 24
+        state = default_state(
+            battery_soc_pct=90.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(10.0),
+            pv_forecast_remaining=5.0,
+            pv_forecast_today=10.0,
+        )
+        result = calculate_schedule(config, state)
+        if result.scheduled_slots:
+            assert "sell" in result.schedule_reason.lower()
+
+    def test_reason_both_not_trading_delta(self):
+        """When arbitrage delta prevents trading, reason explains the spread."""
+        config = default_config(
+            grid_mode="both",
+            arbitrage_price_delta=0.20,
+        )
+        prices = [0.10] * 24
+        prices[12] = 0.15
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=prices,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert "spread" in result.schedule_reason.lower() or "not trading" in result.schedule_reason.lower()
+
+    def test_reason_both_buying_and_selling(self):
+        """When both buying and selling, reason mentions both."""
+        config = default_config(
+            grid_mode="both",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=5.0,
+            battery_discharge_min_pct=10.0,
+        )
+        prices = [0.05] * 12 + [0.40] * 12
+        state = default_state(
+            battery_soc_pct=30.0,
+            slot_prices_today=prices,
+            current_hour=0,
+            current_minute=0,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0,
+            pv_forecast_today=0,
+            pv_actual_today_kwh=0,
+        )
+        result = calculate_schedule(config, state)
+        charge_count = sum(1 for v in result.scheduled_slots.values() if v == "charge")
+        discharge_count = sum(1 for v in result.scheduled_slots.values() if v == "discharge")
+        if charge_count > 0 and discharge_count > 0:
+            assert "buy" in result.schedule_reason.lower() or "sell" in result.schedule_reason.lower()
+
+    def test_reason_always_set(self):
+        """Every schedule result should have a non-empty reason."""
+        for mode in ["off", "from_grid", "to_grid", "both"]:
+            config = default_config(grid_mode=mode)
+            state = default_state()
+            result = calculate_schedule(config, state)
+            assert result.schedule_reason, f"Empty reason for mode={mode}"
