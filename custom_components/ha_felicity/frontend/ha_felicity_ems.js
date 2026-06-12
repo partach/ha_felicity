@@ -12,6 +12,7 @@ class FelicityEMSCard extends LitElement {
       _pastSlotActions: { type: Object }, // past slot actions from HA history
       _slotOverrides: { type: Object }, // manual slot overrides: { today: {idx: action}, tomorrow: {idx: action} }
       _pendingClick: { type: Object },  // first click for two-click override selection
+      _showAdvanced: { type: Boolean }, // toggle for advanced controls
     };
   }
 
@@ -27,6 +28,7 @@ class FelicityEMSCard extends LitElement {
     this._lastHistoryFetch = 0;   // timestamp of last history fetch
     this._slotOverrides = { today: {}, tomorrow: {} };  // manual slot overrides
     this._pendingClick = null;     // { slotIdx, action, day } — first click of two-click selection
+    this._showAdvanced = false;     // advanced controls hidden by default
   }
 
   static getConfigElement() {
@@ -446,10 +448,23 @@ class FelicityEMSCard extends LitElement {
         const chargeIdxSet = new Set(result.slots.filter(s => s.action === "charge").map(s => s.slot));
         let available = remaining.filter(s => s.price > 0 && !chargeIdxSet.has(s.idx));
 
-        if (gridMode === "both" && result.chargeCount > 0) {
-          const maxBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
-          const minSell = maxBuy / roundTrip;
-          available = available.filter(s => s.price >= minSell);
+        if (gridMode === "both") {
+          let minSell = 0;
+          let refBuy = null;
+          if (result.chargeCount > 0) {
+            refBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
+            minSell = refBuy / roundTrip;
+          } else if (remaining.length) {
+            refBuy = Math.min(...remaining.map(s => s.price));
+          }
+          // Arbitrage delta sell gate (mirrors backend): each sell must beat
+          // the buy reference by at least the user's delta.
+          if (arbitrageDelta > 0 && refBuy != null) {
+            minSell = Math.max(minSell, refBuy + arbitrageDelta);
+          }
+          if (minSell > 0) {
+            available = available.filter(s => s.price >= minSell);
+          }
         }
 
         available.sort((a, b) => b.price - a.price);
@@ -1330,9 +1345,22 @@ class FelicityEMSCard extends LitElement {
       if (sellable > 0) {
         const chargeIdxSet = new Set(result.slots.filter(s => s.action === "charge").map(s => s.slot));
         let available = remaining.filter(s => s.price > 0 && !chargeIdxSet.has(s.idx));
-        if (gridMode === "both" && result.chargeCount > 0) {
-          const maxBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
-          available = available.filter(s => s.price >= maxBuy / roundTrip);
+        if (gridMode === "both") {
+          let minSell = 0;
+          let refBuy = null;
+          if (result.chargeCount > 0) {
+            refBuy = Math.max(...result.slots.filter(s => s.action === "charge").map(s => s.price));
+            minSell = refBuy / roundTrip;
+          } else if (remaining.length) {
+            refBuy = Math.min(...remaining.map(s => s.price));
+          }
+          // Arbitrage delta sell gate (mirrors backend)
+          if (arbitrageDelta > 0 && refBuy != null) {
+            minSell = Math.max(minSell, refBuy + arbitrageDelta);
+          }
+          if (minSell > 0) {
+            available = available.filter(s => s.price >= minSell);
+          }
         }
         available.sort((a, b) => b.price - a.price);
         const needed = energyPerSlot > 0 ? Math.ceil(sellable / energyPerSlot) : 0;
@@ -1956,7 +1984,19 @@ class FelicityEMSCard extends LitElement {
             </div>
           </div>
 
-          <!-- Controls -->
+          <!-- Strategy & Reason -->
+          <div class="strategy-section">
+            ${this._renderStrategyControl()}
+          </div>
+
+          ${this._renderScheduleReason()}
+
+          <!-- Advanced toggle & controls -->
+          <div class="advanced-toggle" @click=${() => { this._showAdvanced = !this._showAdvanced; this.requestUpdate(); }}>
+            <ha-icon icon="${this._showAdvanced ? 'mdi:chevron-up' : 'mdi:chevron-down'}"></ha-icon>
+            <span>Advanced settings</span>
+          </div>
+          ${this._showAdvanced ? html`
           <div class="controls-section">
             <div class="controls-grid">
               ${this._renderGridModeControl(gridMode)}
@@ -1971,6 +2011,7 @@ class FelicityEMSCard extends LitElement {
               ${this._renderPriceThresholdControl()}
             </div>
           </div>
+          ` : ''}
 
           <!-- Info footer -->
           <div class="info-footer">
@@ -2084,6 +2125,43 @@ class FelicityEMSCard extends LitElement {
         <input type="range" min="1" max="10" step="1" .value=${display}
           @input=${(e) => this._previewPriceLevel(parseInt(e.target.value))}
           @change=${(e) => this._commitPriceLevel(parseInt(e.target.value))} />
+      </div>
+    `;
+  }
+
+  _renderStrategyControl() {
+    const strategyEid = this._getEntityId("ems_strategy");
+    const currentStrategy = strategyEid && this.hass.states[strategyEid]
+      ? this.hass.states[strategyEid].state
+      : "save_money";
+    const options = [
+      { value: "save_money", label: "Save Money" },
+      { value: "self_sufficiency", label: "Self-Sufficiency" },
+      { value: "battery_care", label: "Battery Care" },
+      { value: "trader", label: "Trader" },
+      { value: "custom", label: "Custom" },
+    ];
+    return html`
+      <div class="strategy-control">
+        <span class="strategy-label">Strategy</span>
+        <select class="strategy-select" @change=${(e) => {
+          this._setSelect("ems_strategy", e.target.value);
+        }}>
+          ${options.map((o) => html`
+            <option value="${o.value}" ?selected=${o.value === currentStrategy}>${o.label}</option>
+          `)}
+        </select>
+      </div>
+    `;
+  }
+
+  _renderScheduleReason() {
+    const reason = this._getAttr("schedule_status", "schedule_reason");
+    if (!reason) return html``;
+    return html`
+      <div class="schedule-reason">
+        <ha-icon icon="mdi:information-outline"></ha-icon>
+        <span>${reason}</span>
       </div>
     `;
   }
@@ -2430,6 +2508,70 @@ class FelicityEMSCard extends LitElement {
         padding: 0;
         height: 24px;
         accent-color: var(--primary-color);
+      }
+
+      /* Strategy section */
+      .strategy-section {
+        margin-bottom: 8px;
+      }
+      .strategy-control {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .strategy-label {
+        font-size: 0.85em;
+        font-weight: 500;
+        color: var(--primary-text-color);
+        white-space: nowrap;
+      }
+      .strategy-select {
+        flex: 1;
+        padding: 6px 8px;
+        border: 1px solid var(--divider-color);
+        border-radius: 6px;
+        background: var(--secondary-background-color);
+        color: var(--primary-text-color);
+        font-size: 0.85em;
+        font-weight: 500;
+      }
+
+      /* Schedule reason ("why" line) */
+      .schedule-reason {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 6px 10px;
+        margin-bottom: 8px;
+        background: rgba(var(--rgb-primary-color, 33, 150, 243), 0.08);
+        border-radius: 6px;
+        font-size: 0.78em;
+        line-height: 1.35;
+        color: var(--primary-text-color);
+      }
+      .schedule-reason ha-icon {
+        --mdc-icon-size: 16px;
+        color: var(--primary-color);
+        flex: 0 0 auto;
+        margin-top: 1px;
+      }
+
+      /* Advanced toggle */
+      .advanced-toggle {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 0;
+        cursor: pointer;
+        font-size: 0.75em;
+        color: var(--secondary-text-color);
+        user-select: none;
+      }
+      .advanced-toggle:hover {
+        color: var(--primary-text-color);
+      }
+      .advanced-toggle ha-icon {
+        --mdc-icon-size: 16px;
       }
 
       /* Info footer */

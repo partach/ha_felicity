@@ -61,7 +61,14 @@ class EMSConfig:
     consumption_est_kwh: float = 10.0
     yesterday_deficit_kwh: float = 0.0
     reserve_target_pct: float = 0.0  # 0 = dynamic (min + overnight), >0 = fixed floor %
-    arbitrage_price_delta: float = 0.0  # €/kWh spread threshold for full charge in 'both' mode
+    # Minimum buy→sell spread (€/kWh) required to TRADE in 'both' mode.
+    # >0: explicit arbitrage trigger — charge-to-full only activates when the
+    #     day's spread >= delta, AND every sell slot must beat the buy
+    #     reference (max scheduled buy price, or cheapest remaining price)
+    #     by at least delta.  Replaces the automatic profitability check.
+    # 0 (default): automatic check — trade whenever the peak price covers
+    #     round-trip losses on the cheapest buy (+ cycle cost).
+    arbitrage_price_delta: float = 0.0
     # Battery degradation cost: each cycled kWh has a wear cost.  Used to
     # require a profitable spread before scheduling arbitrage.  Typical LFP
     # range: 0.02-0.05 €/kWh.  0.0 disables (legacy behaviour).
@@ -139,6 +146,7 @@ class ScheduleResult:
     tomorrow_planned_kwh: float = 0.0
     tomorrow_precharge: float = 0.0
     status: str = "off"
+    schedule_reason: str = ""
     soc_trajectory: list[float] = field(default_factory=list)
     tomorrow_scheduled_slots: dict[int, str] = field(default_factory=dict)
     tomorrow_soc_trajectory: list[float] = field(default_factory=list)
@@ -961,6 +969,11 @@ def select_unified_charge_slots(
     current_hour: int = 12,
     reserve_target_pct: float = 0.0,
     optimization_priority: str = "cost",
+    safe_power_kw: float | None = None,
+    inverter_max_power_kw: float | None = None,
+    pv_confidence: float = 1.0,
+    minutes_per_slot: float | None = None,
+    pv_hourly_kwh_tomorrow: dict[int, float] | None = None,
 ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], float]:
     """Select charge slots from a unified today+tomorrow pool.
 
@@ -968,6 +981,15 @@ def select_unified_charge_slots(
     reserve target the same way they shape today's (fixed floor and
     self_consumption 1.25x boost), keeping the two-day deficit
     consistent with the user's reserve settings.
+
+    When safe_power_kw / inverter_max_power_kw / minutes_per_slot are
+    supplied, slot selection is POWER-AWARE: each candidate slot
+    contributes its actually-achievable grid charge energy
+    (min(safe_power, inverter_max - pv_at_hour) x slot_h x efficiency)
+    instead of a flat per-slot amount.  This stops over-selection — with
+    high charge power the deficit is covered by just the few cheapest
+    slots, and midday slots where PV saturates the inverter are skipped
+    instead of being counted as full-power charge slots.
 
     Returns:
         (today_selected, tomorrow_selected, tomorrow_charge_kwh)
@@ -1034,11 +1056,46 @@ def select_unified_charge_slots(
     negative = [s for s in combined if s[0] < 0]
     non_negative = sorted([s for s in combined if s[0] >= 0], key=lambda x: x[0])
 
-    negative_energy = len(negative) * effective_per_slot
-    remaining_deficit = max(0.0, total_deficit - negative_energy)
-    needed = math.ceil(remaining_deficit / effective_per_slot) if effective_per_slot > 0 else 0
+    # Power-aware per-slot charge energy: how much grid energy can this
+    # slot actually deliver to the battery?  PV occupies inverter capacity,
+    # so a midday slot charges slower (or not at all when PV saturates the
+    # inverter).  Falls back to the flat effective_per_slot when the caller
+    # didn't supply power parameters (legacy / test paths).
+    power_aware = (
+        safe_power_kw is not None
+        and inverter_max_power_kw is not None
+        and minutes_per_slot is not None
+        and effective_per_slot > 0
+    )
 
-    selected = negative + non_negative[:needed]
+    def _slot_charge_energy(s: tuple[float, int, int]) -> float:
+        if not power_aware:
+            return effective_per_slot
+        hour = int((s[2] * minutes_per_slot) / 60)
+        if s[1] == 0:
+            pv_kw = (pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+        else:
+            pv_kw = (pv_hourly_kwh_tomorrow or {}).get(hour, 0.0)
+        grid_kw = min(safe_power_kw, max(0.0, inverter_max_power_kw - pv_kw))
+        return grid_kw * (minutes_per_slot / 60.0) * efficiency
+
+    # Accumulate cheapest-first until the deficit is covered, counting each
+    # slot's real deliverable energy.  Slots where PV saturates the inverter
+    # contribute nothing and are skipped (scheduling them would just burn a
+    # cheap slot on a no-op).
+    negative_energy = sum(_slot_charge_energy(s) for s in negative)
+    remaining_deficit = max(0.0, total_deficit - negative_energy)
+    selected = list(negative)
+    if remaining_deficit > 0 and effective_per_slot > 0:
+        accumulated = 0.0
+        for s in non_negative:
+            if accumulated >= remaining_deficit - 1e-9:
+                break
+            slot_energy = _slot_charge_energy(s)
+            if slot_energy <= 1e-9:
+                continue
+            selected.append(s)
+            accumulated += slot_energy
 
     # Split back into today and tomorrow
     today_selected = [s for s in selected if s[1] == 0]
@@ -1092,7 +1149,8 @@ def select_unified_charge_slots(
     # Convert to (slot_index, price) tuples
     today_result = [(s[2], s[0]) for s in today_selected]
     tomorrow_result = [(s[2], s[0]) for s in tomorrow_selected]
-    tomorrow_charge_kwh = round(len(tomorrow_result) * effective_per_slot, 2)
+    tomorrow_charge_kwh = round(
+        sum(_slot_charge_energy(s) for s in tomorrow_selected), 2)
 
     _LOGGER.info(
         "Unified slot selection: deficit_today=%.2f, deficit_tomorrow=%.2f, "
@@ -1129,7 +1187,6 @@ def _compute_tomorrow_schedule(
     minutes_per_slot = (24 * 60) / num_slots
     slot_duration_hours = minutes_per_slot / 60.0
     energy_per_slot = config.safe_power_kw * slot_duration_hours
-    effective_per_slot = energy_per_slot * config.efficiency
     round_trip_eff = config.efficiency * config.efficiency
 
     # Projected midnight SOC from today's trajectory (last value)
@@ -1146,26 +1203,10 @@ def _compute_tomorrow_schedule(
     if not remaining:
         return {}, []
 
-    # Charge slots: from unified selection stored on today_result
-    scheduled: dict[int, str] = {}
-    charge_indices: set[int] = set()
-
-    # The unified charge selection already picked tomorrow's charge slots.
-    # Reconstruct them: they're the cheapest slots up to tomorrow_planned_slots.
-    if today_result.tomorrow_planned_slots > 0 and config.grid_mode in ("from_grid", "both"):
-        neg = [(i, p) for i, p in remaining if p < 0]
-        non_neg = sorted([(i, p) for i, p in remaining if p >= 0], key=lambda x: x[1])
-        neg_energy = len(neg) * effective_per_slot
-        deficit = today_result.tomorrow_planned_kwh
-        non_neg_needed = math.ceil(max(0, deficit - neg_energy) / effective_per_slot) if effective_per_slot > 0 else 0
-        charge_slots = neg + non_neg[:non_neg_needed]
-        for idx, _ in charge_slots:
-            scheduled[idx] = "charge"
-            charge_indices.add(idx)
-
     # Hourly PV for tomorrow: prefer the real per-hour forecast when the
     # coordinator supplied one; otherwise synthesize a flat daylight (6-18)
-    # distribution from the daily total.
+    # distribution from the daily total.  (Built before the charge-slot
+    # reconstruction below, which needs per-hour PV for power-aware energy.)
     pv_tomorrow_total = state.pv_forecast_tomorrow or 0.0
     if state.pv_hourly_kwh_tomorrow:
         pv_hourly_tomorrow = dict(state.pv_hourly_kwh_tomorrow)
@@ -1173,6 +1214,43 @@ def _compute_tomorrow_schedule(
         daylight_hours = list(range(6, 18))
         pv_per_daylight_hour = pv_tomorrow_total / len(daylight_hours) if daylight_hours else 0.0
         pv_hourly_tomorrow = {h: pv_per_daylight_hour for h in daylight_hours}
+
+    def _tomorrow_slot_charge_energy(idx: int) -> float:
+        """Achievable grid charge energy for a tomorrow slot (mirrors the
+        power-aware accumulation in select_unified_charge_slots)."""
+        hour = int((idx * minutes_per_slot) / 60)
+        pv_kw = pv_hourly_tomorrow.get(hour, 0.0)
+        grid_kw = min(config.safe_power_kw,
+                      max(0.0, config.inverter_max_power_kw - pv_kw))
+        return grid_kw * slot_duration_hours * config.efficiency
+
+    # Charge slots: from unified selection stored on today_result
+    scheduled: dict[int, str] = {}
+    charge_indices: set[int] = set()
+
+    # The unified charge selection already picked tomorrow's charge slots.
+    # Reconstruct them with the same power-aware cheapest-first accumulation
+    # the unified selector used, so the displayed tomorrow schedule matches
+    # the planned energy.
+    if today_result.tomorrow_planned_slots > 0 and config.grid_mode in ("from_grid", "both"):
+        neg = [(i, p) for i, p in remaining if p < 0]
+        non_neg = sorted([(i, p) for i, p in remaining if p >= 0], key=lambda x: x[1])
+        neg_energy = sum(_tomorrow_slot_charge_energy(i) for i, _ in neg)
+        deficit = today_result.tomorrow_planned_kwh
+        remaining_deficit_t = max(0.0, deficit - neg_energy)
+        charge_slots = list(neg)
+        accumulated_t = 0.0
+        for i, p in non_neg:
+            if accumulated_t >= remaining_deficit_t - 1e-9:
+                break
+            slot_energy = _tomorrow_slot_charge_energy(i)
+            if slot_energy <= 1e-9:
+                continue
+            charge_slots.append((i, p))
+            accumulated_t += slot_energy
+        for idx, _ in charge_slots:
+            scheduled[idx] = "charge"
+            charge_indices.add(idx)
 
     # Validate tomorrow's charge slots: drop any that would overflow.
     # Without this, a negative or near-zero-price slot picked by the
@@ -1208,7 +1286,7 @@ def _compute_tomorrow_schedule(
             config.consumption_est_kwh, state.pv_hourly_kwh)
         reserve_target = _compute_reserve_target(config, reserve_kwh)
 
-        charge_energy = len(charge_indices) * effective_per_slot
+        charge_energy = sum(_tomorrow_slot_charge_energy(i) for i in charge_indices)
         max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
 
         # Arbitrage check for tomorrow
@@ -1228,11 +1306,22 @@ def _compute_tomorrow_schedule(
         if sellable > 0:
             available = [(i, p) for i, p in remaining
                          if p > 0 and i not in charge_indices]
-            if config.grid_mode == "both" and charge_indices:
-                max_buy = max(tomorrow_prices[i] for i in charge_indices
-                              if tomorrow_prices[i] is not None)
-                min_sell = max_buy / round_trip_eff
-                available = [(i, p) for i, p in available if p >= min_sell]
+            if config.grid_mode == "both":
+                min_sell = 0.0
+                buy_prices = [tomorrow_prices[i] for i in charge_indices
+                              if tomorrow_prices[i] is not None]
+                if buy_prices:
+                    min_sell = max(buy_prices) / round_trip_eff
+                # Arbitrage delta sell gate (mirrors today's _schedule_both):
+                # sells must beat the buy reference by at least the delta.
+                if config.arbitrage_price_delta > 0:
+                    prices_vals = [p for _, p in remaining]
+                    ref_buy = max(buy_prices) if buy_prices else (
+                        min(prices_vals) if prices_vals else None)
+                    if ref_buy is not None:
+                        min_sell = max(min_sell, ref_buy + config.arbitrage_price_delta)
+                if min_sell > 0:
+                    available = [(i, p) for i, p in available if p >= min_sell]
 
             available.sort(key=lambda x: -x[1])
             # sellable is grid-side kWh; each discharge slot delivers
@@ -1306,6 +1395,10 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
 
     if config.grid_mode == "off" or not state.slot_prices_today:
         result.status = "off" if config.grid_mode == "off" else "no_price_data"
+        if config.grid_mode == "off":
+            result.schedule_reason = "EMS is off — select a strategy to start optimizing"
+        else:
+            result.schedule_reason = "Waiting for electricity price data"
         reserve_kwh = calculate_self_consumption_reserve(
             config.consumption_est_kwh, state.pv_hourly_kwh)
         result.self_consumption_reserve = round(reserve_kwh, 2)
@@ -1327,6 +1420,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
 
     if not remaining:
         result.status = "day_complete"
+        result.schedule_reason = "All price slots for today have passed"
         return result
 
     # When per-hour PV data is unavailable, synthesize from daily forecast
@@ -1570,6 +1664,11 @@ def _schedule_from_grid(
         current_hour=state.current_hour,
         reserve_target_pct=config.reserve_target_pct,
         optimization_priority=config.optimization_priority,
+        safe_power_kw=config.safe_power_kw,
+        inverter_max_power_kw=config.inverter_max_power_kw,
+        pv_confidence=pv_confidence,
+        minutes_per_slot=minutes_per_slot,
+        pv_hourly_kwh_tomorrow=state.pv_hourly_kwh_tomorrow,
     )
 
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
@@ -1591,6 +1690,17 @@ def _schedule_from_grid(
 
     if not selected and not config.discharge_to_make_room_for_negative_price:
         result.status = "no_action_needed"
+        if max_projected >= max_battery_kwh * 0.95:
+            solar_pct = (
+                max_projected / config.battery_capacity_kwh * 100
+                if config.battery_capacity_kwh > 0 else 0
+            )
+            result.schedule_reason = (
+                f"Solar fills battery to {solar_pct:.0f}%"
+                " — no grid charging needed"
+            )
+        else:
+            result.schedule_reason = "Battery reserve is met — no charging needed"
         return result
 
     # Per-slot SOC validation: ensure charge doesn't push SOC above capacity
@@ -1621,6 +1731,7 @@ def _schedule_from_grid(
 
     if not selected and not discharge_for_headroom:
         result.status = "no_action_needed"
+        result.schedule_reason = "Battery reserve is met — no charging needed"
         return result
 
     result.scheduled_slots = {s[0]: "charge" for s in selected}
@@ -1631,6 +1742,24 @@ def _schedule_from_grid(
 
     if selected:
         result.price_threshold = max(s[1] for s in selected)
+
+    # Build human-readable reason
+    deficit_kwh = energy_deficit
+    n_charge = len(selected)
+    n_discharge = len(discharge_for_headroom)
+    parts = []
+    if n_charge:
+        max_price = max(s[1] for s in selected)
+        parts.append(
+            f"Charging {n_charge} slot{'s' if n_charge != 1 else ''}"
+            f" (up to {max_price:.3f}/kWh) to cover {deficit_kwh:.1f} kWh deficit"
+        )
+    if n_discharge:
+        parts.append(
+            f"Pre-discharging {n_discharge} slot{'s' if n_discharge != 1 else ''}"
+            " to make room for negative-price solar"
+        )
+    result.schedule_reason = " · ".join(parts) if parts else ""
 
     return result
 
@@ -1684,6 +1813,9 @@ def _schedule_to_grid(
 
     if sellable <= 0:
         result.status = "no_action_needed"
+        result.schedule_reason = (
+            "Not enough stored energy above reserve to sell"
+        )
         return result
 
     # Filter sell candidates.  When block_export_on_negative_price is
@@ -1727,6 +1859,7 @@ def _schedule_to_grid(
 
     if not selected:
         result.status = "no_action_needed"
+        result.schedule_reason = "No sell slots passed validation — reserve too tight"
         return result
 
     result.scheduled_slots = {s[0]: "discharge" for s in selected}
@@ -1735,6 +1868,15 @@ def _schedule_to_grid(
 
     if selected:
         result.price_threshold = min(s[1] for s in selected)
+
+    n_sell = len(selected)
+    min_price = min(s[1] for s in selected)
+    max_price = max(s[1] for s in selected)
+    result.schedule_reason = (
+        f"Selling {n_sell} slot{'s' if n_sell != 1 else ''}"
+        f" at {min_price:.3f}–{max_price:.3f}/kWh"
+        f" ({sellable:.1f} kWh above reserve)"
+    )
 
     return result
 
@@ -1802,14 +1944,41 @@ def _schedule_both(
     else:
         energy_deficit = base_deficit
 
-    # Both mode: charge to full capacity when profitable buy-sell pairs exist.
-    # The user opted into arbitrage by selecting 'both' — the algorithm should
-    # maximise stored energy available for selling at peak prices, not just
-    # target the conservative reserve.  Skip when solar already fills the
-    # battery (no point grid-charging).
+    # Both mode arbitrage activation.  Two regimes:
+    #
+    # arbitrage_price_delta > 0 — the delta is the EXPLICIT trade trigger.
+    #   Charge-to-full activates only when the day's price spread clears the
+    #   delta, and the sell side (below) requires every sell slot to beat
+    #   the buy reference by at least the delta.  The automatic profitability
+    #   check is skipped entirely: the user asked for "don't trade unless
+    #   the spread is at least X".
+    #
+    # arbitrage_price_delta == 0 (default) — automatic profitability check:
+    #   trade whenever the peak price covers round-trip losses on the
+    #   cheapest buy.  Skip full charging when solar already fills the
+    #   battery (no point grid-charging).
     arbitrage_active = False
     prices_remaining = [p for _, p in remaining if p is not None]
-    if prices_remaining and max_projected < max_battery_kwh * 0.95:
+    if config.arbitrage_price_delta > 0:
+        if prices_remaining:
+            price_spread = max(prices_remaining) - min(prices_remaining)
+            if price_spread >= config.arbitrage_price_delta:
+                arbitrage_active = True
+                if max_projected < max_battery_kwh * 0.95:
+                    full_charge_kwh = max_battery_kwh - current_kwh
+                    energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
+                _LOGGER.debug(
+                    "Arbitrage delta met: spread=%.4f >= delta=%.4f, "
+                    "charging to full (deficit=%.2f kWh)",
+                    price_spread, config.arbitrage_price_delta, energy_deficit,
+                )
+            else:
+                _LOGGER.debug(
+                    "Arbitrage delta NOT met: spread=%.4f < delta=%.4f — "
+                    "no full charge, sells gated at buy+delta",
+                    price_spread, config.arbitrage_price_delta,
+                )
+    elif prices_remaining and max_projected < max_battery_kwh * 0.95:
         cheapest_buy = min(prices_remaining)
         most_expensive = max(prices_remaining)
         min_profitable_sell = cheapest_buy / round_trip_eff
@@ -1821,22 +1990,6 @@ def _schedule_both(
                 "Both-mode arbitrage: buy=%.4f, sell=%.4f (min profitable=%.4f), "
                 "charging to full (deficit=%.2f kWh)",
                 cheapest_buy, most_expensive, min_profitable_sell, energy_deficit,
-            )
-
-    # Arbitrage price delta: optional additional constraint.  When set > 0,
-    # requires the price spread to exceed this threshold before activating
-    # full charging.  With the default of 0, the profitability check above
-    # handles arbitrage automatically.
-    if not arbitrage_active and config.arbitrage_price_delta > 0 and prices_remaining:
-        price_spread = max(prices_remaining) - min(prices_remaining)
-        if price_spread >= config.arbitrage_price_delta:
-            arbitrage_active = True
-            full_charge_kwh = max_battery_kwh - current_kwh
-            energy_deficit = max(energy_deficit, max(0.0, full_charge_kwh - net_pv))
-            _LOGGER.debug(
-                "Arbitrage delta active: spread=%.4f >= delta=%.4f, "
-                "charging to full (deficit=%.2f kWh)",
-                price_spread, config.arbitrage_price_delta, energy_deficit,
             )
 
     charge_slots, tomorrow_slots, tomorrow_charge_kwh = select_unified_charge_slots(
@@ -1851,6 +2004,11 @@ def _schedule_both(
         current_hour=state.current_hour,
         reserve_target_pct=config.reserve_target_pct,
         optimization_priority=config.optimization_priority,
+        safe_power_kw=config.safe_power_kw,
+        inverter_max_power_kw=config.inverter_max_power_kw,
+        pv_confidence=pv_confidence,
+        minutes_per_slot=minutes_per_slot,
+        pv_hourly_kwh_tomorrow=state.pv_hourly_kwh_tomorrow,
     )
 
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
@@ -1895,11 +2053,28 @@ def _schedule_both(
         max_buy_price = max(s[1] for s in charge_slots)
         # Sell must cover: round-trip losses on the buy AND cycle wear cost.
         min_sell_price = (max_buy_price / round_trip_eff) + cycle_cost_per_sold_kwh
-        available_for_sell = [(i, p) for i, p in available_for_sell if p >= min_sell_price]
     elif cycle_cost_per_sold_kwh > 0:
         # No buy slots: still require sell price > cycle wear cost
         # (selling stored PV/yesterday's charge wears the battery too).
-        available_for_sell = [(i, p) for i, p in available_for_sell if p >= cycle_cost_per_sold_kwh]
+        min_sell_price = cycle_cost_per_sold_kwh
+
+    # Arbitrage delta sell gate: when the user set an explicit spread
+    # requirement, every sell slot must beat the buy reference by at least
+    # the delta.  Reference = most expensive scheduled buy slot, or the
+    # cheapest remaining price when nothing is scheduled to buy (the best
+    # buy opportunity we're implicitly passing up).
+    if config.arbitrage_price_delta > 0:
+        if charge_slots:
+            ref_buy = max(s[1] for s in charge_slots)
+        elif prices_remaining:
+            ref_buy = min(prices_remaining)
+        else:
+            ref_buy = None
+        if ref_buy is not None:
+            min_sell_price = max(min_sell_price, ref_buy + config.arbitrage_price_delta)
+
+    if min_sell_price > 0:
+        available_for_sell = [(i, p) for i, p in available_for_sell if p >= min_sell_price]
 
     # sellable is grid-side kWh; each discharge slot delivers
     # energy_per_slot (battery-side) * efficiency to the grid.
@@ -1969,7 +2144,95 @@ def _schedule_both(
     elif sell_selected:
         result.price_threshold = min(s[1] for s in sell_selected)
 
+    # Build human-readable reason for the both-mode schedule decision
+    result.schedule_reason = _build_both_reason(
+        config, prices_remaining, charge_slots, sell_selected,
+        discharge_for_headroom, arbitrage_active, min_sell_price,
+        energy_deficit, sellable, round_trip_eff,
+    )
+
     return result
+
+
+def _build_both_reason(
+    config: EMSConfig,
+    prices_remaining: list[float],
+    charge_slots: list[tuple[int, float]],
+    sell_selected: list[tuple[int, float]],
+    discharge_for_headroom: set[int],
+    arbitrage_active: bool,
+    min_sell_price: float,
+    energy_deficit: float,
+    sellable: float,
+    round_trip_eff: float,
+) -> str:
+    """Build a concise human-readable explanation of the both-mode schedule."""
+    parts: list[str] = []
+    n_buy = len(charge_slots)
+    n_sell = len(sell_selected)
+    n_headroom = len(discharge_for_headroom)
+
+    if n_buy and n_sell:
+        buy_max = max(s[1] for s in charge_slots)
+        sell_min = min(s[1] for s in sell_selected)
+        spread = sell_min - buy_max
+        parts.append(
+            f"Buying {n_buy} slot{'s' if n_buy != 1 else ''}"
+            f" (up to {buy_max:.3f}), selling {n_sell}"
+            f" (from {sell_min:.3f}) — spread {spread:.3f}/kWh"
+        )
+    elif n_buy:
+        buy_max = max(s[1] for s in charge_slots)
+        parts.append(
+            f"Charging {n_buy} slot{'s' if n_buy != 1 else ''}"
+            f" to cover {energy_deficit:.1f} kWh deficit"
+        )
+        if config.arbitrage_price_delta > 0 and not arbitrage_active:
+            if prices_remaining:
+                spread = max(prices_remaining) - min(prices_remaining)
+                parts.append(
+                    f"Not trading: spread {spread:.2f}"
+                    f" < your {config.arbitrage_price_delta:.2f} minimum"
+                )
+            else:
+                parts.append("Not trading: no price spread")
+        elif not arbitrage_active:
+            if prices_remaining:
+                cheapest = min(prices_remaining)
+                most_exp = max(prices_remaining)
+                min_prof = cheapest / round_trip_eff if round_trip_eff > 0 else 0
+                parts.append(
+                    f"Not selling: best price {most_exp:.3f}"
+                    f" doesn't cover round-trip cost ({min_prof:.3f} needed)"
+                )
+            else:
+                parts.append("Not selling: no prices")
+        else:
+            parts.append(f"No profitable sell slots above {min_sell_price:.3f}")
+    elif n_sell:
+        sell_min = min(s[1] for s in sell_selected)
+        parts.append(
+            f"Selling {n_sell} slot{'s' if n_sell != 1 else ''}"
+            f" at {sell_min:.3f}+/kWh"
+            f" ({sellable:.1f} kWh above reserve)"
+        )
+    else:
+        if config.arbitrage_price_delta > 0 and prices_remaining:
+            spread = max(prices_remaining) - min(prices_remaining)
+            parts.append(
+                f"Not trading: spread {spread:.2f}"
+                f" < your {config.arbitrage_price_delta:.2f} minimum"
+            )
+        else:
+            parts.append("No action needed — reserve met, no profitable trade")
+
+    if n_headroom:
+        parts.append(
+            f"Pre-discharging {n_headroom} slot{'s' if n_headroom != 1 else ''}"
+            " for negative-price solar headroom"
+        )
+
+    return " · ".join(parts)
 
 
 def calculate_available_info(

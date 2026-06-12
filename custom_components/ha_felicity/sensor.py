@@ -167,6 +167,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                 })
 
         return {
+            "schedule_reason": self.coordinator.schedule_reason,
             "cheap_slots_remaining": self.coordinator.cheap_slots_remaining,
             "grid_energy_planned_kwh": self.coordinator.grid_energy_planned,
             "scheduled_slot_count": len(scheduled),
