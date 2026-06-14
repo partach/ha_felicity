@@ -1779,6 +1779,7 @@ class FelicityEMSCard extends LitElement {
     const evBoostText = evBoostMin > 0
       ? `${evBoostHours > 0 ? `${evBoostHours}h ` : ""}${evBoostMins}m remaining`
       : "";
+    const operationalMode = this._getState("operational_mode") || null;
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
@@ -1986,9 +1987,14 @@ class FelicityEMSCard extends LitElement {
             </div>
           </div>
 
-          <!-- Strategy & Reason -->
+          <!-- Strategy & Status -->
           <div class="strategy-section">
             ${this._renderStrategyControl()}
+            <div class="status-bar">
+              ${operationalMode ? html`<span class="status-chip mode">${operationalMode}</span>` : ''}
+              <span class="status-chip price">${this._fmt(currentPrice, 3)} ${currency}/kWh</span>
+              <span class="status-chip state-${energyState}">${energyState}</span>
+            </div>
           </div>
 
           ${this._renderScheduleReason()}
@@ -2771,6 +2777,47 @@ class FelicityEMSCard extends LitElement {
         color: var(--primary-text-color);
         font-size: 0.85em;
         font-weight: 500;
+      }
+      .status-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+        flex-wrap: wrap;
+      }
+      .status-chip {
+        font-size: 0.72em;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 10px;
+        white-space: nowrap;
+        letter-spacing: 0.2px;
+        text-transform: capitalize;
+      }
+      .status-chip.mode {
+        background: rgba(100, 140, 200, 0.18);
+        color: var(--primary-text-color);
+      }
+      .status-chip.price {
+        background: rgba(255, 200, 0, 0.15);
+        color: #f4b003;
+        font-variant-numeric: tabular-nums;
+      }
+      .status-chip.state-charging {
+        background: rgba(76, 175, 80, 0.18);
+        color: #4CAF50;
+      }
+      .status-chip.state-discharging {
+        background: rgba(255, 152, 0, 0.18);
+        color: #FF9800;
+      }
+      .status-chip.state-idle {
+        background: var(--secondary-background-color);
+        color: var(--secondary-text-color);
+      }
+      .status-chip.state-unknown {
+        background: var(--secondary-background-color);
+        color: var(--secondary-text-color);
       }
 
       /* Schedule reason ("why" line) */
