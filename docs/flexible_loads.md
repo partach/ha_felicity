@@ -81,3 +81,18 @@ During a boost:
 - **Cyan strip** at the bottom of price bars where loads are scheduled
 - **"N/M loads active"** stat in the stats row
 - **Cyan banner** during EV Boost showing remaining time
+- **Flexible Loads panel** — a dedicated section listing every configured
+  load with:
+  - **On/off state** — the row glows cyan and brightens when the load is
+    active, stays dim when off
+  - **Live power draw** — the current kW with a fill bar showing how much
+    of the load's maximum it is drawing. For the EV charger this is the
+    real draw (active current × voltage × phases), shown alongside the
+    `A · φ · V` detail
+  - **`BOOST` chip** — appears on the EV charger row while EV Boost is active
+  - **Shed-priority badge** — colour-coded ("Sheds 1st" red / "Sheds 2nd"
+    amber / "Sheds last" green) so you can see at a glance which load drops
+    off first when grid current is too high
+  - **Header total** — the combined live power of all active loads
+  - **Footer note** — a reminder that loads are shed before the battery
+    power is reduced

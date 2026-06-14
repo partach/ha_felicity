@@ -542,8 +542,20 @@ select.select_option).
 - Cyan strip at bottom of bars where loads are scheduled
 - "loads" entry in legend (only when loads configured)
 - "N/M loads active" stat in the stats row
+- **Flexible Loads panel** (`_renderFlexLoads`, below the stats row, only
+  when loads configured): one row per load showing on/off state (dim when
+  off, cyan glow when on), the live power draw with a fill bar
+  (`active_power_kw / max_power_kw`), the EV charger's active current
+  detail (`A · φ · V`), a `BOOST` chip during EV boost, and a colour-coded
+  shed-priority badge ("Sheds 1st/2nd/last").  Header shows total live kW.
+  Footer reminds that loads are shed before the battery power is reduced.
 - `flex_load_schedule`, `flex_load_states`, `flex_load_configs` in
-  `schedule_status` attributes
+  `schedule_status` attributes.  `flex_load_configs` entries carry
+  `on`, `active_power_kw`, `max_power_kw`, `priority`, and (EV only)
+  `current_a`, `phases`, `voltage` — built by
+  `HA_FelicityScheduleStatusSensor._build_flex_load_attr`.  EV
+  `active_power_kw` is the *real* draw (`current_step × voltage × phases`),
+  falling back to the startup current when no step has been set yet.
 
 ### EV Boost Override
 

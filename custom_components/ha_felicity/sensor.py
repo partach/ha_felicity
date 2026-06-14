@@ -214,19 +214,46 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "rule1_window_warning": self.coordinator.rule1_window_warning,
             "flex_load_schedule": flex_slot_map,
             "flex_load_states": dict(self.coordinator._flex_load_states),
-            "flex_load_configs": [
-                {
-                    "index": i,
-                    "name": ld.name,
-                    "power_kw": ld.rated_power_kw,
-                    "priority": ld.priority,
-                    "is_ev": ld.is_ev_charger,
-                }
-                for i, ld in enumerate(self.coordinator._build_flex_load_configs())
-            ],
+            "flex_load_configs": self._build_flex_load_attr(),
             "ev_boost_active": self.coordinator.ev_boost_active,
             "ev_boost_remaining_min": self.coordinator.ev_boost_remaining_min,
         }
+
+    def _build_flex_load_attr(self) -> list[dict]:
+        """Build the per-load attribute list for the frontend card.
+
+        Includes the *actual* power each load is drawing right now so the
+        card can show "which load is active and with how much power":
+          - binary loads → rated power when on, else 0
+          - EV charger   → current step × voltage × phases (the real draw),
+            falling back to the startup current when no step has been set
+        """
+        states = self.coordinator._flex_load_states
+        ev_step = self.coordinator._flex_load_current_step
+        configs = []
+        for i, ld in enumerate(self.coordinator._build_flex_load_configs()):
+            is_on = bool(states.get(i, False))
+            entry = {
+                "index": i,
+                "name": ld.name,
+                "power_kw": round(ld.rated_power_kw, 2),
+                "priority": ld.priority,
+                "is_ev": ld.is_ev_charger,
+                "on": is_on,
+            }
+            if ld.is_ev_charger:
+                active_a = (ev_step if (is_on and ev_step) else ld.default_current)
+                max_a = max(ld.current_steps) if ld.current_steps else ld.default_current
+                entry["current_a"] = active_a if is_on else None
+                entry["phases"] = ld.phases
+                entry["voltage"] = ld.voltage
+                entry["max_power_kw"] = round(ld.power_at_current(max_a), 2)
+                entry["active_power_kw"] = round(ld.power_at_current(active_a), 2) if is_on else 0.0
+            else:
+                entry["max_power_kw"] = round(ld.rated_power_kw, 2)
+                entry["active_power_kw"] = round(ld.rated_power_kw, 2) if is_on else 0.0
+            configs.append(entry)
+        return configs
 
 
 class HA_FelicityChargeLikelihoodSensor(CoordinatorEntity, SensorEntity):
