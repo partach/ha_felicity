@@ -550,12 +550,6 @@ class FelicityInverterCard extends LitElement {
         <!-- SECTION 1: Energy Flow -->
         ${this._selectedSection === "energy_flow" ? html`
           <div class="section energy-flow">
-            <!-- Control Dropdowns -->
-            <div class="flow-controls">
-              ${this._renderGridModeSelect()}
-              ${this._renderPriceThresholdSelect()}
-              ${this._renderPowerLevelSelect()}
-            </div>           
             <div class="flow-diagram">
               <style>
                 .card-root {
@@ -602,17 +596,7 @@ class FelicityInverterCard extends LitElement {
                   font-size: 0.85em;
                   color: var(--secondary-text-color);
                 }
-                .labelbold {
-                  font-size: 1.1em;
-                  font-weight: bold;
-                  color: #f4b003ff;
-                }
-                .labelbold2 {
-                  font-size: 1.1em;
-                  font-weight: bold;
-                  color: #03a9f4;
-                }
-                .pv { 
+                .pv {
                   top: 8px; 
                   left: 15%; 
                   transform: translateX(-50%);
@@ -633,21 +617,6 @@ class FelicityInverterCard extends LitElement {
                   flex-direction: column-reverse;
                   gap: 2px;
                 }
-                .state {
-                  bottom: 3px;
-                  width: 95%;
-                  left: 50%;
-                  transform: translateX(-50%);
-                  flex-direction: row;
-                  gap: 2px;
-                  align-items: center;
-                  z-index: 4;
-                  /* New: background bar */
-                  background-color: rgba(126, 123, 123, 0.65);
-                  padding: 2px 5px;
-                  border-radius: 7px;
-                }
-                
                 .battery {
                   bottom: 70px;
                   left: 15%; 
@@ -710,32 +679,6 @@ class FelicityInverterCard extends LitElement {
                   z-index: 1;
                 }
 
-                .flow-controls {
-                  display: grid;
-                  grid-template-columns: 1fr 1fr 1fr;
-                  gap: 3px;
-                  margin-bottom: 4px;
-                  padding: 0 4px;
-                }
-                .control-group {
-                  display: flex;
-                  flex-direction: column;
-                  gap: 2px;
-                  align-items: stretch;
-                }
-                .control-group .control-label {
-                  font-size: 0.82em;
-                  color: var(--secondary-text-color);
-                  text-align: center;
-                }
-                .control-group select {
-                  width: 100%;
-                  padding: 4px 2px;
-                  font-size: 0.82em;
-                  border-radius: 4px;
-                  border: 1px solid var(--divider-color);
-                  background: var(--card-background-color);
-                }
                 .flow-path {
                   fill: none;
                   stroke: var(--primary-color, #03a9f4);
@@ -938,14 +881,6 @@ class FelicityInverterCard extends LitElement {
                 <div class="power-value">${this._formatPower(this._getEffectiveGeneratorPower())}</div>
               </div>
 
-              <div class="flow-item state">
-                <div class="label">
-                  ${this._getStateLabel("operational_mode")} | now:
-                  <span class="labelbold">${this._getStateLabel("current_price")}${this.config.currency} </span>
-                  | State: <span class="labelbold2">${this._getStateLabel("energy_state")}</span>
-                </div>
-              </div>
-              
               <div class="flow-item inverter">
                 <ha-icon .hass=${this.hass} icon="mdi:lightning-bolt"></ha-icon>
               </div>
@@ -1035,12 +970,6 @@ class FelicityInverterCard extends LitElement {
     if (!text) return text;
     const parts = String(text).split(" ");
     return parts.length > 2 ? parts.slice(0, 2).join(" ") : text;
-  }
-
-  _getStateLabel(key) {
-    const state = this._getState(key);
-    const label = state === "—" ? "Unknown" : state;
-    return label;
   }
 
   _getState(key) {
@@ -1162,141 +1091,6 @@ class FelicityInverterCard extends LitElement {
     const power = this._getValue("battery_power");
     if (power == null) return "Idle";
     return power > 0 ? "Charging" : power < 0 ? "Discharging" : "Idle";
-  }
-
-  _renderGridModeSelect() {
-    const entityId = this._getEntityId("grid_mode");
-    if (!entityId) return html``;
-
-    const entity = this.hass.states[entityId];
-    if (!entity) return html``;
-
-    const currentValue = entity.state;
-    const options = entity.attributes?.options || [];
-
-    return html`
-      <div class="control-group">
-        <span class="control-label">Grid Mode</span>
-        <select 
-          @change=${(e) => this._handleGridModeChange(entityId, e.target.value)}
-          .value=${currentValue}
-        >
-          ${options.map(opt => html`
-            <option value="${opt}" ?selected=${opt === currentValue}>
-              ${opt}
-            </option>
-          `)}
-        </select>
-      </div>
-    `;
-  }
-
-  
-  _renderPriceThresholdSelect() {
-    const minPrice = this._getValue("today_min_price");
-    const avgPrice = this._getValue("today_avg_price");
-    const maxPrice = this._getValue("today_max_price");
-    const thresholdEntityId = this._getEntityId("price_threshold_level");
-
-    if (!thresholdEntityId || minPrice == null || avgPrice == null || maxPrice == null) {
-      return html``;
-    }
-
-    const thresholdEntity = this.hass.states[thresholdEntityId];
-    if (!thresholdEntity) return html``;
-
-    const currentLevel = parseInt(thresholdEntity.state) || 1;
-    const priceOptions = this._calculatePriceThresholds(minPrice, avgPrice, maxPrice);
-
-    return html`
-      <div class="control-group">
-        <span class="control-label">Price Threshold</span>
-        <select 
-          @change=${(e) => this._handlePriceThresholdChange(thresholdEntityId, e.target.value)}
-          .value=${currentLevel}
-        >
-          ${priceOptions.map((opt, index) => {
-            const level = index + 1;
-            return html`
-              <option value="${level}" ?selected=${level === currentLevel}>
-                ${level}: ${opt.toFixed(3)} ${this.config?.currency ?? '€'}
-              </option>
-            `;
-          })}
-        </select>
-      </div>
-    `;
-  }
-
-  _calculatePriceThresholds(minPrice, avgPrice, maxPrice) {
-    const thresholds = [];
-    
-    for (let level = 1; level <= 10; level++) {
-      let threshold;
-      if (level <= 5) {
-        const ratio = (level - 1) / 4.0;
-        threshold = minPrice + (avgPrice - minPrice) * ratio;
-      } else {
-        const ratio = (level - 5) / 5.0;
-        threshold = avgPrice + (maxPrice - avgPrice) * ratio;
-      }
-      thresholds.push(threshold);
-    }
-    
-    return thresholds;
-  }
-
-  async _handleGridModeChange(entityId, value) {
-    try {
-      await this.hass.callService("select", "select_option", {
-        entity_id: entityId,
-        option: value,
-      });
-    } catch (err) {
-      console.error("Failed to change grid mode:", err);
-    }
-  }
-
-  async _handlePriceThresholdChange(entityId, level) {
-    try {
-      await this.hass.callService("number", "set_value", {
-        entity_id: entityId,
-        value: parseInt(level),
-      });
-    } catch (err) {
-      console.error("Failed to change price threshold level:", err);
-    }
-  }
-
-  _renderPowerLevelSelect() {
-    const entityId = this._getEntityId("power_level");
-    if (!entityId) return html``;
-
-    const entity = this.hass.states[entityId];
-    if (!entity) return html``;
-
-    const currentLevel = parseFloat(entity.state) || 5;
-    const maxPower = entity.attributes?.max ?? 10;
-    const step = entity.attributes?.step ?? 0.5;
-
-    return html`
-      <div class="control-group">
-        <span class="control-label">Power Level ${currentLevel} kW</span>
-        <input type="range" min="1" max="${maxPower}" step="${step}" .value=${currentLevel}
-          @change=${(e) => this._handlePowerLevelChange(entityId, parseFloat(e.target.value))} />
-      </div>
-    `;
-  }
-
-  async _handlePowerLevelChange(entityId, value) {
-    try {
-      await this.hass.callService("number", "set_value", {
-        entity_id: entityId,
-        value: parseInt(value),
-      });
-    } catch (err) {
-      console.error("Failed to change power level:", err);
-    }
   }
 
   async _sendWrite() {
