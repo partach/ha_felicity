@@ -4678,3 +4678,42 @@ class TestScheduleReason:
             state = default_state()
             result = calculate_schedule(config, state)
             assert result.schedule_reason, f"Empty reason for mode={mode}"
+
+
+class TestFlexibleLoadConfig:
+    """Tests for FlexibleLoadConfig helpers."""
+
+    def test_nearest_step_at_or_below_exact(self):
+        """Exact match returns that step."""
+        load = FlexibleLoadConfig(current_steps=[6, 10, 13, 16, 20, 25])
+        assert load.nearest_step_at_or_below(16) == 16
+
+    def test_nearest_step_at_or_below_between(self):
+        """Non-matching value rounds down to the nearest available step."""
+        load = FlexibleLoadConfig(current_steps=[6, 10, 13, 16, 20, 25])
+        assert load.nearest_step_at_or_below(11) == 10
+
+    def test_nearest_step_at_or_below_below_min(self):
+        """Below minimum returns minimum step."""
+        load = FlexibleLoadConfig(current_steps=[6, 10, 13, 16, 20, 25])
+        assert load.nearest_step_at_or_below(3) == 6
+
+    def test_nearest_step_at_or_below_above_max(self):
+        """Above maximum returns maximum step."""
+        load = FlexibleLoadConfig(current_steps=[6, 10, 13, 16, 20, 25])
+        assert load.nearest_step_at_or_below(32) == 25
+
+    def test_nearest_step_at_or_below_empty(self):
+        """Empty steps returns None."""
+        load = FlexibleLoadConfig(current_steps=[])
+        assert load.nearest_step_at_or_below(16) is None
+
+    def test_power_at_current_single_phase(self):
+        """Single phase power calculation."""
+        load = FlexibleLoadConfig(phases=1, voltage=230)
+        assert abs(load.power_at_current(16) - 3.68) < 0.01
+
+    def test_power_at_current_three_phase(self):
+        """Three phase power calculation."""
+        load = FlexibleLoadConfig(phases=3, voltage=230)
+        assert abs(load.power_at_current(16) - 11.04) < 0.01

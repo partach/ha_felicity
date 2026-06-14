@@ -1122,10 +1122,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
     async def _set_ev_charger_current(self, load: "ems_module.FlexibleLoadConfig",
                                        target_amps: int) -> None:
-        """Set EV charger current to the nearest available step."""
+        """Set EV charger current to the nearest available step at or below target_amps."""
         if not load.current_entity or not load.current_steps:
             return
-        step = load.nearest_step_for_power(load.power_at_current(target_amps))
+        step = load.nearest_step_at_or_below(target_amps)
         if step is None:
             return
         domain = load.current_entity.split(".")[0]
@@ -1176,7 +1176,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     await self._set_ev_charger_current(ld, new_step)
                     return True
 
-        # Step 2: Shed binary loads (highest priority number = least important first)
+        # Step 2: Shed binary loads (3=least important → shed first, 1=most important → shed last)
         # During EV boost, don't shed the EV charger — it's user-requested
         active.sort(key=lambda x: -x[1].priority)
         for idx, ld in active:

@@ -443,7 +443,7 @@ class HA_FelicityStrategySelect(CoordinatorEntity, SelectEntity):
 
     @property
     def current_option(self) -> str:
-        stored = self._entry.options.get("ems_strategy", "save_money")
+        stored = self._entry.options.get("ems_strategy", "custom")
         if stored not in self._STRATEGY_OPTIONS:
             return "custom"
         return stored

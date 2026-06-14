@@ -21,7 +21,7 @@ class FlexibleLoadConfig:
     name: str = ""
     switch_entity: str = ""
     rated_power_kw: float = 0.0
-    priority: int = 1  # 1=shed first, 3=shed last
+    priority: int = 1  # 1=most important (shed last), 3=least important (shed first)
     # EV charger extras (slot 1 only)
     current_entity: str = ""  # entity to set current (number/select)
     current_steps: list[int] = field(default_factory=list)  # e.g. [6,10,13,16,20,25]
@@ -36,6 +36,15 @@ class FlexibleLoadConfig:
     def power_at_current(self, amps: int) -> float:
         """Calculate kW at a given current step."""
         return amps * self.voltage * self.phases / 1000.0
+
+    def nearest_step_at_or_below(self, target_amps: int) -> int | None:
+        """Find the highest available current step at or below target_amps."""
+        if not self.current_steps:
+            return None
+        for step in sorted(self.current_steps, reverse=True):
+            if step <= target_amps:
+                return step
+        return self.current_steps[0]  # minimum step
 
     def nearest_step_for_power(self, target_kw: float) -> int | None:
         """Find the highest current step that stays at or below target_kw."""

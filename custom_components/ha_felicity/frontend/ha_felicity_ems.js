@@ -1748,7 +1748,7 @@ class FelicityEMSCard extends LitElement {
     const scheduleStatus = this._getState("schedule_status") || "unknown";
     const currentPrice = this._getNumericState("current_price");
     const threshold = this._simResult?.threshold ?? this._getNumericState("price_threshold");
-    const gridMode = this._getState("grid_mode") || "off";
+    const gridMode = this._simOverrides.gridMode ?? this._getState("grid_mode") ?? "off";
     const priceMode = this._getState("price_mode") || "manual";
     const likelihood = this._getState("charge_likelihood") || "unknown";
     const currency = this.config.currency || "\u20AC";
@@ -2032,6 +2032,8 @@ class FelicityEMSCard extends LitElement {
         <select @change=${(e) => {
           this._simOverrides = { ...this._simOverrides, gridMode: e.target.value };
           this._setSelect("grid_mode", e.target.value);
+          // Manual grid_mode change → strategy becomes "custom"
+          this._setSelect("ems_strategy", "custom");
           this._drawSlotTimeline();
           this.requestUpdate();
         }}>
@@ -2133,7 +2135,7 @@ class FelicityEMSCard extends LitElement {
     const strategyEid = this._getEntityId("ems_strategy");
     const currentStrategy = strategyEid && this.hass.states[strategyEid]
       ? this.hass.states[strategyEid].state
-      : "save_money";
+      : "custom";
     const options = [
       { value: "save_money", label: "Save Money" },
       { value: "self_sufficiency", label: "Self-Sufficiency" },
@@ -2141,11 +2143,35 @@ class FelicityEMSCard extends LitElement {
       { value: "trader", label: "Trader" },
       { value: "custom", label: "Custom" },
     ];
+    // Strategy → grid_mode mapping so the card can update the local override
+    // immediately (before the HA entity state roundtrip completes).
+    const strategyGridMode = {
+      save_money: "from_grid",
+      self_sufficiency: "from_grid",
+      battery_care: "from_grid",
+      trader: "both",
+    };
     return html`
       <div class="strategy-control">
         <span class="strategy-label">Strategy</span>
         <select class="strategy-select" @change=${(e) => {
-          this._setSelect("ems_strategy", e.target.value);
+          const val = e.target.value;
+          this._setSelect("ems_strategy", val);
+          // Immediately update local grid mode override so the chart and
+          // advanced dropdown reflect the change without waiting for
+          // the entity state roundtrip.
+          const gm = strategyGridMode[val];
+          if (gm) {
+            this._simOverrides = { ...this._simOverrides, gridMode: gm };
+            this._drawSlotTimeline();
+            this.requestUpdate();
+            // Clear the override once HA entity state has caught up
+            setTimeout(() => {
+              delete this._simOverrides.gridMode;
+              this._drawSlotTimeline();
+              this.requestUpdate();
+            }, 3000);
+          }
         }}>
           ${options.map((o) => html`
             <option value="${o.value}" ?selected=${o.value === currentStrategy}>${o.label}</option>
