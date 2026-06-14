@@ -1952,6 +1952,8 @@ class FelicityEMSCard extends LitElement {
             ` : ""}
           </div>
 
+          ${this._renderFlexLoads(flexLoadConfigs)}
+
           <!-- PV Actual & Forecast -->
           <div class="pv-row">
             <div class="pv-item">
@@ -2192,6 +2194,64 @@ class FelicityEMSCard extends LitElement {
     `;
   }
 
+  // Flexible-loads panel: per-load on/off, live power draw, and the order
+  // in which loads are shed when grid current gets too high.
+  _renderFlexLoads(configs) {
+    if (!configs || configs.length === 0) return html``;
+    const evBoost = this._getAttr("schedule_status", "ev_boost_active") || false;
+    const totalActive = configs.reduce((a, c) => a + (c.active_power_kw || 0), 0);
+    const anyOn = configs.some((c) => c.on);
+
+    // priority 3 = least important (shed first); 1 = most important (shed last)
+    const prioInfo = (p) => {
+      if (p >= 3) return { label: "Sheds 1st", cls: "prio-first" };
+      if (p === 2) return { label: "Sheds 2nd", cls: "prio-mid" };
+      return { label: "Sheds last", cls: "prio-last" };
+    };
+
+    return html`
+      <div class="loads-panel">
+        <div class="loads-panel-head">
+          <span class="loads-title">
+            <ha-icon icon="mdi:power-plug"></ha-icon> Flexible Loads
+          </span>
+          <span class="loads-total ${anyOn ? 'on' : ''}">${this._fmt(totalActive, 1)} kW now</span>
+        </div>
+        <div class="loads-list">
+          ${configs.map((c) => {
+            const max = c.max_power_kw > 0 ? c.max_power_kw : (c.active_power_kw || 1);
+            const fillPct = c.on ? Math.max(6, Math.min(100, (c.active_power_kw / max) * 100)) : 0;
+            const pi = prioInfo(c.priority);
+            const isEvBoost = c.is_ev && evBoost;
+            return html`
+              <div class="load-row ${c.on ? 'active' : ''}">
+                <ha-icon class="load-glyph"
+                  icon="${c.is_ev ? 'mdi:ev-station' : 'mdi:power-plug-outline'}"></ha-icon>
+                <div class="load-main">
+                  <div class="load-line">
+                    <span class="load-name">${c.name}</span>
+                    ${isEvBoost ? html`<span class="load-boost">BOOST</span>` : ''}
+                    <span class="load-power">${c.on ? `${this._fmt(c.active_power_kw, 1)} kW` : 'off'}</span>
+                  </div>
+                  <div class="load-bar"><div class="load-bar-fill" style="width:${fillPct}%"></div></div>
+                  ${c.is_ev && c.on && c.current_a != null ? html`
+                    <div class="load-sub">${c.current_a} A · ${c.phases}φ · ${c.voltage} V</div>
+                  ` : ''}
+                </div>
+                <div class="load-prio ${pi.cls}"
+                  title="Order loads are switched off when grid current is too high">
+                  <ha-icon icon="mdi:shield-flash-outline"></ha-icon>
+                  <span>${pi.label}</span>
+                </div>
+              </div>
+            `;
+          })}
+        </div>
+        <div class="loads-foot">Loads are shed before battery power is reduced</div>
+      </div>
+    `;
+  }
+
   // Live preview: update local override and redraw immediately
   _previewPower(kw) {
     this._simOverrides = { ...this._simOverrides, powerKw: kw };
@@ -2279,6 +2339,157 @@ class FelicityEMSCard extends LitElement {
       }
       .ev-boost-banner ha-icon {
         --mdc-icon-size: 18px;
+      }
+
+      /* Flexible loads panel */
+      .loads-panel {
+        margin-bottom: 14px;
+        padding: 10px;
+        border-radius: 8px;
+        background: var(--secondary-background-color);
+      }
+      .loads-panel-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .loads-title {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--primary-text-color);
+      }
+      .loads-title ha-icon {
+        --mdc-icon-size: 18px;
+        color: #00BCD4;
+      }
+      .loads-total {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--secondary-text-color);
+        font-variant-numeric: tabular-nums;
+      }
+      .loads-total.on {
+        color: #00BCD4;
+      }
+      .loads-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .load-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: var(--card-background-color);
+        border: 1px solid transparent;
+        opacity: 0.6;
+        transition: opacity 0.3s ease, box-shadow 0.3s ease;
+      }
+      .load-row.active {
+        opacity: 1;
+        border-color: rgba(0, 188, 212, 0.5);
+        box-shadow: 0 0 6px rgba(0, 188, 212, 0.22);
+      }
+      .load-glyph {
+        --mdc-icon-size: 22px;
+        flex: 0 0 auto;
+        color: var(--secondary-text-color);
+      }
+      .load-row.active .load-glyph {
+        color: #00BCD4;
+      }
+      .load-main {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .load-line {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.8rem;
+      }
+      .load-name {
+        font-weight: 500;
+        color: var(--primary-text-color);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .load-power {
+        margin-left: auto;
+        color: var(--secondary-text-color);
+        font-variant-numeric: tabular-nums;
+      }
+      .load-row.active .load-power {
+        color: #00BCD4;
+        font-weight: 600;
+      }
+      .load-boost {
+        font-size: 0.6rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        padding: 1px 4px;
+        border-radius: 3px;
+        background: #00BCD4;
+        color: #00282d;
+      }
+      .load-bar {
+        margin-top: 4px;
+        height: 5px;
+        border-radius: 3px;
+        background: rgba(150, 150, 150, 0.25);
+        overflow: hidden;
+      }
+      .load-bar-fill {
+        height: 100%;
+        border-radius: 3px;
+        background: linear-gradient(90deg, #00BCD4, #4CAF50);
+        transition: width 0.4s ease;
+      }
+      .load-sub {
+        margin-top: 3px;
+        font-size: 0.68rem;
+        color: var(--secondary-text-color);
+        font-variant-numeric: tabular-nums;
+      }
+      .load-prio {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 0.66rem;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 10px;
+        white-space: nowrap;
+      }
+      .load-prio ha-icon {
+        --mdc-icon-size: 13px;
+      }
+      .load-prio.prio-first {
+        color: #ef5350;
+        background: rgba(239, 83, 80, 0.12);
+      }
+      .load-prio.prio-mid {
+        color: #FFB74D;
+        background: rgba(255, 152, 0, 0.12);
+      }
+      .load-prio.prio-last {
+        color: #66BB6A;
+        background: rgba(76, 175, 80, 0.12);
+      }
+      .loads-foot {
+        margin-top: 6px;
+        font-size: 0.66rem;
+        color: var(--secondary-text-color);
+        opacity: 0.8;
+        text-align: right;
       }
 
       /* Battery SOC indicator */
