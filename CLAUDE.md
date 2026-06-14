@@ -519,7 +519,7 @@ select.select_option).
 
 **Safe power priority chain** (in `_check_safe_power`):
 1. EV charger current step-down (one step per tick)
-2. Binary load shed (highest priority number = shed first)
+2. Binary load shed (3=least important, shed first; 1=most important, shed last)
 3. Battery power reduction (existing behavior, last resort)
 
 ### Configuration (per load)

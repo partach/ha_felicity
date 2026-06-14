@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.text import TextEntity
+from homeassistant.components.text import TextEntity, TextMode
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -87,6 +87,7 @@ class HA_FelicityConfigText(CoordinatorEntity, TextEntity):
         self._attr_unique_id = f"{entry.entry_id}_{option_key}"
         self._attr_name = f"{entry.title} {name}"
         self._attr_native_max = 255
+        self._attr_mode = TextMode.TEXT
         if icon:
             self._attr_icon = icon
 
