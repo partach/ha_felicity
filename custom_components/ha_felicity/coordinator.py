@@ -164,6 +164,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._flex_load_states: dict[int, bool] = {}  # {load_idx: on/off}
         self._flex_load_current_step: int | None = None
         self._flex_load_scheduled: dict[int, dict[int, bool]] = {}  # from ScheduleResult.load_slots
+        self._flex_load_scheduled_tomorrow: dict[int, dict[int, bool]] = {}
         self._ev_boost_until_ts: float = 0.0  # epoch ts — EV override active when now < this
         # Max current applied for the current boost session.  Applied once
         # (not every tick) so safe-power step-downs aren't fought; reset on
@@ -829,6 +830,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots
         self._backend_soc_trajectory_tomorrow = result.tomorrow_soc_trajectory
         self._flex_load_scheduled = result.load_slots
+        self._flex_load_scheduled_tomorrow = result.tomorrow_load_slots
 
         if result.price_threshold is not None:
             self.price_threshold = result.price_threshold

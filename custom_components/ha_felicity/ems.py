@@ -169,6 +169,7 @@ class ScheduleResult:
     tomorrow_soc_trajectory: list[float] = field(default_factory=list)
     # Flexible load schedules: {load_index: {slot_idx: True}}
     load_slots: dict[int, dict[int, bool]] = field(default_factory=dict)
+    tomorrow_load_slots: dict[int, dict[int, bool]] = field(default_factory=dict)
 
 
 @dataclass
@@ -1596,9 +1597,9 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     # Schedule flexible loads into cheap / PV-surplus slots
     active_loads = [ld for ld in config.flexible_loads if ld.enabled]
     if active_loads:
+        cons_per_hour = config.consumption_est_kwh / 24.0
         pv_surplus_set = set()
         if state.pv_hourly_kwh:
-            cons_per_hour = config.consumption_est_kwh / 24.0
             for slot_idx, _ in remaining:
                 hr = int((slot_idx * minutes_per_slot) / 60) % 24
                 pv_hr = state.pv_hourly_kwh.get(hr, 0.0)
@@ -1619,6 +1620,31 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             pv_surplus_set,
             config.ev_charge_strategy,
         )
+
+        # Tomorrow's flex load schedule (same strategy, tomorrow's data)
+        if state.slot_prices_tomorrow:
+            tmr_remaining = list(enumerate(state.slot_prices_tomorrow))
+            tmr_pv_surplus = set()
+            pv_tmr = state.pv_hourly_kwh_tomorrow or {}
+            if pv_tmr:
+                for slot_idx, _ in tmr_remaining:
+                    hr = int((slot_idx * minutes_per_slot) / 60) % 24
+                    pv_hr = pv_tmr.get(hr, 0.0)
+                    if pv_hr > cons_per_hour:
+                        tmr_pv_surplus.add(slot_idx)
+            tmr_charge_prices = [
+                p for i, p in tmr_remaining
+                if result.tomorrow_scheduled_slots.get(i) == "charge"
+            ]
+            tmr_threshold = max(tmr_charge_prices) if tmr_charge_prices else flex_buy_threshold
+            result.tomorrow_load_slots = _schedule_flexible_loads(
+                config.flexible_loads,
+                tmr_remaining,
+                result.tomorrow_scheduled_slots,
+                tmr_threshold,
+                tmr_pv_surplus,
+                config.ev_charge_strategy,
+            )
 
     return result
 

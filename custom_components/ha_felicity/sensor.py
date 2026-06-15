@@ -146,6 +146,10 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
         for load_idx, slots in (self.coordinator._flex_load_scheduled or {}).items():
             for slot in slots:
                 flex_slot_map.setdefault(str(slot), []).append(load_idx)
+        flex_slot_map_tomorrow: dict[str, list[int]] = {}
+        for load_idx, slots in (self.coordinator._flex_load_scheduled_tomorrow or {}).items():
+            for slot in slots:
+                flex_slot_map_tomorrow.setdefault(str(slot), []).append(load_idx)
 
         # Effective capacity (nominal × SOH) — what the scheduler actually
         # plans with.  The client-side simulation must use the same value
@@ -213,6 +217,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "slot_overrides": self.coordinator.slot_overrides if self.coordinator.slot_overrides else {},
             "rule1_window_warning": self.coordinator.rule1_window_warning,
             "flex_load_schedule": flex_slot_map,
+            "flex_load_schedule_tomorrow": flex_slot_map_tomorrow,
             "flex_load_states": dict(self.coordinator._flex_load_states),
             "flex_load_configs": self._build_flex_load_attr(),
             "ev_boost_active": self.coordinator.ev_boost_active,
