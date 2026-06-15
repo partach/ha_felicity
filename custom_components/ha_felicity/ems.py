@@ -105,6 +105,14 @@ class EMSConfig:
     # Flexible loads (EV charger, boiler, etc.) — up to 3 controllable loads.
     # Scheduled into cheap/surplus slots alongside battery actions.
     flexible_loads: list[FlexibleLoadConfig] = field(default_factory=list)
+    # EV charge strategy (applies only to the EV charger, load 1):
+    #   smart      — overlay into cheap / negative / PV-surplus / charge slots
+    #                (cost-optimised, the default)
+    #   solar_only — only switch on when PV surplus is available (no grid)
+    #   cheap_only — only switch on at/below the price threshold or p<0
+    #   always_on  — always allowed on; the EMS only throttles the charge
+    #                current when grid current gets too high
+    ev_charge_strategy: str = "smart"
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -918,6 +926,7 @@ def _schedule_flexible_loads(
     scheduled_slots: dict[int, str],
     price_threshold: float | None,
     pv_surplus_slots: set[int] | None = None,
+    ev_charge_strategy: str = "smart",
 ) -> dict[int, dict[int, bool]]:
     """Schedule flexible loads into cheap or PV-surplus slots.
 
@@ -925,6 +934,13 @@ def _schedule_flexible_loads(
     the battery.  A load is scheduled when the slot price is at or below
     the threshold, OR the slot has PV surplus.  Loads don't affect the
     battery schedule — they're additive consumption.
+
+    The EV charger (load with is_ev_charger) honours ``ev_charge_strategy``:
+      - smart      — cheap / negative / PV-surplus / battery-charge slots
+      - solar_only — only PV-surplus slots
+      - cheap_only — only at/below threshold or negative-price slots
+      - always_on  — every remaining slot (safe-power then throttles current)
+    All other loads always use the smart overlay.
 
     Returns {load_index: {slot_idx: True}} for each active slot.
     """
@@ -940,21 +956,32 @@ def _schedule_flexible_loads(
     pv_surplus = pv_surplus_slots or set()
 
     for load_idx, load in active_loads:
+        strategy = ev_charge_strategy if load.is_ev_charger else "smart"
         load_schedule: dict[int, bool] = {}
         for slot_idx, price in sorted_by_price:
             is_cheap = price_threshold is not None and price <= price_threshold
             is_pv_surplus = slot_idx in pv_surplus
             is_negative = price < 0
             already_charging = scheduled_slots.get(slot_idx) == "charge"
-            if is_cheap or is_pv_surplus or is_negative or already_charging:
+
+            if strategy == "always_on":
+                active = True
+            elif strategy == "solar_only":
+                active = is_pv_surplus
+            elif strategy == "cheap_only":
+                active = is_cheap or is_negative
+            else:  # smart
+                active = is_cheap or is_pv_surplus or is_negative or already_charging
+
+            if active:
                 load_schedule[slot_idx] = True
 
         if load_schedule:
             result[load_idx] = load_schedule
             _LOGGER.debug(
-                "Flexible load '%s' scheduled for %d slots",
+                "Flexible load '%s' scheduled for %d slots (strategy=%s)",
                 load.name or f"load_{load_idx + 1}",
-                len(load_schedule),
+                len(load_schedule), strategy,
             )
 
     return result
@@ -1590,6 +1617,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             result.scheduled_slots,
             flex_buy_threshold,
             pv_surplus_set,
+            config.ev_charge_strategy,
         )
 
     return result

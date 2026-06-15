@@ -56,6 +56,31 @@ Examples:
 
 The **Rated Power** entity is for display only — the EMS uses the current/voltage/phases formula for actual EV charger control.
 
+## EV Charge Strategy
+
+The **EV Charge Strategy** select (load 1 only) controls *when* the EV charger
+is allowed to run. It's shown as a second dropdown next to the EMS Strategy on
+the card.
+
+| Strategy | When the EV charges | Use case |
+|---|---|---|
+| **Smart** (default) | Cheap slots, negative-price slots, PV-surplus slots, and battery-charge slots | Cost-optimised everyday charging |
+| **Solar only** | Only when PV production exceeds house consumption | Charge purely from your own solar, never from the grid |
+| **Cheapest** | Only at/below the price threshold or when price is negative | Pure price control, ignore solar timing |
+| **Always on** | Every slot — the charger is always allowed on | "Charge now no matter what." The EMS only steps the current down if the grid current limit is reached |
+
+The strategy only affects the EV charger (load 1). Loads 2 and 3 always use the
+Smart overlay.
+
+## EV Override (Boost)
+
+The **Override +1h** button (top of the EMS card, next to the battery
+indicator) forces the EV charger on at maximum current. Each press adds one
+more hour. While active, the card shows a **Boost Xh Ym** chip in the status
+bar. Safe-power protection can still step the current down during a boost (grid
+safety), but the charger won't be fully switched off. The boost expires
+automatically when the timer runs out.
+
 ## Safe Power Protection
 
 When grid current exceeds the **Max Amperage Per Phase** limit, loads are shed in this order:

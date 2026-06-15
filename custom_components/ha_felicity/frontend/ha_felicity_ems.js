@@ -1780,6 +1780,15 @@ class FelicityEMSCard extends LitElement {
       ? `${evBoostHours > 0 ? `${evBoostHours}h ` : ""}${evBoostMins}m remaining`
       : "";
     const operationalMode = this._getState("operational_mode") || null;
+    // Active power limit + grid current (for throttle display in status bar)
+    const powerLevelKw = this._getNumericState("power_level");
+    const safeMaxKw = this._getNumericState("safe_max_power") != null
+      ? this._getNumericState("safe_max_power") / 1000 : null;
+    const peakAmp = this._getNumericState("peak_grid_current_now");
+    const isThrottled = powerLevelKw != null && safeMaxKw != null
+      && safeMaxKw < powerLevelKw - 0.05;
+    // Show the EV override button only when an EV charger is configured
+    const evChargerConfigured = flexLoadConfigs.some((c) => c.is_ev);
     const pvRemaining = this._getNumericState("pv_forecast_remaining");
     const pvToday = this._getNumericState("pv_forecast_today");
     const pvTomorrow = this._getNumericState("pv_forecast_tomorrow");
@@ -1856,6 +1865,14 @@ class FelicityEMSCard extends LitElement {
             </div>
             <span class="battery-text">${this._fmt(socPct, 0)}% / ${batteryCapacity} kWh</span>
           </div>
+          ${evChargerConfigured ? html`
+            <button class="override-btn ${evBoostActive ? 'active' : ''}"
+              title="Force the EV charger on. Each press adds +1 hour of 'always on' (the EMS still throttles current if the grid limit is hit)."
+              @click=${() => this._pressEvBoost()}>
+              <ha-icon icon="mdi:ev-station"></ha-icon>
+              <span>Override +1h</span>
+            </button>
+          ` : ''}
           <div class="status-badges">
             <span class="badge ${energyState}">${energyState}</span>
             <span class="badge schedule-${scheduleStatus}">${scheduleStatus.replace(/_/g, ' ')}</span>
@@ -1989,11 +2006,22 @@ class FelicityEMSCard extends LitElement {
 
           <!-- Strategy & Status -->
           <div class="strategy-section">
-            ${this._renderStrategyControl()}
+            <div class="strategy-row">
+              ${this._renderStrategyControl()}
+              ${this._renderEvStrategyControl(evChargerConfigured)}
+            </div>
             <div class="status-bar">
               ${operationalMode ? html`<span class="status-chip mode">${operationalMode}</span>` : ''}
               <span class="status-chip price">${this._fmt(currentPrice, 3)} ${currency}/kWh</span>
-              <span class="status-chip state-${energyState}">${energyState}</span>
+              ${safeMaxKw != null ? html`
+                <span class="status-chip power ${isThrottled ? 'throttled' : ''}">Active power ${this._fmt(safeMaxKw, 1)} kW</span>
+              ` : ''}
+              ${peakAmp != null ? html`
+                <span class="status-chip amp ${isThrottled ? 'throttled' : ''}">Peak Amp. ${this._fmt(peakAmp, 0)} A</span>
+              ` : ''}
+              ${evBoostActive ? html`
+                <span class="status-chip boost">Boost ${evBoostHours}h${evBoostMins}m</span>
+              ` : ''}
             </div>
           </div>
 
@@ -2128,11 +2156,15 @@ class FelicityEMSCard extends LitElement {
     if (!entity) return html``;
     const parsedLevel = parseInt(entity.state);
     const display = this._simOverrides.priceLevel ?? (isNaN(parsedLevel) ? 5 : parsedLevel);
+    // In auto price mode the threshold is computed automatically — the manual
+    // level slider has no effect, so disable it.
+    const autoMode = this._getState("price_mode") === "auto";
 
     return html`
-      <div class="control-item">
-        <span class="control-label">Price Level ${display}/10</span>
+      <div class="control-item ${autoMode ? 'disabled' : ''}">
+        <span class="control-label">Price Level ${autoMode ? 'auto' : `${display}/10`}</span>
         <input type="range" min="1" max="10" step="1" .value=${display}
+          ?disabled=${autoMode}
           @input=${(e) => this._previewPriceLevel(parseInt(e.target.value))}
           @change=${(e) => this._commitPriceLevel(parseInt(e.target.value))} />
       </div>
@@ -2187,6 +2219,41 @@ class FelicityEMSCard extends LitElement {
         </select>
       </div>
     `;
+  }
+
+  _renderEvStrategyControl(show) {
+    if (!show) return html``;
+    const eid = this._getEntityId("ev_charge_strategy");
+    const current = eid && this.hass.states[eid]
+      ? this.hass.states[eid].state : "smart";
+    const options = [
+      { value: "smart", label: "EV: Smart" },
+      { value: "solar_only", label: "EV: Solar only" },
+      { value: "cheap_only", label: "EV: Cheapest" },
+      { value: "always_on", label: "EV: Always on" },
+    ];
+    return html`
+      <div class="strategy-control">
+        <select class="strategy-select"
+          title="How the EV charger is scheduled. Smart: cheap/solar/negative slots. Solar only: PV surplus. Cheapest: only at/below the price threshold. Always on: charge now, the EMS only throttles current if the grid limit is hit."
+          @change=${(e) => this._setSelect("ev_charge_strategy", e.target.value)}>
+          ${options.map((o) => html`
+            <option value="${o.value}" ?selected=${o.value === current}>${o.label}</option>
+          `)}
+        </select>
+      </div>
+    `;
+  }
+
+  // Find the EV Boost (+1h) button entity and press it.  Each press adds an
+  // hour of forced "always on" charging (the backend throttles current under
+  // safe-power if the grid limit is hit).
+  _pressEvBoost() {
+    const eid = (this._deviceEntities || []).find(
+      (e) => e.startsWith("button.") && e.includes("ev_boost") && !e.includes("cancel"),
+    );
+    if (!eid) return;
+    this.hass.callService("button", "press", { entity_id: eid });
   }
 
   _renderScheduleReason() {
@@ -2678,32 +2745,37 @@ class FelicityEMSCard extends LitElement {
       /* PV row */
       .pv-row {
         display: flex;
-        flex-wrap: wrap;
-        justify-content: space-around;
-        gap: 8px 0;
+        flex-wrap: nowrap;
+        justify-content: space-between;
+        gap: 4px;
         margin-bottom: 14px;
-        padding: 8px;
+        padding: 6px 8px;
         border-radius: 8px;
         background: var(--secondary-background-color);
       }
       .pv-item {
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: 4px;
+        min-width: 0;
       }
       .pv-item ha-icon {
-        --mdc-icon-size: 20px;
+        --mdc-icon-size: 17px;
         color: #FFD600;
+        flex: 0 0 auto;
       }
       .pv-label {
         display: block;
-        font-size: 0.7em;
+        font-size: 0.62em;
         color: var(--secondary-text-color);
+        white-space: nowrap;
       }
       .pv-value {
         display: block;
-        font-size: 0.9em;
+        font-size: 0.82em;
         font-weight: 500;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
       }
 
       /* Controls */
@@ -2803,21 +2875,62 @@ class FelicityEMSCard extends LitElement {
         color: #f4b003;
         font-variant-numeric: tabular-nums;
       }
-      .status-chip.state-charging {
-        background: rgba(76, 175, 80, 0.18);
+      .status-chip.power,
+      .status-chip.amp {
+        background: rgba(76, 175, 80, 0.16);
         color: #4CAF50;
+        font-variant-numeric: tabular-nums;
+        text-transform: none;
       }
-      .status-chip.state-discharging {
-        background: rgba(255, 152, 0, 0.18);
-        color: #FF9800;
+      .status-chip.power.throttled,
+      .status-chip.amp.throttled {
+        background: rgba(244, 67, 54, 0.18);
+        color: #ef5350;
       }
-      .status-chip.state-idle {
-        background: var(--secondary-background-color);
-        color: var(--secondary-text-color);
+      .status-chip.boost {
+        background: rgba(0, 188, 212, 0.18);
+        color: #00BCD4;
+        text-transform: none;
       }
-      .status-chip.state-unknown {
-        background: var(--secondary-background-color);
-        color: var(--secondary-text-color);
+
+      /* Strategy dropdown row + EV override button */
+      .strategy-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .strategy-row .strategy-control {
+        flex: 1;
+      }
+      .override-btn {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 10px;
+        border: 1px solid #00BCD4;
+        border-radius: 14px;
+        background: transparent;
+        color: #00BCD4;
+        font-size: 0.72em;
+        font-weight: 600;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .override-btn:hover {
+        background: rgba(0, 188, 212, 0.12);
+      }
+      .override-btn.active {
+        background: #00BCD4;
+        color: #00282d;
+      }
+      .override-btn ha-icon {
+        --mdc-icon-size: 16px;
+      }
+      .control-item.disabled {
+        opacity: 0.45;
+      }
+      .control-item.disabled input[type="range"] {
+        cursor: not-allowed;
       }
 
       /* Schedule reason ("why" line) */

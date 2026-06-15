@@ -679,6 +679,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 "discharge_to_make_room_for_negative_price", "off"
             )).lower() in ("on", "true", "1"),
             flexible_loads=self._build_flex_load_configs(),
+            ev_charge_strategy=str(opts.get("ev_charge_strategy", "smart")),
         )
 
         state = ems_module.EMSState(

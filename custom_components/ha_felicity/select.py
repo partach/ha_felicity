@@ -163,6 +163,21 @@ async def async_setup_entry(
         )
     )
 
+    # EV charge strategy — applies to the EV charger (load 1).  Gated on a
+    # switch entity being assigned to load 1.
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="ev_charge_strategy",
+            select_options=["smart", "solar_only", "cheap_only", "always_on"],
+            name="EV Charge Strategy",
+            icon="mdi:ev-station",
+            entity_category=EntityCategory.CONFIG,
+            requires_option="flexible_load_1_switch_entity",
+        )
+    )
+
     # Flexible load enable selects. Gated on a switch entity being assigned
     # to the load (assigned via the options flow).
     for i in range(1, 4):

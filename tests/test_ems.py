@@ -48,6 +48,7 @@ _project_soc_trajectory = ems._project_soc_trajectory
 _validate_schedule_soc = ems._validate_schedule_soc
 _compute_reserve_target = ems._compute_reserve_target
 _compute_tomorrow_schedule = ems._compute_tomorrow_schedule
+_schedule_flexible_loads = ems._schedule_flexible_loads
 
 
 # ---------------------------------------------------------------------------
@@ -4717,3 +4718,68 @@ class TestFlexibleLoadConfig:
         """Three phase power calculation."""
         load = FlexibleLoadConfig(phases=3, voltage=230)
         assert abs(load.power_at_current(16) - 11.04) < 0.01
+
+
+class TestEVChargeStrategy:
+    """Tests for the EV charge strategy applied in _schedule_flexible_loads."""
+
+    def _ev_load(self):
+        return FlexibleLoadConfig(
+            enabled=True,
+            name="EV",
+            switch_entity="switch.ev",
+            current_entity="number.ev_current",
+            current_steps=[6, 10, 16],
+        )
+
+    def _binary_load(self):
+        return FlexibleLoadConfig(
+            enabled=True, name="Boiler", switch_entity="switch.boiler",
+        )
+
+    def _remaining(self):
+        # 6 slots: 0,1 cheap; 2 negative; 3,4,5 expensive
+        return [(0, 0.05), (1, 0.06), (2, -0.02), (3, 0.30), (4, 0.31), (5, 0.32)]
+
+    def test_smart_default(self):
+        """smart: cheap + negative + pv-surplus + charge slots."""
+        res = _schedule_flexible_loads(
+            [self._ev_load()], self._remaining(), {3: "charge"},
+            price_threshold=0.10, pv_surplus_slots={4}, ev_charge_strategy="smart",
+        )
+        slots = set(res[0].keys())
+        assert slots == {0, 1, 2, 3, 4}  # cheap 0,1; neg 2; charge 3; pv 4
+
+    def test_always_on(self):
+        """always_on: every remaining slot is scheduled regardless of price."""
+        res = _schedule_flexible_loads(
+            [self._ev_load()], self._remaining(), {},
+            price_threshold=0.10, pv_surplus_slots=set(), ev_charge_strategy="always_on",
+        )
+        assert set(res[0].keys()) == {0, 1, 2, 3, 4, 5}
+
+    def test_solar_only(self):
+        """solar_only: only PV-surplus slots, even if cheap/negative."""
+        res = _schedule_flexible_loads(
+            [self._ev_load()], self._remaining(), {3: "charge"},
+            price_threshold=0.10, pv_surplus_slots={4, 5}, ev_charge_strategy="solar_only",
+        )
+        assert set(res[0].keys()) == {4, 5}
+
+    def test_cheap_only(self):
+        """cheap_only: at/below threshold or negative; ignores PV surplus."""
+        res = _schedule_flexible_loads(
+            [self._ev_load()], self._remaining(), {},
+            price_threshold=0.10, pv_surplus_slots={5}, ev_charge_strategy="cheap_only",
+        )
+        # cheap 0,1 + negative 2; NOT the pv-surplus expensive slot 5
+        assert set(res[0].keys()) == {0, 1, 2}
+
+    def test_strategy_only_affects_ev(self):
+        """Non-EV loads always use the smart overlay, ignoring ev_charge_strategy."""
+        res = _schedule_flexible_loads(
+            [self._binary_load()], self._remaining(), {},
+            price_threshold=0.10, pv_surplus_slots={5}, ev_charge_strategy="always_on",
+        )
+        # Binary load uses smart: cheap 0,1 + negative 2 + pv-surplus 5
+        assert set(res[0].keys()) == {0, 1, 2, 5}
