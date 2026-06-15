@@ -1904,6 +1904,7 @@ class FelicityEMSCard extends LitElement {
           <div class="ev-boost-banner">
             <ha-icon icon="mdi:ev-station"></ha-icon>
             <span>EV Boost active — ${evBoostText}</span>
+            <button class="boost-cancel" @click=${() => this._cancelEvBoost()}>Cancel</button>
           </div>
         ` : ""}
 
@@ -2258,6 +2259,14 @@ class FelicityEMSCard extends LitElement {
     this.hass.callService("button", "press", { entity_id: eid });
   }
 
+  _cancelEvBoost() {
+    const eid = (this._deviceEntities || []).find(
+      (e) => e.startsWith("button.") && e.includes("ev_boost") && e.includes("cancel"),
+    );
+    if (!eid) return;
+    this.hass.callService("button", "press", { entity_id: eid });
+  }
+
   _renderScheduleReason() {
     const reason = this._getAttr("schedule_status", "schedule_reason");
     if (!reason) return html``;
@@ -2414,6 +2423,21 @@ class FelicityEMSCard extends LitElement {
       }
       .ev-boost-banner ha-icon {
         --mdc-icon-size: 18px;
+      }
+      .boost-cancel {
+        margin-left: auto;
+        padding: 2px 10px;
+        border: 1px solid #00BCD4;
+        border-radius: 4px;
+        background: transparent;
+        color: #00BCD4;
+        font-size: 0.8rem;
+        font-weight: 600;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .boost-cancel:hover {
+        background: rgba(0, 188, 212, 0.25);
       }
 
       /* Flexible loads panel */
