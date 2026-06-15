@@ -2012,7 +2012,6 @@ class FelicityEMSCard extends LitElement {
             </div>
             <div class="status-bar">
               ${operationalMode ? html`<span class="status-chip mode">${operationalMode}</span>` : ''}
-              <span class="status-chip price">${this._fmt(currentPrice, 3)} ${currency}/kWh</span>
               ${safeMaxKw != null ? html`
                 <span class="status-chip power ${isThrottled ? 'throttled' : ''}">Active power ${this._fmt(safeMaxKw, 1)} kW</span>
               ` : ''}
@@ -2287,6 +2286,7 @@ class FelicityEMSCard extends LitElement {
         <div class="loads-panel-head">
           <span class="loads-title">
             <ha-icon icon="mdi:power-plug"></ha-icon> Flexible Loads
+            <span class="loads-shed-note">· shed before battery power is reduced</span>
           </span>
           <span class="loads-total ${anyOn ? 'on' : ''}">${this._fmt(totalActive, 1)} kW now</span>
         </div>
@@ -2320,7 +2320,6 @@ class FelicityEMSCard extends LitElement {
             `;
           })}
         </div>
-        <div class="loads-foot">Loads are shed before battery power is reduced</div>
       </div>
     `;
   }
@@ -2557,12 +2556,11 @@ class FelicityEMSCard extends LitElement {
         color: #66BB6A;
         background: rgba(76, 175, 80, 0.12);
       }
-      .loads-foot {
-        margin-top: 6px;
+      .loads-shed-note {
         font-size: 0.66rem;
+        font-weight: 400;
         color: var(--secondary-text-color);
         opacity: 0.8;
-        text-align: right;
       }
 
       /* Battery SOC indicator */
@@ -2870,11 +2868,6 @@ class FelicityEMSCard extends LitElement {
         background: rgba(100, 140, 200, 0.18);
         color: var(--primary-text-color);
       }
-      .status-chip.price {
-        background: rgba(255, 200, 0, 0.15);
-        color: #f4b003;
-        font-variant-numeric: tabular-nums;
-      }
       .status-chip.power,
       .status-chip.amp {
         background: rgba(76, 175, 80, 0.16);
@@ -2905,13 +2898,13 @@ class FelicityEMSCard extends LitElement {
       .override-btn {
         display: flex;
         align-items: center;
-        gap: 4px;
-        padding: 4px 10px;
+        gap: 3px;
+        padding: 2px 7px;
         border: 1px solid #00BCD4;
-        border-radius: 14px;
+        border-radius: 10px;
         background: transparent;
         color: #00BCD4;
-        font-size: 0.72em;
+        font-size: 0.62em;
         font-weight: 600;
         cursor: pointer;
         white-space: nowrap;
@@ -2924,7 +2917,7 @@ class FelicityEMSCard extends LitElement {
         color: #00282d;
       }
       .override-btn ha-icon {
-        --mdc-icon-size: 16px;
+        --mdc-icon-size: 13px;
       }
       .control-item.disabled {
         opacity: 0.45;
