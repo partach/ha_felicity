@@ -2571,12 +2571,12 @@ class FelicityEMSCard extends LitElement {
       }
       .battery-bars {
         display: flex;
-        gap: 2px;
+        gap: 1px;
         align-items: center;
       }
       .battery-bars .bar {
-        width: 4px;
-        height: 14px;
+        width: 3px;
+        height: 13px;
         border: 1px solid rgba(255, 255, 255, 0.5);
         border-radius: 1px;
         background: transparent;
@@ -2591,7 +2591,7 @@ class FelicityEMSCard extends LitElement {
         background: #FF9800;
       }
       .battery-text {
-        font-size: 0.5em;
+        font-size: 0.44em;
         color: var(--secondary-text-color);
         white-space: nowrap;
       }
@@ -2856,7 +2856,7 @@ class FelicityEMSCard extends LitElement {
         flex-wrap: wrap;
       }
       .status-chip {
-        font-size: 0.72em;
+        font-size: 0.64em;
         font-weight: 600;
         padding: 2px 8px;
         border-radius: 10px;
