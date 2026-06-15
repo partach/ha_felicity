@@ -536,6 +536,25 @@ select.select_option).
 | `flexible_load_1_phases` | number (1-3) | EV only | — |
 | `flexible_load_1_voltage` | number (110-400V) | EV only | — |
 | `flexible_load_1_default_current` | number (6-32A) | EV only | — |
+| `ev_charge_strategy` | select (smart/solar_only/cheap_only/always_on) | EV only | — |
+
+### EV Charge Strategy
+
+`ev_charge_strategy` (config option + select entity, gated on
+`flexible_load_1_switch_entity`) shapes *when* the EV charger runs in
+`_schedule_flexible_loads`.  It applies only to the load with
+`is_ev_charger`; loads 2-3 always use the `smart` overlay.
+
+| Strategy | Slots scheduled |
+|---|---|
+| `smart` (default) | cheap ∨ negative ∨ PV-surplus ∨ battery-charge |
+| `solar_only` | PV-surplus only |
+| `cheap_only` | at/below threshold ∨ negative |
+| `always_on` | every remaining slot (safe-power then throttles current) |
+
+`always_on` differs from EV Boost: it's a persistent schedule at the
+scheduled current (not time-limited, not forced to max current).  Plumbed
+through `EMSConfig.ev_charge_strategy` → `_schedule_flexible_loads`.
 
 ### Frontend
 
@@ -581,7 +600,23 @@ soon" scenarios.
 
 **Frontend** (`ha_felicity_ems.js`):
 - Cyan banner above the chart: "EV Boost active — Xh Ym remaining"
+- **Override +1h button** in the card header (next to the battery
+  indicator), shown only when an EV charger is configured.  Resolves the
+  `button.*_ev_boost_*` entity (excluding the cancel button) and calls
+  `button.press` — each press adds an hour via the coordinator.
+- Status bar shows a **Boost Xh Ym** chip while active.
 - Auto-refreshes every minute while boost is active.
+
+### EMS Card Status Bar
+
+Below the Strategy dropdowns the card renders a status chip row
+(`status-bar`): operational mode, current price, **Active power X kW**
+(the live `safe_max_power`), **Peak Amp. X A** (`peak_grid_current_now`),
+and the boost chip.  The Active-power and Peak-Amp chips turn red when
+the inverter is being throttled (`safe_max_power < power_level`),
+surfacing safe-power current limiting at a glance.  The energy-state chip
+was removed (it duplicated the header badge).  This merges the status
+info that used to live in the inverter card's grey bottom bar.
 
 ---
 
