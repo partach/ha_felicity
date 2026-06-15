@@ -714,6 +714,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self._yesterday_deficit,
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
             safe_power_kw,
+            opts.get("ev_charge_strategy", "smart"),
         ))
         if (input_hash == self._last_schedule_input_hash
                 and current_slot_idx == self._last_schedule_slot_idx):

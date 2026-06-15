@@ -1863,7 +1863,10 @@ class FelicityEMSCard extends LitElement {
                 <div class="bar ${i < filledBars ? 'filled' : ''} ${i < filledBars && socPct <= 20 ? 'low' : ''} ${i < filledBars && socPct > 20 && socPct <= 50 ? 'mid' : ''}"></div>
               `)}
             </div>
-            <span class="battery-text">${this._fmt(socPct, 0)}% / ${batteryCapacity} kWh</span>
+            <span class="battery-text">
+              <span class="battery-soc">${this._fmt(socPct, 0)}%</span>
+              <span class="battery-cap">${batteryCapacity} kWh</span>
+            </span>
           </div>
           ${evChargerConfigured ? html`
             <button class="override-btn ${evBoostActive ? 'active' : ''}"
@@ -2571,11 +2574,11 @@ class FelicityEMSCard extends LitElement {
       }
       .battery-bars {
         display: flex;
-        gap: 1px;
+        gap: 0.5px;
         align-items: center;
       }
       .battery-bars .bar {
-        width: 3px;
+        width: 1.5px;
         height: 13px;
         border: 1px solid rgba(255, 255, 255, 0.5);
         border-radius: 1px;
@@ -2591,9 +2594,16 @@ class FelicityEMSCard extends LitElement {
         background: #FF9800;
       }
       .battery-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
         font-size: 0.44em;
         color: var(--secondary-text-color);
         white-space: nowrap;
+      }
+      .battery-text .battery-soc {
+        font-weight: 600;
+        color: var(--primary-text-color);
       }
 
       .status-badges {
@@ -2899,13 +2909,15 @@ class FelicityEMSCard extends LitElement {
         display: flex;
         align-items: center;
         gap: 3px;
-        padding: 2px 7px;
+        padding: 2px 6px;
         border: 1px solid #00BCD4;
-        border-radius: 10px;
+        border-radius: 8px;
         background: transparent;
         color: #00BCD4;
-        font-size: 0.62em;
+        font-size: 0.4em;
         font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
         cursor: pointer;
         white-space: nowrap;
       }
@@ -2917,7 +2929,7 @@ class FelicityEMSCard extends LitElement {
         color: #00282d;
       }
       .override-btn ha-icon {
-        --mdc-icon-size: 13px;
+        --mdc-icon-size: 11px;
       }
       .control-item.disabled {
         opacity: 0.45;
