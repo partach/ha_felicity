@@ -844,7 +844,9 @@ class FelicityEMSCard extends LitElement {
     const currentSlot = showTomorrow ? -1 : currentSlotIdx;
 
     // Flexible load schedule: {slot_index: [load indices]} from the backend
-    const flexSchedule = this._getAttr("schedule_status", "flex_load_schedule") || {};
+    const flexSchedule = showTomorrow
+      ? (this._getAttr("schedule_status", "flex_load_schedule_tomorrow") || {})
+      : (this._getAttr("schedule_status", "flex_load_schedule") || {});
 
     // Draw bars
     for (let i = 0; i < numSlots; i++) {

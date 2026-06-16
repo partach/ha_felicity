@@ -4783,3 +4783,67 @@ class TestEVChargeStrategy:
         )
         # Binary load uses smart: cheap 0,1 + negative 2 + pv-surplus 5
         assert set(res[0].keys()) == {0, 1, 2, 5}
+
+    def test_tomorrow_flex_schedule_uses_ev_strategy(self):
+        """Tomorrow's flex load schedule should honour the EV charge strategy."""
+        prices_today = [0.10] * 24
+        prices_tomorrow = [0.05] * 8 + [0.25] * 8 + [0.10] * 8  # cheap morning, expensive mid, medium evening
+        pv_tomorrow = {h: 3.0 for h in range(8, 16)}  # PV 08-16
+
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            safe_power_kw=5,
+            inverter_max_power_kw=10,
+            consumption_est_kwh=10,
+            ev_charge_strategy="always_on",
+            flexible_loads=[self._ev_load()],
+        )
+        state = EMSState(
+            slot_prices_today=prices_today,
+            slot_prices_tomorrow=prices_tomorrow,
+            pv_hourly_kwh={},
+            pv_hourly_kwh_tomorrow=pv_tomorrow,
+            battery_soc_pct=80.0,
+            pv_actual_today_kwh=0,
+            current_hour=23,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+
+        # With always_on, every tomorrow slot should be scheduled
+        assert result.tomorrow_load_slots, "tomorrow_load_slots should not be empty"
+        ev_slots = result.tomorrow_load_slots.get(0, {})
+        assert len(ev_slots) == 24, f"always_on should schedule all 24 slots, got {len(ev_slots)}"
+
+    def test_tomorrow_flex_schedule_solar_only(self):
+        """Tomorrow solar_only strategy should only schedule PV-surplus slots."""
+        prices_today = [0.10] * 24
+        prices_tomorrow = [0.10] * 24
+        pv_tomorrow = {10: 3.0, 11: 4.0, 12: 5.0}  # PV only 10-12
+
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            safe_power_kw=5,
+            inverter_max_power_kw=10,
+            consumption_est_kwh=10,
+            ev_charge_strategy="solar_only",
+            flexible_loads=[self._ev_load()],
+        )
+        state = EMSState(
+            slot_prices_today=prices_today,
+            slot_prices_tomorrow=prices_tomorrow,
+            pv_hourly_kwh={},
+            pv_hourly_kwh_tomorrow=pv_tomorrow,
+            battery_soc_pct=80.0,
+            pv_actual_today_kwh=0,
+            current_hour=23,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        ev_slots = result.tomorrow_load_slots.get(0, {})
+        # Only PV surplus hours (consumption ~0.42 kWh/h, PV 3-5 kWh/h → surplus at 10,11,12)
+        for slot_idx in ev_slots:
+            hour = slot_idx  # 24-slot granularity → slot == hour
+            assert hour in pv_tomorrow, f"solar_only slot {slot_idx} has no PV"
