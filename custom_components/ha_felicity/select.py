@@ -119,6 +119,18 @@ async def async_setup_entry(
         HA_FelicitySpecialModeSelect(
             coordinator=coordinator,
             entry=entry,
+            option_key="scheduler_engine",
+            select_options=["greedy", "milp"],
+            name="Scheduler Engine",
+            icon="mdi:function-variant",
+            entity_category=EntityCategory.CONFIG,
+        )
+    )
+
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
             option_key="charge_to_full_on_negative_price",
             select_options=["off", "on"],
             name="Charge to Full on Negative Price",

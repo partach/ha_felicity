@@ -2044,6 +2044,7 @@ class FelicityEMSCard extends LitElement {
               ${this._renderPriceModeControl(priceMode)}
               ${this._renderChargeMaxControl(chargeMax)}
               ${this._renderDischargeMinControl(dischargeMin)}
+              ${this._renderSchedulerEngineControl()}
             </div>
           </div>
           <div class="controls-section">
@@ -2079,6 +2080,20 @@ class FelicityEMSCard extends LitElement {
           this.requestUpdate();
         }}>
           ${options.map((o) => html`<option value="${o}" ?selected=${o === current}>${o}</option>`)}
+        </select>
+      </div>
+    `;
+  }
+
+  _renderSchedulerEngineControl() {
+    const current = this._getState("scheduler_engine") || "greedy";
+    const labels = { greedy: "Greedy (default)", milp: "Optimizer (MILP)" };
+    const options = ["greedy", "milp"];
+    return html`
+      <div class="control-item">
+        <span class="control-label">Scheduler</span>
+        <select @change=${(e) => this._setSelect("scheduler_engine", e.target.value)}>
+          ${options.map((o) => html`<option value="${o}" ?selected=${o === current}>${labels[o]}</option>`)}
         </select>
       </div>
     `;

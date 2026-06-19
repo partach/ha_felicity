@@ -23,6 +23,7 @@ custom_components/ha_felicity/
 ├── const.py                 # Constants, register groups, model registry
 ├── coordinator.py           # Main coordinator (1501 lines) — polling, scheduling, state machine
 ├── ems.py                   # Pure EMS algorithm (1004 lines) — testable scheduling logic
+├── milp.py                  # Optional MILP/LP scheduler (solver-based alternative to greedy)
 ├── sensor.py                # All HA sensor entities (price, schedule, PV, inverter registers)
 ├── number.py                # Number entities (power level, SOC limits, capacity, etc.)
 ├── select.py                # Select entities (grid_mode, price_mode, safe_power_management)
@@ -58,6 +59,56 @@ tests/
 3. Consider updating the JS card if the change affects the preview
 
 **Ideal refactor**: Have the coordinator call `ems.calculate_schedule()` directly instead of duplicating the logic. This would eliminate drift between the two implementations.
+
+---
+
+## Optional MILP Scheduler (`milp.py`)
+
+The greedy scheduler picks charge and sell slots in separate passes,
+which produces subtle bugs at the seams between features (e.g. allocating
+all charge slots to a cheaper tomorrow while today's expensive sell slots
+starve for energy — the "sell coverage" bug). The MILP scheduler models
+the whole remaining-today + tomorrow horizon as a single optimisation and
+lets a solver find the cost-optimal plan, so cross-slot/cross-day
+interactions can't fall through the cracks.
+
+**Engine selection**: `scheduler_engine` config option (`greedy` default /
+`milp`), exposed as a select entity ("Scheduler Engine") and in the EMS
+card's Advanced settings ("Scheduler"). When `milp`,
+`calculate_schedule` calls `_run_milp_or_none()`, which tries the solver
+and **silently falls back to greedy** on any failure (pulp missing,
+infeasible, timeout, non-optimal). The greedy path stays the safety net —
+MILP failures never break the EMS.
+
+**Model** (`milp.solve_schedule`, a pure LP):
+- Horizon = today's remaining slots + all of tomorrow (when prices known).
+- Per-slot continuous vars: `c[k]` (grid kWh to charge, ≤ inverter
+  headroom after PV), `d[k]` (battery kWh discharged to sell, ≤ safe
+  power), `spill[k]` (PV curtailment), `soc[k]`.
+- SOC dynamics: `soc[k] = soc[k-1] + net_pv[k] - load[k] + eff·c[k] - d[k] - spill[k]`.
+- Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`.
+- Objective: minimise `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal_value·soc[end]`.
+- Grid mode gates charge/discharge; `block_export_on_negative_price` and
+  `arbitrage_price_delta` become per-slot price gates.
+- Round-trip efficiency loss makes charging+discharging the same slot
+  never optimal, so no binary "exclusive" var is needed — stays a fast LP.
+- SOC-bound constraints prevent overflow / phantom charging for free.
+
+**Integration surface is tiny**: the MILP only produces today's
+`scheduled_slots` (informed by the 2-day lookahead). The SOC trajectory,
+tomorrow display schedule, and flexible-load overlays are still computed
+by the existing `ems.py` machinery, so the coordinator and frontend need
+no MILP-specific code. `milp.py` reads `EMSConfig`/`EMSState` by attribute
+and takes precomputed reserve_target + pv_confidence — **zero import
+dependency on ems.py**, keeping the fallback bullet-proof.
+
+**Dependency**: `pulp>=2.7.0` (bundles the CBC solver). Lazy-imported so
+`ems.py` works without it. On hardware where the CBC binary won't run, the
+fallback keeps the EMS functional on greedy.
+
+**Tests**: `TestMILPScheduler` in `test_ems.py` (skipped when pulp absent).
+Loads `milp.py` via the same spec-loader trick as `ems.py` and registers
+it in `sys.modules` so the lazy `import milp` resolves.
 
 ---
 
@@ -649,6 +700,7 @@ info that used to live in the inverter card's grey bottom bar.
 | discharge_to_make_room_for_negative_price | select | off/on | off | Pre-discharge before p<0 PV windows |
 | rule1_time_window | select | manual/auto | manual | Auto writes rule 1 start=00:00, stop=23:59 |
 | rule1_weekday | select | manual/auto | manual | Auto writes rule 1 effective_week=all days |
+| scheduler_engine | select | greedy/milp | greedy | greedy heuristic or MILP solver (auto-falls back to greedy) |
 
 All `HA_FelicityInternalNumber` configuration entities render as
 input boxes (`NumberMode.BOX`) so users can type precise values.
