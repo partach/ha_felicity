@@ -4847,3 +4847,62 @@ class TestEVChargeStrategy:
         for slot_idx in ev_slots:
             hour = slot_idx  # 24-slot granularity → slot == hour
             assert hour in pv_tomorrow, f"solar_only slot {slot_idx} has no PV"
+
+
+class TestSellCoverage:
+    """Ensure both-mode charges today when today has profitable sell slots."""
+
+    def test_sell_coverage_adds_today_charge_slots(self):
+        """When tomorrow is cheaper but today has sells, charge today too.
+
+        Reproduces the bug where unified slot selection put all charge
+        slots on tomorrow, leaving today's battery too low to sell in the
+        evening — dropping 6+ profitable sell slots.
+        """
+        # 24-slot (hourly) granularity for simplicity.
+        # Today: cheap afternoon (0.03), expensive evening (0.25+).
+        # Tomorrow: very cheap overnight (0.01).
+        today_prices = (
+            [0.10] * 14  # 00-13: morning (past, slot 14 = current)
+            + [0.03, 0.03, 0.04, 0.04]  # 14-17: cheap afternoon
+            + [0.25, 0.26, 0.27, 0.25, 0.24, 0.23]  # 18-23: expensive evening
+        )
+        tomorrow_prices = (
+            [0.01] * 6 + [0.03] * 6  # 00-11: very cheap
+            + [0.08] * 6  # 12-17
+            + [0.20] * 6  # 18-23
+        )
+        config = EMSConfig(
+            grid_mode="both",
+            battery_capacity_kwh=60,
+            battery_charge_max_pct=100,
+            battery_discharge_min_pct=20,
+            safe_power_kw=15,
+            inverter_max_power_kw=25,
+            consumption_est_kwh=5,
+            efficiency=0.90,
+            arbitrage_price_delta=0.15,
+        )
+        state = EMSState(
+            slot_prices_today=today_prices,
+            slot_prices_tomorrow=tomorrow_prices,
+            battery_soc_pct=52.0,  # ~31.2 kWh of 60
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=14,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+
+        # The algorithm must schedule some charge slots TODAY (not all tomorrow)
+        today_charges = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        assert len(today_charges) > 0, (
+            "Expected today charge slots to support evening sells, "
+            f"but got 0.  Scheduled: {result.scheduled_slots}"
+        )
+
+        # And it must schedule sell slots in the expensive evening window
+        today_sells = [i for i, a in result.scheduled_slots.items() if a == "discharge"]
+        assert len(today_sells) >= 2, (
+            f"Expected profitable evening sells, got {len(today_sells)}: {today_sells}"
+        )
