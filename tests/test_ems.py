@@ -5097,3 +5097,235 @@ class TestMILPScheduler:
         result = calculate_schedule(config, state)
         # Greedy still produces a schedule (no MILP reason string).
         assert "MILP" not in result.schedule_reason
+
+
+def _grid_cost_of_schedule(config, state, today_sched, tomorrow_sched):
+    """Evaluate the net grid spend of a schedule over the today+tomorrow
+    horizon, mirroring the MILP's cost model so the greedy and MILP
+    schedules can be compared on the same yardstick.
+
+    Cost = Σ price·grid_bought − Σ price·eff·battery_sold
+           − terminal_value·soc_end
+    where terminal_value = mean(horizon price)·eff rewards leftover SOC
+    (exactly the MILP objective's leftover-energy term).  Lower is better.
+    """
+    today = state.slot_prices_today
+    tomorrow = state.slot_prices_tomorrow
+    num_slots = len(today)
+    mps = (24 * 60) / num_slots
+    slot_hours = mps / 60.0
+    eff = config.efficiency
+    cap = config.battery_capacity_kwh
+    soc_max = (config.battery_charge_max_pct / 100.0) * cap
+    soc_min = (config.battery_discharge_min_pct / 100.0) * cap
+    current_slot = min(
+        int((state.current_hour * 60 + state.current_minute) / mps),
+        num_slots - 1,
+    )
+    confidence = ems._calculate_pv_confidence(
+        state.pv_hourly_kwh, state.pv_actual_today_kwh,
+        state.current_hour, state.current_minute,
+        previous_confidence=state.previous_pv_confidence,
+    )
+
+    soc = (state.battery_soc_pct / 100.0) * cap
+    cost = 0.0
+    horizon_prices: list[float] = []
+
+    def _run_day(prices, sched, pv_hourly, conf, start_idx):
+        nonlocal soc, cost
+        for k in range(start_idx, len(prices)):
+            price = prices[k]
+            if price is None:
+                continue
+            horizon_prices.append(price)
+            hour = int((k * mps) / 60) % 24
+            pv_kw = (pv_hourly or {}).get(hour, 0.0) * conf
+            pv_slot = pv_kw * slot_hours
+            if state.consumption_hourly_kwh and hour in state.consumption_hourly_kwh:
+                load = state.consumption_hourly_kwh[hour] * slot_hours
+            else:
+                load = config.consumption_est_kwh / num_slots
+            natural = pv_slot - load
+            action = (sched or {}).get(k)
+            grid_buy = 0.0
+            batt_out = 0.0
+            if action == "charge":
+                grid_kw = min(config.safe_power_kw,
+                              max(0.0, config.inverter_max_power_kw - pv_kw))
+                want_stored = eff * grid_kw * slot_hours
+                room = max(0.0, soc_max - (soc + natural))
+                actual_stored = min(want_stored, room)
+                grid_buy = actual_stored / eff if eff > 0 else 0.0
+                soc = soc + natural + actual_stored
+            elif action == "discharge":
+                avail = max(0.0, (soc + natural) - soc_min)
+                batt_out = min(config.safe_power_kw * slot_hours, avail)
+                soc = soc + natural - batt_out
+            else:
+                soc = soc + natural
+            soc = max(soc_min, min(soc_max, soc))
+            cost += price * grid_buy - price * eff * batt_out
+
+    _run_day(today, today_sched, state.pv_hourly_kwh, confidence, current_slot)
+    if tomorrow:
+        _run_day(tomorrow, tomorrow_sched, state.pv_hourly_kwh_tomorrow, 1.0, 0)
+
+    if horizon_prices:
+        terminal_value = max(0.0, sum(horizon_prices) / len(horizon_prices)) * eff
+        cost -= terminal_value * soc
+    return cost
+
+
+@pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+class TestMILPvsGreedy:
+    """Cross-check the MILP and greedy engines on identical scenarios.
+
+    The two engines are NOT expected to produce byte-identical schedules
+    (that's the whole point of the MILP).  What MUST hold is that the
+    MILP never loses to the heuristic on the modelled objective: its
+    schedule's net grid spend is <= greedy's (within a one-slot
+    discretization epsilon, since the MILP's continuous optimum is
+    rounded to whole charge/discharge slots for execution).
+    """
+
+    @staticmethod
+    def _run(base_kwargs, state_kwargs):
+        cfg_milp = EMSConfig(scheduler_engine="milp", **base_kwargs)
+        cfg_greedy = EMSConfig(scheduler_engine="greedy", **base_kwargs)
+        r_milp = calculate_schedule(cfg_milp, EMSState(**state_kwargs))
+        r_greedy = calculate_schedule(cfg_greedy, EMSState(**state_kwargs))
+        return cfg_milp, r_milp, cfg_greedy, r_greedy
+
+    @staticmethod
+    def _assert_milp_not_worse(base_kwargs, state_kwargs):
+        cfg_m, r_m, cfg_g, r_g = TestMILPvsGreedy._run(base_kwargs, state_kwargs)
+        state = EMSState(**state_kwargs)
+        cost_m = _grid_cost_of_schedule(
+            cfg_m, state, r_m.scheduled_slots, r_m.tomorrow_scheduled_slots)
+        cost_g = _grid_cost_of_schedule(
+            cfg_g, state, r_g.scheduled_slots, r_g.tomorrow_scheduled_slots)
+        # One-slot discretization tolerance at the horizon's max price.
+        num_slots = len(state.slot_prices_today)
+        slot_hours = (24 * 60 / num_slots) / 60.0
+        all_prices = [p for p in state.slot_prices_today if p is not None]
+        if state.slot_prices_tomorrow:
+            all_prices += [p for p in state.slot_prices_tomorrow if p is not None]
+        eps = 1.5 * max(all_prices) * cfg_m.safe_power_kw * slot_hours
+        assert cost_m <= cost_g + eps, (
+            f"MILP cost {cost_m:.3f} should not exceed greedy {cost_g:.3f} "
+            f"(eps={eps:.3f})"
+        )
+        return cost_m, cost_g
+
+    def test_from_grid_no_pv_matches_cheapest(self):
+        """Plain from_grid, no PV: both engines pick the cheapest slots and
+        agree closely on cost, and overlap heavily on slot selection.
+
+        Battery is large enough that whole-slot headroom flooring isn't the
+        binding constraint (a small battery makes greedy floor its slot
+        count to zero while the MILP charges fractionally — a real
+        divergence, covered by the cost-dominance tests instead)."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=40,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=5,
+            inverter_max_power_kw=10,
+            consumption_est_kwh=4,
+            efficiency=0.90,
+            reserve_target_pct=70,
+        )
+        st = dict(
+            slot_prices_today=[0.05, 0.04, 0.20, 0.22, 0.18, 0.06,
+                               0.30, 0.28, 0.25, 0.21, 0.19, 0.17],
+            battery_soc_pct=30.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        cfg_m, r_m, cfg_g, r_g = self._run(base, st)
+        self._assert_milp_not_worse(base, st)
+        # Both should charge from the cheap end of the day (slots 0,1,5...).
+        charges_m = {i for i, a in r_m.scheduled_slots.items() if a == "charge"}
+        charges_g = {i for i, a in r_g.scheduled_slots.items() if a == "charge"}
+        assert charges_m and charges_g
+        # The cheapest two slots (1=0.04, 0=0.05) should be chosen by both.
+        for cheap in (0, 1):
+            assert cheap in charges_m, f"MILP missed cheap slot {cheap}: {charges_m}"
+            assert cheap in charges_g, f"greedy missed cheap slot {cheap}: {charges_g}"
+
+    def test_both_arbitrage_milp_not_worse(self):
+        """Both mode with a wide spread: MILP cost <= greedy cost."""
+        base = dict(
+            grid_mode="both",
+            battery_capacity_kwh=20,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=10,
+            inverter_max_power_kw=15,
+            consumption_est_kwh=4,
+            efficiency=0.90,
+        )
+        st = dict(
+            slot_prices_today=[0.02] * 6 + [0.40] * 6,
+            battery_soc_pct=50.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        self._assert_milp_not_worse(base, st)
+
+    def test_cross_day_cheaper_tomorrow_milp_not_worse(self):
+        """Cross-day: tomorrow cheaper but today has expensive sell slots.
+        This is the seam where greedy historically starved today's sells —
+        the MILP must do at least as well over the 2-day horizon."""
+        base = dict(
+            grid_mode="both",
+            battery_capacity_kwh=20,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=10,
+            inverter_max_power_kw=15,
+            consumption_est_kwh=6,
+            efficiency=0.90,
+        )
+        st = dict(
+            slot_prices_today=[0.10] * 6 + [0.45] * 6,      # expensive evening sells
+            slot_prices_tomorrow=[0.02] * 6 + [0.30] * 6,   # cheaper buys tomorrow
+            battery_soc_pct=55.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        self._assert_milp_not_worse(base, st)
+
+    def test_cloudy_with_pv_milp_not_worse(self):
+        """from_grid with partial PV: MILP cost <= greedy cost."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=5,
+            inverter_max_power_kw=10,
+            consumption_est_kwh=8,
+            efficiency=0.90,
+            reserve_target_pct=50,
+        )
+        st = dict(
+            slot_prices_today=[0.06, 0.05, 0.07, 0.25, 0.28, 0.22,
+                               0.30, 0.26, 0.20, 0.12, 0.10, 0.08],
+            battery_soc_pct=30.0,
+            # Modest midday PV (kWh per hour), not enough to skip grid.
+            pv_hourly_kwh={10: 1.0, 11: 1.5, 12: 2.0, 13: 1.5, 14: 1.0},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        self._assert_milp_not_worse(base, st)
+
