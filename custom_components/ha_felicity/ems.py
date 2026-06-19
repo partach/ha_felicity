@@ -2078,6 +2078,52 @@ def _schedule_both(
     result.tomorrow_planned_slots = len(tomorrow_slots)
     result.tomorrow_planned_kwh = tomorrow_charge_kwh
 
+    # --- Today sell-coverage pass ---
+    # The unified charge selection picks globally-cheapest slots, which may
+    # all land on tomorrow when tomorrow is cheaper.  But tomorrow's charge
+    # can't support today's sells — the energy isn't there yet.  When
+    # arbitrage is active and today has profitable sell candidates, ensure
+    # enough today charge slots exist to support them.
+    if arbitrage_active and not charge_slots:
+        today_charge_indices = {s[0] for s in charge_slots}
+        # Quick check: are there today sell candidates worth chasing?
+        sell_floor = 0.0
+        if config.arbitrage_price_delta > 0:
+            cheapest_today = min((p for _, p in remaining), default=0)
+            sell_floor = cheapest_today + config.arbitrage_price_delta
+        today_sell_candidates = [
+            (i, p) for i, p in remaining
+            if p > sell_floor and p > 0 and i not in today_charge_indices
+        ]
+        if today_sell_candidates:
+            # How much can we sell from current SOC + PV alone?
+            available_to_sell = max(0.0, current_kwh + net_pv - reserve_target)
+            # How much do we want to sell?
+            desired_sell_kwh = len(today_sell_candidates) * energy_per_slot * config.efficiency
+            sell_shortfall = max(0.0, min(desired_sell_kwh, max_battery_kwh - reserve_target) - available_to_sell)
+            if sell_shortfall > effective_per_slot * 0.5:
+                # Add today's cheapest non-sell slots as charge slots
+                today_pool = sorted(
+                    [(i, p) for i, p in remaining
+                     if i not in today_charge_indices
+                     and i not in {s[0] for s in today_sell_candidates}],
+                    key=lambda x: x[1],
+                )
+                added = 0.0
+                for slot in today_pool:
+                    if added >= sell_shortfall:
+                        break
+                    charge_slots.append(slot)
+                    today_charge_indices.add(slot[0])
+                    added += effective_per_slot
+                if added > 0:
+                    _LOGGER.debug(
+                        "Sell-coverage: added %.1f kWh in %d today charge slots "
+                        "to support today's %d sell candidates (shortfall=%.1f kWh)",
+                        added, sum(1 for s in charge_slots if s[0] < num_slots),
+                        len(today_sell_candidates), sell_shortfall,
+                    )
+
     # Sellable energy: peak projected SOC above reserve.
     # After charge selection, include the planned charge energy so the sell
     # side knows the battery will have surplus to sell.  Without this, a low
