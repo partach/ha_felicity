@@ -34,6 +34,22 @@ ems = importlib.util.module_from_spec(_spec)
 sys.modules["ems"] = ems
 _spec.loader.exec_module(ems)
 
+# Load milp.py the same way and register it as "milp" so ems's lazy
+# ``import milp`` finds it inside the test harness.
+_milp_path = os.path.join(
+    os.path.dirname(__file__), "..", "custom_components", "ha_felicity", "milp.py"
+)
+_milp_spec = importlib.util.spec_from_file_location("milp", _milp_path)
+milp = importlib.util.module_from_spec(_milp_spec)
+sys.modules["milp"] = milp
+_milp_spec.loader.exec_module(milp)
+
+try:
+    import pulp as _pulp  # noqa: F401
+    _HAS_PULP = True
+except Exception:
+    _HAS_PULP = False
+
 EMSConfig = ems.EMSConfig
 EMSState = ems.EMSState
 ScheduleResult = ems.ScheduleResult
@@ -4906,3 +4922,178 @@ class TestSellCoverage:
         assert len(today_sells) >= 2, (
             f"Expected profitable evening sells, got {len(today_sells)}: {today_sells}"
         )
+
+
+@pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+class TestMILPScheduler:
+    """Tests for the optional MILP scheduler (milp.py)."""
+
+    def test_milp_disabled_without_engine(self):
+        """Default engine stays greedy; MILP not invoked."""
+        config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10)
+        assert config.scheduler_engine == "greedy"
+
+    def test_milp_charges_cheap_slots_from_grid(self):
+        """MILP from_grid: charge the cheapest slots to cover the deficit."""
+        # Battery low (10%), needs charging. Cheap morning, expensive evening.
+        prices = [0.05] * 6 + [0.30] * 6  # 12 slots (2h each)
+        config = EMSConfig(
+            grid_mode="from_grid",
+            scheduler_engine="milp",
+            battery_capacity_kwh=10,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=5,
+            inverter_max_power_kw=10,
+            consumption_est_kwh=5,
+            efficiency=0.90,
+            reserve_target_pct=50,
+        )
+        state = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=10.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charges = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        assert charges, "MILP should schedule charge slots to reach reserve"
+        # Cheap slots are 0-5; charging should prefer those.
+        assert all(i < 6 for i in charges), f"Expected cheap-slot charging, got {charges}"
+        assert "MILP" in result.schedule_reason
+
+    def test_milp_arbitrage_both_mode(self):
+        """MILP both: buy cheap + sell expensive when spread is profitable."""
+        prices = [0.02] * 6 + [0.40] * 6  # huge spread
+        config = EMSConfig(
+            grid_mode="both",
+            scheduler_engine="milp",
+            battery_capacity_kwh=20,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=10,
+            inverter_max_power_kw=15,
+            consumption_est_kwh=4,
+            efficiency=0.90,
+        )
+        state = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=50.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charges = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        sells = [i for i, a in result.scheduled_slots.items() if a == "discharge"]
+        assert charges, "Expected arbitrage buys"
+        assert sells, "Expected arbitrage sells"
+        # Buys in cheap window, sells in expensive window.
+        assert all(i < 6 for i in charges), f"buys not cheap: {charges}"
+        assert all(i >= 6 for i in sells), f"sells not expensive: {sells}"
+
+    def test_milp_respects_grid_mode_off_via_caller(self):
+        """grid_mode off short-circuits before MILP (engine irrelevant)."""
+        config = EMSConfig(grid_mode="off", scheduler_engine="milp",
+                           battery_capacity_kwh=10)
+        state = EMSState(slot_prices_today=[0.1] * 12, battery_soc_pct=50.0,
+                        pv_hourly_kwh={})
+        result = calculate_schedule(config, state)
+        assert result.status == "off"
+        assert not result.scheduled_slots
+
+    def test_milp_no_charge_when_full(self):
+        """MILP must not schedule charging when the battery is already full."""
+        prices = [0.05] * 6 + [0.06] * 6
+        config = EMSConfig(
+            grid_mode="from_grid",
+            scheduler_engine="milp",
+            battery_capacity_kwh=10,
+            battery_charge_max_pct=100,
+            battery_discharge_min_pct=20,
+            safe_power_kw=5,
+            inverter_max_power_kw=10,
+            consumption_est_kwh=2,
+            efficiency=0.90,
+            reserve_target_pct=50,
+        )
+        state = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=100.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charges = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        assert not charges, f"Full battery should not charge, got {charges}"
+
+    def test_milp_produces_tomorrow_schedule(self):
+        """MILP both-mode with tomorrow prices: produces tomorrow slots too."""
+        today_prices = [0.05] * 6 + [0.30] * 6  # 12 slots, 2h each
+        tomorrow_prices = [0.03] * 6 + [0.35] * 6
+        config = EMSConfig(
+            grid_mode="both",
+            scheduler_engine="milp",
+            battery_capacity_kwh=20,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=10,
+            inverter_max_power_kw=15,
+            consumption_est_kwh=4,
+            efficiency=0.90,
+        )
+        state = EMSState(
+            slot_prices_today=today_prices,
+            slot_prices_tomorrow=tomorrow_prices,
+            battery_soc_pct=50.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert "MILP" in result.schedule_reason
+        assert result.tomorrow_scheduled_slots, \
+            "MILP should produce tomorrow schedule when tomorrow prices exist"
+        assert result.tomorrow_soc_trajectory, \
+            "Tomorrow SOC trajectory should be computed"
+        # Tomorrow's cheap slots (0-5) should be preferred for charging.
+        tmr_charges = [i for i, a in result.tomorrow_scheduled_slots.items()
+                       if a == "charge"]
+        tmr_sells = [i for i, a in result.tomorrow_scheduled_slots.items()
+                     if a == "discharge"]
+        if tmr_charges:
+            assert all(i < 6 for i in tmr_charges), \
+                f"Tomorrow charges should be cheap slots: {tmr_charges}"
+        if tmr_sells:
+            assert all(i >= 6 for i in tmr_sells), \
+                f"Tomorrow sells should be expensive slots: {tmr_sells}"
+
+    def test_milp_falls_back_when_solve_returns_none(self, monkeypatch):
+        """When the solver returns None, calculate_schedule uses greedy."""
+        monkeypatch.setattr(milp, "solve_schedule", lambda *a, **k: None)
+        config = EMSConfig(
+            grid_mode="from_grid",
+            scheduler_engine="milp",
+            battery_capacity_kwh=10,
+            battery_discharge_min_pct=20,
+            safe_power_kw=5,
+            consumption_est_kwh=5,
+            reserve_target_pct=50,
+        )
+        state = EMSState(
+            slot_prices_today=[0.05] * 6 + [0.30] * 6,
+            battery_soc_pct=10.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        # Greedy still produces a schedule (no MILP reason string).
+        assert "MILP" not in result.schedule_reason
