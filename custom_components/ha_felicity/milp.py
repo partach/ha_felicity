@@ -31,10 +31,9 @@ Design
   The SOC-bound constraints then prevent overflow and phantom charging
   for free.
 
-The MILP only produces *today's* ``scheduled_slots`` (informed by the
-2-day lookahead).  Tomorrow's display schedule, the SOC trajectory, and
-flexible-load overlays are still computed by the existing ``ems.py``
-machinery, so the integration surface stays tiny.
+The MILP produces both today's and tomorrow's ``scheduled_slots``
+from the unified 2-day horizon.  The SOC trajectory and flexible-load
+overlays are still computed by the existing ``ems.py`` machinery.
 """
 
 from __future__ import annotations
@@ -60,12 +59,12 @@ def solve_schedule(
     minutes_per_slot: float,
     reserve_target: float,
     pv_confidence: float,
-) -> dict[int, str] | None:
+) -> tuple[dict[int, str], dict[int, str]] | None:
     """Solve the EMS schedule as a MILP.
 
-    Returns ``{today_slot_index: "charge"|"discharge"}`` for today's
-    remaining slots, or ``None`` if the solver is unavailable or fails
-    (caller should fall back to the greedy scheduler).
+    Returns ``(today_slots, tomorrow_slots)`` where each is
+    ``{slot_index: "charge"|"discharge"}``, or ``None`` if the solver
+    is unavailable or fails (caller falls back to greedy).
     """
     try:
         import pulp  # noqa: PLC0415 — lazy import so ems.py works without pulp
@@ -224,24 +223,33 @@ def _solve(
         _LOGGER.warning("MILP non-optimal (%s) — falling back to greedy", status)
         return None
 
-    # Extract today's slot decisions.  Threshold guards against solver
-    # numerical dust on the binary variables.
-    scheduled: dict[int, str] = {}
+    # Extract slot decisions for both days.  Threshold guards against
+    # solver numerical dust on the continuous variables.
+    today_scheduled: dict[int, str] = {}
+    tomorrow_scheduled: dict[int, str] = {}
     for k, h in enumerate(horizon):
-        if h["day"] != "today":
-            continue
         cv = pulp.value(c[k]) or 0.0
         dv = pulp.value(d[k]) or 0.0
+        action = None
         if cv > safe_kwh * 0.05:
-            scheduled[h["slot"]] = "charge"
+            action = "charge"
         elif dv > safe_kwh * 0.05:
-            scheduled[h["slot"]] = "discharge"
+            action = "discharge"
+        if action:
+            if h["day"] == "today":
+                today_scheduled[h["slot"]] = action
+            else:
+                tomorrow_scheduled[h["slot"]] = action
 
     _LOGGER.debug(
-        "MILP solved: %d today slots (%d charge, %d discharge), horizon=%d",
-        len(scheduled),
-        sum(1 for v in scheduled.values() if v == "charge"),
-        sum(1 for v in scheduled.values() if v == "discharge"),
+        "MILP solved: today %d slots (%d charge, %d discharge), "
+        "tomorrow %d slots (%d charge, %d discharge), horizon=%d",
+        len(today_scheduled),
+        sum(1 for v in today_scheduled.values() if v == "charge"),
+        sum(1 for v in today_scheduled.values() if v == "discharge"),
+        len(tomorrow_scheduled),
+        sum(1 for v in tomorrow_scheduled.values() if v == "charge"),
+        sum(1 for v in tomorrow_scheduled.values() if v == "discharge"),
         K,
     )
-    return scheduled
+    return today_scheduled, tomorrow_scheduled

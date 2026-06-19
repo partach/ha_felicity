@@ -1396,9 +1396,28 @@ def _compute_tomorrow_schedule(
                 if idx in validated_discharge:
                     scheduled[idx] = "discharge"
 
-    # SOC trajectory for tomorrow
-    trajectory: list[float] = []
+    trajectory = _compute_tomorrow_soc_trajectory(
+        config, state, scheduled, midnight_kwh, num_slots,
+        minutes_per_slot, pv_hourly_tomorrow,
+    )
+    return scheduled, trajectory
+
+
+def _compute_tomorrow_soc_trajectory(
+    config: EMSConfig,
+    state: EMSState,
+    scheduled: dict[int, str],
+    midnight_kwh: float,
+    num_slots: int,
+    minutes_per_slot: float,
+    pv_hourly_tomorrow: dict[int, float],
+) -> list[float]:
+    """Simulate SOC trajectory for tomorrow given a schedule."""
+    slot_duration_hours = minutes_per_slot / 60.0
+    energy_per_slot = config.safe_power_kw * slot_duration_hours
+    min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
     cap = config.battery_capacity_kwh
+    trajectory: list[float] = []
     soc = midnight_kwh
 
     for i in range(num_slots):
@@ -1425,7 +1444,7 @@ def _compute_tomorrow_schedule(
 
         soc = max(min_kwh, min(cap, soc + delta))
 
-    return scheduled, trajectory
+    return trajectory
 
 
 def _run_milp_or_none(
@@ -1462,7 +1481,7 @@ def _run_milp_or_none(
         previous_confidence=state.previous_pv_confidence,
     )
 
-    scheduled = milp.solve_schedule(
+    milp_result = milp.solve_schedule(
         config, state,
         remaining=remaining,
         current_kwh=current_kwh,
@@ -1472,11 +1491,14 @@ def _run_milp_or_none(
         reserve_target=reserve_target,
         pv_confidence=pv_confidence,
     )
-    if scheduled is None:
+    if milp_result is None:
         return None
+
+    scheduled, tomorrow_scheduled = milp_result
 
     result = ScheduleResult()
     result.scheduled_slots = scheduled
+    result.tomorrow_scheduled_slots = tomorrow_scheduled
     result.self_consumption_reserve = round(reserve_kwh, 2)
     result.reserve_target_pct = round(
         (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
@@ -1491,14 +1513,15 @@ def _run_milp_or_none(
 
     n_charge = sum(1 for v in scheduled.values() if v == "charge")
     n_sell = sum(1 for v in scheduled.values() if v == "discharge")
-    if n_charge and n_sell:
-        result.schedule_reason = (
-            f"MILP plan: buying {n_charge} slot(s), selling {n_sell} slot(s)"
-        )
-    elif n_charge:
-        result.schedule_reason = f"MILP plan: charging {n_charge} slot(s)"
-    elif n_sell:
-        result.schedule_reason = f"MILP plan: selling {n_sell} slot(s)"
+    tmr_charge = sum(1 for v in tomorrow_scheduled.values() if v == "charge")
+    tmr_sell = sum(1 for v in tomorrow_scheduled.values() if v == "discharge")
+    parts = []
+    if n_charge or tmr_charge:
+        parts.append(f"buying {n_charge}+{tmr_charge} slot(s)")
+    if n_sell or tmr_sell:
+        parts.append(f"selling {n_sell}+{tmr_sell} slot(s)")
+    if parts:
+        result.schedule_reason = f"MILP plan: {', '.join(parts)}"
     else:
         result.schedule_reason = "MILP plan: no grid action needed"
     return result
@@ -1679,13 +1702,35 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         config, state,
     )
 
-    # Compute tomorrow's schedule and trajectory (if tomorrow prices exist)
+    # Compute tomorrow's schedule and trajectory (if tomorrow prices exist).
+    # When the MILP already provided tomorrow_scheduled_slots, skip the
+    # greedy reconstruction and only compute the SOC trajectory.
     if state.slot_prices_tomorrow:
-        tmr_slots, tmr_traj = _compute_tomorrow_schedule(
-            config, state, result, result.soc_trajectory,
-        )
-        result.tomorrow_scheduled_slots = tmr_slots
-        result.tomorrow_soc_trajectory = tmr_traj
+        if result.tomorrow_scheduled_slots:
+            tmr_num = len(state.slot_prices_tomorrow)
+            tmr_mps = (24 * 60) / tmr_num
+            min_kwh_t = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
+            if result.soc_trajectory:
+                midnight_pct = result.soc_trajectory[-1]
+                midnight_kwh_t = max(min_kwh_t, (midnight_pct / 100.0) * config.battery_capacity_kwh)
+            else:
+                midnight_kwh_t = min_kwh_t
+            pv_tmr_hourly = state.pv_hourly_kwh_tomorrow or {}
+            if not pv_tmr_hourly:
+                pv_total = state.pv_forecast_tomorrow or 0.0
+                daylight = list(range(6, 18))
+                per_h = pv_total / len(daylight) if daylight else 0.0
+                pv_tmr_hourly = {h: per_h for h in daylight}
+            result.tomorrow_soc_trajectory = _compute_tomorrow_soc_trajectory(
+                config, state, result.tomorrow_scheduled_slots,
+                midnight_kwh_t, tmr_num, tmr_mps, pv_tmr_hourly,
+            )
+        else:
+            tmr_slots, tmr_traj = _compute_tomorrow_schedule(
+                config, state, result, result.soc_trajectory,
+            )
+            result.tomorrow_scheduled_slots = tmr_slots
+            result.tomorrow_soc_trajectory = tmr_traj
 
     # Schedule flexible loads into cheap / PV-surplus slots
     active_loads = [ld for ld in config.flexible_loads if ld.enabled]

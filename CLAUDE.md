@@ -94,13 +94,14 @@ MILP failures never break the EMS.
   never optimal, so no binary "exclusive" var is needed — stays a fast LP.
 - SOC-bound constraints prevent overflow / phantom charging for free.
 
-**Integration surface is tiny**: the MILP only produces today's
-`scheduled_slots` (informed by the 2-day lookahead). The SOC trajectory,
-tomorrow display schedule, and flexible-load overlays are still computed
-by the existing `ems.py` machinery, so the coordinator and frontend need
-no MILP-specific code. `milp.py` reads `EMSConfig`/`EMSState` by attribute
-and takes precomputed reserve_target + pv_confidence — **zero import
-dependency on ems.py**, keeping the fallback bullet-proof.
+**Integration surface is tiny**: the MILP produces both today's and
+tomorrow's `scheduled_slots` from the unified 2-day horizon. When
+tomorrow slots are provided by the MILP, `_compute_tomorrow_schedule`
+(greedy reconstruction) is skipped — only the SOC trajectory is
+computed from the MILP's decisions. Flexible-load overlays are still
+computed by `ems.py`. `milp.py` reads `EMSConfig`/`EMSState` by
+attribute and takes precomputed reserve_target + pv_confidence —
+**zero import dependency on ems.py**, keeping the fallback bullet-proof.
 
 **Dependency**: `pulp>=2.7.0` (bundles the CBC solver). Lazy-imported so
 `ems.py` works without it. On hardware where the CBC binary won't run, the

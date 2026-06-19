@@ -5032,6 +5032,48 @@ class TestMILPScheduler:
         charges = [i for i, a in result.scheduled_slots.items() if a == "charge"]
         assert not charges, f"Full battery should not charge, got {charges}"
 
+    def test_milp_produces_tomorrow_schedule(self):
+        """MILP both-mode with tomorrow prices: produces tomorrow slots too."""
+        today_prices = [0.05] * 6 + [0.30] * 6  # 12 slots, 2h each
+        tomorrow_prices = [0.03] * 6 + [0.35] * 6
+        config = EMSConfig(
+            grid_mode="both",
+            scheduler_engine="milp",
+            battery_capacity_kwh=20,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=10,
+            inverter_max_power_kw=15,
+            consumption_est_kwh=4,
+            efficiency=0.90,
+        )
+        state = EMSState(
+            slot_prices_today=today_prices,
+            slot_prices_tomorrow=tomorrow_prices,
+            battery_soc_pct=50.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert "MILP" in result.schedule_reason
+        assert result.tomorrow_scheduled_slots, \
+            "MILP should produce tomorrow schedule when tomorrow prices exist"
+        assert result.tomorrow_soc_trajectory, \
+            "Tomorrow SOC trajectory should be computed"
+        # Tomorrow's cheap slots (0-5) should be preferred for charging.
+        tmr_charges = [i for i, a in result.tomorrow_scheduled_slots.items()
+                       if a == "charge"]
+        tmr_sells = [i for i, a in result.tomorrow_scheduled_slots.items()
+                     if a == "discharge"]
+        if tmr_charges:
+            assert all(i < 6 for i in tmr_charges), \
+                f"Tomorrow charges should be cheap slots: {tmr_charges}"
+        if tmr_sells:
+            assert all(i >= 6 for i in tmr_sells), \
+                f"Tomorrow sells should be expensive slots: {tmr_sells}"
+
     def test_milp_falls_back_when_solve_returns_none(self, monkeypatch):
         """When the solver returns None, calculate_schedule uses greedy."""
         monkeypatch.setattr(milp, "solve_schedule", lambda *a, **k: None)
