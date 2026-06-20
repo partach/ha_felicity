@@ -4963,6 +4963,7 @@ class TestMILPScheduler:
         # Cheap slots are 0-5; charging should prefer those.
         assert all(i < 6 for i in charges), f"Expected cheap-slot charging, got {charges}"
         assert "MILP" in result.schedule_reason
+        assert result.scheduler_active == "milp"
 
     def test_milp_arbitrage_both_mode(self):
         """MILP both: buy cheap + sell expensive when spread is profitable."""
@@ -5097,6 +5098,28 @@ class TestMILPScheduler:
         result = calculate_schedule(config, state)
         # Greedy still produces a schedule (no MILP reason string).
         assert "MILP" not in result.schedule_reason
+        assert result.scheduler_active == "greedy_fallback"
+
+    def test_greedy_scheduler_active_field(self):
+        """Default greedy engine sets scheduler_active='greedy'."""
+        config = EMSConfig(
+            grid_mode="from_grid",
+            battery_capacity_kwh=10,
+            battery_discharge_min_pct=20,
+            safe_power_kw=5,
+            consumption_est_kwh=5,
+            reserve_target_pct=50,
+        )
+        state = EMSState(
+            slot_prices_today=[0.05] * 6 + [0.30] * 6,
+            battery_soc_pct=10.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.scheduler_active == "greedy"
 
 
 def _grid_cost_of_schedule(config, state, today_sched, tomorrow_sched):

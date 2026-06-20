@@ -169,6 +169,7 @@ class ScheduleResult:
     tomorrow_precharge: float = 0.0
     status: str = "off"
     schedule_reason: str = ""
+    scheduler_active: str = "greedy"  # "greedy" | "milp" | "greedy_fallback"
     soc_trajectory: list[float] = field(default_factory=list)
     tomorrow_scheduled_slots: dict[int, str] = field(default_factory=dict)
     tomorrow_soc_trajectory: list[float] = field(default_factory=list)
@@ -1497,6 +1498,7 @@ def _run_milp_or_none(
     scheduled, tomorrow_scheduled = milp_result
 
     result = ScheduleResult()
+    result.scheduler_active = "milp"
     result.scheduled_slots = scheduled
     result.tomorrow_scheduled_slots = tomorrow_scheduled
     result.self_consumption_reserve = round(reserve_kwh, 2)
@@ -1657,6 +1659,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         )
         if result is None:
             result = _run_greedy()
+            result.scheduler_active = "greedy_fallback"
     else:
         result = _run_greedy()
 
