@@ -1782,6 +1782,8 @@ class FelicityEMSCard extends LitElement {
       ? `${evBoostHours > 0 ? `${evBoostHours}h ` : ""}${evBoostMins}m remaining`
       : "";
     const operationalMode = this._getState("operational_mode") || null;
+    const schedulerActive = this._getAttr("schedule_status", "scheduler_active") || null;
+    const schedulerEngine = this._getState("scheduler_engine") || "greedy";
     // Active power limit + grid current (for throttle display in status bar)
     const powerLevelKw = this._getNumericState("power_level");
     const safeMaxKw = this._getNumericState("safe_max_power") != null
@@ -2018,6 +2020,9 @@ class FelicityEMSCard extends LitElement {
             </div>
             <div class="status-bar">
               ${operationalMode ? html`<span class="status-chip mode">${operationalMode}</span>` : ''}
+              ${schedulerEngine === "milp" ? html`
+                <span class="status-chip engine ${schedulerActive === 'greedy_fallback' ? 'fallback' : ''}">${schedulerActive === 'milp' ? 'MILP' : schedulerActive === 'greedy_fallback' ? 'Greedy (fallback)' : 'Greedy'}</span>
+              ` : ''}
               ${safeMaxKw != null ? html`
                 <span class="status-chip power ${isThrottled ? 'throttled' : ''}">Active power ${this._fmt(safeMaxKw, 1)} kW</span>
               ` : ''}
@@ -2930,6 +2935,15 @@ class FelicityEMSCard extends LitElement {
       .status-chip.amp.throttled {
         background: rgba(244, 67, 54, 0.18);
         color: #ef5350;
+      }
+      .status-chip.engine {
+        background: rgba(156, 39, 176, 0.16);
+        color: #AB47BC;
+        text-transform: none;
+      }
+      .status-chip.engine.fallback {
+        background: rgba(255, 152, 0, 0.18);
+        color: #FF9800;
       }
       .status-chip.boost {
         background: rgba(0, 188, 212, 0.18);

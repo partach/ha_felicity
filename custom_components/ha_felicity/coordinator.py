@@ -98,6 +98,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.grid_energy_planned: float = 0.0
         self.schedule_status: str = "unknown"
         self.schedule_reason: str = ""
+        self.scheduler_active: str = "greedy"
 
         # Consumption tracking & persistent storage
         self.consumption_override_entity = consumption_override_entity
@@ -828,6 +829,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.tomorrow_planned_kwh = result.tomorrow_planned_kwh
         self.schedule_status = result.status
         self.schedule_reason = result.schedule_reason
+        self.scheduler_active = result.scheduler_active
         self._backend_soc_trajectory = result.soc_trajectory
         self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots
         self._backend_soc_trajectory_tomorrow = result.tomorrow_soc_trajectory
