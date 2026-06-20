@@ -569,6 +569,14 @@ turning loads on/off via `hass.services.async_call` (switch.turn_on/off).
 EV charger current is set via its current_entity (number.set_value or
 select.select_option).
 
+**Fault isolation**: `_actuate_flex_loads` is wrapped in a top-level
+try/except at the call site (line 2212) and per-load try/except within
+the method, so a flex-load failure (entity unavailable, service call
+timeout, bad config) never kills the main coordinator update cycle.
+Without this, a charger entity going offline would cause `UpdateFailed`,
+making all entities unavailable and taking the inverter out of eco mode.
+`_safe_power_shed_loads` has the same isolation.
+
 **Safe power priority chain** (in `_check_safe_power`):
 1. EV charger current step-down (one step per tick)
 2. Binary load shed (3=least important, shed first; 1=most important, shed last)

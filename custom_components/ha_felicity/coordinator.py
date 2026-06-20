@@ -1052,7 +1052,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         _LOGGER.info("EV Boost cancelled")
 
     async def _actuate_flex_loads(self) -> None:
-        """Turn flexible loads on/off based on current schedule slot."""
+        """Turn flexible loads on/off based on current schedule slot.
+
+        Each load is actuated independently — a failure on one load must
+        not prevent the others from being switched.  Exceptions from
+        individual service calls are already caught by _set_flex_load /
+        _set_ev_charger_current; the per-load try/except here guards
+        against unexpected errors in the control flow itself (e.g. bad
+        config parse, missing entity domain).
+        """
         loads = self._build_flex_load_configs()
         ev_boost = self.ev_boost_active
 
@@ -1060,15 +1068,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if ev_boost:
             for load_idx, load in enumerate(loads):
                 if load.is_ev_charger:
-                    if not self._flex_load_states.get(load_idx, False):
-                        await self._set_flex_load(load_idx, True, load)
-                    # Raise to max once per boost session — even when the
-                    # schedule already turned the charger on at default
-                    # current.  Not every tick, so safe-power step-downs
-                    # during the boost aren't immediately reverted.
-                    if not self._ev_boost_max_applied and load.current_steps:
-                        await self._set_ev_charger_current(load, max(load.current_steps))
-                        self._ev_boost_max_applied = True
+                    try:
+                        if not self._flex_load_states.get(load_idx, False):
+                            await self._set_flex_load(load_idx, True, load)
+                        if not self._ev_boost_max_applied and load.current_steps:
+                            await self._set_ev_charger_current(load, max(load.current_steps))
+                            self._ev_boost_max_applied = True
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.error("EV boost actuation failed for '%s': %s", load.name, err)
                     break
         else:
             self._ev_boost_max_applied = False
@@ -1076,33 +1083,39 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if not self._flex_load_scheduled and not ev_boost:
             for load_idx, is_on in list(self._flex_load_states.items()):
                 if is_on:
-                    await self._set_flex_load(load_idx, False)
+                    try:
+                        await self._set_flex_load(load_idx, False)
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.error("Failed to turn off flex load %d: %s", load_idx, err)
             return
 
         slot_idx = self._current_slot_index()
         if slot_idx is None:
-            # No slot context (e.g., prices vanished) — switch loads off
-            # rather than leaving them stuck on (EV stays on during boost).
             for load_idx, load in enumerate(loads):
                 if ev_boost and load.is_ev_charger:
                     continue
                 if self._flex_load_states.get(load_idx, False):
-                    await self._set_flex_load(load_idx, False, load)
+                    try:
+                        await self._set_flex_load(load_idx, False, load)
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.error("Failed to turn off flex load '%s': %s", load.name, err)
             return
 
         for load_idx, load in enumerate(loads):
-            # EV boost overrides schedule for the EV charger
             if ev_boost and load.is_ev_charger:
-                continue  # already handled above
+                continue
 
-            should_be_on = slot_idx in self._flex_load_scheduled.get(load_idx, {})
-            currently_on = self._flex_load_states.get(load_idx, False)
+            try:
+                should_be_on = slot_idx in self._flex_load_scheduled.get(load_idx, {})
+                currently_on = self._flex_load_states.get(load_idx, False)
 
-            if should_be_on != currently_on:
-                await self._set_flex_load(load_idx, should_be_on, load)
+                if should_be_on != currently_on:
+                    await self._set_flex_load(load_idx, should_be_on, load)
 
-            if should_be_on and load.is_ev_charger and not currently_on:
-                await self._set_ev_charger_current(load, load.default_current)
+                if should_be_on and load.is_ev_charger and not currently_on:
+                    await self._set_ev_charger_current(load, load.default_current)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("Flex load '%s' actuation failed: %s", load.name, err)
 
     async def _set_flex_load(self, load_idx: int, turn_on: bool,
                              load: "ems_module.FlexibleLoadConfig | None" = None) -> None:
@@ -1697,7 +1710,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("No grid current — keeping current level %d", base_level)
         elif max_current > max_amperage * 0.95:
             # Try shedding flexible loads first before reducing battery power
-            load_shed = await self._safe_power_shed_loads(max_current, max_amperage)
+            try:
+                load_shed = await self._safe_power_shed_loads(max_current, max_amperage)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("Load shedding failed (non-fatal): %s", err)
+                load_shed = False
             if not load_shed:
                 safe_level = max(1, base_level - 2)
                 _LOGGER.warning("High current %.1fA — reducing to level %d", max_current, safe_level)
@@ -2208,8 +2225,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.current_price = None
                 self.price_threshold = None
 
-            # Actuate flexible loads based on current schedule slot
-            await self._actuate_flex_loads()
+            # Actuate flexible loads based on current schedule slot.
+            # Wrapped in try/except so a flex-load failure (entity
+            # unavailable, service call error, bad config) never kills
+            # the main update cycle — the inverter must keep running its
+            # charge/discharge schedule regardless of accessory loads.
+            try:
+                await self._actuate_flex_loads()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("Flex load actuation failed (non-fatal): %s", err)
 
             return new_data
 
