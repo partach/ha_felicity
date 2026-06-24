@@ -223,27 +223,90 @@ def _solve(
         _LOGGER.warning("MILP non-optimal (%s) — falling back to greedy", status)
         return None
 
-    # Extract slot decisions for both days.  Threshold guards against
-    # solver numerical dust on the continuous variables.
-    today_scheduled: dict[int, str] = {}
-    tomorrow_scheduled: dict[int, str] = {}
+    # --- Extract slot decisions ------------------------------------------------
+    # The LP uses continuous variables, so it may spread energy thinly across
+    # many slots — each marginal kWh is technically profitable.  But the
+    # real inverter runs at full power per slot, so a "spread thin" plan
+    # can't execute as computed and produces an unrealistic interleaved
+    # charge/discharge pattern.
+    #
+    # Fix: use the LP's *ranking* (which slots got the most energy allocated)
+    # to decide which slots to activate, but cap the count using battery
+    # physics — how many full-power slots are needed to fill/drain the
+    # available SOC range.  This produces a concentrated plan the inverter
+    # can actually execute, while preserving the LP's cost-optimal ordering.
+    MIN_FRAC = 0.15  # ignore slots where LP allocated <15% of capacity
+
+    charge_candidates: list[tuple[int, dict, float]] = []   # (k, h, kWh)
+    discharge_candidates: list[tuple[int, dict, float]] = []
+
     for k, h in enumerate(horizon):
         cv = pulp.value(c[k]) or 0.0
         dv = pulp.value(d[k]) or 0.0
-        action = None
-        if cv > safe_kwh * 0.05:
-            action = "charge"
-        elif dv > safe_kwh * 0.05:
-            action = "discharge"
-        if action:
-            if h["day"] == "today":
-                today_scheduled[h["slot"]] = action
-            else:
-                tomorrow_scheduled[h["slot"]] = action
+        slot_charge_cap = h["charge_cap"] or safe_kwh
+        slot_discharge_cap = h["discharge_cap"] or safe_kwh
+        if cv > slot_charge_cap * MIN_FRAC:
+            charge_candidates.append((k, h, cv))
+        if dv > slot_discharge_cap * MIN_FRAC:
+            discharge_candidates.append((k, h, dv))
+
+    # Sort by LP-allocated energy descending — highest-conviction slots first.
+    charge_candidates.sort(key=lambda x: -x[2])
+    discharge_candidates.sort(key=lambda x: -x[2])
+
+    # Compute energy caps from battery physics.  The LP's continuous
+    # totals include marginal fractional allocations the inverter can't
+    # execute; capping by physical headroom prevents the slot-count
+    # explosion that turns every marginally-profitable slot into an action.
+    #
+    # Charge cap: how much grid energy can the battery absorb?
+    # (headroom from current SOC to max, divided by efficiency)
+    charge_headroom_kwh = max(0.0, soc_max - current_kwh) / max(eff, 0.5)
+    # Discharge cap: how much can we sell? (SOC above reserve)
+    discharge_headroom_kwh = max(0.0, current_kwh - reserve_target)
+
+    # In arbitrage, energy is cycled: charged first, then sold.  The
+    # discharge headroom grows as charging fills the battery.  Use the
+    # LP's final SOC to estimate the peak SOC the battery will reach.
+    peak_soc = current_kwh
+    for k, h in enumerate(horizon):
+        cv = pulp.value(c[k]) or 0.0
+        dv = pulp.value(d[k]) or 0.0
+        peak_soc = min(soc_max, peak_soc + horizon[k]["net"] + eff * cv - dv)
+    discharge_headroom_kwh = max(discharge_headroom_kwh,
+                                  max(0.0, peak_soc - reserve_target))
+
+    charge_target_kwh = charge_headroom_kwh
+    discharge_target_kwh = discharge_headroom_kwh
+
+    today_scheduled: dict[int, str] = {}
+    tomorrow_scheduled: dict[int, str] = {}
+
+    accum = 0.0
+    for k, h, kw in charge_candidates:
+        if accum >= charge_target_kwh:
+            break
+        slot_energy = h["charge_cap"] or safe_kwh
+        accum += slot_energy * eff  # effective stored energy at full power
+        if h["day"] == "today":
+            today_scheduled[h["slot"]] = "charge"
+        else:
+            tomorrow_scheduled[h["slot"]] = "charge"
+
+    accum = 0.0
+    for k, h, kw in discharge_candidates:
+        if accum >= discharge_target_kwh:
+            break
+        accum += safe_kwh
+        if h["day"] == "today":
+            today_scheduled[h["slot"]] = "discharge"
+        else:
+            tomorrow_scheduled[h["slot"]] = "discharge"
 
     _LOGGER.debug(
         "MILP solved: today %d slots (%d charge, %d discharge), "
-        "tomorrow %d slots (%d charge, %d discharge), horizon=%d",
+        "tomorrow %d slots (%d charge, %d discharge), horizon=%d, "
+        "energy targets: charge=%.1f kWh, discharge=%.1f kWh",
         len(today_scheduled),
         sum(1 for v in today_scheduled.values() if v == "charge"),
         sum(1 for v in today_scheduled.values() if v == "discharge"),
@@ -251,5 +314,7 @@ def _solve(
         sum(1 for v in tomorrow_scheduled.values() if v == "charge"),
         sum(1 for v in tomorrow_scheduled.values() if v == "discharge"),
         K,
+        charge_target_kwh,
+        discharge_target_kwh,
     )
     return today_scheduled, tomorrow_scheduled
