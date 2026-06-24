@@ -2032,15 +2032,49 @@ class TestComputeReserveTarget:
         target = _compute_reserve_target(config, reserve_kwh=10.0)
         assert target == 48.0  # 80% of 60
 
-    def test_fixed_floor_below_discharge_min(self):
-        """reserve_target_pct below discharge_min uses discharge_min instead."""
+    def test_fixed_floor_below_dynamic_raises_to_dynamic(self):
+        """A fixed reserve below the dynamic survival need is raised to it.
+
+        reserve_target_pct is a monotonic floor: it can only RAISE the target,
+        never lower it below the overnight-survival reserve (which itself is
+        >= the hardware discharge minimum).  Here 10% (6 kWh) is below both
+        discharge_min (40% = 24 kWh) and the dynamic reserve (24 + 5 = 29),
+        so the dynamic reserve wins.
+        """
         config = default_config(
             battery_capacity_kwh=60.0,
             battery_discharge_min_pct=40.0,
-            reserve_target_pct=10.0,  # 10% = 6 kWh, but min is 40% = 24 kWh
+            reserve_target_pct=10.0,  # 10% = 6 kWh — below survival need
         )
         target = _compute_reserve_target(config, reserve_kwh=5.0)
-        assert target == 24.0  # discharge_min wins
+        assert target == 29.0  # dynamic survival reserve wins (24 + 5)
+
+    def test_fixed_reserve_never_lowers_below_dynamic(self):
+        """Setting a reserve must never charge the battery LESS full.
+
+        Regression test for the counterintuitive bug: a fixed reserve below
+        the dynamic+boost value used to be returned verbatim, lowering the
+        target below what reserve_target_pct=0 would produce.  Now the fixed
+        value can only raise the target.
+        """
+        # self_consumption dynamic reserve = 12 + 16*1.25 = 32 kWh.
+        base = dict(
+            battery_capacity_kwh=60.0,
+            battery_discharge_min_pct=20.0,
+            optimization_priority="self_consumption",
+        )
+        dynamic = _compute_reserve_target(
+            default_config(reserve_target_pct=0.0, **base), reserve_kwh=16.0)
+        # A user setting 35% (= 21 kWh) — BELOW the 32 kWh dynamic reserve.
+        fixed_low = _compute_reserve_target(
+            default_config(reserve_target_pct=35.0, **base), reserve_kwh=16.0)
+        assert fixed_low >= dynamic, (
+            f"fixed reserve {fixed_low} lowered the target below dynamic {dynamic}"
+        )
+        # A user setting 80% (= 48 kWh) — ABOVE the dynamic reserve — raises it.
+        fixed_high = _compute_reserve_target(
+            default_config(reserve_target_pct=80.0, **base), reserve_kwh=16.0)
+        assert fixed_high == 48.0
 
     def test_fixed_floor_capped_at_capacity(self):
         """reserve_target_pct=100 returns battery capacity."""

@@ -258,15 +258,29 @@ def _compute_reserve_target(
     """
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
 
+    # Dynamic overnight-survival reserve: discharge floor + the energy needed
+    # to ride from sunset to sunrise.  self_consumption holds an extra 25% to
+    # favour PV self-use over grid exports.
+    multiplier = 1.25 if config.optimization_priority == "self_consumption" else 1.0
+    dynamic_reserve = min_kwh + reserve_kwh * multiplier
+
     if config.reserve_target_pct > 0:
         fixed_floor = (config.reserve_target_pct / 100.0) * config.battery_capacity_kwh
-        # Use the higher of fixed floor and discharge minimum
-        return min(config.battery_capacity_kwh, max(fixed_floor, min_kwh))
+        # A user-set reserve means "keep AT LEAST this much in the battery at
+        # all times."  It can only RAISE the target — never push it below the
+        # dynamic overnight-survival need (or the hardware discharge minimum,
+        # which dynamic_reserve already includes).  Taking the max makes the
+        # knob monotonic and intuitive: a higher setting always keeps the
+        # battery fuller and pulls more charging into TODAY (the deficit /
+        # midnight-constraint logic charges to reach the reserve).
+        #
+        # The previous code returned max(fixed_floor, min_kwh) and ignored
+        # dynamic_reserve entirely, so a fixed reserve below the dynamic value
+        # counter-intuitively LOWERED the target and charged the battery LESS
+        # full than reserve_target_pct=0 (pure dynamic) would have.
+        return min(config.battery_capacity_kwh, max(fixed_floor, dynamic_reserve))
 
-    # Self-consumption priority: hold extra reserve to favour PV self-use
-    # over grid exports.  Adds a 25% buffer on top of the overnight reserve.
-    multiplier = 1.25 if config.optimization_priority == "self_consumption" else 1.0
-    return min(config.battery_capacity_kwh, min_kwh + reserve_kwh * multiplier)
+    return min(config.battery_capacity_kwh, dynamic_reserve)
 
 
 def calculate_net_pv_surplus(
@@ -1065,15 +1079,17 @@ def select_unified_charge_slots(
             current_kwh + net_pv + today_charge - drain_to_midnight
         ))
 
-        # Mirror _compute_reserve_target: fixed floor and self_consumption
-        # boost apply to tomorrow's reserve just like today's.
+        # Mirror _compute_reserve_target: the dynamic overnight reserve (with
+        # the self_consumption boost) is the baseline; a fixed reserve can
+        # only RAISE it, never lower it below the survival need.
+        multiplier = 1.25 if optimization_priority == "self_consumption" else 1.0
+        dynamic_tmr = min_kwh + tomorrow_reserve * multiplier
         if reserve_target_pct > 0:
             fixed_floor = (reserve_target_pct / 100.0) * battery_capacity
-            tomorrow_reserve_target = min(battery_capacity, max(fixed_floor, min_kwh))
-        else:
-            multiplier = 1.25 if optimization_priority == "self_consumption" else 1.0
             tomorrow_reserve_target = min(
-                battery_capacity, min_kwh + tomorrow_reserve * multiplier)
+                battery_capacity, max(fixed_floor, dynamic_tmr))
+        else:
+            tomorrow_reserve_target = min(battery_capacity, dynamic_tmr)
         daytime_gap = max(0.0, consumption_est - tomorrow_pv)
         # PV surplus beyond consumption will charge the battery during the day,
         # reducing the need for grid charging overnight.

@@ -290,7 +290,7 @@ This prevents the SOC prediction from assuming unrealistic charge rates
 | inverter_max_power_kw | 10.0 | Total inverter power limit (model-specific) |
 | consumption_est_kwh | 10.0 | Daily consumption (or 7-day rolling avg) |
 | yesterday_deficit_kwh | 0.0 | Carried forward from previous day; reset on grid_mode change |
-| reserve_target_pct | 0.0 | 0=dynamic, >0=fixed floor % |
+| reserve_target_pct | 0.0 | 0=dynamic; >0=monotonic floor, max(fixed, dynamic) — only raises |
 | arbitrage_price_delta | 0.0 | Min buy→sell spread to trade in 'both' mode (>0 gates sells at buy+delta; 0 = automatic profitability check) |
 | battery_cycle_cost_eur_kwh | 0.0 | Wear cost; added to min sell price |
 | optimization_priority | "cost" | cost / longevity / self_consumption |
@@ -305,21 +305,42 @@ already-effective.  SOH is estimated from cumulative cycle throughput
 
 ### Core Concept: Reserve Target
 
-The algorithm does NOT try to fill the battery to 100%. It calculates a **reserve target** — just enough to survive overnight:
+The algorithm does NOT try to fill the battery to 100%. It calculates a **reserve target** — the minimum SOC to maintain at all times. By default that's "just enough to survive overnight"; the user can raise it with `reserve_target_pct`:
 
 ```
-Dynamic (reserve_target_pct = 0):
-  reserve_target = discharge_min_kwh + overnight_reserve
+dynamic_reserve = discharge_min_kwh + overnight_reserve × boost
   where overnight_reserve = consumption_per_hour × (24 - sunset + sunrise)
+        boost = 1.25 if optimization_priority == "self_consumption" else 1.0
+
+Dynamic (reserve_target_pct = 0):
+  reserve_target = dynamic_reserve
 
 Fixed (reserve_target_pct > 0):
-  reserve_target = max(reserve_target_pct × capacity, discharge_min_kwh)
+  reserve_target = max(reserve_target_pct × capacity, dynamic_reserve)
 ```
+
+**`reserve_target_pct` is a MONOTONIC FLOOR — it can only RAISE the target,
+never lower it.** This is the whole point of the setting: "keep AT LEAST this
+much in the battery at all times." A higher value keeps the battery fuller
+and pulls more charging into *today* (the deficit / midnight-constraint logic
+charges to reach the reserve).
+
+⚠️ **Fixed June 2026** (was a real, user-reported bug): the old formula was
+`max(reserve_target_pct × capacity, discharge_min_kwh)` — it ignored the
+dynamic overnight reserve and the self_consumption boost entirely. So a fixed
+reserve *below* the dynamic value would **lower** the target and charge the
+battery LESS full than `reserve_target_pct = 0` would. Setting "I want more
+reserve" produced "charge less full." Now `max(fixed, dynamic)` makes it
+monotonic. Lives in `_compute_reserve_target` (single source) → greedy and
+MILP both inherit it; the tomorrow-side reserve in `select_unified_charge_slots`
+and both JS-card mirrors apply the same `max(fixed, dynamic)` rule.
 
 Example: 60 kWh battery, 35% min, 38.5 kWh/d consumption, sunset 19:00, sunrise 7:00
 - min_kwh = 21 kWh
 - overnight = (38.5/24) × 12h = 19.25 kWh → rounds to ~19.3 kWh
-- reserve_target = 21 + 19.3 = 40.3 kWh (~67% of 60 kWh)
+- dynamic reserve_target = 21 + 19.3 = 40.3 kWh (~67% of 60 kWh)
+- A user setting reserve_target_pct=35% (21 kWh) does NOT lower it to 21 —
+  `max(21, 40.3) = 40.3 kWh` stands. Setting 80% (48 kWh) raises it to 48.
 
 **Reserve exposed even when scheduler is disabled**: `calculate_schedule`
 short-circuits when `grid_mode == "off"` (or no price data), but it still
@@ -773,7 +794,7 @@ info that used to live in the inverter card's grey bottom bar.
 | battery_capacity_kwh | number | 1-200 kWh | 10 | Usable battery capacity |
 | efficiency_factor | number | 0.70-1.00 | 0.90 | Round-trip efficiency |
 | daily_consumption_estimate | number | 0-120 kWh | 10 | Fallback consumption |
-| reserve_target_pct | number | 0-100% | 0 | Fixed reserve floor (0=dynamic) |
+| reserve_target_pct | number | 0-100% | 0 | Monotonic reserve floor — max(fixed, dynamic), only raises (0=dynamic) |
 | arbitrage_price_delta | number | 0-0.50 €/kWh | 0 | Min buy→sell spread to trade (0=auto profitability) |
 | battery_cycle_cost_eur_kwh | number | 0-0.50 €/kWh | 0 | Battery wear cost (profitability filter) |
 | optimization_priority | select | cost/longevity/self_consumption | cost | Multi-objective strategy |

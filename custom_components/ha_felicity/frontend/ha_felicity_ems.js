@@ -225,14 +225,17 @@ class FelicityEMSCard extends LitElement {
     const inverterMaxKw = sim.inverter_max_power_kw || 10;
     const yesterdayDeficit = this._getAttr("schedule_status", "yesterday_deficit_kwh") || 0;
 
-    // Mirrors ems._compute_reserve_target: fixed floor if reserveTargetPct > 0,
-    // otherwise dynamic (dischargeMin floor + overnight reserve).
+    // Mirrors ems._compute_reserve_target: a fixed reserve (reserveTargetPct
+    // > 0) can only RAISE the target above the dynamic overnight-survival
+    // reserve, never lower it below it.  (The 1.25× self_consumption boost on
+    // the dynamic value is a backend-only refinement, not mirrored here.)
     const computeReserveTarget = (minKwh, reserveKwh) => {
+      const dynamic = minKwh + reserveKwh;
       if (reserveTargetPct > 0) {
         const fixedFloor = (reserveTargetPct / 100) * batteryCapacity;
-        return Math.min(batteryCapacity, Math.max(fixedFloor, minKwh));
+        return Math.min(batteryCapacity, Math.max(fixedFloor, dynamic));
       }
-      return Math.min(batteryCapacity, minKwh + reserveKwh);
+      return Math.min(batteryCapacity, dynamic);
     };
 
     const numSlots = slotData.length;
@@ -1216,14 +1219,17 @@ class FelicityEMSCard extends LitElement {
     const consumption = sim.consumption_est_kwh || 10;
     const inverterMaxKw = sim.inverter_max_power_kw || 10;
 
-    // Mirrors ems._compute_reserve_target: fixed floor if reserveTargetPct > 0,
-    // otherwise dynamic (dischargeMin floor + overnight reserve).
+    // Mirrors ems._compute_reserve_target: a fixed reserve (reserveTargetPct
+    // > 0) can only RAISE the target above the dynamic overnight-survival
+    // reserve, never lower it below it.  (The 1.25× self_consumption boost on
+    // the dynamic value is a backend-only refinement, not mirrored here.)
     const computeReserveTarget = (minKwhArg, reserveKwhArg) => {
+      const dynamic = minKwhArg + reserveKwhArg;
       if (reserveTargetPct > 0) {
         const fixedFloor = (reserveTargetPct / 100) * batteryCapacity;
-        return Math.min(batteryCapacity, Math.max(fixedFloor, minKwhArg));
+        return Math.min(batteryCapacity, Math.max(fixedFloor, dynamic));
       }
-      return Math.min(batteryCapacity, minKwhArg + reserveKwhArg);
+      return Math.min(batteryCapacity, dynamic);
     };
 
     const numSlots = slotData.length;
