@@ -4,6 +4,47 @@ This document is a mental model for understanding, debugging, and improving the 
 
 ---
 
+## ⚠️ READ THIS FIRST — Every Session, Before Any Work
+
+**At the start of every session, read this entire CLAUDE.md before making
+any change, answering any question, or proposing any fix.** This document
+is the source of truth for the project's architecture, the algorithm, every
+configuration setting, and the current implementation status. Do not rely on
+memory or assumptions from training — the facts and status are HERE. If
+something you intend to do contradicts this document, stop and reconcile it
+first.
+
+### The One Rule That Keeps Breaking — Single Point of Truth
+
+**`ems.py` is the SINGLE SOURCE OF TRUTH for all scheduling logic. It must
+REMAIN so.** This has been re-established three separate times because the
+code kept drifting back to duplicated logic. Do not reintroduce drift.
+
+- All scheduling/optimization logic lives in `ems.py` (`calculate_schedule`).
+- `coordinator.py` ONLY constructs `EMSConfig` + `EMSState` and calls
+  `ems.calculate_schedule()` (in an executor thread). It must NOT contain
+  a second copy of any scheduling decision.
+- `milp.py` is an alternative *slot selector* invoked by `ems.py`; the
+  shared post-processing (SOC trajectory, tomorrow schedule, flex-load
+  overlay, urgent recovery) stays in `ems.py` for both engines.
+- The frontend JS card is a *preview only* — it uses backend-provided
+  `slot_schedule` / `backend_soc_trajectory` whenever no slider override is
+  active. It is never authoritative.
+
+**When you change the algorithm: change `ems.py` only.** Add/adjust tests in
+`tests/test_ems.py`. The coordinator and frontend inherit the change. If you
+ever feel tempted to "just tweak it in the coordinator," that is the drift
+this rule exists to prevent — don't.
+
+### Before Concluding Any Work
+
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 228).
+- If you added a setting, update the **Settings Traceability Matrix** below
+  and confirm it is consumed by the algorithm (no "optimized-out" settings).
+- Keep this document in sync with the code. If status changed, update it.
+
+---
+
 ## Project Overview
 
 **ha_felicity** is a Home Assistant integration for Felicity solar inverters (TREX-5, TREX-10, TREX-25, TREX-50). It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
