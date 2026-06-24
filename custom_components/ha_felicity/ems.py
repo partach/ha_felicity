@@ -1843,8 +1843,23 @@ def _schedule_from_grid(
     result.reserve_target_pct = round(
         (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
     ) if config.battery_capacity_kwh > 0 else 0.0
+    max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
 
-    battery_shortfall = max(0.0, reserve_target - current_kwh)
+    # Self-consumption: the user wants the battery as HIGH as possible for
+    # maximum self-use, not just enough to survive the night.  Target the
+    # max SOC instead of the overnight reserve.  Cheapest-slot selection and
+    # PV-aware headroom still limit grid charging to the few cheapest slots
+    # of the day and avoid charging what PV will supply — so this fills from
+    # the cheapest slots toward full rather than charging indiscriminately.
+    # Without this, a battery already above the modest overnight reserve
+    # (e.g. 37% > 35% target) shows "reserve met — no charging" and dwells
+    # in the middle, defeating the point of self-sufficiency.
+    if config.optimization_priority == "self_consumption":
+        charge_target = max_battery_kwh
+    else:
+        charge_target = reserve_target
+
+    battery_shortfall = max(0.0, charge_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)
 
     # Predictive: simulate SOC trajectory to catch future shortfalls
@@ -1861,13 +1876,12 @@ def _schedule_from_grid(
         config.battery_capacity_kwh,
         consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
-    predictive_deficit = max(0.0, reserve_target - min_projected)
+    predictive_deficit = max(0.0, charge_target - min_projected)
 
     # When solar will fill the battery to (near) capacity, grid charging
     # cannot add more useful energy — the battery will be full regardless.
     # Any evening drain below reserve_target is unavoidable and cannot be
     # prevented by charging earlier.
-    max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
     if max_projected >= max_battery_kwh * 0.95:
         predictive_deficit = 0.0
 
@@ -1932,6 +1946,17 @@ def _schedule_from_grid(
             result.schedule_reason = (
                 f"Solar fills battery to {solar_pct:.0f}%"
                 " — no grid charging needed"
+            )
+        elif config.optimization_priority == "self_consumption":
+            # Self-consumption targets max SOC, so "no charge" here means
+            # the battery is already (near) full or cheap slots can't add
+            # more without overflow.
+            soc_pct = (
+                current_kwh / config.battery_capacity_kwh * 100
+                if config.battery_capacity_kwh > 0 else 0
+            )
+            result.schedule_reason = (
+                f"Battery near full ({soc_pct:.0f}%) — no more charging needed"
             )
         else:
             result.schedule_reason = "Battery reserve is met — no charging needed"

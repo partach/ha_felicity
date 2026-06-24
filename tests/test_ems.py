@@ -5534,3 +5534,91 @@ class TestSelfSufficiencyTodayFirst:
             f"(battery=40%, reserve needs overnight coverage)"
         )
 
+
+class TestSelfConsumptionFillsBattery:
+    """Self-consumption must charge toward MAX SOC, not stop at the modest
+    overnight reserve.
+
+    Real-world bug: a 60 kWh battery at 37% with a 35% overnight reserve
+    target showed 'Battery reserve is met — no charging needed' and dwelled
+    in the middle, defeating the point of self-sufficiency.  The user wants
+    the battery as high as possible.
+    """
+
+    @staticmethod
+    def _scenario(optimization_priority, battery_soc_pct=55.0,
+                  scheduler_engine="greedy"):
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60,
+            battery_discharge_min_pct=30,
+            battery_charge_max_pct=100,
+            safe_power_kw=15,
+            inverter_max_power_kw=15,
+            consumption_est_kwh=10,   # low overnight need → low reserve target
+            efficiency=0.90,
+            optimization_priority=optimization_priority,
+            scheduler_engine=scheduler_engine,
+        )
+        # All slots cheap-ish; no PV (winter day like the screenshot).
+        # SOC 55% is comfortably above the ~38% (cost) / ~40% (self) reserve,
+        # so cost mode is satisfied while self_consumption still fills up.
+        state = dict(
+            slot_prices_today=[0.06, 0.05, 0.07, 0.08, 0.10, 0.12,
+                               0.14, 0.16, 0.18, 0.20, 0.22, 0.24],
+            battery_soc_pct=battery_soc_pct,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        return base, state
+
+    def test_self_consumption_charges_above_reserve(self):
+        """Battery at 55% (well above the overnight reserve) must still
+        charge toward max under self-consumption."""
+        base, state = self._scenario("self_consumption")
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        charges = {i for i, a in result.scheduled_slots.items() if a == "charge"}
+        assert len(charges) > 0, (
+            f"Self-consumption did not charge despite battery at 55% "
+            f"(reserve_target={result.reserve_target_pct}%): "
+            f"reason={result.schedule_reason!r}"
+        )
+        # Should pick the cheapest slots (1=0.05, 0=0.06) first.
+        assert 1 in charges, f"cheapest slot not selected: {charges}"
+
+    def test_cost_mode_stops_at_reserve(self):
+        """Cost mode (default) at 55% with reserve met does NOT charge —
+        confirms the behaviour change is scoped to self_consumption."""
+        base, state = self._scenario("cost")
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        charges = {i for i, a in result.scheduled_slots.items() if a == "charge"}
+        # Cost mode with reserve met should not grid-charge.
+        assert len(charges) == 0, (
+            f"Cost mode charged unexpectedly (reserve should be met): {charges} "
+            f"(reserve_target={result.reserve_target_pct}%)"
+        )
+
+    def test_self_consumption_more_than_cost(self):
+        """Self-consumption charges strictly more than cost mode at the same
+        SOC above reserve."""
+        base_sc, state_sc = self._scenario("self_consumption")
+        base_c, state_c = self._scenario("cost")
+        r_sc = calculate_schedule(EMSConfig(**base_sc), EMSState(**state_sc))
+        r_c = calculate_schedule(EMSConfig(**base_c), EMSState(**state_c))
+        n_sc = len([a for a in r_sc.scheduled_slots.values() if a == "charge"])
+        n_c = len([a for a in r_c.scheduled_slots.values() if a == "charge"])
+        assert n_sc > n_c, (
+            f"Self-consumption ({n_sc}) should charge more than cost ({n_c})"
+        )
+
+    def test_self_consumption_near_full_no_charge(self):
+        """When already near full, self-consumption stops (no overflow)."""
+        base, state = self._scenario("self_consumption", battery_soc_pct=98.0)
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        charges = {i for i, a in result.scheduled_slots.items() if a == "charge"}
+        assert len(charges) == 0, (
+            f"Near-full battery should not charge: {charges}"
+        )
+

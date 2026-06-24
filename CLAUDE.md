@@ -968,9 +968,25 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
 - `cost` (default): legacy behaviour, minimise grid spend.
 - `longevity`: enforces a 0.05 €/kWh cycle-cost floor (regardless of
   the explicit `battery_cycle_cost_eur_kwh` setting).
-- `self_consumption`: multiplies the dynamic overnight reserve by
-  1.25× to keep more PV-stored energy in the battery for self-use
-  (less grid-export of solar).
+- `self_consumption`: **targets MAX SOC, not the overnight reserve.**
+  The charge target in `_schedule_from_grid` / `_schedule_both` becomes
+  `battery_charge_max_pct × capacity` instead of `reserve_target`, so the
+  battery is filled as high as possible for maximum self-use.  Cheapest-slot
+  selection + PV-aware headroom still limit grid charging to the few cheapest
+  slots of the day and skip what PV will supply — so it fills from the
+  cheapest slots toward full rather than charging indiscriminately.  Also
+  multiplies the *reserve* (the floor) by 1.25×.  The MILP achieves the same
+  via a boosted terminal value (P90 price × efficiency).  Without this, a
+  battery already above the modest overnight reserve (e.g. 37% > 35% target)
+  showed "reserve met — no charging" and dwelled in the middle, defeating
+  self-sufficiency.  `TestSelfConsumptionFillsBattery` pins this.
+
+  Note on the reserve floor itself: the reserve target is only an
+  *overnight-survival floor*, not the charging ceiling.  Daytime/evening
+  consumption is handled by the **predictive SOC trajectory**
+  (`_project_soc_trajectory`), which charges (in any priority) when
+  consumption would drain SOC below the floor before tomorrow's sunrise.
+  The reserve target ≠ "the level it charges to."
 
 **Override SOC validation (#9)**: after merging `slot_overrides` into
 `scheduled_slots`, the coordinator re-runs `_validate_schedule_soc`.
