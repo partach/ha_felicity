@@ -1470,7 +1470,8 @@ def _run_milp_or_none(
             from . import milp  # type: ignore  # noqa: PLC0415
         except ImportError:
             import milp  # type: ignore  # noqa: PLC0415
-    except Exception:  # pragma: no cover - import guard
+    except Exception as err:  # pragma: no cover - import guard
+        _LOGGER.warning("MILP module unavailable — falling back to greedy: %s", err)
         return None
 
     reserve_kwh = calculate_self_consumption_reserve(

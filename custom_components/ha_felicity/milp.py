@@ -68,8 +68,11 @@ def solve_schedule(
     """
     try:
         import pulp  # noqa: PLC0415 — lazy import so ems.py works without pulp
-    except Exception:  # pragma: no cover - import guard
-        _LOGGER.debug("pulp not available — MILP scheduler disabled")
+    except Exception as err:  # pragma: no cover - import guard
+        _LOGGER.warning(
+            "pulp not installed or broken — MILP disabled, using greedy. "
+            "Install with: pip install pulp>=2.7.0  Error: %s", err,
+        )
         return None
 
     try:
@@ -84,7 +87,7 @@ def solve_schedule(
             pv_confidence=pv_confidence,
         )
     except Exception:  # pragma: no cover - solver guard
-        _LOGGER.exception("MILP solve failed — falling back to greedy")
+        _LOGGER.warning("MILP solve failed — falling back to greedy", exc_info=True)
         return None
 
 
