@@ -5221,24 +5221,47 @@ class TestMILPvsGreedy:
         return cfg_milp, r_milp, cfg_greedy, r_greedy
 
     @staticmethod
-    def _assert_milp_not_worse(base_kwargs, state_kwargs):
+    def _assert_milp_sane(base_kwargs, state_kwargs, max_slot_ratio=1.5,
+                          check_cost=True):
+        """Run both engines and assert MILP schedule is sane.
+
+        Checks:
+        1. Cost dominance: MILP cost <= greedy + eps (opt-in, since the
+           LP→full-power extraction can lose optimality on large batteries).
+        2. Slot count sanity: MILP doesn't produce wildly more active slots
+           than greedy (catches the spread-thin / interleaving bug).
+        """
         cfg_m, r_m, cfg_g, r_g = TestMILPvsGreedy._run(base_kwargs, state_kwargs)
         state = EMSState(**state_kwargs)
         cost_m = _grid_cost_of_schedule(
             cfg_m, state, r_m.scheduled_slots, r_m.tomorrow_scheduled_slots)
         cost_g = _grid_cost_of_schedule(
             cfg_g, state, r_g.scheduled_slots, r_g.tomorrow_scheduled_slots)
-        # One-slot discretization tolerance at the horizon's max price.
-        num_slots = len(state.slot_prices_today)
-        slot_hours = (24 * 60 / num_slots) / 60.0
-        all_prices = [p for p in state.slot_prices_today if p is not None]
-        if state.slot_prices_tomorrow:
-            all_prices += [p for p in state.slot_prices_tomorrow if p is not None]
-        eps = 1.5 * max(all_prices) * cfg_m.safe_power_kw * slot_hours
-        assert cost_m <= cost_g + eps, (
-            f"MILP cost {cost_m:.3f} should not exceed greedy {cost_g:.3f} "
-            f"(eps={eps:.3f})"
-        )
+
+        if check_cost:
+            num_slots = len(state.slot_prices_today)
+            slot_hours = (24 * 60 / num_slots) / 60.0
+            all_prices = [p for p in state.slot_prices_today if p is not None]
+            if state.slot_prices_tomorrow:
+                all_prices += [p for p in state.slot_prices_tomorrow if p is not None]
+            eps = 1.5 * max(all_prices) * cfg_m.safe_power_kw * slot_hours
+            assert cost_m <= cost_g + eps, (
+                f"MILP cost {cost_m:.3f} should not exceed greedy {cost_g:.3f} "
+                f"(eps={eps:.3f})"
+            )
+
+        # Slot count sanity: the MILP should not produce wildly more active
+        # slots than greedy.  A continuous LP that spreads energy thinly
+        # across almost every slot produces an unexecutable plan (the
+        # inverter can't interleave charge/discharge rapidly).
+        greedy_total = len(r_g.scheduled_slots)
+        milp_total = len(r_m.scheduled_slots)
+        if greedy_total > 0:
+            assert milp_total <= max(greedy_total * max_slot_ratio, greedy_total + 4), (
+                f"MILP produced {milp_total} active slots vs greedy's {greedy_total} "
+                f"— likely LP spread-thin bug (ratio {milp_total/greedy_total:.1f}x)"
+            )
+
         return cost_m, cost_g
 
     def test_from_grid_no_pv_matches_cheapest(self):
@@ -5270,7 +5293,7 @@ class TestMILPvsGreedy:
             current_minute=0,
         )
         cfg_m, r_m, cfg_g, r_g = self._run(base, st)
-        self._assert_milp_not_worse(base, st)
+        self._assert_milp_sane(base, st)
         # Both should charge from the cheap end of the day (slots 0,1,5...).
         charges_m = {i for i, a in r_m.scheduled_slots.items() if a == "charge"}
         charges_g = {i for i, a in r_g.scheduled_slots.items() if a == "charge"}
@@ -5300,7 +5323,7 @@ class TestMILPvsGreedy:
             current_hour=0,
             current_minute=0,
         )
-        self._assert_milp_not_worse(base, st)
+        self._assert_milp_sane(base, st)
 
     def test_cross_day_cheaper_tomorrow_milp_not_worse(self):
         """Cross-day: tomorrow cheaper but today has expensive sell slots.
@@ -5325,7 +5348,7 @@ class TestMILPvsGreedy:
             current_hour=0,
             current_minute=0,
         )
-        self._assert_milp_not_worse(base, st)
+        self._assert_milp_sane(base, st)
 
     def test_cloudy_with_pv_milp_not_worse(self):
         """from_grid with partial PV: MILP cost <= greedy cost."""
@@ -5350,5 +5373,63 @@ class TestMILPvsGreedy:
             current_hour=0,
             current_minute=0,
         )
-        self._assert_milp_not_worse(base, st)
+        self._assert_milp_sane(base, st)
+
+    def test_large_battery_both_no_interleaving(self):
+        """Large battery (200 kWh) in both mode: MILP should NOT produce
+        interleaved charge/discharge across nearly every slot.
+
+        This is the exact scenario that triggered the spread-thin bug —
+        the LP spread fractional energy across 46/48 slots because each
+        marginal kWh was technically profitable.  The slot-count and
+        alternation checks catch this regression."""
+        # 48 half-hour slots: cheap morning, solar dip, expensive evening
+        prices = (
+            [0.05] * 8 + [0.04] * 4 + [0.06] * 4   # 0-8h: cheap
+            + [0.12] * 4 + [0.10] * 4                # 8-10h: mid
+            + [0.07] * 4 + [0.06] * 4                # 10-14h: solar dip
+            + [0.09] * 4 + [0.15] * 4                # 14-18h: rising
+            + [0.35] * 4 + [0.40] * 4 + [0.30] * 4   # 18-24h: peak
+        )
+        base = dict(
+            grid_mode="both",
+            battery_capacity_kwh=200,
+            battery_discharge_min_pct=30,
+            battery_charge_max_pct=100,
+            safe_power_kw=15,
+            inverter_max_power_kw=25,
+            consumption_est_kwh=20,
+            efficiency=0.90,
+        )
+        st = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=30.0,
+            pv_hourly_kwh={10: 3, 11: 5, 12: 6, 13: 5, 14: 3},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        cfg_m, r_m, cfg_g, r_g = self._run(base, st)
+        # Skip cost dominance on large batteries — the LP→full-power
+        # extraction necessarily loses some LP optimality, and greedy
+        # sometimes wins by cost.  The MILP's value is robustness against
+        # cross-slot bugs, not guaranteed cost superiority after rounding.
+        self._assert_milp_sane(base, st, check_cost=False)
+
+        # Structural: charges should cluster in cheap hours, sells in
+        # expensive hours — no rapid alternation.
+        milp_slots = r_m.scheduled_slots
+        alternations = 0
+        prev_action = None
+        for i in sorted(milp_slots.keys()):
+            if prev_action and milp_slots[i] != prev_action:
+                alternations += 1
+            prev_action = milp_slots[i]
+        # A well-structured plan has few transitions (charge block →
+        # discharge block → maybe another charge block).  The old bug
+        # produced 10+ alternations.
+        assert alternations <= 6, (
+            f"MILP has {alternations} charge<>discharge alternations — "
+            f"likely interleaving bug"
+        )
 
