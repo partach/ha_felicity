@@ -1209,6 +1209,46 @@ def select_unified_charge_slots(
                 len(replacements),
             )
 
+    # --- Self-consumption top-off (cost-aware) ---
+    # Fill the battery toward max SOC for self-use, but ONLY from slots
+    # cheap enough that round-trip losses still pay off: charge at price P
+    # only when P <= efficiency^2 * reference_price, where reference_price
+    # is the mean of the remaining non-negative prices (an estimate of what
+    # the stored energy will displace later).  This tops off using the
+    # cheapest slots of the day and NEVER charges at expensive prices — an
+    # EMS minimises cost above all.  On a flat/expensive day no slot clears
+    # the bar, so it charges nothing extra (the battery rides on the reserve
+    # the survival deficit already secured).  Tomorrow's fill is handled by
+    # the tomorrow-schedule pass and re-planned each day.
+    if optimization_priority == "self_consumption":
+        round_trip = efficiency * efficiency
+        ref_prices = [s[0] for s in (today_pool + tomorrow_pool) if s[0] >= 0]
+        if ref_prices and effective_per_slot > 0:
+            ceiling = round_trip * (sum(ref_prices) / len(ref_prices))
+            committed = sum(_slot_charge_energy(s) for s in today_selected)
+            room = max(0.0, headroom - committed)
+            selected_today_idx = {s[2] for s in today_selected}
+            cheap_unused = sorted(
+                [s for s in today_pool
+                 if 0 <= s[0] <= ceiling and s[2] not in selected_today_idx],
+                key=lambda x: x[0],
+            )
+            added_kwh = 0.0
+            for s in cheap_unused:
+                if added_kwh >= room - 1e-9:
+                    break
+                e = _slot_charge_energy(s)
+                if e <= 1e-9:
+                    continue
+                today_selected.append(s)
+                added_kwh += e
+            if added_kwh > 0:
+                _LOGGER.info(
+                    "Self-consumption top-off: +%.1f kWh from cheap slots "
+                    "(<= %.4f/kWh) toward max SOC (room=%.1f kWh)",
+                    added_kwh, ceiling, room,
+                )
+
     # --- Bridge to tomorrow: intentionally no today↔tomorrow swap ---
     # The inverter stops providing house power once SOC hits min_kwh and
     # passes the house through to grid, so the battery cannot drain below
@@ -1843,6 +1883,7 @@ def _schedule_from_grid(
     result.reserve_target_pct = round(
         (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
     ) if config.battery_capacity_kwh > 0 else 0.0
+    max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
 
     battery_shortfall = max(0.0, reserve_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)
@@ -1867,7 +1908,6 @@ def _schedule_from_grid(
     # cannot add more useful energy — the battery will be full regardless.
     # Any evening drain below reserve_target is unavoidable and cannot be
     # prevented by charging earlier.
-    max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
     if max_projected >= max_battery_kwh * 0.95:
         predictive_deficit = 0.0
 
@@ -1932,6 +1972,17 @@ def _schedule_from_grid(
             result.schedule_reason = (
                 f"Solar fills battery to {solar_pct:.0f}%"
                 " — no grid charging needed"
+            )
+        elif config.optimization_priority == "self_consumption":
+            # Self-consumption targets max SOC, so "no charge" here means
+            # the battery is already (near) full or cheap slots can't add
+            # more without overflow.
+            soc_pct = (
+                current_kwh / config.battery_capacity_kwh * 100
+                if config.battery_capacity_kwh > 0 else 0
+            )
+            result.schedule_reason = (
+                f"Battery near full ({soc_pct:.0f}%) — no more charging needed"
             )
         else:
             result.schedule_reason = "Battery reserve is met — no charging needed"

@@ -335,6 +335,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 slot_idx = self._current_slot_index()
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
                     slot_action = self.scheduled_slots[slot_idx]
+                    # Is this slot a manual override?  Users explicitly
+                    # clicking a slot want it to execute NOW — deferral and
+                    # cheaper-slot logic must not suppress a manual choice.
+                    today_overrides = self.slot_overrides.get("today", {})
+                    is_override = str(slot_idx) in today_overrides or slot_idx in today_overrides
                     if slot_action == "charge" and battery_soc < charge_max:
                         # Defer charging when a cheaper charge slot is
                         # scheduled later.  The 10-second re-evaluation
@@ -347,11 +352,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         #    (battery needs charging now, regardless of price)
                         #  - require a meaningful price gap (>= 1¢/kWh)
                         #    so tiny differences don't keep deferring forever
+                        #  - never defer a manual override (user intent wins)
                         current_price = self.slot_prices_today[slot_idx]
                         below_reserve = battery_soc <= self._reserve_target_pct
                         if (current_price is not None
                                 and current_price >= 0
-                                and not below_reserve):
+                                and not below_reserve
+                                and not is_override):
                             future_charge_prices = [
                                 self.slot_prices_today[idx]
                                 for idx, action in self.scheduled_slots.items()
@@ -836,6 +843,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.tomorrow_planned_kwh = result.tomorrow_planned_kwh
         self.schedule_status = result.status
         self.schedule_reason = result.schedule_reason
+        # Reflect manual overrides in the status/reason.  result.status was
+        # computed by ems.py before overrides were merged, so it can read
+        # "no_action_needed" while overrides actually drive a charge/discharge
+        # this slot.  Correct it so the card chip isn't misleading.
+        current_slot_now = self._current_slot_index()
+        if (self.slot_overrides.get("today")
+                and current_slot_now is not None
+                and current_slot_now in self.scheduled_slots):
+            action_now = self.scheduled_slots[current_slot_now]
+            self.schedule_status = "active"
+            self.schedule_reason = (
+                f"Manual override: {action_now} this slot"
+            )
         self.scheduler_active = result.scheduler_active
         self._backend_soc_trajectory = result.soc_trajectory
         self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots

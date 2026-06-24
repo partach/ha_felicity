@@ -4,6 +4,47 @@ This document is a mental model for understanding, debugging, and improving the 
 
 ---
 
+## ⚠️ READ THIS FIRST — Every Session, Before Any Work
+
+**At the start of every session, read this entire CLAUDE.md before making
+any change, answering any question, or proposing any fix.** This document
+is the source of truth for the project's architecture, the algorithm, every
+configuration setting, and the current implementation status. Do not rely on
+memory or assumptions from training — the facts and status are HERE. If
+something you intend to do contradicts this document, stop and reconcile it
+first.
+
+### The One Rule That Keeps Breaking — Single Point of Truth
+
+**`ems.py` is the SINGLE SOURCE OF TRUTH for all scheduling logic. It must
+REMAIN so.** This has been re-established three separate times because the
+code kept drifting back to duplicated logic. Do not reintroduce drift.
+
+- All scheduling/optimization logic lives in `ems.py` (`calculate_schedule`).
+- `coordinator.py` ONLY constructs `EMSConfig` + `EMSState` and calls
+  `ems.calculate_schedule()` (in an executor thread). It must NOT contain
+  a second copy of any scheduling decision.
+- `milp.py` is an alternative *slot selector* invoked by `ems.py`; the
+  shared post-processing (SOC trajectory, tomorrow schedule, flex-load
+  overlay, urgent recovery) stays in `ems.py` for both engines.
+- The frontend JS card is a *preview only* — it uses backend-provided
+  `slot_schedule` / `backend_soc_trajectory` whenever no slider override is
+  active. It is never authoritative.
+
+**When you change the algorithm: change `ems.py` only.** Add/adjust tests in
+`tests/test_ems.py`. The coordinator and frontend inherit the change. If you
+ever feel tempted to "just tweak it in the coordinator," that is the drift
+this rule exists to prevent — don't.
+
+### Before Concluding Any Work
+
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 228).
+- If you added a setting, update the **Settings Traceability Matrix** below
+  and confirm it is consumed by the algorithm (no "optimized-out" settings).
+- Keep this document in sync with the code. If status changed, update it.
+
+---
+
 ## Project Overview
 
 **ha_felicity** is a Home Assistant integration for Felicity solar inverters (TREX-5, TREX-10, TREX-25, TREX-50). It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
@@ -38,27 +79,37 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 130 tests for the pure EMS algorithm
+└── test_ems.py              # 228 tests for the pure EMS algorithm
 ```
 
 ---
 
-## Critical Architecture: Three Copies of Scheduling Logic
+## Architecture: Single Source of Truth
 
-**This is the most important thing to understand.** The scheduling algorithm exists in THREE places:
+**`ems.py` is the single source of truth for all scheduling logic.**
 
-| Location | Purpose | Authoritative? |
+| Location | Role | Authoritative? |
 |---|---|---|
-| `ems.py` — `calculate_schedule()` | Pure functions, no HA deps | Used by tests only |
-| `coordinator.py` — `_calculate_schedule()` | Runtime scheduling | **YES — this runs in production** |
-| `frontend/ha_felicity_ems.js` — `_simulateSchedule()` | Client-side preview | Visual only, simplified |
+| `ems.py` — `calculate_schedule()` | Pure scheduling algorithm, both greedy and MILP dispatch | **YES — the algorithm** |
+| `coordinator.py` — `_calculate_schedule()` | Constructs `EMSConfig` + `EMSState`, delegates to `ems.calculate_schedule()` via executor thread | Wrapper only |
+| `milp.py` — `solve_schedule()` | Alternative LP optimizer, called by `ems._run_milp_or_none()` | Slot selection only |
+| `frontend/ha_felicity_ems.js` — `_simulateSchedule()` | Client-side preview for slider interaction | Visual fallback only |
 
-**Known problem**: The coordinator duplicates logic from ems.py rather than calling it. They can (and do) diverge. The recent solar protection bug was caused by ems.py having a fix that coordinator.py was missing. When making algorithm changes:
-1. Always update `ems.py` first (testable)
-2. Mirror the change in `coordinator.py` (production)
-3. Consider updating the JS card if the change affects the preview
+**How it works**: The coordinator builds `EMSConfig` (from `config_entry.options`)
+and `EMSState` (from runtime data), then calls `ems.calculate_schedule(config, state)`
+in an executor thread (PuLP writes blocking `.mps` files).  The coordinator NEVER
+duplicates scheduling logic — it only handles inverter control, state transitions,
+and safe power management.
 
-**Ideal refactor**: Have the coordinator call `ems.calculate_schedule()` directly instead of duplicating the logic. This would eliminate drift between the two implementations.
+**When making algorithm changes**: modify `ems.py` only.  The coordinator and
+frontend inherit the change automatically.  The JS card uses backend-provided
+`slot_schedule` and `backend_soc_trajectory` when no slider overrides are active;
+client-side simulation only runs during live slider preview.
+
+**History**: the coordinator previously duplicated ~340 lines of scheduling logic
+from ems.py.  That duplication was eliminated.  The coordinator still calls two
+ems.py private functions (`_validate_schedule_soc`, `_calculate_pv_confidence`)
+for override re-validation — this is coupling but not logic drift.
 
 ---
 
@@ -89,7 +140,12 @@ MILP failures never break the EMS.
 - Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`;
   `soc[midnight] ≥ reserve_target` (prevents cross-day deferral).
 - Objective: minimise `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal_value·soc[end]`.
-  Terminal value boosted for `self_consumption` (P90 price × efficiency).
+  Terminal value = `avg_price × efficiency`.  No per-priority boost — pushing
+  terminal value higher (e.g. P90) would charge at uneconomic prices.
+  Self-consumption differentiates via the reserve floor (1.25×), not the
+  terminal value.  The base `avg × eff` already makes the solver charge
+  any slot priced below `avg × eff²` (round-trip profitable), matching
+  the greedy self-consumption top-off gate.
 - Grid mode gates charge/discharge; `block_export_on_negative_price` and
   `arbitrage_price_delta` become per-slot price gates.
 - Round-trip efficiency loss makes charging+discharging the same slot
@@ -751,6 +807,202 @@ entities that benefit from scrubbing.
 | pv_forecast_today/remaining/tomorrow | Solar forecasts |
 | weekly_avg_consumption | 7-day rolling average |
 
+### Settings Traceability Matrix (Audit: June 2026)
+
+Every configuration setting must flow through the system.  This matrix
+traces each setting from `config_entry.options` through to its consumers.
+**Status: ALL settings verified active — none orphaned or "optimized out".**
+
+#### Settings → EMSConfig (scheduling algorithm in ems.py)
+
+| Option key | EMSConfig field | Greedy | MILP | Notes |
+|---|---|---|---|---|
+| `grid_mode` | `grid_mode` | ✅ | ✅ | Gates charge/discharge in both engines |
+| `battery_capacity_kwh` | `battery_capacity_kwh` | ✅ | ✅ | SOH-scaled by coordinator before construction |
+| `battery_charge_max_level` | `battery_charge_max_pct` | ✅ | ✅ | Upper SOC bound |
+| `battery_discharge_min_level` | `battery_discharge_min_pct` | ✅ | ✅ | Lower SOC bound / hardware floor |
+| `efficiency_factor` | `efficiency` | ✅ | ✅ | Round-trip = efficiency² |
+| `power_level` | `safe_power_kw` | ✅ | ✅ | Charge/discharge power per slot |
+| `daily_consumption_estimate` | `consumption_est_kwh` | ✅ | ✅ | Fallback when no profile available |
+| `reserve_target_pct` | `reserve_target_pct` | ✅ | ✅ via arg | Pre-computed into reserve_target kWh for MILP |
+| `arbitrage_price_delta` | `arbitrage_price_delta` | ✅ | ✅ | Per-slot price gates in both engines |
+| `battery_cycle_cost_eur_kwh` | `battery_cycle_cost_eur_kwh` | ✅ | ✅ | Wear cost in profitability filter + objective |
+| `optimization_priority` | `optimization_priority` | ✅ | ✅ | longevity → 0.05 floor; self_consumption → 1.25× reserve, top-off gate |
+| `block_export_on_negative_price` | `block_export_on_negative_price` | ✅ | ✅ | Blocks sell at p<0 |
+| `charge_to_full_on_negative_price` | `charge_to_full_on_negative_price` | ✅ | implicit | MILP: LP objective naturally charges at p<0 (it's revenue); no phantom-charge exemption |
+| `discharge_to_make_room_for_negative_price` | `discharge_to_make_room_for_negative_price` | ✅ | implicit | MILP: joint optimization naturally creates room when profitable |
+| `scheduler_engine` | `scheduler_engine` | ✅ | — | Used by ems.py to dispatch to MILP or greedy |
+| `ev_charge_strategy` | `ev_charge_strategy` | ✅ | ✅ | Applied in flex-load overlay (runs after both engines) |
+| `flexible_load_*` | `flexible_loads` | ✅ | ✅ | Applied in flex-load overlay (runs after both engines) |
+| n/a | `yesterday_deficit_kwh` | ✅ | implicit | MILP works from current_kwh; deficit already reflected in SOC |
+| n/a | `inverter_max_power_kw` | ✅ | ✅ | From INVERTER_MAX_POWER_KW[model], not a user setting |
+
+#### Settings → Coordinator only (inverter control, not scheduling)
+
+| Option key | Used in | Purpose |
+|---|---|---|
+| `voltage_level` | `_transition_to_state` | Charge voltage register (default 58V) |
+| `discharge_min_voltage` | `_transition_to_state` | Discharge voltage register (default 50V) |
+| `max_amperage_per_phase` | `_check_safe_power` | Grid current limit for power throttling |
+| `safe_power_management` | `_check_safe_power` | auto/on/off — enables power monitoring |
+| `price_mode` | `_determine_energy_state` | manual (threshold) vs auto (schedule) |
+| `price_threshold_level` | manual mode calc | Price level 1-10 for manual mode threshold |
+| `rule1_time_window` | `_apply_rule1_auto_settings` | Auto-write rule 1 start/stop time |
+| `rule1_weekday` | `_apply_rule1_auto_settings` | Auto-write rule 1 weekday mask |
+| `ems_strategy` | frontend card only | Strategy dropdown auto-configures other knobs |
+| `update_interval` | coordinator `__init__` | Polling interval (seconds) |
+
+#### MILP vs Greedy: Known Behavioral Differences
+
+| Feature | Greedy | MILP | Impact |
+|---|---|---|---|
+| `charge_to_full_on_negative_price` | Explicit: forces ALL p<0 slots + phantom-charge exemption | Implicit: LP charges at p<0 naturally (revenue); no phantom charges | MILP won't schedule charge when battery is physically full — correct behavior, BMS would reject anyway |
+| `discharge_to_make_room_for_negative_price` | Explicit: `_select_discharges_for_pv_headroom` helper | Implicit: joint optimization sees both sell revenue + negative-buy revenue | MILP may be more or less aggressive depending on price spread |
+| `yesterday_deficit_kwh` | Added as carryover to deficit | Not used; current_kwh already reflects yesterday's shortfall | No impact — same result |
+| Cross-day slot selection | Separate today/tomorrow pools with today-first guard for self_consumption | Single unified horizon with midnight SOC constraint | MILP sees the whole picture; greedy needs explicit guards |
+| Slot count capping | Fixed count from deficit ÷ per-slot energy | LP energy-based with MIN_FRAC + headroom caps | MILP avoids over-scheduling marginal slots |
+
+---
+
+## Complete Algorithm Flow (ems.py `calculate_schedule`)
+
+This is the authoritative description of the scheduling algorithm.  Both
+greedy and MILP paths share the same entry point and post-processing.
+
+### 1. Entry and Early Exit
+
+```
+calculate_schedule(config: EMSConfig, state: EMSState) → ScheduleResult
+```
+
+- Determines `num_slots` from `slot_prices_today` length (24/48/96).
+- Computes `self_consumption_reserve` and `reserve_target_pct` ALWAYS
+  (even when grid_mode=off) so the frontend's night target line works.
+- **Early exit** on `grid_mode == "off"` or no price data: returns a
+  result with only reserve info populated.
+
+### 2. Common Pre-computation
+
+- `remaining`: list of `(slot_idx, price)` from current slot onward.
+- `net_pv`: net PV surplus via `calculate_net_pv_surplus` (hourly
+  PV × confidence − consumption, positive hours only).
+- `pv_confidence`: `_calculate_pv_confidence` with sliding window +
+  EMA smoothing from `state.previous_pv_confidence`.
+- `energy_per_slot`: `safe_power_kw × slot_hours` (raw inverter energy).
+
+### 3. Engine Dispatch
+
+```
+if scheduler_engine == "milp":
+    result = _run_milp_or_none(...)    # try MILP
+    if result is None:
+        result = _run_greedy()          # fallback
+        result.scheduler_active = "greedy_fallback"
+else:
+    result = _run_greedy()
+```
+
+### 4. Greedy Path (`_schedule_from_grid` / `_schedule_to_grid` / `_schedule_both`)
+
+All three modes follow the same structure:
+
+#### 4a. Reserve & Deficit
+
+```
+min_kwh = discharge_min_pct × capacity
+reserve_target = _compute_reserve_target(config, overnight_reserve)
+  → if reserve_target_pct > 0: fixed floor
+  → else: min_kwh + overnight_hours × consumption/24
+           × 1.25 if self_consumption priority
+```
+
+Deficit = max(snapshot_deficit, predictive_deficit) + yesterday_deficit:
+- **Snapshot**: max(0, reserve_target − current_kwh − net_pv)
+- **Predictive**: simulate SOC through remaining slots → min projected
+- **Solar protection**: if max_projected ≥ 95% capacity → predictive = 0
+
+#### 4b. Charge Slot Selection (`select_unified_charge_slots`)
+
+- Merges today + tomorrow price pools (if tomorrow available).
+- Sorts cheapest-first.
+- **Power-aware accumulation**: each slot's actual grid charge =
+  `min(safe_power, inverter_max − pv) × hours × efficiency`.
+  Midday PV-saturated slots deliver 0 grid kWh → skipped.
+- Accumulates until deficit covered (+ headroom cap).
+- **Self-consumption today-first**: forces today's deficit onto today's
+  slots when `optimization_priority == "self_consumption"`.
+- **Self-consumption top-off**: after deficit covered, fills toward max
+  SOC from cheap slots only: `price ≤ efficiency² × mean_remaining`.
+  Never charges at uneconomic prices.
+- **Headroom cap**: `max(0, max_battery − current − net_pv_surplus)`.
+  Negative-price slots pass through; SOC validation prunes later.
+
+#### 4c. Sell Slot Selection (to_grid / both)
+
+- Sell slot count from sellable energy above reserve.
+- Profitability filter: `min_sell_price = max_buy / efficiency² + cycle_cost`.
+- **Arbitrage delta > 0**: replaces auto profitability check.
+  Every sell must beat `buy_reference + delta`.  No sells if nothing
+  clears the bar.
+- **block_export_on_negative_price**: filters p<0 sells.
+
+#### 4d. Negative-Price Strategies (opt-in)
+
+- **charge_to_full**: adds ALL remaining p<0 slots to charge set.
+- **discharge_to_make_room**: `_select_discharges_for_pv_headroom` adds
+  pre-emptive discharge before p<0 PV windows at expensive positive
+  prices.
+
+#### 4e. SOC Validation (`_validate_schedule_soc`)
+
+Forward-simulates SOC through every slot.  Drops violations:
+- Overflow (charge → SOC > capacity): drop most expensive non-negative
+  charge first, then negative-price charges unless PV alone fills battery.
+- Underflow (discharge → SOC < minimum): drop least profitable discharge.
+- Phantom charges (SOC already at capacity): always dropped.
+
+### 5. MILP Path (`milp.solve_schedule`)
+
+- Builds horizon: today's remaining + all of tomorrow.
+- Per-slot continuous vars: charge energy `c[k]`, discharge `d[k]`, spill, soc.
+- **Constraints**: SOC dynamics, `soc_min ≤ soc ≤ soc_max`,
+  `soc[end] ≥ reserve_target`, `soc[midnight] ≥ reserve_target`.
+- **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·soc[end]`
+  where `terminal = avg_price × efficiency`.
+- **Price gates**: `arbitrage_price_delta` → charge/discharge UB = 0 for
+  slots outside spread.  `block_export_on_negative_price` → discharge UB = 0.
+- **Post-solve**: LP allocations ranked by energy, capped by battery
+  physics (charge headroom / discharge headroom) to prevent over-scheduling.
+- Returns `(today_slots, tomorrow_slots)` or `None` → greedy fallback.
+
+### 6. Post-Processing (both engines)
+
+- **Urgent recovery**: if SOC < discharge_min, force immediate charge slots.
+- **SOC trajectory**: `_compute_scheduled_soc_trajectory` for today.
+- **Tomorrow schedule**: MILP provides it directly; greedy runs
+  `_compute_tomorrow_schedule` reconstruction.
+- **Flexible loads**: `_schedule_flexible_loads` overlays loads into
+  cheap / PV-surplus / negative / battery-charge slots (controlled by
+  `ev_charge_strategy` for the EV charger).
+
+### 7. Coordinator Execution (every 10s)
+
+```
+_determine_energy_state(battery_soc):
+  if auto mode + slot in scheduled_slots:
+    if charge slot:
+      - defer if cheaper scheduled slot later (≥1¢ gap, SOC > reserve)
+      - never defer overrides or negative-price slots
+    if discharge slot:
+      - skip if SOC ≤ reserve_target (not just discharge_min)
+  if manual mode:
+    - simple price vs threshold comparison with hysteresis
+
+_transition_to_state(new_state):
+  - writes econ_rule_1_enable, _voltage, _soc, _power
+  - discharge SOC floor = reserve_target in auto mode (not discharge_min)
+```
+
 ---
 
 ## Known Issues and Gotchas
@@ -968,9 +1220,30 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
 - `cost` (default): legacy behaviour, minimise grid spend.
 - `longevity`: enforces a 0.05 €/kWh cycle-cost floor (regardless of
   the explicit `battery_cycle_cost_eur_kwh` setting).
-- `self_consumption`: multiplies the dynamic overnight reserve by
-  1.25× to keep more PV-stored energy in the battery for self-use
-  (less grid-export of solar).
+- `self_consumption`: **tops off the battery from cheap slots, cost-aware.**
+  After the normal survival deficit is covered, `select_unified_charge_slots`
+  fills today toward max-SOC headroom — but ONLY from slots cheap enough that
+  round-trip losses still pay off: charge at price `P` only when
+  `P <= efficiency² × mean_remaining_price`.  This tops the battery off using
+  the cheapest slots of the day and **never charges at expensive prices** (an
+  EMS minimises cost above all).  On a flat or expensive day no slot clears
+  the bar, so nothing extra is charged — the battery rides on the reserve the
+  survival deficit secured.  PV-aware headroom still skips what solar will
+  supply.  Also multiplies the *reserve floor* by 1.25× (matters in
+  to_grid/both — keeps more stored energy from being sold).
+
+  The MILP achieves the same automatically: its terminal value
+  (`mean × efficiency`) makes the solver charge any slot priced below
+  `mean × efficiency²` to store energy for later — the same round-trip bar as
+  the greedy gate, so the two engines agree.  **No P90/aggressive boost** —
+  pushing the terminal value higher would charge at uneconomic prices.
+
+  Reserve floor ≠ charging ceiling: the reserve target is only an
+  *overnight-survival floor*.  Daytime/evening consumption is handled by the
+  **predictive SOC trajectory** (`_project_soc_trajectory`), which charges (in
+  any priority) when consumption would drain SOC below the floor before
+  tomorrow's sunrise.  `TestSelfConsumptionFillsBattery` (incl.
+  `test_self_consumption_never_charges_expensive`) pins all of this.
 
 **Override SOC validation (#9)**: after merging `slot_overrides` into
 `scheduled_slots`, the coordinator re-runs `_validate_schedule_soc`.
@@ -1106,15 +1379,13 @@ wiring) found and fixed:
 These were flagged in the same review but require larger changes
 or design discussion before implementation:
 
-#### #2 MILP Optimizer
-Current scheduler is greedy (cheapest-first).  A mixed-integer linear
-programme over the 24-48h horizon would find provably optimal
-schedules — typically 5-15% better on complex price patterns.
-**Why deferred**: requires adding `pulp` or `scipy.optimize`
-(scipy is heavy), a fundamentally different approach, and careful
-tuning of the objective function to reflect the existing
-constraints (SOC bounds, headroom, anti-conflict).  Expected
-2-week effort with substantial test coverage.
+#### #2 MILP Optimizer — IMPLEMENTED
+`milp.py` implements an LP scheduler using PuLP/CBC.  Selected via
+`scheduler_engine=milp`.  Silently falls back to greedy on any
+failure.  See "Optional MILP Scheduler" section above for the full
+model description, settings traceability, and known behavioral
+differences vs greedy.  Both engines are actively tested (13 MILP
+tests + 5 MILP-vs-Greedy parity tests).
 
 #### #7 Frontend Simulation Drift
 The JS card has a simplified `_simulateSchedule` that doesn't fully
@@ -1142,7 +1413,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (178 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (228 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -1175,8 +1446,20 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Phantom charge prevention (tomorrow schedule, full battery)
 - Flexible load scheduling (cheap, negative, PV surplus, disabled, multi-load)
 - EV charger current step helpers (power calculation, nearest step)
+- EV charge strategy (smart, always_on, solar_only, cheap_only)
+- Sell coverage (both mode charges today to cover today's sell slots)
+- MILP scheduler: cheapest charge, arbitrage, no-charge-when-full, tomorrow, fallback
+- MILP vs Greedy parity: from_grid, both arbitrage, cross-day, cloudy, large battery
+- Self-sufficiency today-first: greedy charges today, MILP midnight constraint
+- Self-consumption top-off: charges above reserve, cost-gated, never charges expensive
+- Schedule reason messages
 
-**Not tested**: coordinator.py runtime logic (requires HA mocking). This is a gap — when the coordinator diverges from ems.py, tests won't catch it.
+**Not tested**: coordinator.py runtime logic (requires HA mocking).  Since
+the coordinator now delegates to `ems.calculate_schedule()`, algorithm
+drift is structurally prevented.  What remains untested is the coordinator's
+own logic: EMSConfig/EMSState construction, `_determine_energy_state`
+(slot deferral, override bypass), `_transition_to_state` (Modbus writes),
+`_check_safe_power` (current monitoring), and `_actuate_flex_loads`.
 
 ---
 
