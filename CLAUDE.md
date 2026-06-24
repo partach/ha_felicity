@@ -86,8 +86,10 @@ MILP failures never break the EMS.
   headroom after PV), `d[k]` (battery kWh discharged to sell, ≤ safe
   power), `spill[k]` (PV curtailment), `soc[k]`.
 - SOC dynamics: `soc[k] = soc[k-1] + net_pv[k] - load[k] + eff·c[k] - d[k] - spill[k]`.
-- Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`.
+- Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`;
+  `soc[midnight] ≥ reserve_target` (prevents cross-day deferral).
 - Objective: minimise `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal_value·soc[end]`.
+  Terminal value boosted for `self_consumption` (P90 price × efficiency).
 - Grid mode gates charge/discharge; `block_export_on_negative_price` and
   `arbitrage_price_delta` become per-slot price gates.
 - Round-trip efficiency loss makes charging+discharging the same slot
@@ -102,6 +104,11 @@ computed from the MILP's decisions. Flexible-load overlays are still
 computed by `ems.py`. `milp.py` reads `EMSConfig`/`EMSState` by
 attribute and takes precomputed reserve_target + pv_confidence —
 **zero import dependency on ems.py**, keeping the fallback bullet-proof.
+
+**Blocking I/O**: PuLP writes a `.mps` model file and runs the CBC solver
+as a subprocess — both are blocking operations.  The coordinator runs
+`calculate_schedule` in an executor thread (`async_add_executor_job`)
+so the MILP never blocks the HA event loop.
 
 **Dependency**: `pulp>=2.7.0` (bundles the CBC solver). Lazy-imported so
 `ems.py` works without it. On hardware where the CBC binary won't run, the
@@ -323,7 +330,20 @@ min_sell_price = max_buy_price / (efficiency × efficiency)
 
 When tomorrow's prices are available, merges today+tomorrow slots, picks cheapest from combined pool. The tomorrow-side reserve target honours `reserve_target_pct` and the `self_consumption` 1.25× boost, same as today's.
 
-**Intentionally no today↔tomorrow safety swap**: the inverter switches the house to grid passthrough once SOC hits `min_kwh`, so the battery can't drain below the floor from consumption. Forcing expensive today slots to "bridge" the night would cost more than consuming from grid (round-trip losses on the same prices); charging defers to tomorrow's cheaper slots. `test_safety_swap` pins this.
+**Intentionally no today↔tomorrow safety swap**: the inverter switches the
+house to grid passthrough once SOC hits `min_kwh`, so the battery can't
+drain below the floor from consumption.  Forcing expensive today slots to
+"bridge" the night would cost more than consuming from grid (round-trip
+losses on the same prices); charging defers to tomorrow's cheaper slots.
+`test_safety_swap` pins this.
+
+**Exception — `self_consumption` priority**: the self-sufficiency strategy
+overrides the no-swap rule.  `select_unified_charge_slots` forces today's
+`energy_deficit` onto today's slots even when tomorrow is cheaper.  Without
+this, the user sees "tomorrow never comes" — every day defers to the next.
+The MILP enforces this via a midnight SOC boundary constraint
+(`soc[midnight_slot] >= reserve_target`).
+`TestSelfSufficiencyTodayFirst` pins both.
 
 ### Per-Slot SOC Validation
 

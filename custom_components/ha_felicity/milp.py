@@ -205,10 +205,35 @@ def _solve(
     # End-of-horizon reserve (overnight coverage).
     prob += soc[K - 1] >= min(reserve_target, soc_max)
 
+    # Midnight boundary constraint: when the horizon spans today+tomorrow,
+    # force the battery to reach reserve_target by end of today.  Without
+    # this the solver defers all charging to cheaper tomorrow slots, the
+    # battery drains overnight, and on the next day it defers again —
+    # "tomorrow never comes."
+    midnight_k = None
+    for k in range(K):
+        if horizon[k]["day"] == "tomorrow":
+            midnight_k = k
+            break
+    if midnight_k is not None and midnight_k > 0:
+        prob += soc[midnight_k - 1] >= min(reserve_target, soc_max)
+
     # Value energy left in the battery at the horizon end so the solver
     # doesn't pointlessly dump it at the last positive price.  Conservative
     # reference: the average horizon price (× efficiency for sell value).
-    terminal_value = max(0.0, sum(prices_h) / len(prices_h)) * eff
+    avg_price = max(0.0, sum(prices_h) / len(prices_h))
+    terminal_value = avg_price * eff
+
+    # Self-consumption: heavily reward keeping the battery full.  The user
+    # wants maximum self-sufficiency — stored energy avoids the most
+    # expensive grid consumption.  Use the 90th-percentile price as the
+    # value of stored energy (more aggressive than average, less extreme
+    # than max).
+    if config.optimization_priority == "self_consumption":
+        sorted_prices = sorted(p for p in prices_h if p > 0)
+        if sorted_prices:
+            p90 = sorted_prices[int(len(sorted_prices) * 0.9)]
+            terminal_value = max(terminal_value, p90 * eff)
 
     # Objective: minimise net grid spend + wear − value of leftover energy.
     prob += (

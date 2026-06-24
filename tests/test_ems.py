@@ -5433,3 +5433,104 @@ class TestMILPvsGreedy:
             f"likely interleaving bug"
         )
 
+
+class TestSelfSufficiencyTodayFirst:
+    """Self-sufficiency should charge the battery TODAY — not defer to tomorrow.
+
+    When tomorrow's prices are cheaper, the unified pool (greedy) and the MILP
+    both tend to defer all charging to tomorrow. For self-consumption mode
+    this is wrong: the user wants the battery full tonight.  If deferral
+    happens every day, it becomes 'tomorrow never comes.'
+    """
+
+    @staticmethod
+    def _make_scenario(optimization_priority="self_consumption",
+                       scheduler_engine="greedy"):
+        """60 kWh battery at 40%, tomorrow much cheaper."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=5,
+            inverter_max_power_kw=10,
+            consumption_est_kwh=20,
+            efficiency=0.90,
+            optimization_priority=optimization_priority,
+            scheduler_engine=scheduler_engine,
+        )
+        state = dict(
+            slot_prices_today=[0.12] * 6 + [0.20] * 6,     # today: moderately priced
+            slot_prices_tomorrow=[0.03] * 6 + [0.15] * 6,  # tomorrow: much cheaper
+            battery_soc_pct=40.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        return base, state
+
+    def test_self_consumption_greedy_charges_today(self):
+        """Greedy self-consumption must charge some today slots, not defer all."""
+        base, state = self._make_scenario("self_consumption", "greedy")
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        today_charges = {i for i, a in result.scheduled_slots.items()
+                         if a == "charge"}
+        assert len(today_charges) > 0, (
+            f"Self-sufficiency greedy deferred all charging to tomorrow "
+            f"(today_charges={today_charges}, tomorrow={result.tomorrow_scheduled_slots})"
+        )
+
+    def test_cost_mode_may_defer_to_tomorrow(self):
+        """Cost mode is allowed to defer to cheaper tomorrow (baseline check)."""
+        base, state = self._make_scenario("cost", "greedy")
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        # Cost mode might or might not charge today — the key is that
+        # self_consumption mode charges MORE today than cost mode.
+        today_charges_cost = len({i for i, a in result.scheduled_slots.items()
+                                   if a == "charge"})
+
+        base_sc, state_sc = self._make_scenario("self_consumption", "greedy")
+        result_sc = calculate_schedule(EMSConfig(**base_sc), EMSState(**state_sc))
+        today_charges_sc = len({i for i, a in result_sc.scheduled_slots.items()
+                                 if a == "charge"})
+        assert today_charges_sc >= today_charges_cost, (
+            f"Self-consumption charged {today_charges_sc} today slots, "
+            f"cost mode charged {today_charges_cost} — self-consumption should "
+            f"charge at least as much today"
+        )
+
+    @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+    def test_milp_midnight_constraint_charges_today(self):
+        """MILP midnight SOC constraint forces today charging for overnight."""
+        base, state = self._make_scenario("self_consumption", "milp")
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        today_charges = {i for i, a in result.scheduled_slots.items()
+                         if a == "charge"}
+        assert len(today_charges) > 0, (
+            f"MILP self-sufficiency deferred all charging to tomorrow "
+            f"despite midnight SOC constraint "
+            f"(today_charges={today_charges}, tomorrow={result.tomorrow_scheduled_slots})"
+        )
+        assert result.scheduler_active == "milp"
+
+    @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+    def test_milp_midnight_constraint_cost_mode(self):
+        """MILP midnight constraint also applies in cost mode (prevents
+        overnight drain below reserve target)."""
+        base, state = self._make_scenario("cost", "milp")
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        # Even in cost mode, the midnight constraint should force SOME
+        # today charging when the battery would drain below reserve
+        # by midnight without it.
+        today_charges = {i for i, a in result.scheduled_slots.items()
+                         if a == "charge"}
+        # With 40% SOC and 20% floor on 60 kWh, there's 12 kWh above floor.
+        # 20 kWh consumption / 24h * 12h remaining = 10 kWh drain.
+        # Reserve target includes overnight reserve.
+        # The MILP must charge something today to avoid overnight drain.
+        assert len(today_charges) > 0, (
+            f"MILP cost mode should charge today to cover overnight reserve "
+            f"(battery=40%, reserve needs overnight coverage)"
+        )
+

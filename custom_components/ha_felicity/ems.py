@@ -1144,6 +1144,35 @@ def select_unified_charge_slots(
     today_selected = [s for s in selected if s[1] == 0]
     tomorrow_selected = [s for s in selected if s[1] == 1]
 
+    # --- Self-sufficiency: cover today's deficit from today's slots ---
+    # The unified pool may have placed today's deficit onto tomorrow's
+    # cheaper slots.  For self-consumption the user wants the battery
+    # charged TODAY — deferring causes overnight grid use and the
+    # "tomorrow never comes" loop (the next day defers again).
+    if optimization_priority == "self_consumption" and energy_deficit > 0:
+        today_charge_energy = sum(_slot_charge_energy(s) for s in today_selected)
+        shortfall = energy_deficit - today_charge_energy
+        if shortfall > 1e-3:
+            today_selected_indices = {s[2] for s in today_selected}
+            unused_today = sorted(
+                [s for s in today_pool
+                 if s[0] >= 0 and s[2] not in today_selected_indices],
+                key=lambda x: x[0],
+            )
+            for s in unused_today:
+                if shortfall <= 1e-3:
+                    break
+                slot_energy = _slot_charge_energy(s)
+                if slot_energy <= 1e-9:
+                    continue
+                today_selected.append(s)
+                shortfall -= slot_energy
+            _LOGGER.info(
+                "Self-sufficiency: forced %.1f kWh of today's %.1f kWh "
+                "deficit onto today's slots (was deferred to tomorrow)",
+                energy_deficit - shortfall, energy_deficit,
+            )
+
     # --- Battery headroom constraint ---
     # Subtract net PV surplus: that energy will also fill the battery,
     # so real headroom for grid charging is smaller than raw capacity gap.

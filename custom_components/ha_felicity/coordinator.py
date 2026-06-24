@@ -604,12 +604,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             previous_pv_confidence=self._last_pv_confidence,
         )
 
-    def _calculate_schedule(self, battery_soc: float | None) -> None:
+    async def _calculate_schedule(self, battery_soc: float | None) -> None:
         """Calculate optimal charge/discharge schedule.
 
         Delegates entirely to ems.calculate_schedule() — the single source of
         truth for scheduling logic — and unpacks the result into coordinator
-        attributes.
+        attributes.  The pure calculation runs in an executor thread because
+        the MILP solver performs blocking file I/O (writes .mps model to /tmp
+        and runs the CBC subprocess).
         """
         opts = self.config_entry.options
         now = datetime.now()
@@ -730,7 +732,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._last_schedule_input_hash = input_hash
         self._last_schedule_slot_idx = current_slot_idx
 
-        result = ems_module.calculate_schedule(config, state)
+        result = await self.hass.async_add_executor_job(
+            ems_module.calculate_schedule, config, state
+        )
 
         # Smoothed PV confidence for this tick — same EMA blend the
         # schedule used internally (previous_confidence keeps the chain
@@ -805,20 +809,23 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     keep_all_negative_charges=config.charge_to_full_on_negative_price,
                 )
                 # Drop any slot rejected by validation, including overrides
-                dropped: list[int] = []
+                dropped: list[tuple[int, str]] = []
                 for idx in list(self.scheduled_slots.keys()):
                     action = self.scheduled_slots[idx]
                     if action == "charge" and idx not in validated_charge:
                         del self.scheduled_slots[idx]
-                        dropped.append(idx)
+                        dropped.append((idx, action))
                     elif action == "discharge" and idx not in validated_discharge:
                         del self.scheduled_slots[idx]
-                        dropped.append(idx)
+                        dropped.append((idx, action))
                 if dropped:
                     _LOGGER.warning(
                         "Override SOC validation: dropped %d slot(s) that would "
-                        "violate battery bounds: %s",
-                        len(dropped), sorted(dropped),
+                        "violate battery bounds: %s  (soc=%.1f kWh, cap=%.1f, "
+                        "floor=%.1f, charge_count=%d, discharge_count=%d)",
+                        len(dropped), [(s, a) for s, a in dropped],
+                        current_kwh_t, effective_capacity, floor_t,
+                        len(validated_charge), len(validated_discharge),
                     )
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
@@ -2100,7 +2107,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             # In auto mode, run the schedule optimizer
                             if price_mode == "auto":
-                                self._calculate_schedule(battery_soc)
+                                await self._calculate_schedule(battery_soc)
                                 # Schedule may have updated self.price_threshold
                                 new_data["price_threshold"] = self.price_threshold
 
