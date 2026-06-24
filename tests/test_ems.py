@@ -5622,3 +5622,46 @@ class TestSelfConsumptionFillsBattery:
             f"Near-full battery should not charge: {charges}"
         )
 
+    def test_self_consumption_never_charges_expensive(self):
+        """CRITICAL: self-consumption tops off ONLY from cheap slots — it must
+        never charge an expensive slot just to fill the battery.  An EMS
+        minimises cost above all."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60,
+            battery_discharge_min_pct=30,
+            battery_charge_max_pct=100,
+            safe_power_kw=15,
+            inverter_max_power_kw=15,
+            consumption_est_kwh=10,
+            efficiency=0.90,
+            optimization_priority="self_consumption",
+        )
+        # Cheap morning (0.04-0.06), very expensive evening (0.40-0.50).
+        # Battery mid-level, lots of headroom — the naive "fill to max"
+        # would grab the 0.40+ slots; the cost-aware gate must NOT.
+        prices = [0.05, 0.04, 0.06, 0.05] + [0.40, 0.45, 0.50, 0.48,
+                                             0.42, 0.46, 0.44, 0.41]
+        state = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=50.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        result = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        charge_prices = [prices[i] for i, a in result.scheduled_slots.items()
+                         if a == "charge"]
+        assert charge_prices, "should charge the cheap morning slots"
+        # Every charged slot must be a genuinely cheap one (round-trip gate).
+        mean_p = sum(prices) / len(prices)
+        ceiling = (0.90 ** 2) * mean_p
+        for p in charge_prices:
+            assert p <= ceiling + 1e-9, (
+                f"charged an expensive slot at {p:.3f} (ceiling {ceiling:.3f}) "
+                f"— EMS must never charge above the round-trip-profitable bar"
+            )
+        # None of the expensive evening slots (>= 0.40) may be charged.
+        assert all(p < 0.40 for p in charge_prices), charge_prices
+

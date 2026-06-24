@@ -1209,6 +1209,46 @@ def select_unified_charge_slots(
                 len(replacements),
             )
 
+    # --- Self-consumption top-off (cost-aware) ---
+    # Fill the battery toward max SOC for self-use, but ONLY from slots
+    # cheap enough that round-trip losses still pay off: charge at price P
+    # only when P <= efficiency^2 * reference_price, where reference_price
+    # is the mean of the remaining non-negative prices (an estimate of what
+    # the stored energy will displace later).  This tops off using the
+    # cheapest slots of the day and NEVER charges at expensive prices — an
+    # EMS minimises cost above all.  On a flat/expensive day no slot clears
+    # the bar, so it charges nothing extra (the battery rides on the reserve
+    # the survival deficit already secured).  Tomorrow's fill is handled by
+    # the tomorrow-schedule pass and re-planned each day.
+    if optimization_priority == "self_consumption":
+        round_trip = efficiency * efficiency
+        ref_prices = [s[0] for s in (today_pool + tomorrow_pool) if s[0] >= 0]
+        if ref_prices and effective_per_slot > 0:
+            ceiling = round_trip * (sum(ref_prices) / len(ref_prices))
+            committed = sum(_slot_charge_energy(s) for s in today_selected)
+            room = max(0.0, headroom - committed)
+            selected_today_idx = {s[2] for s in today_selected}
+            cheap_unused = sorted(
+                [s for s in today_pool
+                 if 0 <= s[0] <= ceiling and s[2] not in selected_today_idx],
+                key=lambda x: x[0],
+            )
+            added_kwh = 0.0
+            for s in cheap_unused:
+                if added_kwh >= room - 1e-9:
+                    break
+                e = _slot_charge_energy(s)
+                if e <= 1e-9:
+                    continue
+                today_selected.append(s)
+                added_kwh += e
+            if added_kwh > 0:
+                _LOGGER.info(
+                    "Self-consumption top-off: +%.1f kWh from cheap slots "
+                    "(<= %.4f/kWh) toward max SOC (room=%.1f kWh)",
+                    added_kwh, ceiling, room,
+                )
+
     # --- Bridge to tomorrow: intentionally no today↔tomorrow swap ---
     # The inverter stops providing house power once SOC hits min_kwh and
     # passes the house through to grid, so the battery cannot drain below
@@ -1845,21 +1885,7 @@ def _schedule_from_grid(
     ) if config.battery_capacity_kwh > 0 else 0.0
     max_battery_kwh = (config.battery_charge_max_pct / 100.0) * config.battery_capacity_kwh
 
-    # Self-consumption: the user wants the battery as HIGH as possible for
-    # maximum self-use, not just enough to survive the night.  Target the
-    # max SOC instead of the overnight reserve.  Cheapest-slot selection and
-    # PV-aware headroom still limit grid charging to the few cheapest slots
-    # of the day and avoid charging what PV will supply — so this fills from
-    # the cheapest slots toward full rather than charging indiscriminately.
-    # Without this, a battery already above the modest overnight reserve
-    # (e.g. 37% > 35% target) shows "reserve met — no charging" and dwells
-    # in the middle, defeating the point of self-sufficiency.
-    if config.optimization_priority == "self_consumption":
-        charge_target = max_battery_kwh
-    else:
-        charge_target = reserve_target
-
-    battery_shortfall = max(0.0, charge_target - current_kwh)
+    battery_shortfall = max(0.0, reserve_target - current_kwh)
     snapshot_deficit = max(0.0, battery_shortfall - net_pv)
 
     # Predictive: simulate SOC trajectory to catch future shortfalls
@@ -1876,7 +1902,7 @@ def _schedule_from_grid(
         config.battery_capacity_kwh,
         consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
-    predictive_deficit = max(0.0, charge_target - min_projected)
+    predictive_deficit = max(0.0, reserve_target - min_projected)
 
     # When solar will fill the battery to (near) capacity, grid charging
     # cannot add more useful energy — the battery will be full regardless.

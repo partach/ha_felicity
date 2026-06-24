@@ -219,21 +219,18 @@ def _solve(
         prob += soc[midnight_k - 1] >= min(reserve_target, soc_max)
 
     # Value energy left in the battery at the horizon end so the solver
-    # doesn't pointlessly dump it at the last positive price.  Conservative
-    # reference: the average horizon price (× efficiency for sell value).
+    # doesn't pointlessly dump it at the last positive price.  Reference:
+    # the average horizon price (× efficiency).  This makes the solver
+    # charge any slot whose price is below avg·eff² (round-trip-profitable)
+    # to store energy for later — i.e. it already tops off the battery from
+    # the cheapest slots without ever charging at a loss.  This matches the
+    # greedy self-consumption top-off gate (price <= eff² · mean), so the
+    # two engines agree.  No per-priority boost: pushing the terminal value
+    # higher (e.g. P90) would charge at uneconomic prices, which an EMS must
+    # never do.  Self-consumption differentiates via the reserve floor
+    # (1.25× in reserve_target), not by over-charging.
     avg_price = max(0.0, sum(prices_h) / len(prices_h))
     terminal_value = avg_price * eff
-
-    # Self-consumption: heavily reward keeping the battery full.  The user
-    # wants maximum self-sufficiency — stored energy avoids the most
-    # expensive grid consumption.  Use the 90th-percentile price as the
-    # value of stored energy (more aggressive than average, less extreme
-    # than max).
-    if config.optimization_priority == "self_consumption":
-        sorted_prices = sorted(p for p in prices_h if p > 0)
-        if sorted_prices:
-            p90 = sorted_prices[int(len(sorted_prices) * 0.9)]
-            terminal_value = max(terminal_value, p90 * eff)
 
     # Objective: minimise net grid spend + wear − value of leftover energy.
     prob += (

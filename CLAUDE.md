@@ -968,25 +968,30 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
 - `cost` (default): legacy behaviour, minimise grid spend.
 - `longevity`: enforces a 0.05 €/kWh cycle-cost floor (regardless of
   the explicit `battery_cycle_cost_eur_kwh` setting).
-- `self_consumption`: **targets MAX SOC, not the overnight reserve.**
-  The charge target in `_schedule_from_grid` / `_schedule_both` becomes
-  `battery_charge_max_pct × capacity` instead of `reserve_target`, so the
-  battery is filled as high as possible for maximum self-use.  Cheapest-slot
-  selection + PV-aware headroom still limit grid charging to the few cheapest
-  slots of the day and skip what PV will supply — so it fills from the
-  cheapest slots toward full rather than charging indiscriminately.  Also
-  multiplies the *reserve* (the floor) by 1.25×.  The MILP achieves the same
-  via a boosted terminal value (P90 price × efficiency).  Without this, a
-  battery already above the modest overnight reserve (e.g. 37% > 35% target)
-  showed "reserve met — no charging" and dwelled in the middle, defeating
-  self-sufficiency.  `TestSelfConsumptionFillsBattery` pins this.
+- `self_consumption`: **tops off the battery from cheap slots, cost-aware.**
+  After the normal survival deficit is covered, `select_unified_charge_slots`
+  fills today toward max-SOC headroom — but ONLY from slots cheap enough that
+  round-trip losses still pay off: charge at price `P` only when
+  `P <= efficiency² × mean_remaining_price`.  This tops the battery off using
+  the cheapest slots of the day and **never charges at expensive prices** (an
+  EMS minimises cost above all).  On a flat or expensive day no slot clears
+  the bar, so nothing extra is charged — the battery rides on the reserve the
+  survival deficit secured.  PV-aware headroom still skips what solar will
+  supply.  Also multiplies the *reserve floor* by 1.25× (matters in
+  to_grid/both — keeps more stored energy from being sold).
 
-  Note on the reserve floor itself: the reserve target is only an
-  *overnight-survival floor*, not the charging ceiling.  Daytime/evening
-  consumption is handled by the **predictive SOC trajectory**
-  (`_project_soc_trajectory`), which charges (in any priority) when
-  consumption would drain SOC below the floor before tomorrow's sunrise.
-  The reserve target ≠ "the level it charges to."
+  The MILP achieves the same automatically: its terminal value
+  (`mean × efficiency`) makes the solver charge any slot priced below
+  `mean × efficiency²` to store energy for later — the same round-trip bar as
+  the greedy gate, so the two engines agree.  **No P90/aggressive boost** —
+  pushing the terminal value higher would charge at uneconomic prices.
+
+  Reserve floor ≠ charging ceiling: the reserve target is only an
+  *overnight-survival floor*.  Daytime/evening consumption is handled by the
+  **predictive SOC trajectory** (`_project_soc_trajectory`), which charges (in
+  any priority) when consumption would drain SOC below the floor before
+  tomorrow's sunrise.  `TestSelfConsumptionFillsBattery` (incl.
+  `test_self_consumption_never_charges_expensive`) pins all of this.
 
 **Override SOC validation (#9)**: after merging `slot_overrides` into
 `scheduled_slots`, the coordinator re-runs `_validate_schedule_soc`.
