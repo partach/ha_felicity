@@ -1059,23 +1059,30 @@ class FelicityEMSCard extends LitElement {
     // overnight TARGET, not an all-day hard floor — the SOC is allowed to
     // dip below it during the day (down to discharge_min) because PV
     // refills the battery.  Most meaningful in the evening/overnight.
+    //
+    // Use the backend-computed value directly — it includes the 1.25×
+    // self_consumption boost, the monotonic fixed-floor logic, and any
+    // other refinements.  Client-side recomputation drifted from the
+    // backend and showed wrong night targets.
     const simR2 = this._getAttr("schedule_status", "sim_params") || {};
-    const battCap = simR2.battery_capacity_kwh || 10;
     const dischMinPct = simR2.battery_discharge_min_pct ?? 20;
-    let reserveKwhVal = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
-    if (reserveKwhVal <= 0) {
-      reserveKwhVal = this._overnightReserveKwh(
-        simR2.consumption_est_kwh, simR2.pv_hourly_kwh || null);
-    }
-    const userReservePct = simR2.reserve_target_pct ?? 0;
-    let reserveShowPct;
-    if (userReservePct > 0) {
-      reserveShowPct = userReservePct;
-    } else if (reserveKwhVal > 0 && battCap > 0) {
-      const minKwh = (dischMinPct / 100) * battCap;
-      reserveShowPct = ((minKwh + reserveKwhVal) / battCap) * 100;
-    } else {
-      reserveShowPct = dischMinPct;
+    let reserveShowPct = parseFloat(
+      simR2.backend_reserve_target_pct
+      ?? this._getAttr("schedule_status", "reserve_target_pct")
+    ) || 0;
+    if (reserveShowPct <= 0) {
+      const battCap = simR2.battery_capacity_kwh || 10;
+      let reserveKwhVal = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
+      if (reserveKwhVal <= 0) {
+        reserveKwhVal = this._overnightReserveKwh(
+          simR2.consumption_est_kwh, simR2.pv_hourly_kwh || null);
+      }
+      if (reserveKwhVal > 0 && battCap > 0) {
+        const minKwh = (dischMinPct / 100) * battCap;
+        reserveShowPct = ((minKwh + reserveKwhVal) / battCap) * 100;
+      } else {
+        reserveShowPct = dischMinPct;
+      }
     }
     if (socTrajectory && socTrajectory.length > 1 && reserveShowPct > 0 && reserveShowPct < 100) {
       const toY = (soc) => marginTop + chartH - ((soc - 0) / 100) * chartH;
