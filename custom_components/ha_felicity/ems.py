@@ -1990,16 +1990,28 @@ def _schedule_from_grid(
                 " — no grid charging needed"
             )
         elif config.optimization_priority == "self_consumption":
-            # Self-consumption targets max SOC, so "no charge" here means
-            # the battery is already (near) full or cheap slots can't add
-            # more without overflow.
+            # Self-consumption targets max SOC, but only via slots cheap
+            # enough to beat round-trip losses (it never charges at a loss).
+            # "No charge" therefore means one of two things — report the
+            # ACTUAL one rather than always claiming "battery near full"
+            # (which is plainly wrong at, say, 65% and misleads the user
+            # into thinking the optimizer is broken):
+            #   • SOC genuinely high → the battery really is (near) full
+            #   • SOC moderate but reserve met and no remaining slot clears
+            #     the round-trip economic bar → topping off would lose money
             soc_pct = (
                 current_kwh / config.battery_capacity_kwh * 100
                 if config.battery_capacity_kwh > 0 else 0
             )
-            result.schedule_reason = (
-                f"Battery near full ({soc_pct:.0f}%) — no more charging needed"
-            )
+            if soc_pct >= 90:
+                result.schedule_reason = (
+                    f"Battery near full ({soc_pct:.0f}%) — no more charging needed"
+                )
+            else:
+                result.schedule_reason = (
+                    f"Reserve met ({soc_pct:.0f}%) — no slots cheap enough to "
+                    "top off without losing money on round-trip losses"
+                )
         else:
             result.schedule_reason = "Battery reserve is met — no charging needed"
         return result
