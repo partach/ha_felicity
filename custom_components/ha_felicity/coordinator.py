@@ -694,6 +694,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             scheduler_engine=str(opts.get("scheduler_engine", "greedy")),
         )
 
+        # What did the previous schedule predict the SOC would be at this slot?
+        # Used by the consumption-deviation correction to detect unexpected
+        # loads (car charger, oven, etc.) draining the battery faster than the
+        # profile-based prediction.
+        predicted_soc = None
+        if self._backend_soc_trajectory and self.slot_prices_today:
+            slot_idx = int((now.hour * 60 + now.minute) / ((24 * 60) / len(self.slot_prices_today)))
+            slot_idx = min(slot_idx, len(self._backend_soc_trajectory) - 1)
+            if 0 <= slot_idx < len(self._backend_soc_trajectory):
+                predicted_soc = self._backend_soc_trajectory[slot_idx]
+
         state = ems_module.EMSState(
             battery_soc_pct=battery_soc,
             slot_prices_today=self.slot_prices_today,
@@ -710,6 +721,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             pv_fallback_today_kwh=pv_fallback,
             current_hour=now.hour,
             current_minute=now.minute,
+            predicted_soc_pct=predicted_soc,
         )
 
         # Skip recalc when inputs unchanged (#8).  Hashing the inputs lets

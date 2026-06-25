@@ -79,7 +79,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 228 tests for the pure EMS algorithm
+└── test_ems.py              # 234 tests for the pure EMS algorithm
 ```
 
 ---
@@ -368,8 +368,15 @@ predictive_deficit = max(0, reserve_target - min_projected)
 if max_projected >= max_battery_kwh * 0.95:
     predictive_deficit = 0.0
 
-# Use the worse case
-energy_deficit = max(snapshot_deficit, predictive_deficit) + carryover
+# Consumption-deviation correction: detect unexpected loads (car charger,
+# oven, etc.) draining the battery faster than the trajectory predicted.
+# Compare predicted SOC (from previous schedule's trajectory) with actual.
+deviation = _consumption_deviation_kwh(state, current_kwh, reserve_target, capacity)
+# Guards: >1 kWh floor (noise), SOC > reserve (urgent recovery handles below),
+# 0.5× damping (avoids over-reaction on transient loads like kettles).
+
+# Use the worse case + deviation + carryover
+energy_deficit = max(snapshot_deficit, predictive_deficit) + deviation + carryover
 ```
 
 ### PV Confidence Factor
@@ -1146,6 +1153,29 @@ attribute dict (with 96-slot arrays, hourly PV/consumption maps, SOC
 history) on every HA state read — fixes a `helpers/entity.py:1214` slow-
 update warning.
 
+#### C7. Consumption Deviation Correction — IMPLEMENTED
+When an unexpected load (car charger, oven, EV) drains the battery faster
+than the 7-day consumption profile predicted, the algorithm now detects the
+deviation and adds compensating charge slots.  Compares the previous
+schedule's predicted SOC at the current slot with the actual SOC.  If actual
+is significantly below predicted (>1 kWh floor, 0.5× damped), the deviation
+feeds into the deficit calculation so the next recalc plans extra charging.
+
+**Mechanism**: `_consumption_deviation_kwh()` helper, called in both
+`_schedule_from_grid` and `_schedule_both`.  For MILP, the deviation
+lowers `current_kwh` so the solver sees a less-full battery.
+Coordinator feeds `predicted_soc_pct` from `_backend_soc_trajectory[current_slot]`
+into `EMSState`.
+
+**Guards**: >1 kWh noise floor (filters SOC rounding and small appliances);
+only when SOC > reserve_target (below reserve, urgent-recovery handles it);
+0.5× damping to avoid over-reaction on transient loads.
+
+**Real-world scenario**: car charger at 3.7 kW drains ~7 kWh in 2 hours.
+Weekly avg consumption is 6.3 kWh/d.  Without this fix, the algorithm saw
+"reserve met" and did nothing.  With the fix, the 3.5 kWh deviation-induced
+deficit triggers compensating charge from the cheapest available slot.
+
 ### Correctness Improvements (Medium Priority)
 
 #### D. SOC Trajectory in Frontend — IMPLEMENTED
@@ -1434,7 +1464,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (228 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (234 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -1474,6 +1504,7 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Self-sufficiency today-first: greedy charges today, MILP midnight constraint
 - Self-consumption top-off: charges above reserve, cost-gated, never charges expensive
 - Schedule reason messages
+- Consumption deviation correction (car charger detection, noise filter, below-reserve guard, both mode)
 
 **Not tested**: coordinator.py runtime logic (requires HA mocking).  Since
 the coordinator now delegates to `ems.calculate_schedule()`, algorithm
