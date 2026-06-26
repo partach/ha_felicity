@@ -142,6 +142,12 @@ class EMSState:
     consumption_hourly_kwh: dict[int, float] | None = None  # {hour: avg_kwh} from 7-day profile
     # Previous-tick PV confidence for EMA smoothing.  None on first call.
     previous_pv_confidence: float | None = None
+    # SOC% the previous schedule's trajectory predicted for the current slot.
+    # Used by the consumption-deviation correction: if actual SOC is
+    # significantly below this, an unexpected load (EV charger, oven, etc.)
+    # has drained the battery faster than predicted.  The difference is fed
+    # into the deficit as extra energy to recover.
+    predicted_soc_pct: float | None = None
     # Last successful Modbus read timestamp (epoch seconds).  Informational —
     # the staleness check lives in the coordinator, which refuses to re-plan
     # when reads have failed for too long.
@@ -281,6 +287,42 @@ def _compute_reserve_target(
         return min(config.battery_capacity_kwh, max(fixed_floor, dynamic_reserve))
 
     return min(config.battery_capacity_kwh, dynamic_reserve)
+
+
+def _consumption_deviation_kwh(
+    state: EMSState,
+    current_kwh: float,
+    reserve_target: float,
+    battery_capacity: float,
+) -> float:
+    """Detect unexpected loads draining the battery faster than predicted.
+
+    Compares actual SOC against what the previous schedule's trajectory
+    predicted for the current slot.  If actual is significantly below
+    predicted, the difference (damped by 0.5×) is returned as extra deficit
+    to compensate.  This makes the algorithm react to car chargers, ovens,
+    and other transient loads within a few recalc cycles (~30s) instead of
+    waiting for the 7-day consumption profile to catch up.
+
+    Guards:
+    - > 1 kWh floor: filters SOC rounding noise and small appliances.
+    - Only when SOC > reserve_target: below reserve the urgent-recovery
+      path already handles charging.
+    - 0.5× damping: avoids over-reaction on transient loads.
+    """
+    if state.predicted_soc_pct is None or battery_capacity <= 0:
+        return 0.0
+    predicted_kwh = (state.predicted_soc_pct / 100.0) * battery_capacity
+    deviation = predicted_kwh - current_kwh
+    if deviation > 1.0 and current_kwh > reserve_target:
+        extra = deviation * 0.5
+        _LOGGER.info(
+            "Consumption deviation: predicted=%.1f kWh, actual=%.1f kWh, "
+            "deviation=%.1f kWh → adding %.1f kWh to deficit",
+            predicted_kwh, current_kwh, deviation, extra,
+        )
+        return extra
+    return 0.0
 
 
 def calculate_net_pv_surplus(
@@ -1568,10 +1610,17 @@ def _run_milp_or_none(
         previous_confidence=state.previous_pv_confidence,
     )
 
+    # Consumption-deviation correction for MILP: lower the starting SOC
+    # by the deviation so the solver "sees" a less-full battery and plans
+    # extra charging to compensate for the unexpected load.
+    deviation = _consumption_deviation_kwh(
+        state, current_kwh, reserve_target, config.battery_capacity_kwh)
+    milp_current_kwh = max(0.0, current_kwh - deviation)
+
     milp_result = milp.solve_schedule(
         config, state,
         remaining=remaining,
-        current_kwh=current_kwh,
+        current_kwh=milp_current_kwh,
         num_slots=num_slots,
         current_slot=current_slot,
         minutes_per_slot=minutes_per_slot,
@@ -1929,10 +1978,16 @@ def _schedule_from_grid(
 
     base_deficit = max(snapshot_deficit, predictive_deficit)
 
+    consumption_deviation = _consumption_deviation_kwh(
+        state, current_kwh, reserve_target, config.battery_capacity_kwh)
+    base_deficit += consumption_deviation
+
     _LOGGER.debug(
-        "from_grid deficit: snapshot=%.2f, predictive=%.2f "
+        "from_grid deficit: snapshot=%.2f, predictive=%.2f, "
+        "consumption_deviation=%.2f "
         "(min_projected=%.1f, max_projected=%.1f, reserve_target=%.1f)",
-        snapshot_deficit, predictive_deficit, min_projected, max_projected,
+        snapshot_deficit, predictive_deficit, consumption_deviation,
+        min_projected, max_projected,
         reserve_target,
     )
 
@@ -1990,16 +2045,28 @@ def _schedule_from_grid(
                 " — no grid charging needed"
             )
         elif config.optimization_priority == "self_consumption":
-            # Self-consumption targets max SOC, so "no charge" here means
-            # the battery is already (near) full or cheap slots can't add
-            # more without overflow.
+            # Self-consumption targets max SOC, but only via slots cheap
+            # enough to beat round-trip losses (it never charges at a loss).
+            # "No charge" therefore means one of two things — report the
+            # ACTUAL one rather than always claiming "battery near full"
+            # (which is plainly wrong at, say, 65% and misleads the user
+            # into thinking the optimizer is broken):
+            #   • SOC genuinely high → the battery really is (near) full
+            #   • SOC moderate but reserve met and no remaining slot clears
+            #     the round-trip economic bar → topping off would lose money
             soc_pct = (
                 current_kwh / config.battery_capacity_kwh * 100
                 if config.battery_capacity_kwh > 0 else 0
             )
-            result.schedule_reason = (
-                f"Battery near full ({soc_pct:.0f}%) — no more charging needed"
-            )
+            if soc_pct >= 90:
+                result.schedule_reason = (
+                    f"Battery near full ({soc_pct:.0f}%) — no more charging needed"
+                )
+            else:
+                result.schedule_reason = (
+                    f"Reserve met ({soc_pct:.0f}%) — no slots cheap enough to "
+                    "top off without losing money on round-trip losses"
+                )
         else:
             result.schedule_reason = "Battery reserve is met — no charging needed"
         return result
@@ -2232,10 +2299,15 @@ def _schedule_both(
 
     base_deficit = max(snapshot_deficit, predictive_deficit)
 
+    consumption_deviation = _consumption_deviation_kwh(
+        state, current_kwh, reserve_target, config.battery_capacity_kwh)
+    base_deficit += consumption_deviation
+
     _LOGGER.debug(
-        "both deficit: snapshot=%.2f, predictive=%.2f "
+        "both deficit: snapshot=%.2f, predictive=%.2f, "
+        "consumption_deviation=%.2f "
         "(min=%.1f, max=%.1f, reserve=%.1f)",
-        snapshot_deficit, predictive_deficit,
+        snapshot_deficit, predictive_deficit, consumption_deviation,
         min_projected, max_projected, reserve_target,
     )
 

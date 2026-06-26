@@ -5699,3 +5699,170 @@ class TestSelfConsumptionFillsBattery:
         # None of the expensive evening slots (>= 0.40) may be charged.
         assert all(p < 0.40 for p in charge_prices), charge_prices
 
+
+class TestConsumptionDeviationCorrection:
+    """When actual SOC drops below the predicted trajectory (unexpected load
+    like a car charger), the algorithm should add corrective charging.
+
+    Real-world bug: car charger at 3.7 kW drains the battery 12% in 2 hours
+    but the algorithm sees no deficit (reserve_target still met) and does
+    nothing.  The user sees the SOC flatline while the battery drains.
+    """
+
+    def test_deviation_triggers_extra_charging(self):
+        """Car charger drains 5 kWh; algorithm should add charging to compensate."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_charge_max_pct=100,
+            battery_discharge_min_pct=20,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=25,
+            consumption_est_kwh=6.3,
+            optimization_priority="self_consumption",
+        )
+        prices = [0.10] * 24
+        # Without deviation: 62% SOC → 37.2 kWh, reserve ~16 kWh → no deficit
+        state_no_dev = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=62.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=17,
+            current_minute=0,
+        )
+        r1 = calculate_schedule(EMSConfig(**base), EMSState(**state_no_dev))
+        charge_no_dev = [i for i, a in r1.scheduled_slots.items() if a == "charge"]
+
+        # With deviation: previous trajectory predicted 72% (43.2 kWh)
+        # but actual is 62% (37.2 kWh) → 6 kWh deviation → 3 kWh extra deficit
+        state_with_dev = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=62.0,
+            predicted_soc_pct=72.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=17,
+            current_minute=0,
+        )
+        r2 = calculate_schedule(EMSConfig(**base), EMSState(**state_with_dev))
+        charge_with_dev = [i for i, a in r2.scheduled_slots.items() if a == "charge"]
+
+        assert len(charge_with_dev) > len(charge_no_dev), (
+            f"Deviation should trigger extra charging: "
+            f"without={charge_no_dev}, with={charge_with_dev}"
+        )
+
+    def test_small_deviation_ignored(self):
+        """Deviations under 1 kWh (rounding, small appliances) should NOT trigger."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_charge_max_pct=100,
+            battery_discharge_min_pct=20,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=25,
+            consumption_est_kwh=6.3,
+            optimization_priority="self_consumption",
+        )
+        prices = [0.10] * 24
+        # 0.8 kWh deviation (below 1 kWh floor) → should be ignored
+        state = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=62.0,
+            predicted_soc_pct=63.3,  # 0.78 kWh gap on 60 kWh battery
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=17,
+            current_minute=0,
+        )
+        r = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        # Should behave same as no deviation
+        state_none = dict(state)
+        del state_none["predicted_soc_pct"]
+        r_none = calculate_schedule(EMSConfig(**base), EMSState(**state_none))
+        assert len(r.scheduled_slots) == len(r_none.scheduled_slots)
+
+    def test_deviation_below_reserve_ignored(self):
+        """When SOC is below reserve target, urgent recovery handles it — no double-counting."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_charge_max_pct=100,
+            battery_discharge_min_pct=20,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=25,
+            consumption_est_kwh=6.3,
+        )
+        prices = [0.10] * 24
+        # SOC at 15% (9 kWh) → below reserve. Deviation is real but
+        # urgent recovery should handle it.
+        state = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=15.0,
+            predicted_soc_pct=30.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=17,
+            current_minute=0,
+        )
+        r = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        # Should not crash and should charge (from urgent recovery)
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        assert len(charge) > 0
+
+    def test_deviation_works_in_both_mode(self):
+        """Consumption deviation should also trigger in both mode."""
+        base = dict(
+            grid_mode="both",
+            battery_capacity_kwh=60.0,
+            battery_charge_max_pct=100,
+            battery_discharge_min_pct=20,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=25,
+            consumption_est_kwh=6.3,
+            optimization_priority="self_consumption",
+        )
+        prices = [0.10] * 12 + [0.30] * 12
+        state = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=62.0,
+            predicted_soc_pct=75.0,  # 7.8 kWh deviation
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=12,
+            current_minute=0,
+        )
+        r = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        # With a 7.8 kWh deviation, should schedule extra cheap charge slots
+        assert len(charge) > 0, "both mode should react to consumption deviation"
+
+    def test_no_deviation_when_predicted_is_none(self):
+        """First run (no previous trajectory) should not trigger deviation."""
+        base = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=60.0,
+            battery_charge_max_pct=100,
+            battery_discharge_min_pct=20,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=25,
+            consumption_est_kwh=6.3,
+        )
+        prices = [0.10] * 24
+        state = dict(
+            slot_prices_today=prices,
+            battery_soc_pct=50.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=17,
+            current_minute=0,
+        )
+        r = calculate_schedule(EMSConfig(**base), EMSState(**state))
+        assert r.scheduled_slots is not None  # should not crash
+
