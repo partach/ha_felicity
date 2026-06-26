@@ -335,48 +335,30 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 slot_idx = self._current_slot_index()
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
                     slot_action = self.scheduled_slots[slot_idx]
-                    # Is this slot a manual override?  Users explicitly
-                    # clicking a slot want it to execute NOW — deferral and
-                    # cheaper-slot logic must not suppress a manual choice.
-                    today_overrides = self.slot_overrides.get("today", {})
-                    is_override = str(slot_idx) in today_overrides or slot_idx in today_overrides
                     if slot_action == "charge" and battery_soc < charge_max:
-                        # Defer charging when a cheaper charge slot is
-                        # scheduled later.  The 10-second re-evaluation
-                        # cycle adjusts the deficit naturally, so we don't
-                        # lose coverage — we just shift charging to
-                        # cheaper slots.  Negative-price slots are always
-                        # profitable — never defer those.
-                        # GUARDS to prevent deferral stall (#1):
-                        #  - never defer when SOC is at/below reserve target
-                        #    (battery needs charging now, regardless of price)
-                        #  - require a meaningful price gap (>= 1¢/kWh)
-                        #    so tiny differences don't keep deferring forever
-                        #  - never defer a manual override (user intent wins)
-                        current_price = self.slot_prices_today[slot_idx]
-                        below_reserve = battery_soc <= self._reserve_target_pct
-                        if (current_price is not None
-                                and current_price >= 0
-                                and not below_reserve
-                                and not is_override):
-                            future_charge_prices = [
-                                self.slot_prices_today[idx]
-                                for idx, action in self.scheduled_slots.items()
-                                if idx > slot_idx
-                                and action == "charge"
-                                and self.slot_prices_today[idx] is not None
-                            ]
-                            min_meaningful_gap = 0.01  # 1¢/kWh
-                            if (future_charge_prices
-                                    and (current_price - min(future_charge_prices))
-                                        >= min_meaningful_gap):
-                                _LOGGER.debug(
-                                    "Deferring charge at slot %d (%.4f) — "
-                                    "meaningfully cheaper slot later (%.4f)",
-                                    slot_idx, current_price,
-                                    min(future_charge_prices),
-                                )
-                                return "idle"
+                        # Execute every scheduled charge slot.  No per-slot
+                        # "defer for a cheaper later slot" logic — it was
+                        # removed because it could only ever HARM:
+                        #
+                        # The optimizer (ems.select_unified_charge_slots) is
+                        # cheapest-first AND power-aware: it picks the cheapest
+                        # N slots needed to cover the deficit, where N already
+                        # accounts for the per-slot charge-rate cap
+                        # (min(safe_power, inverter_max - pv) x slot_h x eff).
+                        #   - If a cheaper LATER slot could cover the deficit,
+                        #     the optimizer simply doesn't schedule the current
+                        #     slot, and this branch isn't reached (idle below).
+                        #   - The current slot is scheduled ONLY when it is one
+                        #     of the cheapest-N slots REQUIRED.  In that case
+                        #     every scheduled charge slot (including the cheaper
+                        #     later ones) is needed, and the rate cap means a
+                        #     skipped slot can't be made up later.
+                        # So deferral never saved money (the optimizer already
+                        # avoids expensive slots) and only ever stalled charging
+                        # — real customer report: 23% SOC, 9-20 slots scheduled,
+                        # battery sat IDLE draining toward discharge_min while
+                        # the deferral kept "waiting for a cheaper slot" that was
+                        # already committed.  Trust the schedule: charge now.
                         return "charging"
                     if slot_action == "discharge" and battery_soc > discharge_min:
                         # Guard against draining below reserve target.
@@ -2083,11 +2065,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             price_mode = self.config_entry.options.get("price_mode", "manual")
 
-                            # In manual mode, threshold comes from user level. In auto, schedule may override.
                             if price_mode == "manual":
                                 self.price_threshold = manual_threshold
-                            else:
-                                # Auto mode: start with manual as base, schedule will override
+                            elif self.price_threshold is None:
+                                # Auto mode first-run: use manual as initial value
+                                # until the schedule computes its own threshold.
+                                # Once the schedule has run, its threshold is
+                                # authoritative and must NOT be overwritten here
+                                # every tick — that caused the threshold to bounce
+                                # between the manual calculation and the schedule's
+                                # max-charge-price on every 10s cycle.
                                 self.price_threshold = manual_threshold
 
                             new_data["price_threshold"] = self.price_threshold
