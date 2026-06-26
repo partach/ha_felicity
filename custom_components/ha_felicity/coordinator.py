@@ -2083,11 +2083,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             price_mode = self.config_entry.options.get("price_mode", "manual")
 
-                            # In manual mode, threshold comes from user level. In auto, schedule may override.
                             if price_mode == "manual":
                                 self.price_threshold = manual_threshold
-                            else:
-                                # Auto mode: start with manual as base, schedule will override
+                            elif self.price_threshold is None:
+                                # Auto mode first-run: use manual as initial value
+                                # until the schedule computes its own threshold.
+                                # Once the schedule has run, its threshold is
+                                # authoritative and must NOT be overwritten here
+                                # every tick — that caused the threshold to bounce
+                                # between the manual calculation and the schedule's
+                                # max-charge-price on every 10s cycle.
                                 self.price_threshold = manual_threshold
 
                             new_data["price_threshold"] = self.price_threshold
