@@ -234,13 +234,14 @@ the inverter.  `start_time == stop_time` is treated as "all day"; a full
 banner in the EMS card.  Weekday bit mapping: inverter bit0=Sunday..
 bit6=Saturday, mapped from Python via `isoweekday() % 7`.
 
-**Charge deferral** (`coordinator._determine_energy_state`): when the current
-slot is flagged `charge` but a later scheduled charge slot has a cheaper
-price (non-negative slots only), execution returns `idle` instead. The next
-10s re-evaluation cycle adjusts the deficit naturally, so charging shifts to
-the cheapest scheduled slot. This compensates for deficit shrinking as PV
-confidence recovers mid-day — without it, early expensive slots would
-execute while later cheaper slots got dropped from a re-plan.
+**Charge execution** (`coordinator._determine_energy_state`): when the
+current slot is flagged `charge` (and SOC < charge_max), the coordinator
+executes it — full stop.  It does **not** second-guess the plan with a
+"defer for a cheaper later slot" check; that logic was removed (see C3
+below) because it fought the power-aware optimiser and stalled charging.
+The cheapest-slot decision lives entirely in `ems.py`: a slot is scheduled
+only if it's one of the cheapest-N slots needed to cover the deficit, so by
+the time the coordinator sees it, charging now is the correct action.
 
 ### State Transitions (coordinator.py `_transition_to_state`, ~1425-1482)
 
@@ -1019,8 +1020,7 @@ Forward-simulates SOC through every slot.  Drops violations:
 _determine_energy_state(battery_soc):
   if auto mode + slot in scheduled_slots:
     if charge slot:
-      - defer if cheaper scheduled slot later (≥1¢ gap, SOC > reserve)
-      - never defer overrides or negative-price slots
+      - charge now (no deferral — trust the power-aware optimiser; see C3)
     if discharge slot:
       - skip if SOC ≤ reserve_target (not just discharge_min)
   if manual mode:
@@ -1133,29 +1133,37 @@ Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumptio
 #### C2. SOC History Display — IMPLEMENTED
 Coordinator records battery SOC at each slot boundary in `_soc_history`. Frontend draws solid line for actual past SOC, dotted line for projected future.
 
-#### C3. Cheapest-First Charge Execution — IMPLEMENTED
-`_determine_energy_state` defers execution at a scheduled charge slot if a
-later scheduled charge slot has a lower price. Prevents expensive-early-slot
-commitment when the deficit would have shrunk (e.g., PV confidence
-recovering) by the time the cheaper late slot would execute. Negative-price
-slots are exempt.
+#### C3. Charge Execution — Trust the Schedule (deferral REMOVED June 2026)
+`_determine_energy_state` executes **every** scheduled charge slot when the
+current slot is flagged `charge` (and SOC < charge_max).  There is no longer
+any per-slot "defer for a cheaper later slot" logic.
 
-**Deferral stall prevention**: never defer when SOC is at/below
-reserve_target (battery needs charging now, regardless of price), and only
-defer when the future slot is cheaper by ≥ 1¢/kWh.  Without these guards,
-recovering PV confidence could keep deferring the same slot indefinitely
-until the day ended without any charging.
+**Why the old deferral was removed (it could only ever harm):** the optimizer
+(`select_unified_charge_slots`) is cheapest-first AND power-aware — it picks
+the cheapest N slots needed to cover the deficit, where N already accounts
+for the per-slot charge-rate cap (`min(safe_power, inverter_max − pv) ×
+slot_h × eff`).  Two cases:
 
-**Proximity guard** (June 2026): the original guard only blocked deferral
-when SOC was exactly at/below reserve_target.  This left a dangerous gap:
-at 23% SOC with 17% reserve, the battery was just 6% above reserve but
-deferral was allowed because 23 > 17.  With negative-price slots scheduled
-later (e.g. -0.03 vs current 0.007 → 3.7¢ gap), the system deferred
-indefinitely while consumption drained toward discharge_min.  Now uses a
-**proximity margin**: `max(10%, 3h_consumption / capacity)` added to
-reserve_target.  At 23% SOC with 17% reserve + 10% margin = 27% threshold,
-`23 <= 27` blocks deferral and charges immediately.  The margin scales
-with consumption/capacity ratio so high-drain systems get wider protection.
+- If a cheaper LATER slot could cover the deficit, the optimizer simply
+  **doesn't schedule the current slot** → `_determine_energy_state` returns
+  idle naturally.  No deferral needed.
+- The current slot is scheduled **only** when it is one of the cheapest-N
+  slots *required*.  Then every scheduled charge slot — including the cheaper
+  later ones — is needed, and the rate cap means a skipped slot **cannot be
+  made up later**.
+
+So the deferral never saved money (the optimizer already avoids expensive
+slots) and only ever fired in the case where skipping was harmful.  Real
+customer report: 23% SOC, 9–20 slots scheduled, price 0.042 ≪ threshold
+0.161, yet the battery sat **IDLE** draining toward discharge_min because the
+deferral kept "waiting for a cheaper slot" (a negative-price slot later) that
+was itself already committed to the plan.  The cheapest-slot optimisation now
+lives entirely in `ems.py` (the single source of truth); the coordinator just
+executes the plan.
+
+History: the deferral previously had escalating guards (SOC-floor, 1¢ gap,
+proximity margin) trying to plug the stall, but the stall was structural —
+the feature fought the power-aware optimiser.  Removing it is the clean fix.
 
 #### C4. Schedule-Status Attribute Caching — IMPLEMENTED
 `HA_FelicityScheduleStatusSensor` caches `extra_state_attributes` and
@@ -1258,7 +1266,7 @@ runtime safeguards.
 
 | ID | Fix | Where |
 |---|---|---|
-| #1 | Cheap-slot deferral stall guards (SOC-floor + 1¢ gap) | coordinator |
+| #1 | Cheap-slot deferral REMOVED (fought power-aware optimiser; see C3) | coordinator |
 | #3 | EMA smoothing on PV confidence (alpha=0.3) | ems |
 | #4 | Forecast.solar fallback (`pv_fallback_today_kwh`) | ems + coordinator |
 | #5 | `block_export_on_negative_price` config | ems |
