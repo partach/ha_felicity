@@ -350,14 +350,24 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         # GUARDS to prevent deferral stall (#1):
                         #  - never defer when SOC is at/below reserve target
                         #    (battery needs charging now, regardless of price)
+                        #  - never defer when SOC is NEAR reserve — within
+                        #    2 hours of consumption the battery is about to
+                        #    hit the floor; deferring risks discharge_min
                         #  - require a meaningful price gap (>= 1¢/kWh)
                         #    so tiny differences don't keep deferring forever
                         #  - never defer a manual override (user intent wins)
                         current_price = self.slot_prices_today[slot_idx]
-                        below_reserve = battery_soc <= self._reserve_target_pct
+                        consumption_daily = self._get_consumption_estimate()
+                        effective_cap = (
+                            (self.config_entry.options.get("battery_capacity_kwh", 10) or 10)
+                            * self._battery_soh_factor
+                        )
+                        cons_margin = (consumption_daily / 8.0) / effective_cap * 100.0 if effective_cap > 0 else 10.0
+                        margin_pct = max(10.0, cons_margin)
+                        near_reserve = battery_soc <= (self._reserve_target_pct + margin_pct)
                         if (current_price is not None
                                 and current_price >= 0
-                                and not below_reserve
+                                and not near_reserve
                                 and not is_override):
                             future_charge_prices = [
                                 self.slot_prices_today[idx]
@@ -372,9 +382,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                         >= min_meaningful_gap):
                                 _LOGGER.debug(
                                     "Deferring charge at slot %d (%.4f) — "
-                                    "meaningfully cheaper slot later (%.4f)",
+                                    "meaningfully cheaper slot later (%.4f) "
+                                    "(soc=%.1f%%, reserve=%.1f%%, margin=%.1f%%)",
                                     slot_idx, current_price,
                                     min(future_charge_prices),
+                                    battery_soc, self._reserve_target_pct,
+                                    margin_pct,
                                 )
                                 return "idle"
                         return "charging"

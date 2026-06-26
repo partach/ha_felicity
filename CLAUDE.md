@@ -1146,6 +1146,17 @@ defer when the future slot is cheaper by ≥ 1¢/kWh.  Without these guards,
 recovering PV confidence could keep deferring the same slot indefinitely
 until the day ended without any charging.
 
+**Proximity guard** (June 2026): the original guard only blocked deferral
+when SOC was exactly at/below reserve_target.  This left a dangerous gap:
+at 23% SOC with 17% reserve, the battery was just 6% above reserve but
+deferral was allowed because 23 > 17.  With negative-price slots scheduled
+later (e.g. -0.03 vs current 0.007 → 3.7¢ gap), the system deferred
+indefinitely while consumption drained toward discharge_min.  Now uses a
+**proximity margin**: `max(10%, 3h_consumption / capacity)` added to
+reserve_target.  At 23% SOC with 17% reserve + 10% margin = 27% threshold,
+`23 <= 27` blocks deferral and charges immediately.  The margin scales
+with consumption/capacity ratio so high-drain systems get wider protection.
+
 #### C4. Schedule-Status Attribute Caching — IMPLEMENTED
 `HA_FelicityScheduleStatusSensor` caches `extra_state_attributes` and
 rebuilds only in `_handle_coordinator_update`. Avoids rebuilding the
