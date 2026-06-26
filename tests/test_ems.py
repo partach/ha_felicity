@@ -5564,8 +5564,8 @@ class TestSelfSufficiencyTodayFirst:
         # Reserve target includes overnight reserve.
         # The MILP must charge something today to avoid overnight drain.
         assert len(today_charges) > 0, (
-            f"MILP cost mode should charge today to cover overnight reserve "
-            f"(battery=40%, reserve needs overnight coverage)"
+            "MILP cost mode should charge today to cover overnight reserve "
+            "(battery=40%, reserve needs overnight coverage)"
         )
 
 
