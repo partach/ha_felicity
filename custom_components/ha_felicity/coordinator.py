@@ -2143,15 +2143,23 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Midnight bookkeeping (once per day change)
                             now = datetime.now()
                             if self._current_day != now.day:
-                                _LOGGER.info(
-                                    "New day detected — running midnight bookkeeping"
-                                )
+                                first_boot = self._current_day is None
+                                if first_boot:
+                                    _LOGGER.info(
+                                        "First tick — initializing day tracking "
+                                        "(skipping consumption recording for partial day)"
+                                    )
+                                else:
+                                    _LOGGER.info(
+                                        "New day detected — running midnight bookkeeping"
+                                    )
                                 battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)
                                 self.battery_soc = battery_soc
-                                # Record deficit before rolling over (for next-day compensation)
-                                self._calculate_yesterday_deficit(battery_soc)
-                                # Record daily consumption for rolling average
-                                await self._record_daily_consumption()
+                                if not first_boot:
+                                    # Record deficit before rolling over (for next-day compensation)
+                                    self._calculate_yesterday_deficit(battery_soc)
+                                    # Record daily consumption for rolling average
+                                    await self._record_daily_consumption()
                                 self._soc_history = {}
                                 self._last_recorded_slot = -1
                                 self._pv_integrated_today_kwh = 0.0
