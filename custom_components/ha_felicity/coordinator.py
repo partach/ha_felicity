@@ -909,7 +909,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 f"Manual override: {action_now} this slot"
             )
         self.scheduler_active = result.scheduler_active
-        self._backend_soc_trajectory = result.soc_trajectory
+        # Recompute SOC trajectory with the finalized schedule (including
+        # any merged manual overrides).  Without this, the trajectory shows
+        # the pre-override plan — so manually-added charge slots don't
+        # appear in the SOC line, and the graph flatlines while the inverter
+        # is actively charging.
+        if today_overrides and self.slot_prices_today and battery_soc is not None:
+            num_slots_r = len(self.slot_prices_today)
+            minutes_per_slot_r = (24 * 60) / num_slots_r
+            current_slot_r = int(
+                (now.hour * 60 + now.minute) / minutes_per_slot_r
+            )
+            current_slot_r = min(current_slot_r, num_slots_r - 1)
+            current_kwh_r = (battery_soc / 100.0) * effective_capacity
+            self._backend_soc_trajectory = ems_module._compute_scheduled_soc_trajectory(
+                self.slot_prices_today, num_slots_r, minutes_per_slot_r,
+                current_kwh_r, current_slot_r,
+                self.scheduled_slots, config, state,
+            )
+        else:
+            self._backend_soc_trajectory = result.soc_trajectory
         self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots
         self._backend_soc_trajectory_tomorrow = result.tomorrow_soc_trajectory
         self._flex_load_scheduled = result.load_slots
