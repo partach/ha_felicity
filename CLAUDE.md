@@ -1076,8 +1076,19 @@ Now uses thresholded hysteresis:
   so the flipper pattern is easy to spot in retrospect:
   `State decision: desired=X, current=Y, soc=%, price=, threshold=, grid_power=W`
 
-### 6. Generator-Port Solar Workaround
-TREX-25/50 with micro-inverters on the generator port need special handling. PV registers read 0, falling back to generator_day_cost_energy. Both backend and frontend handle this but it's fragile.
+### 6. Generator-Port Solar Workaround — IMPROVED
+TREX-25/50 with micro-inverters on the generator port need special handling.
+PV registers read 0 and `generator_day_cost_energy` is unreliable (known
+Felicity firmware bug).  Three-tier fallback in `pv_actual_today_kwh`:
+1. PV string registers (`pv1-4_day_energy`) — used when > 0.1 kWh
+2. Generator/micro-inverter day register — used when > 0.1 kWh
+3. **Software-integrated PV** (`_pv_integrated_today_kwh`) — coordinator
+   accumulates instantaneous power (`total_generator_power` + PV string
+   power) every 10s tick using trapezoidal integration.  Reset at midnight.
+   This gives an accurate PV-today reading even when both day-energy
+   registers are stuck at zero.  Prevents `pv_confidence` from collapsing
+   to 0.1 (which distorts the SOC trajectory and over-schedules grid
+   charging) on generator-port installations.
 
 ### 7. Forecast.Solar `wh_hours` date handling
 `_retrieve_pv_forecast` now filters `wh_hours` entries by today's date before

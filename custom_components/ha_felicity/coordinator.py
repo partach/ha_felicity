@@ -149,6 +149,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._battery_soh_factor: float = 1.0
         self._last_soc_for_cycles: float | None = None
 
+        # Software PV integration: TREX-25/50 with generator-port solar report
+        # PV Today = 0.0 (the day-energy register doesn't track generator-port
+        # production reliably).  We integrate instantaneous generator power
+        # ourselves every tick (10s).  Reset at midnight.
+        self._pv_integrated_today_kwh: float = 0.0
+        self._last_pv_integrate_ts: float | None = None
+
         # Grid-mode change tracking (#10).  Detect transitions to reset
         # transient state that shouldn't survive a mode change.
         self._last_grid_mode: str | None = None
@@ -215,15 +222,66 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             gen_energy = self.data.get("generator_day_cost_energy") or 0.0
             micro_energy = self.data.get("microinverter_day_cost_energy") or 0.0
             alt_energy = max(gen_energy, micro_energy)
-            if alt_energy > 0:
-                _LOGGER.debug(
-                    "PV registers near zero (%.2f) but gen/micro port has %.2f kWh "
-                    "— using as PV actual (solar via gen port)",
-                    pv_kwh, alt_energy,
-                )
+            if alt_energy > 0.1:
                 return round(alt_energy, 2)
+            # Hardware registers all zero — fall back to our software-
+            # integrated counter (from instantaneous power readings).
+            if self._pv_integrated_today_kwh > 0.1:
+                _LOGGER.debug(
+                    "PV registers and gen-day all zero — using software-"
+                    "integrated PV: %.2f kWh",
+                    self._pv_integrated_today_kwh,
+                )
+                return round(self._pv_integrated_today_kwh, 2)
 
         return round(pv_kwh, 2) if has_pv_data else None
+
+    def _integrate_pv_power(self) -> None:
+        """Accumulate PV energy from instantaneous power readings.
+
+        For generator-port solar installations where the day-energy register
+        is unreliable, we integrate the real-time power ourselves.  Reads
+        total_generator_power (kW) — available on TREX-25/50 — and adds
+        power × dt to the running total.  Also includes PV string power for
+        installations where both are present.
+
+        Called every coordinator tick (~10s).  Reset at midnight.
+        """
+        now_ts = time.time()
+        if self._last_pv_integrate_ts is None:
+            self._last_pv_integrate_ts = now_ts
+            return
+
+        dt_hours = (now_ts - self._last_pv_integrate_ts) / 3600.0
+        self._last_pv_integrate_ts = now_ts
+        if dt_hours <= 0 or dt_hours > 0.1:
+            return
+
+        pv_kw = 0.0
+        # PV string power (pv1-4, TREX-25/50)
+        for key in ("pv1_power", "pv2_power", "pv3_power", "pv4_power"):
+            val = self.data.get(key) if self.data else None
+            if val is not None and val > 0:
+                pv_kw += val
+        # Generator-port power (micro-inverter solar)
+        gen_kw = 0.0
+        for key in ("total_generator_power",
+                     "phase_a_generator_active_power",
+                     "phase_b_generator_active_power",
+                     "phase_c_generator_active_power"):
+            val = self.data.get(key) if self.data else None
+            if val is not None and val > 0:
+                gen_kw += val
+                if key == "total_generator_power":
+                    break  # use total if available; skip per-phase
+        # TREX-5/10: pv_power_conversion (W)
+        pv_conv = self.data.get("pv_power_conversion") if self.data else None
+        if pv_conv is not None and pv_conv > 0:
+            pv_kw += pv_conv / 1000.0
+
+        total_kw = pv_kw + gen_kw
+        if total_kw > 0:
+            self._pv_integrated_today_kwh += total_kw * dt_hours
 
     def _apply_scaling(self, raw: int, index: int, size: int = 1) -> int | float:
         """Apply scaling based on index and size."""
@@ -2096,6 +2154,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 await self._record_daily_consumption()
                                 self._soc_history = {}
                                 self._last_recorded_slot = -1
+                                self._pv_integrated_today_kwh = 0.0
                                 self._current_day = now.day
 
                                 # Propagate tomorrow's slot overrides → today
@@ -2123,6 +2182,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 self._last_modbus_success_ts = time.time()
                             # Cycle counting + SOH update (#13)
                             self._track_cycle_throughput(battery_soc)
+                            # PV power integration (generator-port solar fix)
+                            self._integrate_pv_power()
 
                             # In auto mode, run the schedule optimizer
                             if price_mode == "auto":
