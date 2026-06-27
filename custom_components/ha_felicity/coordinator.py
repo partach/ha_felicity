@@ -1265,9 +1265,24 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         domain = load.current_entity.split(".")[0]
         try:
             if domain in ("select", "input_select"):
+                # Select entities expose a fixed list of option strings, and
+                # different chargers format them differently ("16", "16 A",
+                # "16A").  Passing the bare number ("16") raises
+                # ServiceValidationError when the entity expects "16 A".
+                # Resolve the actual option string by matching the numeric
+                # value against the entity's real options.
+                option = self._match_select_option(load.current_entity, step)
+                if option is None:
+                    _LOGGER.warning(
+                        "EV charger current %dA has no matching option on %s "
+                        "(options: %s) — skipping",
+                        step, load.current_entity,
+                        self._select_options(load.current_entity),
+                    )
+                    return
                 await self.hass.services.async_call(
                     domain, "select_option",
-                    {"entity_id": load.current_entity, "option": str(step)},
+                    {"entity_id": load.current_entity, "option": option},
                 )
             else:
                 await self.hass.services.async_call(
@@ -1278,6 +1293,44 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("EV charger current → %dA via %s", step, load.current_entity)
         except Exception as err:
             _LOGGER.error("Failed to set EV charger current: %s", err)
+
+    def _select_options(self, entity_id: str) -> list[str]:
+        """Return a select entity's current option list (empty if unavailable)."""
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return []
+        opts = state.attributes.get("options")
+        return list(opts) if isinstance(opts, (list, tuple)) else []
+
+    def _match_select_option(self, entity_id: str, amps: int) -> str | None:
+        """Find the option string on a select entity matching a numeric amperage.
+
+        Charger integrations format current options inconsistently: "16",
+        "16 A", "16A", "16.0".  Parse the leading number from each option and
+        return the one equal to `amps`.  Returns None when the entity is
+        unavailable or has no matching option (caller skips the write).
+        """
+        options = self._select_options(entity_id)
+        if not options:
+            # Entity not loaded yet — fall back to the bare number so the
+            # service call still has a chance (matches the legacy behaviour).
+            return str(amps)
+        for opt in options:
+            # Extract the leading numeric part (e.g. "16 A" → 16, "16A" → 16).
+            num = ""
+            for ch in str(opt).strip():
+                if ch.isdigit() or ch == ".":
+                    num += ch
+                else:
+                    break
+            if not num:
+                continue
+            try:
+                if abs(float(num) - amps) < 0.001:
+                    return opt
+            except ValueError:
+                continue
+        return None
 
     async def _safe_power_shed_loads(self, current_amps: float, max_amps: float) -> bool:
         """Shed flexible loads to reduce grid current.

@@ -721,7 +721,13 @@ during:
 **Actuation**: `coordinator._actuate_flex_loads()` runs every 10s cycle,
 turning loads on/off via `hass.services.async_call` (switch.turn_on/off).
 EV charger current is set via its current_entity (number.set_value or
-select.select_option).
+select.select_option).  For `select`/`input_select` current entities the
+option string is resolved by matching the numeric amperage against the
+entity's real `options` attribute (`_match_select_option`) — charger
+integrations format options inconsistently ("16", "16 A", "16A"), and
+passing the bare number raises `ServiceValidationError` when the entity
+expects "16 A".  Falls back to the bare number when the entity isn't
+loaded yet; skips (with a warning) when no option matches.
 
 **Fault isolation**: `_actuate_flex_loads` is wrapped in a top-level
 try/except at the call site (line 2212) and per-load try/except within
