@@ -47,6 +47,18 @@ _LOGGER = logging.getLogger(__name__)
 # well under this; the limit only guards against pathological inputs.
 _SOLVE_TIME_LIMIT = 10
 
+# Permanent MILP disable flag (process-lifetime).  When the CBC solver
+# binary is missing or otherwise unrunnable, the failure is structural —
+# it will recur on every 10s tick and never recover within this process.
+# Retrying logs a full traceback ~8600×/day and wastes CPU building the
+# model each time.  Once we detect an unrecoverable solver failure we set
+# this flag so solve_schedule() short-circuits to greedy immediately.  It
+# resets to False only on a fresh process start (HA restart / reload), so
+# a genuine fix (installing CBC) is re-checked on the next boot — exactly
+# the "only re-check on next boot" behaviour we want.
+_MILP_DISABLED = False
+_MILP_DISABLED_REASON = ""
+
 
 def solve_schedule(
     config: Any,
@@ -66,11 +78,21 @@ def solve_schedule(
     ``{slot_index: "charge"|"discharge"}``, or ``None`` if the solver
     is unavailable or fails (caller falls back to greedy).
     """
+    global _MILP_DISABLED, _MILP_DISABLED_REASON
+
+    # Short-circuit: a prior unrecoverable failure disabled MILP for the
+    # lifetime of this process.  No retry, no traceback spam — greedy runs.
+    if _MILP_DISABLED:
+        return None
+
     try:
         import pulp  # noqa: PLC0415 — lazy import so ems.py works without pulp
     except Exception as err:  # pragma: no cover - import guard
+        _MILP_DISABLED = True
+        _MILP_DISABLED_REASON = f"pulp import failed: {err}"
         _LOGGER.warning(
-            "pulp not installed or broken — MILP disabled, using greedy. "
+            "pulp not installed or broken — MILP disabled for this session "
+            "(greedy fallback active; re-checked on next restart). "
             "Install with: pip install pulp>=2.7.0  Error: %s", err,
         )
         return None
@@ -86,6 +108,20 @@ def solve_schedule(
             reserve_target=reserve_target,
             pv_confidence=pv_confidence,
         )
+    except FileNotFoundError as err:
+        # The CBC solver binary is missing / unrunnable on this platform
+        # (common on uncommon CPU arches or new Python versions where the
+        # prebuilt binary path doesn't exist).  This is unrecoverable for
+        # the process lifetime — disable MILP so we don't rebuild the model
+        # and raise the same traceback every 10s (was logged 1100+ times).
+        _MILP_DISABLED = True
+        _MILP_DISABLED_REASON = f"CBC solver binary unavailable: {err}"
+        _LOGGER.warning(
+            "MILP CBC solver binary not found — disabling MILP for this "
+            "session, using greedy (re-checked on next restart). "
+            "The greedy scheduler is fully functional. Error: %s", err,
+        )
+        return None
     except Exception:  # pragma: no cover - solver guard
         _LOGGER.warning("MILP solve failed — falling back to greedy", exc_info=True)
         return None

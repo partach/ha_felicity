@@ -11,7 +11,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pymodbus.exceptions import ModbusException, ConnectionException
-from .const import DOMAIN, INVERTER_MODEL_TREX_TEN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW
+from .const import (
+    DOMAIN, INVERTER_MODEL_TREX_TEN, CONF_INVERTER_MODEL,
+    DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW,
+    INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY,
+)
 from .type_specific import TypeSpecificHandler
 from . import ems as ems_module
 
@@ -69,6 +73,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._current_energy_state: str | None = None
         self._last_state_change: datetime | None = None
         self._current_day: int | None = None
+
+        # Minimum charge commitment (anti flip-flop).  When the battery is
+        # near the reserve target the schedule's marginal deficit can
+        # oscillate in/out of "charge" every tick, producing a charge→off
+        # storm that hammers the grid current (seconds-scale toggling).
+        # Once charging starts we commit to it until SOC rises a meaningful
+        # amount OR a minimum duration passes — so each charge episode is a
+        # real block, never a micro-burst.
+        self._charge_commit_start_soc: float | None = None
+        self._charge_commit_until_ts: float = 0.0
 
         # Price tracking
         self.current_price: float | None = None
@@ -1882,12 +1896,29 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             soc_limit,
             voltage_level,
         )
-        # Set operating mode FIRST (system_mode, sell_enable) so that when the
-        # economic rule is activated the inverter already sees the correct mode.
-        # On TREX-25/50, enabling the rule before sell_enable is set causes the
-        # inverter to latch a "charge" interpretation when sell_enable is stale
-        # from a previous charging cycle.  Writing mode first eliminates the race.
-        await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
+        # Set operating mode FIRST (system_mode, sell_enable, eco_timeofuse) so
+        # that when the economic rule is activated the inverter already sees the
+        # correct mode.  On TREX-25/50, enabling the rule before sell_enable is
+        # set causes the inverter to latch a "charge" interpretation when
+        # sell_enable is stale from a previous charging cycle.  Writing mode
+        # first eliminates the race.
+        #
+        # CRITICAL: the mode write is now checked.  For TREX-25/50 it sets
+        # eco_timeofuse=1 (Economic mode) — without it the inverter stays in
+        # General mode and silently ignores Rule 1.  If the mode write fails we
+        # must NOT proceed to set econ_rule_1_enable: that would leave the
+        # inverter with "rule 1 = charge" but "mode = General", i.e. inert,
+        # exactly the reported failure.  Abort and let the next cycle retry
+        # the whole transition atomically.
+        mode_ok = await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
+        if not mode_ok and new_state != "idle":
+            _LOGGER.error(
+                "CRITICAL: Failed to set operating mode (Economic) for state %s — "
+                "skipping rule-1 enable to avoid an inert 'enable=%s, mode=General' "
+                "state; will retry next cycle",
+                new_state, new_state,
+            )
+            return False
         # The enable write is the critical one — if it fails, the inverter won't change state
         enable_ok = await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
         if not enable_ok:
@@ -1963,7 +1994,77 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         current_week if isinstance(current_week, int) else 0,
                     )
 
-    
+    async def _ensure_economic_mode_when_active(self) -> None:
+        """Self-heal: re-assert Economic mode if the inverter silently dropped it.
+
+        The coordinator only calls _transition_to_state when the *desired*
+        state changes.  But on TREX-25/50 the inverter can fall out of
+        Economic mode (eco_timeofuse → 0, i.e. "General mode") while we still
+        believe we're charging/discharging — a firmware quirk, the Felicity
+        app, or a power blip can reset it.  When that happens Rule 1 goes
+        inert: econ_rule_1_grid_charge_enable stays 1 but the inverter ignores
+        it, so the battery just sits there (the exact reported failure:
+        "enable=charge but mode=General, battery not charging").  No state
+        change occurs, so nothing re-writes the mode.
+
+        This runs every cycle.  When we're in an active state but the
+        Economic-mode register reads disabled, re-write the operating mode to
+        bring the inverter back under Rule 1 control.  Idempotent: only writes
+        when the register actually shows Economic mode is off.
+
+        The Economic-mode register differs by model:
+          - TREX-25/50: `eco_timeofuse` (1 = Economic, 0 = General)
+          - TREX-5/10:  `operating_mode` (2 = Economic, 0 = General,
+                        1 = Backup)
+        """
+        if self._current_energy_state not in ("charging", "discharging"):
+            return
+        if not self.data:
+            return
+
+        enable_value = {"charging": 1, "discharging": 2}[self._current_energy_state]
+
+        if self.inverter_model in (
+            INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
+        ):
+            eco = self.data.get("eco_timeofuse")
+            if eco is None or int(eco) == 1:
+                return  # register not read, or Economic mode already active
+            register_val = eco
+        elif self.inverter_model in (
+            INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN
+        ):
+            mode = self.data.get("operating_mode")
+            if mode is None or int(mode) == 2:
+                return  # register not read, or Economic mode already active
+            register_val = mode
+        else:
+            return
+
+        _LOGGER.warning(
+            "Self-heal: inverter dropped out of Economic mode (register=%s) "
+            "while state=%s — re-asserting operating mode so Rule 1 resumes "
+            "(battery was likely sitting inert)",
+            register_val, self._current_energy_state,
+        )
+        ok = await self.TypeSpecificHandler.write_type_specific_register(
+            "operating_mode", enable_value
+        )
+        if ok:
+            # Reflect the re-assertion in cached data so we don't re-trigger
+            # before the next read.
+            if self.inverter_model in (
+                INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
+            ):
+                self.data["eco_timeofuse"] = 1
+            else:
+                self.data["operating_mode"] = 2
+        else:
+            _LOGGER.error(
+                "Self-heal: failed to re-assert Economic mode for state %s",
+                self._current_energy_state,
+            )
+
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
         opts = self.config_entry.options
@@ -2305,6 +2406,35 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 # discharge window.
                                 self._anticonflict_import_ticks = 0
 
+                            # Minimum charge commitment (anti flip-flop).
+                            # When we're charging and the schedule suddenly
+                            # wants idle, hold the charge until the commitment
+                            # is satisfied.  This kills the seconds-scale
+                            # charge→off storm that occurs when SOC hovers
+                            # near the reserve target and the marginal deficit
+                            # oscillates in and out of the plan each tick.
+                            MIN_CHARGE_SOC_GAIN = 5.0      # %
+                            MIN_CHARGE_DURATION_S = 900    # 15 min (one slot)
+                            _commit_opts = self.config_entry.options
+                            charge_max_pct = _commit_opts.get("battery_charge_max_level", 100)
+                            commit_grid_mode = _commit_opts.get("grid_mode", "off")
+                            if (self._current_energy_state == "charging"
+                                    and desired_state == "idle"
+                                    and commit_grid_mode in ("from_grid", "both")
+                                    and battery_soc is not None
+                                    and battery_soc < charge_max_pct
+                                    and self._charge_commit_start_soc is not None):
+                                soc_gain = battery_soc - self._charge_commit_start_soc
+                                time_held = time.time() < self._charge_commit_until_ts
+                                if soc_gain < MIN_CHARGE_SOC_GAIN and time_held:
+                                    _LOGGER.info(
+                                        "Charge commitment: holding charge (gain %.1f%% "
+                                        "< %.1f%%, %.0fs left) — preventing flip-flop",
+                                        soc_gain, MIN_CHARGE_SOC_GAIN,
+                                        self._charge_commit_until_ts - time.time(),
+                                    )
+                                    desired_state = "charging"
+
                             _LOGGER.debug(
                                 "State decision: desired=%s, current=%s, soc=%s%%, "
                                 "price=%s, threshold=%s, grid_power=%s",
@@ -2318,6 +2448,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             if desired_state != self._current_energy_state:
                                 success = await self._transition_to_state(desired_state)
                                 if success:
+                                    # Arm / disarm the charge commitment on the
+                                    # transition edge so each charge episode is
+                                    # a real block (anti flip-flop).
+                                    if desired_state == "charging":
+                                        self._charge_commit_start_soc = battery_soc
+                                        self._charge_commit_until_ts = (
+                                            time.time() + MIN_CHARGE_DURATION_S
+                                        )
+                                    else:
+                                        self._charge_commit_start_soc = None
+                                        self._charge_commit_until_ts = 0.0
                                     self._current_energy_state = desired_state
                                     self._last_state_change = now
                                 else:
@@ -2325,6 +2466,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                         "State transition to %s failed — will retry next cycle (inverter may still be in %s)",
                                         desired_state, self._current_energy_state,
                                     )
+                            else:
+                                # No state change this cycle, but verify the
+                                # inverter hasn't silently dropped out of
+                                # Economic mode while we believe we're active.
+                                await self._ensure_economic_mode_when_active()
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",

@@ -131,6 +131,19 @@ and **silently falls back to greedy** on any failure (pulp missing,
 infeasible, timeout, non-optimal). The greedy path stays the safety net —
 MILP failures never break the EMS.
 
+**Permanent disable on unrecoverable failure** (`_MILP_DISABLED` module
+flag): when the CBC solver binary is missing/unrunnable (`FileNotFoundError`
+from `subprocess.Popen` — happens on uncommon CPU arches or new Python
+versions where pulp's prebuilt CBC path doesn't exist) or pulp import fails,
+the failure is **structural** — it recurs on every 10s tick and never
+recovers within the process.  Without a guard it logs a full traceback
+~8600×/day (one user saw 1100+).  `solve_schedule` now sets a process-
+lifetime flag on these unrecoverable errors and short-circuits to greedy
+immediately on subsequent calls — no rebuild, no traceback spam.  The flag
+resets only on a fresh process start (HA restart/reload), so installing CBC
+is re-checked on the next boot.  Non-optimal/infeasible results do NOT set
+the flag (they can be input-dependent and recover next slot).
+
 **Model** (`milp.solve_schedule`, a pure LP):
 - Horizon = today's remaining slots + all of tomorrow (when prices known).
 - Per-slot continuous vars: `c[k]` (grid kWh to charge, ≤ inverter
@@ -250,6 +263,42 @@ the time the coordinator sees it, charging now is the correct action.
 | charging | 1 | voltage_level (default 58V) | charge_max (default 100%) | safe_max_power (W) |
 | discharging | 2 | discharge_min_voltage (default 50V) | discharge floor (see below) | safe_max_power (W) |
 | idle | 0 | *(not written)* | *(not written)* | *(not written)* |
+
+**Economic-mode atomicity (all models)**: the inverter only obeys Rule 1
+when it's in "Economic mode".  The register differs by model: TREX-25/50 use
+`eco_timeofuse` (1=Economic), TREX-5/10 use `operating_mode` (2=Economic,
+0=General).  When in General mode the inverter **silently ignores** the
+rule-1 charge enable — `econ_rule_1_enable`/`_grid_charge_enable=1` but
+nothing charges.  `_transition_to_state` writes the operating mode FIRST and
+now **checks the result**: if the mode write fails it aborts and does NOT
+write `econ_rule_1_enable`, so the inverter is never left in the inert
+"enable=charge, mode=General" state.  The transition returns False and the
+next cycle retries atomically.  `_handle_operating_mode` likewise propagates
+the Economic-mode write result (eco_timeofuse on TREX-25/50, operating_mode
+on TREX-5/10) instead of always returning True.
+
+**Economic-mode self-heal** (`_ensure_economic_mode_when_active`): the
+inverter can drop out of Economic mode *after* a successful transition
+(firmware quirk, Felicity app, power blip) while the coordinator still
+believes it's charging/discharging.  No state change → nothing re-writes the
+mode → battery sits inert.  This check runs every cycle: when in an active
+state but the Economic-mode register reads off (`eco_timeofuse`!=1 on
+TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-asserts the operating
+mode.  Idempotent (only writes when the register actually shows General).
+
+**Minimum charge commitment (anti flip-flop)**: when SOC hovers near the
+reserve target, the schedule's marginal deficit can flip in/out of "charge"
+every tick, producing a charge→off storm on `econ_rule_1_enable` that
+hammers the grid current (seconds-scale toggling, real customer report on a
+TREX-10 at ~34% SOC).  Once charging starts, the coordinator commits to it
+until SOC rises ≥ `MIN_CHARGE_SOC_GAIN` (5%) **or** `MIN_CHARGE_DURATION_S`
+(15 min, one slot) elapses — whichever first.  While committed, a schedule
+flip to idle is overridden back to charging, so each charge episode is a
+real block, never a micro-burst.  Released early when SOC reaches
+`charge_max` (never overcharges) and capped at 15 min (never infinite).
+Armed/disarmed on the transition edge; the held-charge ticks still run the
+Economic-mode self-heal, so a held charge actively keeps the inverter in
+Economic mode.
 
 **Discharge SOC floor**: in auto mode (grid_mode active) the discharging
 SOC register is written from the *computed* `_reserve_target_pct`

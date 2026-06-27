@@ -237,11 +237,24 @@ class TypeSpecificHandler:
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             if value == 0: # assume idle
                 await self.async_write_register("operating_mode", 0)
-            elif value in (1,2): # assume Economic mode, enabled to_grid or from_grid 
-                await self.async_write_register("operating_mode", 2) # skip back-up mode for now
+                return True
+            elif value in (1,2): # Economic mode, enabled to_grid or from_grid
+                # operating_mode=2 (Economic) is what makes the inverter obey
+                # Rule 1.  If this write fails the inverter stays in General
+                # mode and silently ignores the rule-1 enable — check it and
+                # propagate failure so the caller doesn't leave the inverter
+                # in the inert "enable=charge, mode=General" state.
+                ok = await self.async_write_register("operating_mode", 2) # skip back-up mode for now
+                if not ok:
+                    _LOGGER.error(
+                        "Failed to write operating_mode=2 (Economic) on %s — "
+                        "inverter would stay in General mode and ignore Rule 1",
+                        self._inverter_model,
+                    )
+                return ok
             else:
               _LOGGER.warning("Operating mode unknown for TREX10 series, not changing registers")
-            return True
+              return False
     
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
             if value == 0: # assume idle, we dont control but we need to set things back if we did (but defaults no know atm)
@@ -251,22 +264,38 @@ class TypeSpecificHandler:
                 await self.async_write_register("zero_export_to_ct_sell_enable", 0) # Would it standard be ok to allow this? No the it seems to prefere selling to loading battery (?)
             elif value == 1: # Charge and we want to control
                 await self.async_write_register("system_mode", 2) # allows charge
-                if self.register_map.get("eco_timeofuse",0) == 0:
-                    _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
-                await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
-#                await self.async_write_register("econ_rule_1_sell_enable", 0) # we want to charge, not sell
+                # eco_timeofuse=1 is the CRITICAL "Economic mode" enable — it's
+                # what makes the inverter actually obey Rule 1.  Without it the
+                # inverter stays in General mode and silently ignores the
+                # rule-1 charge enable (the exact "enable=charge but mode=General"
+                # bug).  Check this write and propagate failure so the caller
+                # does NOT proceed to set the rule-1 enable on a General-mode
+                # inverter (which leaves it inert).
+                eco_ok = await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+                if not eco_ok:
+                    _LOGGER.error(
+                        "Failed to write eco_timeofuse=1 (Economic mode) for charging "
+                        "on %s — inverter would stay in General mode and ignore Rule 1",
+                        self._inverter_model,
+                    )
+                    return False
                 await self.async_write_register("zero_export_to_ct_sell_enable", 0) # Provide back to grid if needed. (to_grid or from_grid is enabled)
             elif value == 2: # discharge to grid and we want to control
-                if self.register_map.get("eco_timeofuse",0) == 0:
-                    _LOGGER.debug("Econ rule not enabled. Enabling directly via integration!")
                 await self.async_write_register("zero_export_to_ct_sell_enable", 1) # Provide back to grid if needed. (to_grid or from_grid is enabled)
                 await self.async_write_register("system_mode", 0)
-                await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
-#                await self.async_write_register("econ_rule_1_sell_enable", 1) # we need to enable sell as we want to discharge to sell
-            else:    
+                eco_ok = await self.async_write_register("eco_timeofuse", 1) # enable use of rule set
+                if not eco_ok:
+                    _LOGGER.error(
+                        "Failed to write eco_timeofuse=1 (Economic mode) for discharging "
+                        "on %s — inverter would stay in General mode and ignore Rule 1",
+                        self._inverter_model,
+                    )
+                    return False
+            else:
               _LOGGER.warning("Operating mode unknown for TREX50 series, not changing registers")
+              return False
             return True
-    
+
         return False  # unknown model → fallback
 
     async def _handle_econ_rule_1_enable(self, value: int) -> bool:
