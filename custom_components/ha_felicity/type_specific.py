@@ -237,11 +237,24 @@ class TypeSpecificHandler:
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             if value == 0: # assume idle
                 await self.async_write_register("operating_mode", 0)
-            elif value in (1,2): # assume Economic mode, enabled to_grid or from_grid 
-                await self.async_write_register("operating_mode", 2) # skip back-up mode for now
+                return True
+            elif value in (1,2): # Economic mode, enabled to_grid or from_grid
+                # operating_mode=2 (Economic) is what makes the inverter obey
+                # Rule 1.  If this write fails the inverter stays in General
+                # mode and silently ignores the rule-1 enable — check it and
+                # propagate failure so the caller doesn't leave the inverter
+                # in the inert "enable=charge, mode=General" state.
+                ok = await self.async_write_register("operating_mode", 2) # skip back-up mode for now
+                if not ok:
+                    _LOGGER.error(
+                        "Failed to write operating_mode=2 (Economic) on %s — "
+                        "inverter would stay in General mode and ignore Rule 1",
+                        self._inverter_model,
+                    )
+                return ok
             else:
               _LOGGER.warning("Operating mode unknown for TREX10 series, not changing registers")
-            return True
+              return False
     
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
             if value == 0: # assume idle, we dont control but we need to set things back if we did (but defaults no know atm)

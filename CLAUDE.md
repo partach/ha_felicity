@@ -264,26 +264,41 @@ the time the coordinator sees it, charging now is the correct action.
 | discharging | 2 | discharge_min_voltage (default 50V) | discharge floor (see below) | safe_max_power (W) |
 | idle | 0 | *(not written)* | *(not written)* | *(not written)* |
 
-**Economic-mode atomicity (TREX-25/50)**: on TREX-25/50 the inverter only
-obeys Rule 1 when `eco_timeofuse=1` ("Economic mode").  When it's 0 the
-inverter is in "General mode" and **silently ignores** the rule-1 charge
-enable — `econ_rule_1_grid_charge_enable=1` but nothing charges.
-`_transition_to_state` writes the operating mode (which sets
-`eco_timeofuse`) FIRST and now **checks the result**: if the mode write
-fails it aborts and does NOT write `econ_rule_1_enable`, so the inverter is
-never left in the inert "enable=charge, mode=General" state.  The transition
-returns False and the next cycle retries atomically.  `_handle_operating_mode`
-likewise propagates the `eco_timeofuse` write result instead of always
-returning True.
+**Economic-mode atomicity (all models)**: the inverter only obeys Rule 1
+when it's in "Economic mode".  The register differs by model: TREX-25/50 use
+`eco_timeofuse` (1=Economic), TREX-5/10 use `operating_mode` (2=Economic,
+0=General).  When in General mode the inverter **silently ignores** the
+rule-1 charge enable — `econ_rule_1_enable`/`_grid_charge_enable=1` but
+nothing charges.  `_transition_to_state` writes the operating mode FIRST and
+now **checks the result**: if the mode write fails it aborts and does NOT
+write `econ_rule_1_enable`, so the inverter is never left in the inert
+"enable=charge, mode=General" state.  The transition returns False and the
+next cycle retries atomically.  `_handle_operating_mode` likewise propagates
+the Economic-mode write result (eco_timeofuse on TREX-25/50, operating_mode
+on TREX-5/10) instead of always returning True.
 
 **Economic-mode self-heal** (`_ensure_economic_mode_when_active`): the
 inverter can drop out of Economic mode *after* a successful transition
 (firmware quirk, Felicity app, power blip) while the coordinator still
 believes it's charging/discharging.  No state change → nothing re-writes the
 mode → battery sits inert.  This check runs every cycle: when in an active
-state but `eco_timeofuse` reads 0, it re-asserts the operating mode.
-Idempotent (only writes when the register actually shows Economic off).
-TREX-25/50 only.
+state but the Economic-mode register reads off (`eco_timeofuse`!=1 on
+TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-asserts the operating
+mode.  Idempotent (only writes when the register actually shows General).
+
+**Minimum charge commitment (anti flip-flop)**: when SOC hovers near the
+reserve target, the schedule's marginal deficit can flip in/out of "charge"
+every tick, producing a charge→off storm on `econ_rule_1_enable` that
+hammers the grid current (seconds-scale toggling, real customer report on a
+TREX-10 at ~34% SOC).  Once charging starts, the coordinator commits to it
+until SOC rises ≥ `MIN_CHARGE_SOC_GAIN` (5%) **or** `MIN_CHARGE_DURATION_S`
+(15 min, one slot) elapses — whichever first.  While committed, a schedule
+flip to idle is overridden back to charging, so each charge episode is a
+real block, never a micro-burst.  Released early when SOC reaches
+`charge_max` (never overcharges) and capped at 15 min (never infinite).
+Armed/disarmed on the transition edge; the held-charge ticks still run the
+Economic-mode self-heal, so a held charge actively keeps the inverter in
+Economic mode.
 
 **Discharge SOC floor**: in auto mode (grid_mode active) the discharging
 SOC register is written from the *computed* `_reserve_target_pct`
