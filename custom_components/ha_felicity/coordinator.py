@@ -14,6 +14,7 @@ from pymodbus.exceptions import ModbusException, ConnectionException
 from .const import (
     DOMAIN, INVERTER_MODEL_TREX_TEN, CONF_INVERTER_MODEL,
     DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW,
+    INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY,
 )
 from .type_specific import TypeSpecificHandler
