@@ -131,6 +131,19 @@ and **silently falls back to greedy** on any failure (pulp missing,
 infeasible, timeout, non-optimal). The greedy path stays the safety net —
 MILP failures never break the EMS.
 
+**Permanent disable on unrecoverable failure** (`_MILP_DISABLED` module
+flag): when the CBC solver binary is missing/unrunnable (`FileNotFoundError`
+from `subprocess.Popen` — happens on uncommon CPU arches or new Python
+versions where pulp's prebuilt CBC path doesn't exist) or pulp import fails,
+the failure is **structural** — it recurs on every 10s tick and never
+recovers within the process.  Without a guard it logs a full traceback
+~8600×/day (one user saw 1100+).  `solve_schedule` now sets a process-
+lifetime flag on these unrecoverable errors and short-circuits to greedy
+immediately on subsequent calls — no rebuild, no traceback spam.  The flag
+resets only on a fresh process start (HA restart/reload), so installing CBC
+is re-checked on the next boot.  Non-optimal/infeasible results do NOT set
+the flag (they can be input-dependent and recover next slot).
+
 **Model** (`milp.solve_schedule`, a pure LP):
 - Horizon = today's remaining slots + all of tomorrow (when prices known).
 - Per-slot continuous vars: `c[k]` (grid kWh to charge, ≤ inverter
@@ -250,6 +263,27 @@ the time the coordinator sees it, charging now is the correct action.
 | charging | 1 | voltage_level (default 58V) | charge_max (default 100%) | safe_max_power (W) |
 | discharging | 2 | discharge_min_voltage (default 50V) | discharge floor (see below) | safe_max_power (W) |
 | idle | 0 | *(not written)* | *(not written)* | *(not written)* |
+
+**Economic-mode atomicity (TREX-25/50)**: on TREX-25/50 the inverter only
+obeys Rule 1 when `eco_timeofuse=1` ("Economic mode").  When it's 0 the
+inverter is in "General mode" and **silently ignores** the rule-1 charge
+enable — `econ_rule_1_grid_charge_enable=1` but nothing charges.
+`_transition_to_state` writes the operating mode (which sets
+`eco_timeofuse`) FIRST and now **checks the result**: if the mode write
+fails it aborts and does NOT write `econ_rule_1_enable`, so the inverter is
+never left in the inert "enable=charge, mode=General" state.  The transition
+returns False and the next cycle retries atomically.  `_handle_operating_mode`
+likewise propagates the `eco_timeofuse` write result instead of always
+returning True.
+
+**Economic-mode self-heal** (`_ensure_economic_mode_when_active`): the
+inverter can drop out of Economic mode *after* a successful transition
+(firmware quirk, Felicity app, power blip) while the coordinator still
+believes it's charging/discharging.  No state change → nothing re-writes the
+mode → battery sits inert.  This check runs every cycle: when in an active
+state but `eco_timeofuse` reads 0, it re-asserts the operating mode.
+Idempotent (only writes when the register actually shows Economic off).
+TREX-25/50 only.
 
 **Discharge SOC floor**: in auto mode (grid_mode active) the discharging
 SOC register is written from the *computed* `_reserve_target_pct`

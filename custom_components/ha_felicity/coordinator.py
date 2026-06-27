@@ -11,7 +11,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pymodbus.exceptions import ModbusException, ConnectionException
-from .const import DOMAIN, INVERTER_MODEL_TREX_TEN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW
+from .const import (
+    DOMAIN, INVERTER_MODEL_TREX_TEN, CONF_INVERTER_MODEL,
+    DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW,
+    INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY,
+)
 from .type_specific import TypeSpecificHandler
 from . import ems as ems_module
 
@@ -1882,12 +1886,29 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             soc_limit,
             voltage_level,
         )
-        # Set operating mode FIRST (system_mode, sell_enable) so that when the
-        # economic rule is activated the inverter already sees the correct mode.
-        # On TREX-25/50, enabling the rule before sell_enable is set causes the
-        # inverter to latch a "charge" interpretation when sell_enable is stale
-        # from a previous charging cycle.  Writing mode first eliminates the race.
-        await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
+        # Set operating mode FIRST (system_mode, sell_enable, eco_timeofuse) so
+        # that when the economic rule is activated the inverter already sees the
+        # correct mode.  On TREX-25/50, enabling the rule before sell_enable is
+        # set causes the inverter to latch a "charge" interpretation when
+        # sell_enable is stale from a previous charging cycle.  Writing mode
+        # first eliminates the race.
+        #
+        # CRITICAL: the mode write is now checked.  For TREX-25/50 it sets
+        # eco_timeofuse=1 (Economic mode) — without it the inverter stays in
+        # General mode and silently ignores Rule 1.  If the mode write fails we
+        # must NOT proceed to set econ_rule_1_enable: that would leave the
+        # inverter with "rule 1 = charge" but "mode = General", i.e. inert,
+        # exactly the reported failure.  Abort and let the next cycle retry
+        # the whole transition atomically.
+        mode_ok = await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
+        if not mode_ok and new_state != "idle":
+            _LOGGER.error(
+                "CRITICAL: Failed to set operating mode (Economic) for state %s — "
+                "skipping rule-1 enable to avoid an inert 'enable=%s, mode=General' "
+                "state; will retry next cycle",
+                new_state, new_state,
+            )
+            return False
         # The enable write is the critical one — if it fails, the inverter won't change state
         enable_ok = await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_enable", enable_value)
         if not enable_ok:
@@ -1963,7 +1984,54 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         current_week if isinstance(current_week, int) else 0,
                     )
 
-    
+    async def _ensure_economic_mode_when_active(self) -> None:
+        """Self-heal: re-assert Economic mode if the inverter silently dropped it.
+
+        The coordinator only calls _transition_to_state when the *desired*
+        state changes.  But on TREX-25/50 the inverter can fall out of
+        Economic mode (eco_timeofuse → 0, i.e. "General mode") while we still
+        believe we're charging/discharging — a firmware quirk, the Felicity
+        app, or a power blip can reset it.  When that happens Rule 1 goes
+        inert: econ_rule_1_grid_charge_enable stays 1 but the inverter ignores
+        it, so the battery just sits there (the exact reported failure:
+        "enable=charge but mode=General, battery not charging").  No state
+        change occurs, so nothing re-writes the mode.
+
+        This runs every cycle.  When we're in an active state but
+        eco_timeofuse reads disabled, re-write the operating mode to bring the
+        inverter back under Rule 1 control.  Idempotent: only writes when the
+        register actually shows Economic mode is off.
+        """
+        if self._current_energy_state not in ("charging", "discharging"):
+            return
+        if self.inverter_model not in (
+            INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
+        ):
+            return
+        if not self.data:
+            return
+        eco = self.data.get("eco_timeofuse")
+        if eco is None or int(eco) == 1:
+            return  # register not read, or Economic mode already active
+
+        enable_value = {"charging": 1, "discharging": 2}[self._current_energy_state]
+        _LOGGER.warning(
+            "Self-heal: inverter dropped out of Economic mode (eco_timeofuse=%s) "
+            "while state=%s — re-asserting operating mode so Rule 1 resumes "
+            "(battery was likely sitting inert)",
+            eco, self._current_energy_state,
+        )
+        ok = await self.TypeSpecificHandler.write_type_specific_register(
+            "operating_mode", enable_value
+        )
+        if ok:
+            self.data["eco_timeofuse"] = 1
+        else:
+            _LOGGER.error(
+                "Self-heal: failed to re-assert Economic mode for state %s",
+                self._current_energy_state,
+            )
+
     def get_energy_state_info(self) -> dict:
         """Get current energy management state info (useful for debugging sensor)."""
         opts = self.config_entry.options
@@ -2325,6 +2393,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                         "State transition to %s failed — will retry next cycle (inverter may still be in %s)",
                                         desired_state, self._current_energy_state,
                                     )
+                            else:
+                                # No state change this cycle, but verify the
+                                # inverter hasn't silently dropped out of
+                                # Economic mode while we believe we're active.
+                                await self._ensure_economic_mode_when_active()
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",
