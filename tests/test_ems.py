@@ -5785,8 +5785,14 @@ class TestConsumptionDeviationCorrection:
         r_none = calculate_schedule(EMSConfig(**base), EMSState(**state_none))
         assert len(r.scheduled_slots) == len(r_none.scheduled_slots)
 
-    def test_deviation_below_reserve_ignored(self):
-        """When SOC is below reserve target, urgent recovery handles it — no double-counting."""
+    def test_deviation_below_reserve_now_compensates(self):
+        """Below the reserve target the deviation correction now also fires.
+
+        Previously it was gated on SOC > reserve_target (the dead band where
+        urgent recovery — which only fires below discharge_min — didn't reach).
+        A sustained load draining the battery in the reserve→discharge_min
+        band must now be compensated too, not ignored.
+        """
         base = dict(
             grid_mode="from_grid",
             battery_capacity_kwh=60.0,
@@ -5798,20 +5804,27 @@ class TestConsumptionDeviationCorrection:
             consumption_est_kwh=6.3,
         )
         prices = [0.10] * 24
-        # SOC at 15% (9 kWh) → below reserve. Deviation is real but
-        # urgent recovery should handle it.
+        # SOC at 50% (30 kWh) — below the self-consumption reserve target but
+        # well above discharge_min (so urgent recovery does NOT fire).  A real
+        # 9 kWh deviation must trigger compensating charge.
+        base_dev = dict(base, optimization_priority="self_consumption")
         state = dict(
             slot_prices_today=prices,
-            battery_soc_pct=15.0,
-            predicted_soc_pct=30.0,
+            battery_soc_pct=50.0,
+            predicted_soc_pct=65.0,  # 9 kWh below prediction
             pv_hourly_kwh={},
             pv_actual_today_kwh=0,
             current_hour=17,
             current_minute=0,
         )
-        r = calculate_schedule(EMSConfig(**base), EMSState(**state))
-        # Should not crash and should charge (from urgent recovery)
+        state_none = dict(state)
+        del state_none["predicted_soc_pct"]
+        r = calculate_schedule(EMSConfig(**base_dev), EMSState(**state))
+        r_none = calculate_schedule(EMSConfig(**base_dev), EMSState(**state_none))
         charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        charge_none = [i for i, a in r_none.scheduled_slots.items() if a == "charge"]
+        # With the deviation, at least as many charge slots as without it.
+        assert len(charge) >= len(charge_none)
         assert len(charge) > 0
 
     def test_deviation_works_in_both_mode(self):

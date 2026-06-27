@@ -164,6 +164,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._battery_soh_factor: float = 1.0
         self._last_soc_for_cycles: float | None = None
 
+        # Sustained consumption-deviation tracking.  The deviation correction
+        # (ems._consumption_deviation_kwh) only engages when an unexpected load
+        # has persisted for a significant time — not a transient spike.  This
+        # timestamp marks when the actual SOC first fell significantly below
+        # the predicted trajectory; it resets to None the moment consumption
+        # returns to trend (so the extra charge stops on its own).
+        self._deviation_since_ts: float | None = None
+
         # Software PV integration: TREX-25/50 with generator-port solar report
         # PV Today = 0.0 (the day-energy register doesn't track generator-port
         # production reliably).  We integrate instantaneous generator power
@@ -751,14 +759,56 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # What did the previous schedule predict the SOC would be at this slot?
         # Used by the consumption-deviation correction to detect unexpected
-        # loads (car charger, oven, etc.) draining the battery faster than the
-        # profile-based prediction.
-        predicted_soc = None
+        # loads (air-conditioning, car charger, oven) draining the battery
+        # faster than the profile-based prediction.
+        #
+        # SUSTAINED-ONLY GATE: we only hand the prediction to the algorithm
+        # (which then sizes a compensating deficit) once the deviation has
+        # PERSISTED for a significant time.  A transient spike — kettle, oven
+        # preheat, an AC compressor cycling on for two minutes — must not
+        # trigger extra grid charging.  The moment consumption returns to the
+        # predicted trend the timer resets and the prediction is withheld, so
+        # the extra charge stops on its own (energy already stored stays; we
+        # never force a discharge).
+        DEVIATION_MIN_DURATION_S = 1800        # 30 min sustained
+        predicted_soc_raw = None
         if self._backend_soc_trajectory and self.slot_prices_today:
             slot_idx = int((now.hour * 60 + now.minute) / ((24 * 60) / len(self.slot_prices_today)))
             slot_idx = min(slot_idx, len(self._backend_soc_trajectory) - 1)
             if 0 <= slot_idx < len(self._backend_soc_trajectory):
-                predicted_soc = self._backend_soc_trajectory[slot_idx]
+                predicted_soc_raw = self._backend_soc_trajectory[slot_idx]
+
+        predicted_soc = None
+        if (predicted_soc_raw is not None and battery_soc is not None
+                and effective_capacity > 0):
+            deviation_kwh = ((predicted_soc_raw - battery_soc) / 100.0) * effective_capacity
+            # "Significant" scales with battery size: ~3% of capacity, min
+            # 1.5 kWh.  On 60 kWh that's ~1.8 kWh (≈ a sustained 3–4 kW excess
+            # load over the window) — AC / EV territory, not a kettle.
+            significant_kwh = max(1.5, 0.03 * effective_capacity)
+            if deviation_kwh > significant_kwh:
+                if self._deviation_since_ts is None:
+                    self._deviation_since_ts = time.time()
+            else:
+                # Consumption back on trend → stop tracking → withhold the
+                # prediction → extra charge stops next recalc.
+                self._deviation_since_ts = None
+
+            sustained = (
+                self._deviation_since_ts is not None
+                and time.time() - self._deviation_since_ts >= DEVIATION_MIN_DURATION_S
+            )
+            if sustained:
+                predicted_soc = predicted_soc_raw
+                _LOGGER.info(
+                    "Sustained consumption deviation: actual %.1f%% vs predicted "
+                    "%.1f%% (%.1f kWh) for >=%.0f min — engaging deviation "
+                    "correction",
+                    battery_soc, predicted_soc_raw, deviation_kwh,
+                    DEVIATION_MIN_DURATION_S / 60.0,
+                )
+        else:
+            self._deviation_since_ts = None
 
         state = ems_module.EMSState(
             battery_soc_pct=battery_soc,
