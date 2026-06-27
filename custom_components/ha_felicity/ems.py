@@ -300,21 +300,36 @@ def _consumption_deviation_kwh(
     Compares actual SOC against what the previous schedule's trajectory
     predicted for the current slot.  If actual is significantly below
     predicted, the difference (damped by 0.5×) is returned as extra deficit
-    to compensate.  This makes the algorithm react to car chargers, ovens,
-    and other transient loads within a few recalc cycles (~30s) instead of
-    waiting for the 7-day consumption profile to catch up.
+    to compensate.  This makes the algorithm react to air-conditioning, car
+    chargers, ovens, etc. instead of waiting for the 7-day consumption
+    profile to catch up.
 
-    Guards:
-    - > 1 kWh floor: filters SOC rounding noise and small appliances.
-    - Only when SOC > reserve_target: below reserve the urgent-recovery
-      path already handles charging.
-    - 0.5× damping: avoids over-reaction on transient loads.
+    **Sustained-only / cost / stop-on-normalise behaviour lives in the
+    coordinator**, which sets `state.predicted_soc_pct` ONLY when the
+    deviation has persisted for a significant time (so a transient spike —
+    kettle, AC compressor cycling — is filtered) and clears it (→ None) the
+    moment consumption returns to the predicted trend.  When it's None this
+    function returns 0, so the extra charge stops on its own.  Cost stays
+    minimal because the extra deficit is covered by the normal cheapest-slot
+    selection downstream.
+
+    Guards here:
+    - > 1 kWh floor: filters SOC rounding noise.
+    - 0.5× damping: avoids over-reaction.
+
+    NOTE: this now fires below the reserve target too.  It used to be gated
+    on `current_kwh > reserve_target` on the assumption that "below reserve,
+    urgent recovery charges" — but urgent recovery only fires below
+    discharge_min, leaving the whole reserve→discharge_min band uncovered.
+    That band is exactly where a sustained unexpected load (AC, EV) drains
+    the battery toward the overnight floor, so it must compensate there.
+    The `reserve_target` parameter is retained for call-site compatibility.
     """
     if state.predicted_soc_pct is None or battery_capacity <= 0:
         return 0.0
     predicted_kwh = (state.predicted_soc_pct / 100.0) * battery_capacity
     deviation = predicted_kwh - current_kwh
-    if deviation > 1.0 and current_kwh > reserve_target:
+    if deviation > 1.0:
         extra = deviation * 0.5
         _LOGGER.info(
             "Consumption deviation: predicted=%.1f kWh, actual=%.1f kWh, "

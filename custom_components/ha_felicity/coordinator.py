@@ -164,6 +164,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._battery_soh_factor: float = 1.0
         self._last_soc_for_cycles: float | None = None
 
+        # Sustained consumption-deviation tracking.  The deviation correction
+        # (ems._consumption_deviation_kwh) only engages when an unexpected load
+        # has persisted for a significant time — not a transient spike.  This
+        # timestamp marks when the actual SOC first fell significantly below
+        # the predicted trajectory; it resets to None the moment consumption
+        # returns to trend (so the extra charge stops on its own).
+        self._deviation_since_ts: float | None = None
+
         # Software PV integration: TREX-25/50 with generator-port solar report
         # PV Today = 0.0 (the day-energy register doesn't track generator-port
         # production reliably).  We integrate instantaneous generator power
@@ -751,14 +759,56 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # What did the previous schedule predict the SOC would be at this slot?
         # Used by the consumption-deviation correction to detect unexpected
-        # loads (car charger, oven, etc.) draining the battery faster than the
-        # profile-based prediction.
-        predicted_soc = None
+        # loads (air-conditioning, car charger, oven) draining the battery
+        # faster than the profile-based prediction.
+        #
+        # SUSTAINED-ONLY GATE: we only hand the prediction to the algorithm
+        # (which then sizes a compensating deficit) once the deviation has
+        # PERSISTED for a significant time.  A transient spike — kettle, oven
+        # preheat, an AC compressor cycling on for two minutes — must not
+        # trigger extra grid charging.  The moment consumption returns to the
+        # predicted trend the timer resets and the prediction is withheld, so
+        # the extra charge stops on its own (energy already stored stays; we
+        # never force a discharge).
+        DEVIATION_MIN_DURATION_S = 1800        # 30 min sustained
+        predicted_soc_raw = None
         if self._backend_soc_trajectory and self.slot_prices_today:
             slot_idx = int((now.hour * 60 + now.minute) / ((24 * 60) / len(self.slot_prices_today)))
             slot_idx = min(slot_idx, len(self._backend_soc_trajectory) - 1)
             if 0 <= slot_idx < len(self._backend_soc_trajectory):
-                predicted_soc = self._backend_soc_trajectory[slot_idx]
+                predicted_soc_raw = self._backend_soc_trajectory[slot_idx]
+
+        predicted_soc = None
+        if (predicted_soc_raw is not None and battery_soc is not None
+                and effective_capacity > 0):
+            deviation_kwh = ((predicted_soc_raw - battery_soc) / 100.0) * effective_capacity
+            # "Significant" scales with battery size: ~3% of capacity, min
+            # 1.5 kWh.  On 60 kWh that's ~1.8 kWh (≈ a sustained 3–4 kW excess
+            # load over the window) — AC / EV territory, not a kettle.
+            significant_kwh = max(1.5, 0.03 * effective_capacity)
+            if deviation_kwh > significant_kwh:
+                if self._deviation_since_ts is None:
+                    self._deviation_since_ts = time.time()
+            else:
+                # Consumption back on trend → stop tracking → withhold the
+                # prediction → extra charge stops next recalc.
+                self._deviation_since_ts = None
+
+            sustained = (
+                self._deviation_since_ts is not None
+                and time.time() - self._deviation_since_ts >= DEVIATION_MIN_DURATION_S
+            )
+            if sustained:
+                predicted_soc = predicted_soc_raw
+                _LOGGER.info(
+                    "Sustained consumption deviation: actual %.1f%% vs predicted "
+                    "%.1f%% (%.1f kWh) for >=%.0f min — engaging deviation "
+                    "correction",
+                    battery_soc, predicted_soc_raw, deviation_kwh,
+                    DEVIATION_MIN_DURATION_S / 60.0,
+                )
+        else:
+            self._deviation_since_ts = None
 
         state = ems_module.EMSState(
             battery_soc_pct=battery_soc,
@@ -1265,9 +1315,24 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         domain = load.current_entity.split(".")[0]
         try:
             if domain in ("select", "input_select"):
+                # Select entities expose a fixed list of option strings, and
+                # different chargers format them differently ("16", "16 A",
+                # "16A").  Passing the bare number ("16") raises
+                # ServiceValidationError when the entity expects "16 A".
+                # Resolve the actual option string by matching the numeric
+                # value against the entity's real options.
+                option = self._match_select_option(load.current_entity, step)
+                if option is None:
+                    _LOGGER.warning(
+                        "EV charger current %dA has no matching option on %s "
+                        "(options: %s) — skipping",
+                        step, load.current_entity,
+                        self._select_options(load.current_entity),
+                    )
+                    return
                 await self.hass.services.async_call(
                     domain, "select_option",
-                    {"entity_id": load.current_entity, "option": str(step)},
+                    {"entity_id": load.current_entity, "option": option},
                 )
             else:
                 await self.hass.services.async_call(
@@ -1278,6 +1343,44 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.info("EV charger current → %dA via %s", step, load.current_entity)
         except Exception as err:
             _LOGGER.error("Failed to set EV charger current: %s", err)
+
+    def _select_options(self, entity_id: str) -> list[str]:
+        """Return a select entity's current option list (empty if unavailable)."""
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return []
+        opts = state.attributes.get("options")
+        return list(opts) if isinstance(opts, (list, tuple)) else []
+
+    def _match_select_option(self, entity_id: str, amps: int) -> str | None:
+        """Find the option string on a select entity matching a numeric amperage.
+
+        Charger integrations format current options inconsistently: "16",
+        "16 A", "16A", "16.0".  Parse the leading number from each option and
+        return the one equal to `amps`.  Returns None when the entity is
+        unavailable or has no matching option (caller skips the write).
+        """
+        options = self._select_options(entity_id)
+        if not options:
+            # Entity not loaded yet — fall back to the bare number so the
+            # service call still has a chance (matches the legacy behaviour).
+            return str(amps)
+        for opt in options:
+            # Extract the leading numeric part (e.g. "16 A" → 16, "16A" → 16).
+            num = ""
+            for ch in str(opt).strip():
+                if ch.isdigit() or ch == ".":
+                    num += ch
+                else:
+                    break
+            if not num:
+                continue
+            try:
+                if abs(float(num) - amps) < 0.001:
+                    return opt
+            except ValueError:
+                continue
+        return None
 
     async def _safe_power_shed_loads(self, current_amps: float, max_amps: float) -> bool:
         """Shed flexible loads to reduce grid current.

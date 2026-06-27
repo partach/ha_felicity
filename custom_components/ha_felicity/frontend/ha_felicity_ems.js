@@ -181,8 +181,8 @@ class FelicityEMSCard extends LitElement {
   }
 
   // Mirror of ems.calculate_self_consumption_reserve(). Client-side fallback
-  // for the "night target" line and "overnight need" stat when the backend
-  // hasn't computed self_consumption_reserve (e.g. price_mode manual).
+  // for the "overnight need" stat when the backend hasn't computed
+  // self_consumption_reserve (e.g. price_mode manual).
   _overnightReserveKwh(consumptionEst, pvHourly) {
     const consumptionPerHour = (consumptionEst || 0) / 24.0;
     let sunsetHour = 19;
@@ -199,6 +199,36 @@ class FelicityEMSCard extends LitElement {
     }
     const overnightHours = (24 - sunsetHour) + sunriseHour;
     return consumptionPerHour * overnightHours;
+  }
+
+  // Projected overnight-minimum SOC (%) — the lowest point of the predicted
+  // SOC trajectory over the relevant horizon.  For the Today view that's from
+  // "now" to end of day PLUS tomorrow's early-morning slots (the true
+  // overnight low usually sits just before tomorrow's sunrise).  For the
+  // Tomorrow view it's the minimum across tomorrow's trajectory.
+  _projectedOvernightMinPct(socTraj, currentSlot, numSlots, showTomorrow) {
+    if (!Array.isArray(socTraj) || socTraj.length < 2) return null;
+    const vals = [];
+    const pushVals = (arr, from, to) => {
+      for (let i = from; i < to && i < arr.length; i++) {
+        const v = parseFloat(arr[i]);
+        if (!isNaN(v)) vals.push(v);
+      }
+    };
+    if (showTomorrow) {
+      pushVals(socTraj, 0, socTraj.length);
+    } else {
+      pushVals(socTraj, Math.max(0, currentSlot), socTraj.length);
+      // Extend into tomorrow morning so the cross-midnight low is captured.
+      const simParams = this._getAttr("schedule_status", "sim_params") || {};
+      const tmr = simParams.backend_soc_trajectory_tomorrow;
+      if (Array.isArray(tmr) && tmr.length) {
+        const cut = Math.ceil((8 / 24) * tmr.length); // first ~8h (to ~sunrise)
+        pushVals(tmr, 0, cut);
+      }
+    }
+    if (!vals.length) return null;
+    return Math.min(...vals);
   }
 
   // ── Client-side schedule simulation ──────────────────────────
@@ -1054,51 +1084,29 @@ class FelicityEMSCard extends LitElement {
       ctx.fillText("50%", rightEdge, mid50Y + 3);
     }
 
-    // Reserve target line (light-purple dashed) — shows the SOC the EMS
-    // aims to have by sunset to survive the night.  NOTE: this is an
-    // overnight TARGET, not an all-day hard floor — the SOC is allowed to
-    // dip below it during the day (down to discharge_min) because PV
-    // refills the battery.  Most meaningful in the evening/overnight.
-    //
-    // Use the backend-computed value directly — it includes the 1.25×
-    // self_consumption boost, the monotonic fixed-floor logic, and any
-    // other refinements.  Client-side recomputation drifted from the
-    // backend and showed wrong night targets.
-    const simR2 = this._getAttr("schedule_status", "sim_params") || {};
-    const dischMinPct = simR2.battery_discharge_min_pct ?? 20;
-    let reserveShowPct = parseFloat(
-      simR2.backend_reserve_target_pct
-      ?? this._getAttr("schedule_status", "reserve_target_pct")
-    ) || 0;
-    if (reserveShowPct <= 0) {
-      const battCap = simR2.battery_capacity_kwh || 10;
-      let reserveKwhVal = parseFloat(this._getAttr("schedule_status", "self_consumption_reserve")) || 0;
-      if (reserveKwhVal <= 0) {
-        reserveKwhVal = this._overnightReserveKwh(
-          simR2.consumption_est_kwh, simR2.pv_hourly_kwh || null);
-      }
-      if (reserveKwhVal > 0 && battCap > 0) {
-        const minKwh = (dischMinPct / 100) * battCap;
-        reserveShowPct = ((minKwh + reserveKwhVal) / battCap) * 100;
-      } else {
-        reserveShowPct = dischMinPct;
-      }
-    }
-    if (socTrajectory && socTrajectory.length > 1 && reserveShowPct > 0 && reserveShowPct < 100) {
+    // Projected overnight-minimum line (light-purple dashed) — the LOWEST SOC
+    // the battery is predicted to reach before tomorrow's sun refills it.
+    // This replaces the old "reserve target" line, which showed an
+    // aspirational floor the SOC frequently sat *below* (cost-optimisation
+    // declines to top off at peak prices), so it told the user little.  The
+    // projected low directly answers "how low will my battery actually get?"
+    const overnightLowPct = this._projectedOvernightMinPct(
+      socTrajectory, currentSlotIdx, numSlots, showTomorrow);
+    if (overnightLowPct != null && overnightLowPct > 0 && overnightLowPct < 100) {
       const toY = (soc) => marginTop + chartH - ((soc - 0) / 100) * chartH;
-      const reserveY = toY(reserveShowPct);
+      const lowY = toY(overnightLowPct);
       ctx.strokeStyle = "rgba(186, 145, 255, 0.75)";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 3]);
       ctx.beginPath();
-      ctx.moveTo(marginLeft, reserveY);
-      ctx.lineTo(w - marginRight, reserveY);
+      ctx.moveTo(marginLeft, lowY);
+      ctx.lineTo(w - marginRight, lowY);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = "rgba(186, 145, 255, 0.95)";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "left";
-      ctx.fillText(`${Math.round(reserveShowPct)}% night target`, marginLeft + 3, reserveY - 3);
+      ctx.fillText(`${Math.round(overnightLowPct)}% projected low`, marginLeft + 3, lowY - 3);
     }
 
     // PV-only banner: inform user this is a solar-only preview

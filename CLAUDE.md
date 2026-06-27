@@ -629,7 +629,13 @@ Also detects external changes (user adjusting via inverter app).
 - Battery indicator (10-segment, color-coded by SOC)
 - Price chart (canvas) — bars per slot, colored by action
 - SOC trajectory line (blue dotted)
-- Reserve target line (red dashed) — computed reserve floor as SOC%
+- Projected overnight-minimum line (purple dashed) — the lowest SOC% the
+  battery is predicted to reach before tomorrow's sun refills it
+  (`_projectedOvernightMinPct`: min of the future SOC trajectory + tomorrow's
+  early-morning slots).  Replaced the old "night target"/reserve line, which
+  showed an aspirational floor the SOC frequently sat *below* (cost-
+  optimisation declines to top off at peak prices) and so told the user
+  little.  The "overnight need" kWh stat still shows the reserve energy.
 - Threshold line (yellow dashed)
 - PV stats (actual, remaining, forecast today, forecast tomorrow)
 - Schedule stats (charge/discharge counts, planned kWh, reserve)
@@ -721,7 +727,13 @@ during:
 **Actuation**: `coordinator._actuate_flex_loads()` runs every 10s cycle,
 turning loads on/off via `hass.services.async_call` (switch.turn_on/off).
 EV charger current is set via its current_entity (number.set_value or
-select.select_option).
+select.select_option).  For `select`/`input_select` current entities the
+option string is resolved by matching the numeric amperage against the
+entity's real `options` attribute (`_match_select_option`) — charger
+integrations format options inconsistently ("16", "16 A", "16A"), and
+passing the bare number raises `ServiceValidationError` when the entity
+expects "16 A".  Falls back to the bare number when the entity isn't
+loaded yet; skips (with a warning) when no option matches.
 
 **Fault isolation**: `_actuate_flex_loads` is wrapped in a top-level
 try/except at the call site (line 2212) and per-load try/except within
@@ -1246,14 +1258,39 @@ lowers `current_kwh` so the solver sees a less-full battery.
 Coordinator feeds `predicted_soc_pct` from `_backend_soc_trajectory[current_slot]`
 into `EMSState`.
 
-**Guards**: >1 kWh noise floor (filters SOC rounding and small appliances);
-only when SOC > reserve_target (below reserve, urgent-recovery handles it);
-0.5× damping to avoid over-reaction on transient loads.
+**Guards** (ems side): >1 kWh noise floor; 0.5× damping to avoid
+over-reaction.
+
+**Sustained-only gate + fires below reserve** (fixed July 2026): the
+correction used to be gated on `current_kwh > reserve_target` on the
+assumption that "below reserve, urgent recovery charges."  But urgent
+recovery only fires below `discharge_min`, leaving the entire
+`reserve → discharge_min` band uncovered — exactly where a sustained
+unexpected load (air-conditioning, EV) drains the battery toward the
+overnight floor.  A real customer at ~62% SOC (below an 80% reserve) with
+high AC load saw no extra recovery.  Now:
+- The `current_kwh > reserve_target` gate is **removed** — the correction
+  fires across the whole band (and above reserve).
+- **Persistence gate moved to the coordinator**: it sets
+  `predicted_soc_pct` (which enables the correction) ONLY when the actual
+  SOC has stayed significantly below the predicted trajectory for
+  `DEVIATION_MIN_DURATION_S` (30 min).  "Significant" = `max(1.5 kWh,
+  3% of capacity)`.  This filters transients (kettle, oven preheat, an AC
+  compressor cycling on for two minutes) — only a real sustained load (AC,
+  EV) triggers extra charging.
+- **Stops on normalisation**: the coordinator tracks `_deviation_since_ts`
+  and resets it the moment consumption returns to trend, so it stops
+  handing the prediction to the algorithm and the extra charge ends on the
+  next recalc.  Energy already stored stays — it never force-discharges.
+- **Cost stays minimal**: the deviation only sizes the extra deficit; the
+  normal cheapest-slot selection covers it, so it buys from the cheapest
+  available slots, not at peak.
 
 **Real-world scenario**: car charger at 3.7 kW drains ~7 kWh in 2 hours.
 Weekly avg consumption is 6.3 kWh/d.  Without this fix, the algorithm saw
-"reserve met" and did nothing.  With the fix, the 3.5 kWh deviation-induced
-deficit triggers compensating charge from the cheapest available slot.
+"reserve met" and did nothing.  With the fix, after the load has run long
+enough to register as sustained, the deviation-induced deficit triggers
+compensating charge from the cheapest available slot.
 
 ### Correctness Improvements (Medium Priority)
 
