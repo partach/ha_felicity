@@ -1,6 +1,7 @@
 """Data update coordinator for Felicity with proper async handling."""
 
 import asyncio
+import dataclasses
 import json
 import logging
 import math
@@ -987,10 +988,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             )
             current_slot_r = min(current_slot_r, num_slots_r - 1)
             current_kwh_r = (battery_soc / 100.0) * effective_capacity
+            # Mirror calculate_schedule's PV synthesis: when the forecast has
+            # no hourly breakdown, ems.calculate_schedule internally rebuilds
+            # the state with a synthesized hourly PV curve (from the daily
+            # total) so the trajectory accounts for solar.  That rebuilt state
+            # is NOT returned, so this recompute must apply the same synthesis
+            # — otherwise the override trajectory "forgets PV" and draws a
+            # far-too-low curve (real customer report: 12 charge slots + big PV
+            # remaining, yet the SOC line barely rose).
+            traj_state = state
+            if not state.pv_hourly_kwh:
+                forecast_total = self.pv_forecast_today or pv_fallback
+                if forecast_total and forecast_total > 0:
+                    traj_state = dataclasses.replace(
+                        state,
+                        pv_hourly_kwh=ems_module._synthesize_pv_hourly(forecast_total),
+                    )
             self._backend_soc_trajectory = ems_module._compute_scheduled_soc_trajectory(
                 self.slot_prices_today, num_slots_r, minutes_per_slot_r,
                 current_kwh_r, current_slot_r,
-                self.scheduled_slots, config, state,
+                self.scheduled_slots, config, traj_state,
             )
         else:
             self._backend_soc_trajectory = result.soc_trajectory
