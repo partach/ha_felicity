@@ -724,6 +724,19 @@ their `_simOverrides` entry after 2 s (like `_commitPower` does for
 `powerKw`) — previously they stuck forever, keeping `hasSliderOverrides`
 true and pinning the card to the client trajectory permanently.
 
+**Override recompute must mirror calculate_schedule's PV synthesis**: when
+the forecast has no hourly breakdown, `calculate_schedule` internally
+rebuilds `state` with `_synthesize_pv_hourly(daily_total)` so the trajectory
+accounts for solar — but that rebuilt state is NOT returned.  The
+coordinator's override recompute therefore re-applies the same synthesis
+(`dataclasses.replace(state, pv_hourly_kwh=_synthesize_pv_hourly(...))`)
+before calling `_compute_scheduled_soc_trajectory`.  Without it the override
+trajectory "forgets PV" entirely and draws a far-too-low curve (real
+customer report: 12 charge slots + big PV remaining, SOC line barely rose).
+This is a documented coupling/duplication smell — the clean long-term fix is
+to pass overrides INTO `calculate_schedule` so ems.py owns the whole merge +
+trajectory, but that's a larger refactor.
+
 ### Past Slot History
 Fetches `energy_state` history from HA API (throttled 60s), shows what actually happened vs what was planned.
 
