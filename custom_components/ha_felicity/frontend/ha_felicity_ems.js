@@ -1671,12 +1671,22 @@ class FelicityEMSCard extends LitElement {
       return;
     }
 
-    // Determine click intent: charge (below threshold) or sell (above threshold)
-    const clickAction = slot.price <= threshold ? "charge" : "discharge";
-
-    // Enforce grid_mode restrictions
-    if (gridMode === "from_grid" && clickAction === "discharge") return;
-    if (gridMode === "to_grid" && clickAction === "charge") return;
+    // Determine click intent based on grid mode:
+    //  - from_grid: every manually-picked slot is a CHARGE slot, even one
+    //    priced above the threshold.  A strict threshold otherwise blocks
+    //    the user from forcing charge slots they actually need.
+    //  - to_grid: every manually-picked slot is a SELL slot, regardless of
+    //    threshold.
+    //  - both: threshold decides — below = charge, above = sell.
+    let clickAction;
+    if (gridMode === "from_grid") {
+      clickAction = "charge";
+    } else if (gridMode === "to_grid") {
+      clickAction = "discharge";
+    } else {
+      // both (or off, already returned above): price threshold decides
+      clickAction = slot.price <= threshold ? "charge" : "discharge";
+    }
 
     // Two-click selection logic
     if (!this._pendingClick) {

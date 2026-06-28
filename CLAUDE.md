@@ -688,6 +688,18 @@ reads it from `_getAttr("schedule_status", "schedule_reason")`.
   - Power Level slider (live preview)
   - Price Threshold Level slider (live preview)
 
+**Manual slot override intent is grid-mode-aware** (`_handleCanvasClick`):
+- `from_grid`: every picked slot becomes a **charge** slot, even above the
+  price threshold — a strict threshold otherwise blocks the user from
+  forcing charge slots they need.
+- `to_grid`: every picked slot becomes a **sell** slot, regardless of
+  threshold.
+- `both`: the threshold decides — below = charge, above = sell.
+The coordinator's override merge mirrors this (from_grid accepts only
+charge, to_grid only discharge, both accepts either), so the picked slots
+pass through and execute (subject to SOC-overflow validation).  Charge
+slots above the threshold are intentional and are NOT price-filtered.
+
 ### Client-Side Simulation
 Mirrors coordinator logic for instant preview when dragging sliders. Uses `sim_params` from `schedule_status` sensor attributes.
 
