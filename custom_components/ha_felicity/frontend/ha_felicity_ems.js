@@ -1018,11 +1018,19 @@ class FelicityEMSCard extends LitElement {
     }
 
     // ── SOC trajectory (solid past / dotted future) ──────────────────
-    // Prefer backend-computed trajectory when no slider overrides are active.
-    // Slot overrides (manual clicks) are handled by the backend, so its
-    // trajectory remains authoritative. Only slider previews need client-side.
+    // Prefer the backend-computed trajectory: it includes any manual slot
+    // overrides (recomputed server-side), the real per-hour PV, SOC
+    // validation, and reserve protection.  Only fall back to the client-side
+    // preview for a PURE slider preview (power / Max-SOC / Min-SOC drag) with
+    // NO slot overrides — there the backend hasn't seen the change yet.
+    //
+    // Critically, when slot overrides ARE active we always use the backend:
+    // the client sim diverges (flat PV fallback, no validation) and could
+    // draw a LOWER curve even though the user just ADDED charge slots — the
+    // exact "extra charge slots show less SOC" bug.
+    const hasSlotOverridesActive = hasTodaySlotOverrides || hasTomorrowSlotOverrides;
     let backendTrajectory = null;
-    if (!hasSliderOverrides) {
+    if (!hasSliderOverrides || hasSlotOverridesActive) {
       const simParams = this._getAttr("schedule_status", "sim_params") || {};
       backendTrajectory = showTomorrow
         ? (simParams.backend_soc_trajectory_tomorrow || null)
@@ -1663,12 +1671,22 @@ class FelicityEMSCard extends LitElement {
       return;
     }
 
-    // Determine click intent: charge (below threshold) or sell (above threshold)
-    const clickAction = slot.price <= threshold ? "charge" : "discharge";
-
-    // Enforce grid_mode restrictions
-    if (gridMode === "from_grid" && clickAction === "discharge") return;
-    if (gridMode === "to_grid" && clickAction === "charge") return;
+    // Determine click intent based on grid mode:
+    //  - from_grid: every manually-picked slot is a CHARGE slot, even one
+    //    priced above the threshold.  A strict threshold otherwise blocks
+    //    the user from forcing charge slots they actually need.
+    //  - to_grid: every manually-picked slot is a SELL slot, regardless of
+    //    threshold.
+    //  - both: threshold decides — below = charge, above = sell.
+    let clickAction;
+    if (gridMode === "from_grid") {
+      clickAction = "charge";
+    } else if (gridMode === "to_grid") {
+      clickAction = "discharge";
+    } else {
+      // both (or off, already returned above): price threshold decides
+      clickAction = slot.price <= threshold ? "charge" : "discharge";
+    }
 
     // Two-click selection logic
     if (!this._pendingClick) {
@@ -2149,6 +2167,15 @@ class FelicityEMSCard extends LitElement {
           this._setNumber("battery_charge_max_level", val);
           this._drawSlotTimeline();
           this.requestUpdate();
+          // Clear the preview override once HA state catches up — otherwise
+          // it sticks forever, keeping hasSliderOverrides true and forcing the
+          // card onto the (less accurate) client-side trajectory permanently.
+          setTimeout(() => {
+            this._simOverrides = { ...this._simOverrides };
+            delete this._simOverrides.chargeMax;
+            this._drawSlotTimeline();
+            this.requestUpdate();
+          }, 2000);
         }}>
           ${options.map((v) => html`<option value="${v}" ?selected=${v === current}>${v}%</option>`)}
         </select>
@@ -2168,6 +2195,13 @@ class FelicityEMSCard extends LitElement {
           this._setNumber("battery_discharge_min_level", val);
           this._drawSlotTimeline();
           this.requestUpdate();
+          // Clear the preview override once HA state catches up (see Max SOC).
+          setTimeout(() => {
+            this._simOverrides = { ...this._simOverrides };
+            delete this._simOverrides.dischargeMin;
+            this._drawSlotTimeline();
+            this.requestUpdate();
+          }, 2000);
         }}>
           ${options.map((v) => html`<option value="${v}" ?selected=${v === current}>${v}%</option>`)}
         </select>

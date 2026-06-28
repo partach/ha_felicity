@@ -688,6 +688,18 @@ reads it from `_getAttr("schedule_status", "schedule_reason")`.
   - Power Level slider (live preview)
   - Price Threshold Level slider (live preview)
 
+**Manual slot override intent is grid-mode-aware** (`_handleCanvasClick`):
+- `from_grid`: every picked slot becomes a **charge** slot, even above the
+  price threshold — a strict threshold otherwise blocks the user from
+  forcing charge slots they need.
+- `to_grid`: every picked slot becomes a **sell** slot, regardless of
+  threshold.
+- `both`: the threshold decides — below = charge, above = sell.
+The coordinator's override merge mirrors this (from_grid accepts only
+charge, to_grid only discharge, both accepts either), so the picked slots
+pass through and execute (subject to SOC-overflow validation).  Charge
+slots above the threshold are intentional and are NOT price-filtered.
+
 ### Client-Side Simulation
 Mirrors coordinator logic for instant preview when dragging sliders. Uses `sim_params` from `schedule_status` sensor attributes.
 
@@ -697,7 +709,20 @@ backend-provided `slot_schedule` / `slot_schedule_tomorrow` (with actions)
 and `backend_soc_trajectory` / `backend_soc_trajectory_tomorrow` for the
 SOC line. Client-side simulation (`_simulateSchedule`,
 `_simulateScheduleTomorrow`, `_computeSocTrajectory`) only runs when the
-user is actively previewing via sliders or manual slot clicks.
+user is actively previewing via sliders.
+
+**SOC line always uses the backend when slot overrides are active**: manual
+slot overrides are committed to the backend and the SOC trajectory is
+recomputed server-side with them merged (`coordinator._calculate_schedule`
+re-runs `_compute_scheduled_soc_trajectory` on the override-merged schedule).
+The client-side `_computeSocTrajectory` diverges (flat-PV fallback when
+`pv_hourly_kwh` is absent, no SOC validation) and could draw a *lower* curve
+even though the user just ADDED charge slots.  The trajectory gate therefore
+prefers the backend whenever slot overrides exist, even if a slider preview
+is also active.  Also: the Max-SOC / Min-SOC dropdown previews now CLEAR
+their `_simOverrides` entry after 2 s (like `_commitPower` does for
+`powerKw`) — previously they stuck forever, keeping `hasSliderOverrides`
+true and pinning the card to the client trajectory permanently.
 
 ### Past Slot History
 Fetches `energy_state` history from HA API (throttled 60s), shows what actually happened vs what was planned.
