@@ -238,21 +238,39 @@ def _solve(
         prob += soc[k] == prev + horizon[k]["net"] + eff * c[k] - d[k] - spill[k]
         prev = soc[k]
 
-    # End-of-horizon reserve (overnight coverage).
-    prob += soc[K - 1] >= min(reserve_target, soc_max)
+    # Reserve constraints are SOFT (slack + penalty), never hard.  A hard
+    # `soc >= reserve_target` can be INFEASIBLE — e.g. late evening with the
+    # reserve near capacity and only a few low-power slots before the
+    # boundary, the battery physically cannot charge fast enough against
+    # consumption to reach it (real customer log: "MILP non-optimal
+    # (Infeasible) — falling back to greedy", repeatedly).  Infeasibility
+    # made the whole MILP plan collapse to greedy.  With a slack the solver
+    # instead gets AS CLOSE to the reserve as physically possible and the LP
+    # is always feasible.  The penalty is set well above any per-kWh charge
+    # cost so the solver still charges to reach the reserve whenever it CAN —
+    # the slack only absorbs the genuinely-unreachable remainder.
+    reserve_clamped = min(reserve_target, soc_max)
+    reserve_penalty = max(1.0, most_exp) * 5.0
+    reserve_shortfalls = []
 
-    # Midnight boundary constraint: when the horizon spans today+tomorrow,
-    # force the battery to reach reserve_target by end of today.  Without
-    # this the solver defers all charging to cheaper tomorrow slots, the
-    # battery drains overnight, and on the next day it defers again —
-    # "tomorrow never comes."
+    # End-of-horizon reserve (overnight coverage).
+    end_short = pulp.LpVariable("reserve_short_end", lowBound=0)
+    prob += soc[K - 1] + end_short >= reserve_clamped
+    reserve_shortfalls.append(end_short)
+
+    # Midnight boundary: when the horizon spans today+tomorrow, push the
+    # battery toward reserve_target by end of today.  Without this the solver
+    # defers all charging to cheaper tomorrow slots, the battery drains
+    # overnight, and on the next day it defers again — "tomorrow never comes."
     midnight_k = None
     for k in range(K):
         if horizon[k]["day"] == "tomorrow":
             midnight_k = k
             break
     if midnight_k is not None and midnight_k > 0:
-        prob += soc[midnight_k - 1] >= min(reserve_target, soc_max)
+        mid_short = pulp.LpVariable("reserve_short_mid", lowBound=0)
+        prob += soc[midnight_k - 1] + mid_short >= reserve_clamped
+        reserve_shortfalls.append(mid_short)
 
     # Value energy left in the battery at the horizon end so the solver
     # doesn't pointlessly dump it at the last positive price.  Reference:
@@ -268,12 +286,16 @@ def _solve(
     avg_price = max(0.0, sum(prices_h) / len(prices_h))
     terminal_value = avg_price * eff
 
-    # Objective: minimise net grid spend + wear − value of leftover energy.
+    # Objective: minimise net grid spend + wear − value of leftover energy
+    # + reserve-shortfall penalty (drives charging toward the reserve when
+    # physically feasible; absorbs the unreachable remainder instead of
+    # making the model infeasible).
     prob += (
         pulp.lpSum(horizon[k]["price"] * c[k] for k in range(K))           # buy cost
         - pulp.lpSum(horizon[k]["price"] * eff * d[k] for k in range(K))   # sell revenue
         + pulp.lpSum(cycle_cost * d[k] for k in range(K))                  # wear
         - terminal_value * soc[K - 1]                                      # leftover value
+        + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
     )
 
     solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=_SOLVE_TIME_LIMIT)
