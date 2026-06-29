@@ -1313,7 +1313,34 @@ extrapolation from today's actual production) so the algorithm doesn't
 default to PV=0 and over-aggressively grid-charge.
 
 #### C. Consumption Profile Awareness — IMPLEMENTED
-Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumption_hourly_kwh` provides per-hour averages used in `_project_soc_trajectory()` and `_validate_schedule_soc()`. Coordinator records hourly breakdown at midnight. Frontend card also uses profiles.
+Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumption_hourly_kwh` provides per-hour averages used in `_project_soc_trajectory()`, `_validate_schedule_soc()`, and (July 2026) the overnight reserve. Coordinator records hourly breakdown at midnight. Frontend card also uses profiles.
+
+**Data path** (`coordinator`):
+1. `_resolve_consumption_entity` — picks the source: the user's
+   `consumption_override_entity` if set, else an inverter load-energy sensor
+   (`homeload_day_cost_energy` / `load_day_cost_energy` / …) resolved via the
+   **entity registry** by the exact `unique_id` (`{entry_id}_{key}`).
+2. `_query_hourly_from_history` — HA recorder `statistics_during_period`
+   ("change" per hour) → 24 hourly buckets.  Falls back to a FLAT daily/24
+   distribution when no statistics exist.
+3. `_record_hourly_consumption` (midnight) appends to a 7-day
+   `_hourly_consumption_history`; `_calculate_hourly_profile` averages it into
+   `_hourly_consumption_profile`.  Persisted in the consumption Store and
+   **recomputed on startup** from the loaded history (no cold-start gap).
+4. Exposed as `consumption_hourly_profile` in `schedule_status` attributes —
+   inspect it to confirm the shape (low-night/high-day for EV loads).  A FLAT
+   profile (all hours equal) means the history query fell back (no stats or,
+   pre-fix, an unresolved entity).
+
+**Registry-lookup fix (July 2026)**: `_resolve_consumption_entity` previously
+GUESSED the entity_id as `sensor.{title}_{key}`.  HA derives the entity_id
+from the slugified friendly NAME (e.g. "Homeload Day Cost Energy （0.1KWh）" →
+`..._homeload_day_cost_energy_0_1kwh`), so the guess never matched → the hourly
+profile silently fell back to FLAT → the profile-aware overnight reserve had no
+effect (daytime-heavy / EV loads looked flat overnight again).  Now resolved
+via `entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)` — exact
+and rename-proof.  Best accuracy still comes from setting a
+`consumption_override_entity` (a real P1/energy meter).
 
 #### C2. SOC History Display — IMPLEMENTED
 Coordinator records battery SOC at each slot boundary in `_soc_history`. Frontend draws solid line for actual past SOC, dotted line for projected future.

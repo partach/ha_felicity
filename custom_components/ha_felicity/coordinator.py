@@ -1734,15 +1734,43 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._calculate_hourly_profile()
 
     def _resolve_consumption_entity(self) -> str | None:
-        """Return the best entity_id to query for hourly consumption history."""
+        """Return the best entity_id to query for hourly consumption history.
+
+        Resolution order:
+          1. The user's consumption_override_entity (a real energy meter / P1).
+          2. An inverter load-energy sensor this integration created — looked
+             up via the ENTITY REGISTRY by the exact unique_id the sensor was
+             registered with (`{entry_id}_{key}`).  The old code GUESSED the
+             entity_id as `sensor.{title}_{key}`, but HA derives the entity_id
+             from the slugified friendly NAME (e.g. "Homeload Day Cost Energy
+             （0.1KWh）" → `..._homeload_day_cost_energy_0_1kwh`), so the guess
+             never matched → resolution failed → the hourly profile silently
+             fell back to a FLAT distribution.  That flat profile defeats the
+             profile-aware overnight reserve (daytime-heavy / EV loads look
+             like flat overnight consumption again).  The registry lookup is
+             exact and rename-proof.
+        """
         if self.consumption_override_entity:
             return self.consumption_override_entity
-        # Try to find the sensor entity created by this integration for load energy
+
+        from homeassistant.helpers import entity_registry as er
+        ent_reg = er.async_get(self.hass)
+        entry_id = self.config_entry.entry_id
         for key in ["daily_energy_consumed", "daily_load_energy",
                      "total_load_consumption_energy_day",
                      "load_consumption_energy_day",
                      "homeload_day_cost_energy",
                      "load_day_cost_energy"]:
+            eid = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{entry_id}_{key}")
+            if not eid:
+                continue
+            state = self.hass.states.get(eid)
+            if state and state.state not in ("unknown", "unavailable"):
+                return eid
+
+        # Legacy fallback: the old title-based guess (kept in case a future
+        # entity isn't in the registry under the expected unique_id).
+        for key in ["homeload_day_cost_energy", "load_day_cost_energy"]:
             eid = f"sensor.{self.config_entry.title.lower().replace(' ', '_')}_{key}"
             state = self.hass.states.get(eid)
             if state and state.state not in ("unknown", "unavailable"):
