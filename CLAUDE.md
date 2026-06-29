@@ -359,7 +359,7 @@ The algorithm does NOT try to fill the battery to 100%. It calculates a **reserv
 
 ```
 dynamic_reserve = discharge_min_kwh + overnight_reserve × boost
-  where overnight_reserve = consumption_per_hour × (24 - sunset + sunrise)
+  where overnight_reserve = consumption_per_hour × overnight_hours
         boost = 1.25 if optimization_priority == "self_consumption" else 1.0
 
 Dynamic (reserve_target_pct = 0):
@@ -368,6 +368,35 @@ Dynamic (reserve_target_pct = 0):
 Fixed (reserve_target_pct > 0):
   reserve_target = max(reserve_target_pct × capacity, dynamic_reserve)
 ```
+
+**Time-aware `overnight_hours` (from_grid only, fixed July 2026)**:
+`calculate_self_consumption_reserve` takes the current time.  During the day
+`overnight_hours = (24 − sunset) + sunrise` (the full night — charge up before
+sunset).  But once we're PAST sunset, it covers only the REMAINING hours to
+sunrise.  Without this, a high-consumption house keeps demanding a full-night
+reserve at e.g. 22:30 — which (×1.25 boost, capped at capacity) pins the
+target at ~100% of a small battery and forces grid charging at PEAK evening
+prices to "maintain" a reserve the battery is meant to be DISCHARGING through
+overnight (then tomorrow's PV refills it for free).  Real customer report:
+72 kWh/day house, 48 kWh battery at 85% SOC at 22:31, MILP booked 4 charge
+slots at ~18 €/kWh.  Scoped to **from_grid** (`_schedule_from_grid` and the
+MILP reserve when `grid_mode == "from_grid"`): in both/to_grid the reserve
+also gates SELLING, where shrinking it at night changes trade economics and
+caused two-day-optimization regressions, so those keep the full-night reserve.
+The tomorrow-side reserve in `select_unified_charge_slots` is always
+full-night (tomorrow's whole night is still ahead).
+
+**Boost dropped at night (from_grid)**: the time-aware reserve alone wasn't
+enough — the 1.25× self_consumption boost re-inflated the (shrunk) night
+reserve to ~84%, so the battery was still topped up at peak (1 residual
+slot).  `_compute_reserve_target(apply_boost=...)` now suppresses the boost
+when `_is_night(...)` (past sunset / before sunrise).  Rationale: the boost
+exists to hold extra *PV* energy for self-use — a daytime concept.  At night
+there's no PV to preserve; the battery just needs survival to sunrise, then
+tomorrow's PV refills it.  With both fixes the customer scenario charges 0
+slots (reserve 69% < 85% SOC).  `_is_night` / `_sunset_sunrise_hours` are
+shared helpers.  Pinned by `test_self_consumption_boost_dropped_at_night`
+and `test_time_aware_no_expensive_night_charge`.
 
 **`reserve_target_pct` is a MONOTONIC FLOOR — it can only RAISE the target,
 never lower it.** This is the whole point of the setting: "keep AT LEAST this

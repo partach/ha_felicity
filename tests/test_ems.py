@@ -184,6 +184,64 @@ class TestSelfConsumptionReserve:
         reserve_high = calculate_self_consumption_reserve(50.0)
         assert reserve_high > reserve_low
 
+    def test_time_aware_shrinks_at_night(self):
+        """Past sunset, the reserve covers only the remaining hours to sunrise."""
+        # No current_hour → full night (default sunset 19, sunrise 7 = 12h).
+        full = calculate_self_consumption_reserve(24.0)
+        assert full == pytest.approx(12.0, abs=0.1)
+        # 22:30 → remaining to sunrise (7:00) = 8.5h.
+        night = calculate_self_consumption_reserve(24.0, None, 22, 30)
+        assert night == pytest.approx(24.0 / 24 * 8.5, abs=0.1)
+        assert night < full
+
+    def test_time_aware_full_during_day(self):
+        """Before sunset, the full night is still ahead → full reserve."""
+        day = calculate_self_consumption_reserve(24.0, None, 14, 0)
+        full = calculate_self_consumption_reserve(24.0)
+        assert day == pytest.approx(full, abs=0.1)
+
+    def test_time_aware_early_morning(self):
+        """Before sunrise, reserve covers only hours left until sunrise."""
+        # 03:00 → 4h left to sunrise (7:00).
+        early = calculate_self_consumption_reserve(24.0, None, 3, 0)
+        assert early == pytest.approx(24.0 / 24 * 4.0, abs=0.1)
+
+    def test_time_aware_no_expensive_night_charge(self):
+        """from_grid: a full battery at night must NOT charge at peak prices.
+
+        Real customer report: 72 kWh/day house, 48 kWh battery at 85% SOC at
+        22:31 booked charge slots at the evening peak.  With the time-aware
+        reserve the remaining-night need is well below the battery level, so
+        no charging is forced.
+        """
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=48.0,
+            battery_discharge_min_pct=10.0,
+            consumption_est_kwh=72.2,
+            safe_power_kw=10.0,
+            optimization_priority="self_consumption",
+        )
+        # Cheap day, expensive evening.
+        prices = [0.05] * 12 + [0.12] * 5 + [0.19] * 7
+        pv = make_pv_hourly(43.2)
+        state = default_state(
+            battery_soc_pct=85.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=47.4,
+            pv_forecast_tomorrow=55.4,
+            pv_actual_today_kwh=43.2,
+            current_hour=22,
+            current_minute=31,
+        )
+        result = calculate_schedule(config, state)
+        charge = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        assert len(charge) == 0, (
+            f"battery at 85% at 22:31 should not force night charging, got {charge}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test: PV surplus
@@ -3602,7 +3660,11 @@ class TestOptimizationPriority:
         )
 
     def test_self_consumption_raises_reserve_target(self):
-        """Self-consumption priority raises the dynamic reserve."""
+        """Self-consumption priority raises the dynamic reserve DURING THE DAY.
+
+        The 1.25× boost holds extra PV energy for self-use — a daytime concept.
+        Tested at noon (the boost is dropped at night; see the night test).
+        """
         config_cost = default_config(
             grid_mode="from_grid",
             battery_capacity_kwh=20.0,
@@ -3620,13 +3682,43 @@ class TestOptimizationPriority:
             slot_prices_today=[0.10] * 24,
             pv_hourly_kwh={},
             pv_forecast_remaining=0.0,
-            current_hour=0,
+            current_hour=12,
         )
         result_cost = calculate_schedule(config_cost, state)
         result_self = calculate_schedule(config_self, state)
         assert result_self.reserve_target_pct > result_cost.reserve_target_pct, (
             f"self_consumption reserve ({result_self.reserve_target_pct}%) "
             f"should exceed cost reserve ({result_cost.reserve_target_pct}%)"
+        )
+
+    def test_self_consumption_boost_dropped_at_night(self):
+        """At night the self_consumption boost is dropped (battery rides down).
+
+        The 1.25× boost is a daytime PV-self-use concept; at night the reserve
+        should be the bare survival need so the battery discharges to power the
+        house and refills from tomorrow's PV instead of charging at peak.
+        """
+        common = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=20.0,
+        )
+        config_cost = default_config(optimization_priority="cost", **common)
+        config_self = default_config(optimization_priority="self_consumption", **common)
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=[0.10] * 24,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=23,  # night (after sunset 19)
+        )
+        result_cost = calculate_schedule(config_cost, state)
+        result_self = calculate_schedule(config_self, state)
+        assert result_self.reserve_target_pct == pytest.approx(
+            result_cost.reserve_target_pct, abs=0.5
+        ), (
+            f"at night self_consumption reserve ({result_self.reserve_target_pct}%) "
+            f"should match cost ({result_cost.reserve_target_pct}%) — boost dropped"
         )
 
 
