@@ -1212,8 +1212,26 @@ own simulation only for live slider previews.
 ### 3. PV Confidence Can Over-React
 The confidence factor can drop to 0.1 early in the day on partially cloudy mornings, causing excessive grid charging. It doesn't recover when clouds clear.
 
-### 4. Consumption Estimate Sensitivity
-The algorithm uses consumption_est/24 for hourly drain — assumes flat consumption. Houses with evening peaks (cooking, heating) may see under-predicted evening drain.
+### 4. Consumption Estimate Sensitivity — PARTLY FIXED
+The SOC trajectory (`_project_soc_trajectory`) uses the 7-day **hourly**
+consumption profile (`consumption_hourly_kwh`) when available, so it handles
+non-flat days (evening peaks, daytime EV charging) accurately.
+
+**Overnight-need now profile-aware too** (fixed July 2026): the reserve
+(`calculate_self_consumption_reserve`) used to compute the overnight need as
+`consumption_est/24 × overnight_hours` — a FLAT average.  For a daytime-heavy
+load (e.g. 2 EVs charging during the day → 72 kWh/d average but low night
+consumption) this hugely OVER-estimated the night need (~30 kWh vs a real ~12
+kWh base load), pinning the reserve near 100% and forcing evening grid
+charging — even though the trajectory (already profile-aware) showed the
+battery barely draining overnight.  That mismatch was a phantom deficit
+(`predictive_deficit = reserve[flat,high] − min_projected[profile,high]`).
+Now the reserve SUMS the hourly profile over the night hours (when the
+profile is supplied), making it consistent with the trajectory.  Falls back
+to the flat average when no profile exists (new installs).  Wired into the
+from_grid greedy and MILP reserve calls (`consumption_hourly_kwh=` arg).
+Real customer report: 2-EV house, 80% SOC, MILP booked 5 evening charge
+slots; with the profile-aware reserve the phantom deficit vanishes.
 
 ### 5. Anti-Conflict Guard Hysteresis — IMPLEMENTED
 Previously the 200W grid import check suppressed discharge on a single
@@ -1295,7 +1313,34 @@ extrapolation from today's actual production) so the algorithm doesn't
 default to PV=0 and over-aggressively grid-charge.
 
 #### C. Consumption Profile Awareness — IMPLEMENTED
-Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumption_hourly_kwh` provides per-hour averages used in `_project_soc_trajectory()` and `_validate_schedule_soc()`. Coordinator records hourly breakdown at midnight. Frontend card also uses profiles.
+Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumption_hourly_kwh` provides per-hour averages used in `_project_soc_trajectory()`, `_validate_schedule_soc()`, and (July 2026) the overnight reserve. Coordinator records hourly breakdown at midnight. Frontend card also uses profiles.
+
+**Data path** (`coordinator`):
+1. `_resolve_consumption_entity` — picks the source: the user's
+   `consumption_override_entity` if set, else an inverter load-energy sensor
+   (`homeload_day_cost_energy` / `load_day_cost_energy` / …) resolved via the
+   **entity registry** by the exact `unique_id` (`{entry_id}_{key}`).
+2. `_query_hourly_from_history` — HA recorder `statistics_during_period`
+   ("change" per hour) → 24 hourly buckets.  Falls back to a FLAT daily/24
+   distribution when no statistics exist.
+3. `_record_hourly_consumption` (midnight) appends to a 7-day
+   `_hourly_consumption_history`; `_calculate_hourly_profile` averages it into
+   `_hourly_consumption_profile`.  Persisted in the consumption Store and
+   **recomputed on startup** from the loaded history (no cold-start gap).
+4. Exposed as `consumption_hourly_profile` in `schedule_status` attributes —
+   inspect it to confirm the shape (low-night/high-day for EV loads).  A FLAT
+   profile (all hours equal) means the history query fell back (no stats or,
+   pre-fix, an unresolved entity).
+
+**Registry-lookup fix (July 2026)**: `_resolve_consumption_entity` previously
+GUESSED the entity_id as `sensor.{title}_{key}`.  HA derives the entity_id
+from the slugified friendly NAME (e.g. "Homeload Day Cost Energy （0.1KWh）" →
+`..._homeload_day_cost_energy_0_1kwh`), so the guess never matched → the hourly
+profile silently fell back to FLAT → the profile-aware overnight reserve had no
+effect (daytime-heavy / EV loads looked flat overnight again).  Now resolved
+via `entity_registry.async_get_entity_id("sensor", DOMAIN, unique_id)` — exact
+and rename-proof.  Best accuracy still comes from setting a
+`consumption_override_entity` (a real P1/energy meter).
 
 #### C2. SOC History Display — IMPLEMENTED
 Coordinator records battery SOC at each slot boundary in `_soc_history`. Frontend draws solid line for actual past SOC, dotted line for projected future.
