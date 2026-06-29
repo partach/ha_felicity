@@ -70,6 +70,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.original_nordpool_entity = nordpool_entity
         self.override_nordpool_entity = nordpool_override
         
+        # Integration version (manifest), set by __init__ after construction;
+        # surfaced in the EMS card footer.
+        self.integration_version: str | None = None
+
         # Runtime state
         self.connected = False
         self._current_energy_state: str | None = None
@@ -755,7 +759,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             )).lower() in ("on", "true", "1"),
             flexible_loads=self._build_flex_load_configs(),
             ev_charge_strategy=str(opts.get("ev_charge_strategy", "smart")),
-            scheduler_engine=str(opts.get("scheduler_engine", "greedy")),
+            scheduler_engine=str(opts.get("scheduler_engine", "milp")),
         )
 
         # What did the previous schedule predict the SOC would be at this slot?
@@ -845,7 +849,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
             safe_power_kw,
             opts.get("ev_charge_strategy", "smart"),
-            opts.get("scheduler_engine", "greedy"),
+            opts.get("scheduler_engine", "milp"),
         ))
         if (input_hash == self._last_schedule_input_hash
                 and current_slot_idx == self._last_schedule_slot_idx):

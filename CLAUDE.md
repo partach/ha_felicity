@@ -123,13 +123,41 @@ the whole remaining-today + tomorrow horizon as a single optimisation and
 lets a solver find the cost-optimal plan, so cross-slot/cross-day
 interactions can't fall through the cracks.
 
-**Engine selection**: `scheduler_engine` config option (`greedy` default /
-`milp`), exposed as a select entity ("Scheduler Engine") and in the EMS
+**Engine selection**: `scheduler_engine` config option (**`milp` default** /
+`greedy`), exposed as a select entity ("Scheduler Engine") and in the EMS
 card's Advanced settings ("Scheduler"). When `milp`,
 `calculate_schedule` calls `_run_milp_or_none()`, which tries the solver
 and **silently falls back to greedy** on any failure (pulp missing,
 infeasible, timeout, non-optimal). The greedy path stays the safety net —
 MILP failures never break the EMS.
+
+**Why MILP is the default (robustness)**: the greedy two-day reconstruction
+(`_compute_tomorrow_schedule`) is the fragile, non-deterministic part — on a
+real arbitrage it scheduled 1 charge slot where the MILP scheduled 10, and a
+1.4% reserve change flipped its tomorrow decisions on/off.  The MILP optimises
+the whole remaining-today + tomorrow horizon jointly, so cross-slot/cross-day
+and cross-mode behaviour is uniform and deterministic.  This is also why the
+night-aware reserve + boost-drop apply to ALL modes in the MILP but only to
+from_grid in greedy — the MILP stays robust with them everywhere; the greedy
+two-day path destabilised in both/to_grid.  Greedy remains the dependency-free
+fallback; MILP auto-disables to greedy when CBC/pulp is unavailable, so the
+default flip can't break any install.  A one-time migration bumps existing
+auto-`greedy` installs to `milp` (marker-guarded; see `__init__.py`).
+
+**MILP feasibility guarantee** (fixed): a customer log showed ~24% of MILP
+runs returning `Infeasible` (158/672, clustered 16:00–18:00) → falling back to
+the fragile greedy.  Cause: the reserve constraints (`soc[midnight] >= reserve`,
+`soc[end] >= reserve`) and the per-slot `soc >= soc_min` bound were HARD; in the
+evening with a near-capacity reserve and few low-power slots left — or any time
+consumption drains faster than charging can offset — there was no feasible LP.
+Two fixes make the LP **provably feasible for any input**: (1) the reserve
+constraints are SOFT (shortfall slack + heavy penalty — reach the reserve when
+physically possible, get as close as possible otherwise); (2) a per-slot
+emergency import slack `imp[k]` on the SOC dynamics (grid passthrough — the
+house draws from grid when the battery is at min) absorbs any otherwise-
+infeasible drain.  Both slacks carry a high penalty (`5× max price`) so they're
+0 in normal cases (parity preserved) and only activate to keep the LP feasible.
+Pinned by `test_milp_never_infeasible_extreme_drain`.
 
 **Permanent disable on unrecoverable failure** (`_MILP_DISABLED` module
 flag): when the CBC solver binary is missing/unrunnable (`FileNotFoundError`
@@ -359,7 +387,7 @@ The algorithm does NOT try to fill the battery to 100%. It calculates a **reserv
 
 ```
 dynamic_reserve = discharge_min_kwh + overnight_reserve × boost
-  where overnight_reserve = consumption_per_hour × (24 - sunset + sunrise)
+  where overnight_reserve = consumption_per_hour × overnight_hours
         boost = 1.25 if optimization_priority == "self_consumption" else 1.0
 
 Dynamic (reserve_target_pct = 0):
@@ -368,6 +396,35 @@ Dynamic (reserve_target_pct = 0):
 Fixed (reserve_target_pct > 0):
   reserve_target = max(reserve_target_pct × capacity, dynamic_reserve)
 ```
+
+**Time-aware `overnight_hours` (from_grid only, fixed July 2026)**:
+`calculate_self_consumption_reserve` takes the current time.  During the day
+`overnight_hours = (24 − sunset) + sunrise` (the full night — charge up before
+sunset).  But once we're PAST sunset, it covers only the REMAINING hours to
+sunrise.  Without this, a high-consumption house keeps demanding a full-night
+reserve at e.g. 22:30 — which (×1.25 boost, capped at capacity) pins the
+target at ~100% of a small battery and forces grid charging at PEAK evening
+prices to "maintain" a reserve the battery is meant to be DISCHARGING through
+overnight (then tomorrow's PV refills it for free).  Real customer report:
+72 kWh/day house, 48 kWh battery at 85% SOC at 22:31, MILP booked 4 charge
+slots at ~18 €/kWh.  Scoped to **from_grid** (`_schedule_from_grid` and the
+MILP reserve when `grid_mode == "from_grid"`): in both/to_grid the reserve
+also gates SELLING, where shrinking it at night changes trade economics and
+caused two-day-optimization regressions, so those keep the full-night reserve.
+The tomorrow-side reserve in `select_unified_charge_slots` is always
+full-night (tomorrow's whole night is still ahead).
+
+**Boost dropped at night (from_grid)**: the time-aware reserve alone wasn't
+enough — the 1.25× self_consumption boost re-inflated the (shrunk) night
+reserve to ~84%, so the battery was still topped up at peak (1 residual
+slot).  `_compute_reserve_target(apply_boost=...)` now suppresses the boost
+when `_is_night(...)` (past sunset / before sunrise).  Rationale: the boost
+exists to hold extra *PV* energy for self-use — a daytime concept.  At night
+there's no PV to preserve; the battery just needs survival to sunrise, then
+tomorrow's PV refills it.  With both fixes the customer scenario charges 0
+slots (reserve 69% < 85% SOC).  `_is_night` / `_sunset_sunrise_hours` are
+shared helpers.  Pinned by `test_self_consumption_boost_dropped_at_night`
+and `test_time_aware_no_expensive_night_charge`.
 
 **`reserve_target_pct` is a MONOTONIC FLOOR — it can only RAISE the target,
 never lower it.** This is the whole point of the setting: "keep AT LEAST this

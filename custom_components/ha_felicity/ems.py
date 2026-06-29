@@ -117,7 +117,7 @@ class EMSConfig:
     # "milp" (the solver in milp.py).  When "milp", calculate_schedule tries
     # the MILP first and silently falls back to greedy on any failure
     # (pulp missing, infeasible, timeout).
-    scheduler_engine: str = "greedy"
+    scheduler_engine: str = "milp"
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -222,16 +222,13 @@ def _synthesize_pv_hourly(
     return hourly
 
 
-def calculate_self_consumption_reserve(
-    consumption_est: float,
+def _sunset_sunrise_hours(
     pv_hourly_kwh: dict[int, float] | None = None,
-) -> float:
-    """Calculate battery reserve needed for self-consumption overnight.
+) -> tuple[int, int]:
+    """Return (sunset_hour, sunrise_hour), derived from PV production hours.
 
-    Returns reserve in kWh needed from sunset to sunrise.
+    Defaults to 19:00 / 07:00 when no PV breakdown is available.
     """
-    consumption_per_hour = consumption_est / 24.0
-
     sunset_hour = 19
     sunrise_hour = 7
     if pv_hourly_kwh:
@@ -239,14 +236,72 @@ def calculate_self_consumption_reserve(
         if pv_hours:
             sunset_hour = max(pv_hours) + 1
             sunrise_hour = min(pv_hours)
+    return sunset_hour, sunrise_hour
 
-    overnight_hours = (24 - sunset_hour) + sunrise_hour
+
+def _is_night(
+    pv_hourly_kwh: dict[int, float] | None,
+    current_hour: int,
+    current_minute: int = 0,
+) -> bool:
+    """True when the current time is past sunset or before sunrise."""
+    sunset_hour, sunrise_hour = _sunset_sunrise_hours(pv_hourly_kwh)
+    now_h = current_hour + current_minute / 60.0
+    return now_h >= sunset_hour or now_h < sunrise_hour
+
+
+def calculate_self_consumption_reserve(
+    consumption_est: float,
+    pv_hourly_kwh: dict[int, float] | None = None,
+    current_hour: int | None = None,
+    current_minute: int = 0,
+) -> float:
+    """Calculate battery reserve needed for self-consumption overnight.
+
+    Returns the reserve in kWh needed to ride from now (or sunset, during the
+    day) to sunrise.
+
+    **Time-aware** (fixed July 2026): when `current_hour` is supplied and we
+    are already PAST sunset (i.e. in the night), the reserve covers only the
+    REMAINING hours to sunrise — not the full 12-hour night.  Otherwise a
+    high-consumption house keeps demanding a full-night reserve at, say,
+    22:30, which (×1.25 self_consumption boost) pins the target at ~100% of a
+    small battery and forces grid charging at peak evening prices to "maintain"
+    a reserve the battery is supposed to be DISCHARGING through overnight
+    (the whole point of self-consumption).  Shrinking the reserve as the night
+    progresses lets the battery drain to power the house and refill from
+    tomorrow's PV instead of buying at peak.  During the day the full-night
+    reserve still applies (charge up before sunset).  When `current_hour` is
+    omitted the legacy full-night behaviour is used (tests / tomorrow-side).
+    """
+    consumption_per_hour = consumption_est / 24.0
+
+    sunset_hour, sunrise_hour = _sunset_sunrise_hours(pv_hourly_kwh)
+
+    full_overnight_hours = (24 - sunset_hour) + sunrise_hour
+
+    if current_hour is None:
+        overnight_hours = full_overnight_hours
+    else:
+        now_h = current_hour + current_minute / 60.0
+        if now_h >= sunset_hour:
+            # Evening / night before midnight → hours left to tomorrow sunrise.
+            overnight_hours = (24 - now_h) + sunrise_hour
+        elif now_h < sunrise_hour:
+            # Early morning before sunrise → hours left until sunrise today.
+            overnight_hours = sunrise_hour - now_h
+        else:
+            # Daytime → full night still ahead; charge up before sunset.
+            overnight_hours = full_overnight_hours
+        overnight_hours = max(0.0, min(full_overnight_hours, overnight_hours))
+
     reserve = consumption_per_hour * overnight_hours
 
     _LOGGER.debug(
         "Self-consumption reserve: %.2f kWh (sunset=%d:00, sunrise=%d:00, "
-        "overnight=%.1fh, consumption=%.1f kWh/day)",
-        reserve, sunset_hour, sunrise_hour, overnight_hours, consumption_est,
+        "overnight=%.1fh of %.1fh full, consumption=%.1f kWh/day)",
+        reserve, sunset_hour, sunrise_hour, overnight_hours,
+        full_overnight_hours, consumption_est,
     )
     return reserve
 
@@ -254,6 +309,7 @@ def calculate_self_consumption_reserve(
 def _compute_reserve_target(
     config: EMSConfig,
     reserve_kwh: float,
+    apply_boost: bool = True,
 ) -> float:
     """Compute the battery reserve target in kWh.
 
@@ -261,13 +317,23 @@ def _compute_reserve_target(
     Otherwise falls back to the dynamic calculation: discharge_min + overnight reserve.
     When optimization_priority == "self_consumption", the dynamic reserve is
     boosted to keep more PV-stored energy in the battery for self-use.
+
+    `apply_boost=False` suppresses the 1.25× self_consumption boost.  The
+    boost exists to hold extra *PV* energy for self-use — a daytime concept.
+    At NIGHT there is no PV to preserve; the battery only needs to survive to
+    sunrise, then tomorrow's PV refills it.  Keeping the boost at night pins
+    the reserve near full and forces grid charging at peak prices to "maintain"
+    it (the battery should be discharging through the night, not topped up).
+    Callers pass `apply_boost=not _is_night(...)` in from_grid so the boost
+    applies during the day but the battery rides down overnight.
     """
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
 
     # Dynamic overnight-survival reserve: discharge floor + the energy needed
     # to ride from sunset to sunrise.  self_consumption holds an extra 25% to
-    # favour PV self-use over grid exports.
-    multiplier = 1.25 if config.optimization_priority == "self_consumption" else 1.0
+    # favour PV self-use over grid exports (daytime only — see apply_boost).
+    boost_active = apply_boost and config.optimization_priority == "self_consumption"
+    multiplier = 1.25 if boost_active else 1.0
     dynamic_reserve = min_kwh + reserve_kwh * multiplier
 
     if config.reserve_target_pct > 0:
@@ -1616,9 +1682,20 @@ def _run_milp_or_none(
         _LOGGER.warning("MILP module unavailable — falling back to greedy: %s", err)
         return None
 
+    # Time-aware + night-boost-drop reserve, applied to ALL grid modes here.
+    # (The greedy path scopes the same treatment to from_grid because its
+    # fragile two-day reconstruction destabilises in both/to_grid at night.
+    # The MILP is a single joint 2-day optimisation with a SOFT reserve, so
+    # it stays robust with the night-aware reserve in every mode — verified
+    # by the full test + MILP-parity suite.  This is exactly why the MILP is
+    # the more robust engine: cross-mode/cross-day behaviour is uniform.)
     reserve_kwh = calculate_self_consumption_reserve(
-        config.consumption_est_kwh, state.pv_hourly_kwh)
-    reserve_target = _compute_reserve_target(config, reserve_kwh)
+        config.consumption_est_kwh, state.pv_hourly_kwh,
+        state.current_hour, state.current_minute)
+    milp_night = _is_night(
+        state.pv_hourly_kwh, state.current_hour, state.current_minute)
+    reserve_target = _compute_reserve_target(
+        config, reserve_kwh, apply_boost=not milp_night)
     pv_confidence = _calculate_pv_confidence(
         state.pv_hourly_kwh, state.pv_actual_today_kwh,
         state.current_hour, state.current_minute,
@@ -1954,12 +2031,28 @@ def _schedule_from_grid(
     result = ScheduleResult()
     effective_per_slot = energy_per_slot * config.efficiency
 
+    # Time-aware reserve (from_grid / self-consumption only): once we're past
+    # sunset, only the REMAINING hours to sunrise need covering — not the full
+    # night.  Without this, a high-consumption house keeps demanding a
+    # full-night reserve at e.g. 22:30, which (×1.25 boost, capped at capacity)
+    # pins the target at ~100% and forces grid charging at PEAK evening prices
+    # to "maintain" a reserve the battery is meant to be DISCHARGING through
+    # overnight — then tomorrow's PV refills it for free anyway.  Real customer
+    # report (72 kWh/day house, 48 kWh battery at 85%): 4 charge slots booked
+    # at ~18 EUR/kWh evening peak.  Scoped to from_grid because both/to_grid
+    # use the reserve to also gate SELLING, where shrinking it at night has
+    # different (trade-off) implications.
     reserve_kwh = calculate_self_consumption_reserve(
-        config.consumption_est_kwh, state.pv_hourly_kwh)
+        config.consumption_est_kwh, state.pv_hourly_kwh,
+        state.current_hour, state.current_minute)
     result.self_consumption_reserve = round(reserve_kwh, 2)
 
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
-    reserve_target = _compute_reserve_target(config, reserve_kwh)
+    # Drop the self_consumption 1.25× boost at night: it holds extra PV energy
+    # for self-use (daytime), but at night the battery should ride down to
+    # survival and refill from tomorrow's PV — not be topped up at peak prices.
+    night = _is_night(state.pv_hourly_kwh, state.current_hour, state.current_minute)
+    reserve_target = _compute_reserve_target(config, reserve_kwh, apply_boost=not night)
     result.reserve_target_pct = round(
         (reserve_target / config.battery_capacity_kwh) * 100.0, 1,
     ) if config.battery_capacity_kwh > 0 else 0.0

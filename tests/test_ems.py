@@ -131,6 +131,10 @@ def default_config(**overrides) -> EMSConfig:
         safe_power_kw=5.0,
         consumption_est_kwh=38.5,
         yesterday_deficit_kwh=0.0,
+        # Greedy-path tests use default_config(); the EMSConfig dataclass
+        # default is now "milp" (matching the user-facing default), so pin
+        # greedy explicitly here.  MILP tests set scheduler_engine="milp".
+        scheduler_engine="greedy",
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -183,6 +187,64 @@ class TestSelfConsumptionReserve:
         reserve_low = calculate_self_consumption_reserve(10.0)
         reserve_high = calculate_self_consumption_reserve(50.0)
         assert reserve_high > reserve_low
+
+    def test_time_aware_shrinks_at_night(self):
+        """Past sunset, the reserve covers only the remaining hours to sunrise."""
+        # No current_hour → full night (default sunset 19, sunrise 7 = 12h).
+        full = calculate_self_consumption_reserve(24.0)
+        assert full == pytest.approx(12.0, abs=0.1)
+        # 22:30 → remaining to sunrise (7:00) = 8.5h.
+        night = calculate_self_consumption_reserve(24.0, None, 22, 30)
+        assert night == pytest.approx(24.0 / 24 * 8.5, abs=0.1)
+        assert night < full
+
+    def test_time_aware_full_during_day(self):
+        """Before sunset, the full night is still ahead → full reserve."""
+        day = calculate_self_consumption_reserve(24.0, None, 14, 0)
+        full = calculate_self_consumption_reserve(24.0)
+        assert day == pytest.approx(full, abs=0.1)
+
+    def test_time_aware_early_morning(self):
+        """Before sunrise, reserve covers only hours left until sunrise."""
+        # 03:00 → 4h left to sunrise (7:00).
+        early = calculate_self_consumption_reserve(24.0, None, 3, 0)
+        assert early == pytest.approx(24.0 / 24 * 4.0, abs=0.1)
+
+    def test_time_aware_no_expensive_night_charge(self):
+        """from_grid: a full battery at night must NOT charge at peak prices.
+
+        Real customer report: 72 kWh/day house, 48 kWh battery at 85% SOC at
+        22:31 booked charge slots at the evening peak.  With the time-aware
+        reserve the remaining-night need is well below the battery level, so
+        no charging is forced.
+        """
+        config = default_config(
+            grid_mode="from_grid",
+            battery_capacity_kwh=48.0,
+            battery_discharge_min_pct=10.0,
+            consumption_est_kwh=72.2,
+            safe_power_kw=10.0,
+            optimization_priority="self_consumption",
+        )
+        # Cheap day, expensive evening.
+        prices = [0.05] * 12 + [0.12] * 5 + [0.19] * 7
+        pv = make_pv_hourly(43.2)
+        state = default_state(
+            battery_soc_pct=85.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=pv,
+            pv_forecast_remaining=0.0,
+            pv_forecast_today=47.4,
+            pv_forecast_tomorrow=55.4,
+            pv_actual_today_kwh=43.2,
+            current_hour=22,
+            current_minute=31,
+        )
+        result = calculate_schedule(config, state)
+        charge = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        assert len(charge) == 0, (
+            f"battery at 85% at 22:31 should not force night charging, got {charge}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3602,7 +3664,11 @@ class TestOptimizationPriority:
         )
 
     def test_self_consumption_raises_reserve_target(self):
-        """Self-consumption priority raises the dynamic reserve."""
+        """Self-consumption priority raises the dynamic reserve DURING THE DAY.
+
+        The 1.25× boost holds extra PV energy for self-use — a daytime concept.
+        Tested at noon (the boost is dropped at night; see the night test).
+        """
         config_cost = default_config(
             grid_mode="from_grid",
             battery_capacity_kwh=20.0,
@@ -3620,13 +3686,43 @@ class TestOptimizationPriority:
             slot_prices_today=[0.10] * 24,
             pv_hourly_kwh={},
             pv_forecast_remaining=0.0,
-            current_hour=0,
+            current_hour=12,
         )
         result_cost = calculate_schedule(config_cost, state)
         result_self = calculate_schedule(config_self, state)
         assert result_self.reserve_target_pct > result_cost.reserve_target_pct, (
             f"self_consumption reserve ({result_self.reserve_target_pct}%) "
             f"should exceed cost reserve ({result_cost.reserve_target_pct}%)"
+        )
+
+    def test_self_consumption_boost_dropped_at_night(self):
+        """At night the self_consumption boost is dropped (battery rides down).
+
+        The 1.25× boost is a daytime PV-self-use concept; at night the reserve
+        should be the bare survival need so the battery discharges to power the
+        house and refills from tomorrow's PV instead of charging at peak.
+        """
+        common = dict(
+            grid_mode="from_grid",
+            battery_capacity_kwh=20.0,
+            consumption_est_kwh=20.0,
+        )
+        config_cost = default_config(optimization_priority="cost", **common)
+        config_self = default_config(optimization_priority="self_consumption", **common)
+        state = default_state(
+            battery_soc_pct=50.0,
+            slot_prices_today=[0.10] * 24,
+            pv_hourly_kwh={},
+            pv_forecast_remaining=0.0,
+            current_hour=23,  # night (after sunset 19)
+        )
+        result_cost = calculate_schedule(config_cost, state)
+        result_self = calculate_schedule(config_self, state)
+        assert result_self.reserve_target_pct == pytest.approx(
+            result_cost.reserve_target_pct, abs=0.5
+        ), (
+            f"at night self_consumption reserve ({result_self.reserve_target_pct}%) "
+            f"should match cost ({result_cost.reserve_target_pct}%) — boost dropped"
         )
 
 
@@ -4962,10 +5058,45 @@ class TestSellCoverage:
 class TestMILPScheduler:
     """Tests for the optional MILP scheduler (milp.py)."""
 
-    def test_milp_disabled_without_engine(self):
-        """Default engine stays greedy; MILP not invoked."""
+    def test_default_engine_is_milp(self):
+        """MILP is now the default engine (robust joint 2-day optimiser)."""
         config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10)
-        assert config.scheduler_engine == "greedy"
+        assert config.scheduler_engine == "milp"
+
+    def test_milp_never_infeasible_extreme_drain(self):
+        """MILP must stay feasible (not fall back) even when consumption would
+        drain the battery below min with no way to charge.
+
+        Previously the hard SOC-min / reserve constraints made the LP
+        infeasible in such cases (100% of the customer log's MILP failures
+        were 'Infeasible'), collapsing to greedy.  The soft reserve + the
+        per-slot feasibility slack guarantee a solution.
+        """
+        config = EMSConfig(
+            grid_mode="to_grid",          # no charging to offset the drain
+            scheduler_engine="milp",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=120.0,    # extreme — drains far below min
+            efficiency=0.90,
+            reserve_target_pct=80,        # high reserve, also hard to reach
+        )
+        state = EMSState(
+            slot_prices_today=[0.30] * 24,
+            battery_soc_pct=22.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=20,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        # Did not fall back to greedy — the MILP itself produced the plan.
+        assert result.scheduler_active == "milp", (
+            f"MILP should stay feasible, got {result.scheduler_active}"
+        )
 
     def test_milp_charges_cheap_slots_from_grid(self):
         """MILP from_grid: charge the cheapest slots to cover the deficit."""
@@ -5135,9 +5266,10 @@ class TestMILPScheduler:
         assert result.scheduler_active == "greedy_fallback"
 
     def test_greedy_scheduler_active_field(self):
-        """Default greedy engine sets scheduler_active='greedy'."""
+        """Greedy engine sets scheduler_active='greedy'."""
         config = EMSConfig(
             grid_mode="from_grid",
+            scheduler_engine="greedy",
             battery_capacity_kwh=10,
             battery_discharge_min_pct=20,
             safe_power_kw=5,
@@ -5720,6 +5852,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
             optimization_priority="self_consumption",
         )
         prices = [0.10] * 24
@@ -5765,6 +5898,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
             optimization_priority="self_consumption",
         )
         prices = [0.10] * 24
@@ -5802,6 +5936,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
         )
         prices = [0.10] * 24
         # SOC at 50% (30 kWh) — below the self-consumption reserve target but
@@ -5838,6 +5973,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
             optimization_priority="self_consumption",
         )
         prices = [0.10] * 12 + [0.30] * 12
@@ -5866,6 +6002,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
         )
         prices = [0.10] * 24
         state = dict(
