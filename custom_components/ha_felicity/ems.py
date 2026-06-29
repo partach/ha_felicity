@@ -250,11 +250,42 @@ def _is_night(
     return now_h >= sunset_hour or now_h < sunrise_hour
 
 
+def _sum_hourly_consumption(
+    profile: dict, start_h: float, hours: float, flat_per_hour: float,
+) -> float:
+    """Sum a per-hour consumption profile over a window, wrapping midnight.
+
+    `start_h` may be fractional (e.g. 22.5); `hours` is the window length.
+    Missing hours fall back to `flat_per_hour` so a partial profile degrades
+    gracefully.
+    """
+    total = 0.0
+    h = float(start_h)
+    remaining = float(hours)
+    iters = 0
+    while remaining > 1e-9 and iters < 64:
+        iters += 1
+        hour_idx = int(h) % 24
+        frac = min(1.0 - (h - math.floor(h)), remaining)
+        if frac <= 1e-9:
+            frac = min(1.0, remaining)
+        val = profile.get(hour_idx)
+        if val is None:
+            val = profile.get(str(hour_idx))
+        if val is None:
+            val = flat_per_hour
+        total += val * frac
+        h += frac
+        remaining -= frac
+    return total
+
+
 def calculate_self_consumption_reserve(
     consumption_est: float,
     pv_hourly_kwh: dict[int, float] | None = None,
     current_hour: int | None = None,
     current_minute: int = 0,
+    consumption_hourly_kwh: dict[int, float] | None = None,
 ) -> float:
     """Calculate battery reserve needed for self-consumption overnight.
 
@@ -273,6 +304,17 @@ def calculate_self_consumption_reserve(
     tomorrow's PV instead of buying at peak.  During the day the full-night
     reserve still applies (charge up before sunset).  When `current_hour` is
     omitted the legacy full-night behaviour is used (tests / tomorrow-side).
+
+    **Profile-aware overnight need** (fixed July 2026): when an hourly
+    consumption profile is supplied, the overnight need is the SUM of the
+    profile over the night hours — NOT the flat daily-average × hours.  This
+    matters hugely for daytime-heavy loads: a house with 2 EVs charging during
+    the day has a high daily average (72 kWh/d) but LOW night consumption.
+    The flat estimate computed ~30 kWh overnight need (3 kWh/h × 10h), pinning
+    the reserve near 100% and forcing evening grid charging — while the SOC
+    trajectory (which already uses the profile) correctly showed the battery
+    barely draining overnight.  That mismatch created a phantom deficit.
+    Summing the profile makes the reserve consistent with the trajectory.
     """
     consumption_per_hour = consumption_est / 24.0
 
@@ -282,25 +324,35 @@ def calculate_self_consumption_reserve(
 
     if current_hour is None:
         overnight_hours = full_overnight_hours
+        start_h = float(sunset_hour)
     else:
         now_h = current_hour + current_minute / 60.0
         if now_h >= sunset_hour:
             # Evening / night before midnight → hours left to tomorrow sunrise.
             overnight_hours = (24 - now_h) + sunrise_hour
+            start_h = now_h
         elif now_h < sunrise_hour:
             # Early morning before sunrise → hours left until sunrise today.
             overnight_hours = sunrise_hour - now_h
+            start_h = now_h
         else:
             # Daytime → full night still ahead; charge up before sunset.
             overnight_hours = full_overnight_hours
+            start_h = float(sunset_hour)
         overnight_hours = max(0.0, min(full_overnight_hours, overnight_hours))
 
-    reserve = consumption_per_hour * overnight_hours
+    if consumption_hourly_kwh:
+        reserve = _sum_hourly_consumption(
+            consumption_hourly_kwh, start_h, overnight_hours, consumption_per_hour)
+        source = "profile"
+    else:
+        reserve = consumption_per_hour * overnight_hours
+        source = "flat-avg"
 
     _LOGGER.debug(
-        "Self-consumption reserve: %.2f kWh (sunset=%d:00, sunrise=%d:00, "
-        "overnight=%.1fh of %.1fh full, consumption=%.1f kWh/day)",
-        reserve, sunset_hour, sunrise_hour, overnight_hours,
+        "Self-consumption reserve: %.2f kWh (%s; sunset=%d:00, sunrise=%d:00, "
+        "start=%.1f, overnight=%.1fh of %.1fh full, consumption=%.1f kWh/day)",
+        reserve, source, sunset_hour, sunrise_hour, start_h, overnight_hours,
         full_overnight_hours, consumption_est,
     )
     return reserve
@@ -1691,7 +1743,8 @@ def _run_milp_or_none(
     # the more robust engine: cross-mode/cross-day behaviour is uniform.)
     reserve_kwh = calculate_self_consumption_reserve(
         config.consumption_est_kwh, state.pv_hourly_kwh,
-        state.current_hour, state.current_minute)
+        state.current_hour, state.current_minute,
+        consumption_hourly_kwh=state.consumption_hourly_kwh)
     milp_night = _is_night(
         state.pv_hourly_kwh, state.current_hour, state.current_minute)
     reserve_target = _compute_reserve_target(
@@ -2044,7 +2097,8 @@ def _schedule_from_grid(
     # different (trade-off) implications.
     reserve_kwh = calculate_self_consumption_reserve(
         config.consumption_est_kwh, state.pv_hourly_kwh,
-        state.current_hour, state.current_minute)
+        state.current_hour, state.current_minute,
+        consumption_hourly_kwh=state.consumption_hourly_kwh)
     result.self_consumption_reserve = round(reserve_kwh, 2)
 
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh

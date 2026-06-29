@@ -1212,8 +1212,26 @@ own simulation only for live slider previews.
 ### 3. PV Confidence Can Over-React
 The confidence factor can drop to 0.1 early in the day on partially cloudy mornings, causing excessive grid charging. It doesn't recover when clouds clear.
 
-### 4. Consumption Estimate Sensitivity
-The algorithm uses consumption_est/24 for hourly drain — assumes flat consumption. Houses with evening peaks (cooking, heating) may see under-predicted evening drain.
+### 4. Consumption Estimate Sensitivity — PARTLY FIXED
+The SOC trajectory (`_project_soc_trajectory`) uses the 7-day **hourly**
+consumption profile (`consumption_hourly_kwh`) when available, so it handles
+non-flat days (evening peaks, daytime EV charging) accurately.
+
+**Overnight-need now profile-aware too** (fixed July 2026): the reserve
+(`calculate_self_consumption_reserve`) used to compute the overnight need as
+`consumption_est/24 × overnight_hours` — a FLAT average.  For a daytime-heavy
+load (e.g. 2 EVs charging during the day → 72 kWh/d average but low night
+consumption) this hugely OVER-estimated the night need (~30 kWh vs a real ~12
+kWh base load), pinning the reserve near 100% and forcing evening grid
+charging — even though the trajectory (already profile-aware) showed the
+battery barely draining overnight.  That mismatch was a phantom deficit
+(`predictive_deficit = reserve[flat,high] − min_projected[profile,high]`).
+Now the reserve SUMS the hourly profile over the night hours (when the
+profile is supplied), making it consistent with the trajectory.  Falls back
+to the flat average when no profile exists (new installs).  Wired into the
+from_grid greedy and MILP reserve calls (`consumption_hourly_kwh=` arg).
+Real customer report: 2-EV house, 80% SOC, MILP booked 5 evening charge
+slots; with the profile-aware reserve the phantom deficit vanishes.
 
 ### 5. Anti-Conflict Guard Hysteresis — IMPLEMENTED
 Previously the 200W grid import check suppressed discharge on a single
