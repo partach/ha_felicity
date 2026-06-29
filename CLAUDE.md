@@ -14,6 +14,42 @@ memory or assumptions from training — the facts and status are HERE. If
 something you intend to do contradicts this document, stop and reconcile it
 first.
 
+### The Documentation Set — keep ALL of it current (do not let it float)
+
+There are TWO authoritative docs and they must BOTH be read and kept in sync:
+
+| Doc | Role | Update when |
+|---|---|---|
+| **CLAUDE.md** (this file) | Architecture, status, every fix's rationale, known issues, settings matrix | every change |
+| **docs/EMS_LOGIC.md** | The behavioural SPECIFICATION — what the EMS should do per mode/knob, traced from inputs to action | every change that alters behaviour |
+
+A past session updated only CLAUDE.md and let `docs/EMS_LOGIC.md` go stale —
+that is the "floating basis" failure.  **Before concluding any work, update
+BOTH** (CLAUDE.md for the what/why/status, EMS_LOGIC.md for the behavioural
+contract).  `EMS.md` and the root `EMS_LOGIC.md` are older analysis docs — do
+not treat them as current.
+
+### Validate behaviour with the simulator — don't assert from memory
+
+`tools/ems_simulator.py` runs `ems.calculate_schedule` on a library of named
+scenarios (`tools/scenarios.py`) for BOTH engines, checks expectations, and
+renders charts.  When you change scheduling behaviour: add/adjust a scenario
+that encodes the intended outcome, run `python tools/ems_simulator.py`, and
+confirm it's green before claiming a fix works.  Reproduce customer reports as
+scenarios so they become permanent, readable regression tests.
+
+### Engine default = GREEDY (decision, June 2026)
+
+`scheduler_engine` defaults to **greedy** (multi-month track record, no solver
+dependency).  **MILP is opt-in.**  A prior session flipped the default to MILP;
+it was reverted after fact-checking showed the recent customer-reported bugs
+were MILP-specific or shared-reserve (not greedy scheduling), plus MILP carries
+a pulp/CBC dependency and was not yet validated for determinism.  Do NOT flip
+the default back to MILP without (a) the simulator harness showing MILP is
+deterministic and correct across all knob scenarios, and (b) explicit user
+agreement.  Greedy's two-day reconstruction is less powerful on cross-day
+arbitrage, but it is the proven, dependency-free path.
+
 ### The One Rule That Keeps Breaking — Single Point of Truth
 
 **`ems.py` is the SINGLE SOURCE OF TRUTH for all scheduling logic. It must

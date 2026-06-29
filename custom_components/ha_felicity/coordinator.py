@@ -824,7 +824,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             )).lower() in ("on", "true", "1"),
             flexible_loads=self._build_flex_load_configs(),
             ev_charge_strategy=str(opts.get("ev_charge_strategy", "smart")),
-            scheduler_engine=str(opts.get("scheduler_engine", "milp")),
+            scheduler_engine=str(opts.get("scheduler_engine", "greedy")),
         )
 
         # What did the previous schedule predict the SOC would be at this slot?
@@ -914,7 +914,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
             safe_power_kw,
             opts.get("ev_charge_strategy", "smart"),
-            opts.get("scheduler_engine", "milp"),
+            opts.get("scheduler_engine", "greedy"),
         ))
         if (input_hash == self._last_schedule_input_hash
                 and current_slot_idx == self._last_schedule_slot_idx):

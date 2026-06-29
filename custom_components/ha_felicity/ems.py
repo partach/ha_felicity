@@ -117,7 +117,7 @@ class EMSConfig:
     # "milp" (the solver in milp.py).  When "milp", calculate_schedule tries
     # the MILP first and silently falls back to greedy on any failure
     # (pulp missing, infeasible, timeout).
-    scheduler_engine: str = "milp"
+    scheduler_engine: str = "greedy"
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.

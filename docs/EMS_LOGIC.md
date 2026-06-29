@@ -2,6 +2,47 @@
 
 This document traces the complete decision path of the Felicity EMS, from raw inputs to inverter action, for each mode.
 
+> **This is the behavioural SPECIFICATION.** It must be kept in sync with the
+> code on every behaviour change (alongside CLAUDE.md). The body below predates
+> June 2026; the **Recent behavioural decisions** section is the current
+> authority where it conflicts with older text. Validate with
+> `tools/ems_simulator.py`.
+
+---
+
+## Recent behavioural decisions (June–July 2026) — current authority
+
+These refine/override the older sections below. Each is pinned by a simulator
+scenario and/or `tests/test_ems.py`.
+
+1. **Engine default = greedy; MILP opt-in.** Greedy has a multi-month track
+   record and no solver dependency. MILP is the joint 2-day optimiser but is
+   validated per-scenario before it can become default again.
+2. **Reserve is time-aware (from_grid + MILP all modes).** Past sunset the
+   overnight reserve covers only the REMAINING hours to sunrise, not the full
+   night — so a high-consumption house isn't forced to charge at peak evening
+   prices to "maintain" a full-night reserve the battery should be discharging.
+3. **Self-consumption boost dropped at night.** The ×1.25 boost (hold extra PV
+   energy for self-use) is a daytime concept; at night the reserve is bare
+   survival so the battery rides down and refills from tomorrow's PV.
+4. **Overnight need is profile-aware.** The reserve SUMS the 7-day *hourly*
+   consumption profile over the night hours (not flat daily/24). Critical for
+   daytime-heavy loads (EVs): high daily average but low night use → small
+   reserve → no phantom evening charging. Falls back to flat with no profile.
+   The hourly profile is resolved via the entity registry (exact unique_id),
+   not a guessed entity_id.
+5. **MILP is provably feasible.** Reserve constraints are soft (shortfall slack
+   + penalty) and the SOC dynamics carry a per-slot grid-passthrough slack, so
+   the LP never returns Infeasible (which used to drop ~24% of runs to greedy).
+6. **Manual price mode is a threshold rule, not the optimizer.** `scheduled_slots`
+   in manual mode is rebuilt from the threshold (from_grid/both charge BELOW it,
+   to_grid/both sell ABOVE it) — never the stale optimizer plan.
+7. **No charge deferral in the coordinator.** Every scheduled charge slot
+   executes; the cheapest-slot decision lives entirely in `ems.py`.
+8. **Manual slot picks are grid-mode-aware.** from_grid → any picked slot is a
+   charge slot (even above threshold); to_grid → any is a sell slot; both →
+   threshold decides.
+
 ---
 
 ## 1. User Configuration: The Settings That Shape Every Decision
