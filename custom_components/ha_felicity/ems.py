@@ -117,7 +117,7 @@ class EMSConfig:
     # "milp" (the solver in milp.py).  When "milp", calculate_schedule tries
     # the MILP first and silently falls back to greedy on any failure
     # (pulp missing, infeasible, timeout).
-    scheduler_engine: str = "greedy"
+    scheduler_engine: str = "milp"
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -1682,18 +1682,17 @@ def _run_milp_or_none(
         _LOGGER.warning("MILP module unavailable — falling back to greedy: %s", err)
         return None
 
-    # Time-aware reserve in from_grid only (see _schedule_from_grid): past
-    # sunset the MILP's midnight constraint (soc[midnight] >= reserve_target)
-    # otherwise forces charging to a full-night reserve at peak prices.
-    # both/to_grid keep the full-night reserve (it also gates selling).
-    from_grid = config.grid_mode == "from_grid"
+    # Time-aware + night-boost-drop reserve, applied to ALL grid modes here.
+    # (The greedy path scopes the same treatment to from_grid because its
+    # fragile two-day reconstruction destabilises in both/to_grid at night.
+    # The MILP is a single joint 2-day optimisation with a SOFT reserve, so
+    # it stays robust with the night-aware reserve in every mode — verified
+    # by the full test + MILP-parity suite.  This is exactly why the MILP is
+    # the more robust engine: cross-mode/cross-day behaviour is uniform.)
     reserve_kwh = calculate_self_consumption_reserve(
         config.consumption_est_kwh, state.pv_hourly_kwh,
-        state.current_hour if from_grid else None,
-        state.current_minute)
-    # from_grid at night: drop the 1.25× boost so the midnight constraint
-    # targets survival, not a topped-up battery (see _compute_reserve_target).
-    milp_night = from_grid and _is_night(
+        state.current_hour, state.current_minute)
+    milp_night = _is_night(
         state.pv_hourly_kwh, state.current_hour, state.current_minute)
     reserve_target = _compute_reserve_target(
         config, reserve_kwh, apply_boost=not milp_night)

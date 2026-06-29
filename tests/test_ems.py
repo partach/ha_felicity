@@ -131,6 +131,10 @@ def default_config(**overrides) -> EMSConfig:
         safe_power_kw=5.0,
         consumption_est_kwh=38.5,
         yesterday_deficit_kwh=0.0,
+        # Greedy-path tests use default_config(); the EMSConfig dataclass
+        # default is now "milp" (matching the user-facing default), so pin
+        # greedy explicitly here.  MILP tests set scheduler_engine="milp".
+        scheduler_engine="greedy",
     )
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -5054,10 +5058,10 @@ class TestSellCoverage:
 class TestMILPScheduler:
     """Tests for the optional MILP scheduler (milp.py)."""
 
-    def test_milp_disabled_without_engine(self):
-        """Default engine stays greedy; MILP not invoked."""
+    def test_default_engine_is_milp(self):
+        """MILP is now the default engine (robust joint 2-day optimiser)."""
         config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10)
-        assert config.scheduler_engine == "greedy"
+        assert config.scheduler_engine == "milp"
 
     def test_milp_charges_cheap_slots_from_grid(self):
         """MILP from_grid: charge the cheapest slots to cover the deficit."""
@@ -5227,9 +5231,10 @@ class TestMILPScheduler:
         assert result.scheduler_active == "greedy_fallback"
 
     def test_greedy_scheduler_active_field(self):
-        """Default greedy engine sets scheduler_active='greedy'."""
+        """Greedy engine sets scheduler_active='greedy'."""
         config = EMSConfig(
             grid_mode="from_grid",
+            scheduler_engine="greedy",
             battery_capacity_kwh=10,
             battery_discharge_min_pct=20,
             safe_power_kw=5,
@@ -5812,6 +5817,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
             optimization_priority="self_consumption",
         )
         prices = [0.10] * 24
@@ -5857,6 +5863,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
             optimization_priority="self_consumption",
         )
         prices = [0.10] * 24
@@ -5894,6 +5901,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
         )
         prices = [0.10] * 24
         # SOC at 50% (30 kWh) — below the self-consumption reserve target but
@@ -5930,6 +5938,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
             optimization_priority="self_consumption",
         )
         prices = [0.10] * 12 + [0.30] * 12
@@ -5958,6 +5967,7 @@ class TestConsumptionDeviationCorrection:
             safe_power_kw=10.0,
             inverter_max_power_kw=25,
             consumption_est_kwh=6.3,
+            scheduler_engine="greedy",
         )
         prices = [0.10] * 24
         state = dict(

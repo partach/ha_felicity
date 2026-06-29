@@ -216,7 +216,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "flexible_load_1_voltage": 230,
         "flexible_load_1_default_current": 16,
         "ev_charge_strategy": "smart",
-        "scheduler_engine": "greedy",
+        "scheduler_engine": "milp",
         "flexible_load_2_enabled": "off",
         "flexible_load_2_name": "",
         "flexible_load_2_switch_entity": "",
@@ -232,6 +232,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for key, default in defaults_to_set.items():
         if key not in updated_options:
             updated_options[key] = default
+
+    # One-time default-engine bump: MILP is now the default (it's the robust,
+    # joint 2-day optimiser; greedy's two-day reconstruction is fragile).  Most
+    # existing installs have "greedy" only because that was the OLD default —
+    # not a deliberate choice.  Bump them once.  This is SAFE: when CBC/pulp is
+    # unavailable the MILP auto-disables to greedy (see milp._MILP_DISABLED), so
+    # no install can break.  The marker means we only bump once, so a user who
+    # deliberately re-selects greedy afterwards is respected.
+    if (updated_options.get("scheduler_engine") == "greedy"
+            and not updated_options.get("_scheduler_default_milp_done")):
+        updated_options["scheduler_engine"] = "milp"
+        updated_options["_scheduler_default_milp_done"] = True
 
     if updated_options != options:
         hass.config_entries.async_update_entry(entry, options=updated_options)
