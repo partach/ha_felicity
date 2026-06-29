@@ -300,6 +300,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator._last_register_set = register_set_key
     coordinator._last_options = dict(entry.options)  # snapshot for update_listener comparison
 
+    # Expose the integration's manifest version (for the EMS card footer).
+    # async_get_integration uses HA's cached manifest — no blocking file I/O.
+    try:
+        from homeassistant.loader import async_get_integration
+        integration = await async_get_integration(hass, DOMAIN)
+        coordinator.integration_version = str(integration.version)
+    except Exception as err:  # noqa: BLE001 — version display is non-critical
+        _LOGGER.debug("Could not resolve integration version: %s", err)
+
     # First refresh
     await coordinator.async_config_entry_first_refresh()
 

@@ -1887,6 +1887,7 @@ class FelicityEMSCard extends LitElement {
     const weeklyConsumption = this._getNumericState("weekly_avg_consumption");
     const safeMaxPower = this._getNumericState("safe_max_power");
     const dailyConsumptionEst = this._getNumericState("daily_consumption_estimate");
+    const integrationVersion = this._getAttr("schedule_status", "integration_version");
 
     // Economic Rule 1 window mismatch warning (integration doesn't write
     // rule 1 start/stop time or weekday — a restricted window silently
@@ -2104,6 +2105,7 @@ class FelicityEMSCard extends LitElement {
             ${safeMaxPower != null ? html`<span>Safe: ${this._fmt(safeMaxPower / 1000, 1)} kW</span>` : ""}
             ${dailyConsumptionEst != null ? html`<span>Est: ${this._fmt(dailyConsumptionEst, 1)} kWh/d</span>` : ""}
             ${weeklyConsumption != null ? html`<span>Avg: ${this._fmt(weeklyConsumption, 1)} kWh/d</span>` : ""}
+            ${integrationVersion ? html`<span>v${integrationVersion}</span>` : ""}
           </div>
         </div>
       </ha-card>

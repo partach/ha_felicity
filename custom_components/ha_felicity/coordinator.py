@@ -70,6 +70,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.original_nordpool_entity = nordpool_entity
         self.override_nordpool_entity = nordpool_override
         
+        # Integration version (manifest), set by __init__ after construction;
+        # surfaced in the EMS card footer.
+        self.integration_version: str | None = None
+
         # Runtime state
         self.connected = False
         self._current_energy_state: str | None = None

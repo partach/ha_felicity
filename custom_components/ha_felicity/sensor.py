@@ -223,6 +223,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "flex_load_configs": self._build_flex_load_attr(),
             "ev_boost_active": self.coordinator.ev_boost_active,
             "ev_boost_remaining_min": self.coordinator.ev_boost_remaining_min,
+            "integration_version": self.coordinator.integration_version,
         }
 
     def _build_flex_load_attr(self) -> list[dict]:
