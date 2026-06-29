@@ -215,7 +215,7 @@ def _solve(
     # naturally stops at the SOC floor.  Round-trip efficiency loss makes
     # charging and discharging the same slot never optimal, so no binary
     # "exclusive" variable is needed — this stays a fast, robust LP.
-    c, d, spill, soc = {}, {}, {}, {}
+    c, d, spill, soc, imp = {}, {}, {}, {}, {}
     for k, h in enumerate(horizon):
         price = h["price"]
         charge_ub = h["charge_cap"] if allow_charge else 0.0
@@ -231,11 +231,22 @@ def _solve(
         d[k] = pulp.LpVariable(f"d_{k}", lowBound=0, upBound=discharge_ub)
         spill[k] = pulp.LpVariable(f"spill_{k}", lowBound=0)
         soc[k] = pulp.LpVariable(f"soc_{k}", lowBound=soc_min, upBound=soc_max)
+        # Emergency feasibility slack — physically, grid passthrough keeps the
+        # battery from dropping below soc_min (the house draws from grid when
+        # the battery is empty).  Without it the SOC dynamics can be
+        # INFEASIBLE: when consumption drains the battery faster than charging
+        # can offset (e.g. to_grid mode where charging is disallowed, or a very
+        # high-consumption slot), `soc[k] == prev + net + ... ` cannot satisfy
+        # `soc[k] >= soc_min`, and the whole MILP collapses to greedy.  imp[k]
+        # absorbs exactly that deficit.  It carries a high penalty so it's 0 in
+        # every normal case (no behavioural change / parity preserved) and only
+        # activates to keep the LP feasible.
+        imp[k] = pulp.LpVariable(f"imp_{k}", lowBound=0)
 
     # SOC dynamics.  soc[k] is the level at the *end* of slot k.
     prev = current_kwh
     for k in range(K):
-        prob += soc[k] == prev + horizon[k]["net"] + eff * c[k] - d[k] - spill[k]
+        prob += soc[k] == prev + horizon[k]["net"] + eff * c[k] - d[k] - spill[k] + imp[k]
         prev = soc[k]
 
     # Reserve constraints are SOFT (slack + penalty), never hard.  A hard
@@ -296,6 +307,7 @@ def _solve(
         + pulp.lpSum(cycle_cost * d[k] for k in range(K))                  # wear
         - terminal_value * soc[K - 1]                                      # leftover value
         + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
+        + pulp.lpSum(reserve_penalty * imp[k] for k in range(K))           # feasibility slack
     )
 
     solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=_SOLVE_TIME_LIMIT)

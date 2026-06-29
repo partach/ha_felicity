@@ -5063,6 +5063,41 @@ class TestMILPScheduler:
         config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10)
         assert config.scheduler_engine == "milp"
 
+    def test_milp_never_infeasible_extreme_drain(self):
+        """MILP must stay feasible (not fall back) even when consumption would
+        drain the battery below min with no way to charge.
+
+        Previously the hard SOC-min / reserve constraints made the LP
+        infeasible in such cases (100% of the customer log's MILP failures
+        were 'Infeasible'), collapsing to greedy.  The soft reserve + the
+        per-slot feasibility slack guarantee a solution.
+        """
+        config = EMSConfig(
+            grid_mode="to_grid",          # no charging to offset the drain
+            scheduler_engine="milp",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=120.0,    # extreme — drains far below min
+            efficiency=0.90,
+            reserve_target_pct=80,        # high reserve, also hard to reach
+        )
+        state = EMSState(
+            slot_prices_today=[0.30] * 24,
+            battery_soc_pct=22.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=20,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        # Did not fall back to greedy — the MILP itself produced the plan.
+        assert result.scheduler_active == "milp", (
+            f"MILP should stay feasible, got {result.scheduler_active}"
+        )
+
     def test_milp_charges_cheap_slots_from_grid(self):
         """MILP from_grid: charge the cheapest slots to cover the deficit."""
         # Battery low (10%), needs charging. Cheap morning, expensive evening.

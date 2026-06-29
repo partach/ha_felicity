@@ -123,13 +123,41 @@ the whole remaining-today + tomorrow horizon as a single optimisation and
 lets a solver find the cost-optimal plan, so cross-slot/cross-day
 interactions can't fall through the cracks.
 
-**Engine selection**: `scheduler_engine` config option (`greedy` default /
-`milp`), exposed as a select entity ("Scheduler Engine") and in the EMS
+**Engine selection**: `scheduler_engine` config option (**`milp` default** /
+`greedy`), exposed as a select entity ("Scheduler Engine") and in the EMS
 card's Advanced settings ("Scheduler"). When `milp`,
 `calculate_schedule` calls `_run_milp_or_none()`, which tries the solver
 and **silently falls back to greedy** on any failure (pulp missing,
 infeasible, timeout, non-optimal). The greedy path stays the safety net —
 MILP failures never break the EMS.
+
+**Why MILP is the default (robustness)**: the greedy two-day reconstruction
+(`_compute_tomorrow_schedule`) is the fragile, non-deterministic part — on a
+real arbitrage it scheduled 1 charge slot where the MILP scheduled 10, and a
+1.4% reserve change flipped its tomorrow decisions on/off.  The MILP optimises
+the whole remaining-today + tomorrow horizon jointly, so cross-slot/cross-day
+and cross-mode behaviour is uniform and deterministic.  This is also why the
+night-aware reserve + boost-drop apply to ALL modes in the MILP but only to
+from_grid in greedy — the MILP stays robust with them everywhere; the greedy
+two-day path destabilised in both/to_grid.  Greedy remains the dependency-free
+fallback; MILP auto-disables to greedy when CBC/pulp is unavailable, so the
+default flip can't break any install.  A one-time migration bumps existing
+auto-`greedy` installs to `milp` (marker-guarded; see `__init__.py`).
+
+**MILP feasibility guarantee** (fixed): a customer log showed ~24% of MILP
+runs returning `Infeasible` (158/672, clustered 16:00–18:00) → falling back to
+the fragile greedy.  Cause: the reserve constraints (`soc[midnight] >= reserve`,
+`soc[end] >= reserve`) and the per-slot `soc >= soc_min` bound were HARD; in the
+evening with a near-capacity reserve and few low-power slots left — or any time
+consumption drains faster than charging can offset — there was no feasible LP.
+Two fixes make the LP **provably feasible for any input**: (1) the reserve
+constraints are SOFT (shortfall slack + heavy penalty — reach the reserve when
+physically possible, get as close as possible otherwise); (2) a per-slot
+emergency import slack `imp[k]` on the SOC dynamics (grid passthrough — the
+house draws from grid when the battery is at min) absorbs any otherwise-
+infeasible drain.  Both slacks carry a high penalty (`5× max price`) so they're
+0 in normal cases (parity preserved) and only activate to keep the LP feasible.
+Pinned by `test_milp_never_infeasible_extreme_drain`.
 
 **Permanent disable on unrecoverable failure** (`_MILP_DISABLED` module
 flag): when the CBC solver binary is missing/unrunnable (`FileNotFoundError`
