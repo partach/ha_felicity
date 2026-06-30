@@ -52,6 +52,27 @@ scenario and/or `tests/test_ems.py`.
 8. **Manual slot picks are grid-mode-aware.** from_grid → any picked slot is a
    charge slot (even above threshold); to_grid → any is a sell slot; both →
    threshold decides.
+9. **Greedy re-shops charge energy dropped for overflow (from_grid).** When SOC
+   validation drops a back-to-back charge slot that overflowed a small battery,
+   `_schedule_from_grid` re-shops the dropped energy into a LATER slot where
+   prior drain freed headroom — but only at a price **≤ the marginal price the
+   selector already committed to**, and bounded by PV-aware headroom. So a
+   heavy-load / undersized-battery day charges the second *cheap* slot (closing
+   the greedy/MILP gap — both reach the same planned kWh), while a PV-fed small
+   battery never buys an expensive evening peak to chase the deficit
+   (cost-first / no-safety-swap: drawing the shortfall live from cheap night
+   grid beats a lossy round-trip at a higher price). Pinned by
+   `TestGreedyReshopAfterOverflow` + the `cons_heavy_flat` /
+   `self_suff_flat_low_soc` simulator scenarios.
+
+> **Greedy vs MILP, observed (July 2026).** On `self_suff_flat_low_soc` and
+> `to_grid_sell_surplus` the simulator shows greedy making the cost-optimal
+> choice while MILP does not: MILP charges a 0.30 evening peak to satisfy a
+> 100% self_consumption reserve (its soft-reserve penalty is near-hard), and
+> MILP sells at a cheap 0.18 slot instead of waiting for the 0.40 peak
+> (spill-avoidance under PV overflow). These are MILP modelling artifacts and
+> reinforce the greedy-default decision. They are documented, not yet fixed —
+> MILP remains opt-in.
 
 ---
 

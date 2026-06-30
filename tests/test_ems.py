@@ -6017,3 +6017,98 @@ class TestConsumptionDeviationCorrection:
         r = calculate_schedule(EMSConfig(**base), EMSState(**state))
         assert r.scheduled_slots is not None  # should not crash
 
+
+class TestGreedyReshopAfterOverflow:
+    """Greedy must re-shop charge energy that SOC-validation drops for
+    overflow into a later slot where prior drain has freed headroom — but
+    only at a price no higher than the marginal slot it already committed to
+    (cost-first / no-safety-swap).
+
+    Background: the greedy selector picks the cheapest slots cheapest-first.
+    When the two cheapest slots land back-to-back on a small battery,
+    charging them consecutively overflows capacity, so validation drops one.
+    Without re-shopping, the overnight deficit is left half-covered and the
+    battery rides the floor far earlier than the MILP plan (which places its
+    second charge later, after consumption frees room).  The re-shop closes
+    that gap — without ever charging an expensive slot to chase the deficit.
+    """
+
+    def test_reshops_dropped_cheap_slot_into_later_slot(self):
+        """20 kWh battery, 40 kWh/day flat load, four equally-cheap night
+        slots: greedy must charge TWO of them (a later one after drain), not
+        stall at one because the first two overflow back-to-back."""
+        # Slots 0-5 cheap (0.05), 6-16 mid (0.15), 17-23 peak (0.30).
+        prices = [0.05] * 6 + [0.15] * 11 + [0.30] * 7
+        cons = {h: 40.0 / 24.0 for h in range(24)}  # heavy flat ~1.67 kWh/h
+        cfg = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=15.0,
+            consumption_est_kwh=40.0,
+            scheduler_engine="greedy",
+        )
+        st = EMSState(
+            battery_soc_pct=40.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(6.0),
+            consumption_hourly_kwh=cons,
+            pv_actual_today_kwh=3.0,
+            pv_forecast_today=6.0,
+            pv_forecast_remaining=3.0,
+            current_hour=2,
+            current_minute=0,
+        )
+        r = calculate_schedule(cfg, st)
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        prices_used = [prices[i] for i in charge]
+        assert len(charge) >= 2, (
+            f"greedy should re-shop into a 2nd cheap slot, got {charge} "
+            f"(reason={r.schedule_reason!r})"
+        )
+        # Cost discipline: every charge slot is a cheap (0.05) night slot —
+        # the re-shop must NOT reach into the 0.15/0.30 tiers.
+        assert all(p <= 0.05 + 1e-6 for p in prices_used), (
+            f"re-shop charged an expensive slot: {list(zip(charge, prices_used))}"
+        )
+
+    def test_does_not_reshop_into_expensive_slot_when_pv_fills(self):
+        """Small battery, good midday PV: greedy covers the deficit with one
+        cheap midday slot + solar and must NOT buy a peak-priced evening slot
+        to chase the remaining (PV-served / cheap-night-served) deficit."""
+        # Cheap night (0.05), mid day (0.15), expensive evening (0.30).
+        prices = [0.05] * 6 + [0.15] * 11 + [0.30] * 7
+        cfg = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=12.0,
+            scheduler_engine="greedy",
+        )
+        st = EMSState(
+            battery_soc_pct=30.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(5.0),
+            pv_actual_today_kwh=2.0,
+            pv_forecast_today=5.0,
+            pv_forecast_remaining=3.0,
+            current_hour=11,
+            current_minute=0,
+        )
+        r = calculate_schedule(cfg, st)
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        prices_used = [prices[i] for i in charge]
+        assert all(p <= 0.15 + 1e-6 for p in prices_used), (
+            f"greedy bought a peak evening slot to chase the deficit: "
+            f"{list(zip(charge, prices_used))} (reason={r.schedule_reason!r})"
+        )
+

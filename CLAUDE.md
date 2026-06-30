@@ -594,6 +594,38 @@ The validation simulates forward through PV-only overflows (clamping
 soc and continuing) instead of breaking on the first PV-caused
 violation, which lets it detect phantom charges later in the day.
 
+**Re-shop after overflow drop (greedy from_grid, July 2026)
+— `_fill_charge_to_deficit`**: the greedy selector picks the cheapest slots
+cheapest-first.  When the two cheapest slots land *back-to-back* on a small
+battery, charging them consecutively overflows capacity, so SOC validation
+drops one — and the dropped energy was previously never re-allocated, leaving
+the overnight deficit half-covered.  Real symptom: a 20 kWh battery under a
+40 kWh/day load charged only **1 of 2** needed cheap night slots, then rode
+the floor ~9 h earlier than the MILP plan (which placed its second charge
+*later*, after consumption had freed headroom).  After validation,
+`_schedule_from_grid` now re-shops: it walks the remaining slots
+cheapest-first and adds each candidate that (a) is priced **≤ the marginal
+price the selector already committed to**, (b) survives a fresh validation
+against the kept set, and (c) increases delivered charge energy — until the
+deficit is covered.  Two guards keep it cost-first:
+- **Price ceiling** (`max_price` = max price of the selected set): we only
+  re-shop into a slot as cheap as the ones already chosen.  We must NOT reach
+  for a pricier slot to chase the deficit — bridging an overnight need by
+  charging a 0.30 evening peak (while the chosen slots were 0.15, or while
+  cheap 0.05 night grid follows after midnight) costs MORE than drawing the
+  shortfall from the grid live (round-trip loss on a higher price).  Same
+  no-safety-swap economics the two-day selector applies.
+- **PV-aware headroom cap** (`min(deficit, max_battery − current − net_pv)`):
+  when PV surplus will fill the battery, the target shrinks so we don't
+  over-charge.
+Scoped to greedy `from_grid` and skipped for
+`charge_to_full_on_negative_price` (its negative-slot handling is outside the
+deficit model).  No-op for healthy schedules (validation dropped nothing →
+delivered energy already meets the target).  Pinned by
+`TestGreedyReshopAfterOverflow` (re-shops a cheap slot; never an expensive
+one).  This closes most of the greedy/MILP gap on undersized-battery /
+heavy-load days without touching MILP.
+
 ### Arbitrage Price Delta (both mode) — the TRADE TRIGGER
 
 `arbitrage_price_delta` is the explicit minimum buy→sell spread required
