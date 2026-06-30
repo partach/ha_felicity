@@ -5288,6 +5288,96 @@ class TestMILPScheduler:
         result = calculate_schedule(config, state)
         assert result.scheduler_active == "greedy"
 
+    @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+    def test_milp_no_peak_charge_to_hit_reserve(self):
+        """MILP must NOT charge an expensive evening peak just to satisfy a
+        high self_consumption reserve.
+
+        Regression: with a ~100% self_consumption reserve and a today-only
+        horizon, the LP charged a 0.30 evening slot to reach the reserve by
+        midnight (its soft-reserve penalty was effectively hard), and the
+        extraction kept that slot because it ranked by LP energy.  The
+        cheapest-first per-day extraction + half-slot rule must keep only the
+        cheap 0.15 slots and drop the 0.30 one — drawing the shortfall from
+        cheap night grid beats a lossy round-trip at the peak.
+        """
+        # Cheap night (0.05), mid day (0.15), expensive evening (0.30).
+        prices = [0.05] * 6 + [0.15] * 11 + [0.30] * 7
+        config = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            scheduler_engine="milp",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=12.0,
+        )
+        state = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=30.0,
+            pv_hourly_kwh=make_pv_hourly(5.0),
+            pv_actual_today_kwh=2.0,
+            pv_forecast_today=5.0,
+            pv_forecast_remaining=3.0,
+            current_hour=11,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.scheduler_active == "milp"
+        charge_prices = [prices[i] for i, a in result.scheduled_slots.items()
+                         if a == "charge"]
+        assert charge_prices, "MILP should charge the cheap slots"
+        assert all(p <= 0.15 + 1e-6 for p in charge_prices), (
+            f"MILP charged an expensive peak to hit the reserve: {charge_prices}"
+        )
+
+    @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+    def test_milp_sells_evening_peak_not_cheap_early_slot(self):
+        """MILP to_grid must sell into the EVENING PEAK, not a cheap early slot.
+
+        Regression: with a near-full battery and big PV (overflow), the LP
+        cycles PV — sell early to clear room, then sell again at the peak — so
+        the early cheap slot and the peak slot tie on LP energy.  The
+        extraction (capped to ~1 slot) ranked by energy and the stable sort
+        kept the EARLIER cheap slot (0.18) over the peak (0.40).  Ranking
+        discharge dearest-first must keep the peak.
+        """
+        # Cheap-ish day (0.08 midday / 0.18 shoulders), 0.40 evening peak.
+        prices = ([0.18] * 9 + [0.08] * 7 + [0.40] * 6 + [0.18] * 2)[:24]
+        config = EMSConfig(
+            grid_mode="to_grid",
+            optimization_priority="cost",
+            scheduler_engine="milp",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=15.0,
+            consumption_est_kwh=8.0,
+        )
+        state = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=90.0,
+            pv_hourly_kwh=make_pv_hourly(20.0),
+            pv_actual_today_kwh=2.0,
+            pv_forecast_today=20.0,
+            pv_forecast_remaining=18.0,
+            current_hour=8,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.scheduler_active == "milp"
+        sell_prices = [prices[i] for i, a in result.scheduled_slots.items()
+                       if a == "discharge"]
+        assert sell_prices, "MILP should sell the surplus"
+        assert min(sell_prices) >= 0.40 - 1e-6, (
+            f"MILP sold a cheap early slot instead of the peak: {sell_prices}"
+        )
+
 
 def _grid_cost_of_schedule(config, state, today_sched, tomorrow_sched):
     """Evaluate the net grid spend of a schedule over the today+tomorrow

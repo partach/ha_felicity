@@ -65,14 +65,29 @@ scenario and/or `tests/test_ems.py`.
    `TestGreedyReshopAfterOverflow` + the `cons_heavy_flat` /
    `self_suff_flat_low_soc` simulator scenarios.
 
-> **Greedy vs MILP, observed (July 2026).** On `self_suff_flat_low_soc` and
-> `to_grid_sell_surplus` the simulator shows greedy making the cost-optimal
-> choice while MILP does not: MILP charges a 0.30 evening peak to satisfy a
-> 100% self_consumption reserve (its soft-reserve penalty is near-hard), and
-> MILP sells at a cheap 0.18 slot instead of waiting for the 0.40 peak
-> (spill-avoidance under PV overflow). These are MILP modelling artifacts and
-> reinforce the greedy-default decision. They are documented, not yet fixed —
-> MILP remains opt-in.
+10. **MILP discrete-extraction is cost-ranked (July 2026).** The MILP solves a
+   continuous LP, then collapses it to discrete full-power slots capped by
+   battery physics.  That collapse now executes the most cost-effective
+   subset:
+   - **Sells dearest-first.** When the cap allows fewer sell slots than the LP
+     spread energy across (the LP cycles PV — sell early to clear room, then
+     sell again at the peak — so the early cheap slot and the peak tie on
+     energy), the extraction keeps the **highest-price** slots.  Fixes MILP
+     selling a cheap 0.18 slot instead of the 0.40 evening peak
+     (`to_grid_sell_surplus`).
+   - **Charges cheapest-first, per day.** Charge selection is capped **per day**
+     at the energy the LP allocated to that day (preserving the midnight-reserve
+     "today-first" split — a single global cheapest-first cap would let cheap
+     tomorrow slots starve today), and within each day picks the cheapest slots.
+     A **half-slot rule** stops it pulling in a pricier slot to cover a
+     sub-half-slot remainder — which is how an expensive reserve-top-off slot
+     used to sneak in.  Fixes MILP charging a 0.30 evening peak to hit a high
+     self_consumption reserve (`self_suff_flat_low_soc`); it now charges the
+     0.15 slots and accepts the cheaper round-trip, like greedy.
+   Pinned by `test_milp_sells_evening_peak_not_cheap_early_slot`,
+   `test_milp_no_peak_charge_to_hit_reserve`, and the two simulator scenarios
+   (whose expectations now assert "no peak charge" / "sells the peak" for BOTH
+   engines).
 
 ---
 

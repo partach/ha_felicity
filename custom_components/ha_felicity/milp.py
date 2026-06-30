@@ -345,9 +345,18 @@ def _solve(
         if dv > slot_discharge_cap * MIN_FRAC:
             discharge_candidates.append((k, h, dv))
 
-    # Sort by LP-allocated energy descending — highest-conviction slots first.
-    charge_candidates.sort(key=lambda x: -x[2])
-    discharge_candidates.sort(key=lambda x: -x[2])
+    # Rank for the capped, discrete, full-power execution.  The LP spreads
+    # energy across more slots than the inverter can run at full power, so we
+    # take a *subset* up to the physical headroom (below).  Among the slots the
+    # LP chose to use, execute the most COST-EFFECTIVE subset: most-expensive
+    # slots to SELL (charge is ranked per-day in the extraction below, to
+    # respect the today/tomorrow split).  Ranking discharge by LP-allocated
+    # energy instead (the old behaviour) could keep an early CHEAP-priced sell
+    # over the evening PEAK when both got similar energy — the LP cycles PV
+    # (sell early to make room, then sell again at the peak), so both tie on
+    # energy and the cheaper one used to win.  Price is the primary key; LP
+    # energy is the tiebreaker (conviction).
+    discharge_candidates.sort(key=lambda x: (-x[1]["price"], -x[2]))
 
     # Compute energy caps from battery physics.  The LP's continuous
     # totals include marginal fractional allocations the inverter can't
@@ -377,16 +386,34 @@ def _solve(
     today_scheduled: dict[int, str] = {}
     tomorrow_scheduled: dict[int, str] = {}
 
-    accum = 0.0
-    for k, h, kw in charge_candidates:
-        if accum >= charge_target_kwh:
-            break
-        slot_energy = h["charge_cap"] or safe_kwh
-        accum += slot_energy * eff  # effective stored energy at full power
-        if h["day"] == "today":
-            today_scheduled[h["slot"]] = "charge"
-        else:
-            tomorrow_scheduled[h["slot"]] = "charge"
+    # --- Charge execution: per day, cheapest-first ---
+    # Collapse the LP's continuous charge plan to discrete full-power slots.
+    # Cap EACH DAY at the effective energy the LP allocated to it, so the
+    # today/tomorrow split the solver chose is preserved: the midnight-reserve
+    # constraint decides how much MUST charge today (self-sufficiency
+    # "today-first") versus deferring to a cheaper tomorrow — a single global
+    # cap + cheapest-first would let cheap tomorrow slots starve today.
+    # WITHIN each day, execute the CHEAPEST slots, and never pull in a pricier
+    # slot just to cover a sub-half-slot remainder — that half-slot rule is
+    # what stops an expensive reserve-top-off slot from sneaking in (#2: a
+    # 0.30 evening slot used to be added to "finish" a reserve the two cheap
+    # 0.15 slots had effectively already met).
+    for day, sched in (("today", today_scheduled),
+                       ("tomorrow", tomorrow_scheduled)):
+        cands = sorted(
+            ((h, cv) for (k, h, cv) in charge_candidates if h["day"] == day),
+            key=lambda x: (x[0]["price"], -x[1]),
+        )
+        target = eff * sum(cv for _, cv in cands)
+        if day == "today":
+            target = min(target, charge_target_kwh)
+        accum = 0.0
+        for h, cv in cands:
+            slot_energy = (h["charge_cap"] or safe_kwh) * eff
+            if target - accum <= slot_energy * 0.5:
+                break  # remaining need < half a slot — don't add a pricier one
+            accum += slot_energy
+            sched[h["slot"]] = "charge"
 
     accum = 0.0
     for k, h, kw in discharge_candidates:

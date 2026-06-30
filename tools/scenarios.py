@@ -181,9 +181,12 @@ SCENARIOS = [
                       pv_hourly_kwh=pv_bell(5.0), pv_actual_today_kwh=2.0,
                       pv_forecast_today=5.0, pv_forecast_remaining=3.0,
                       current_hour=11, current_minute=0),
+        # Must charge to cover the deficit — but NEVER at the 0.30 evening peak
+        # just to hit a high self_consumption reserve (both engines: cost-first).
         "expect": lambda r, s: (
-            len(r["charge_slots"]) > 0,
-            f"charges to cover deficit (got {len(r['charge_slots'])} slots)",
+            len(r["charge_slots"]) > 0 and (max(r["charge_prices"]) <= 0.15 + 1e-6),
+            f"charges cheap to cover deficit, no evening peak "
+            f"(slots={len(r['charge_slots'])}, prices={r['charge_prices']})",
         ),
     },
 
@@ -217,9 +220,13 @@ SCENARIOS = [
                       pv_hourly_kwh=pv_bell(20.0), pv_actual_today_kwh=2.0,
                       pv_forecast_today=20.0, pv_forecast_remaining=18.0,
                       current_hour=8, current_minute=0),
+        # Never charges from grid, AND sells into the EVENING PEAK (0.40) — not
+        # a cheap early slot to clear room for PV (both engines: dearest-first).
         "expect": lambda r, s: (
-            len(r["charge_slots"]) == 0,
-            f"to_grid never charges from grid (got {len(r['charge_slots'])})",
+            len(r["charge_slots"]) == 0
+            and bool(r["sell_prices"]) and min(r["sell_prices"]) >= 0.30,
+            f"no grid charge; sells the peak (charge={len(r['charge_slots'])}, "
+            f"sell_prices={r['sell_prices']})",
         ),
     },
 

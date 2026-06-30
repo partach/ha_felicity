@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 242).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 244).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 242 tests for the pure EMS algorithm
+└── test_ems.py              # 244 tests for the pure EMS algorithm
 ```
 
 ---
@@ -1233,8 +1233,26 @@ Forward-simulates SOC through every slot.  Drops violations:
   where `terminal = avg_price × efficiency`.
 - **Price gates**: `arbitrage_price_delta` → charge/discharge UB = 0 for
   slots outside spread.  `block_export_on_negative_price` → discharge UB = 0.
-- **Post-solve**: LP allocations ranked by energy, capped by battery
-  physics (charge headroom / discharge headroom) to prevent over-scheduling.
+- **Post-solve (cost-ranked discrete extraction)**: the continuous LP is
+  collapsed to discrete full-power slots, capped by battery physics (charge /
+  discharge headroom) to prevent over-scheduling.  The collapse executes the
+  most cost-effective subset of the slots the LP used:
+  - **Discharge: dearest-first.**  When the cap allows fewer sell slots than
+    the LP spread energy across (the LP cycles PV — sell early to clear room,
+    then sell again at the peak, so the early cheap slot and the peak tie on
+    energy), keep the **highest-price** slots.  (Ranking by LP energy used to
+    keep the cheap early slot over the 0.40 peak — `to_grid` bug #3.)
+  - **Charge: cheapest-first, per day.**  Cap each day at the energy the LP
+    allocated to it (preserving the midnight-reserve **today-first** split — a
+    single global cheapest-first cap would let cheap tomorrow slots starve
+    today), then within each day pick the **cheapest** slots.  A **half-slot
+    rule** (only add a slot if the remaining day-target exceeds half its
+    energy) stops a pricier slot being pulled in to cover a tiny remainder —
+    which is how an expensive reserve-top-off slot used to sneak in (MILP
+    charging a 0.30 peak to hit a high self_consumption reserve — bug #2).
+  Pinned by `test_milp_sells_evening_peak_not_cheap_early_slot`,
+  `test_milp_no_peak_charge_to_hit_reserve`, and the `to_grid_sell_surplus` /
+  `self_suff_flat_low_soc` simulator scenarios.
 - Returns `(today_slots, tomorrow_slots)` or `None` → greedy fallback.
 
 ### 6. Post-Processing (both engines)
@@ -1797,7 +1815,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (242 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (244 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
