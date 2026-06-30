@@ -960,6 +960,129 @@ def _validate_schedule_soc(
     return charge_slots, discharge_slots
 
 
+def _slot_grid_charge_kwh(
+    slot_idx: int,
+    pv_hourly_kwh: dict[int, float] | None,
+    minutes_per_slot: float,
+    pv_confidence: float,
+    energy_per_slot: float,
+    efficiency: float,
+    inverter_max_power_kw: float,
+    safe_power_kw: float,
+) -> float:
+    """Grid energy (kWh, after charge efficiency) a single charge slot can
+    actually store, accounting for PV sharing the inverter at that hour.
+
+    Mirrors the per-slot charge contribution computed inside
+    `_validate_schedule_soc`, so callers can size how much a candidate slot
+    adds without re-running the full SOC simulation.
+    """
+    if inverter_max_power_kw > 0:
+        hour = int((slot_idx * minutes_per_slot) / 60)
+        pv_kwh = (pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+        grid_kw = min(
+            safe_power_kw or energy_per_slot / (minutes_per_slot / 60.0),
+            max(0.0, inverter_max_power_kw - pv_kwh),
+        )
+        return grid_kw * (minutes_per_slot / 60.0) * efficiency
+    return energy_per_slot * efficiency
+
+
+def _fill_charge_to_deficit(
+    remaining: list[tuple[int, float]],
+    validated_charge: set[int],
+    energy_deficit: float,
+    current_kwh: float,
+    consumption_per_slot: float,
+    pv_hourly_kwh: dict[int, float] | None,
+    minutes_per_slot: float,
+    pv_confidence: float,
+    battery_capacity: float,
+    min_kwh: float,
+    energy_per_slot: float,
+    efficiency: float,
+    inverter_max_power_kw: float,
+    safe_power_kw: float,
+    consumption_hourly_kwh: dict[int, float] | None,
+    max_price: float | None = None,
+) -> set[int]:
+    """Re-shop charge energy dropped by SOC validation into later slots.
+
+    The greedy selector (`select_unified_charge_slots`) picks the cheapest
+    slots cheapest-first.  When the cheapest slots land back-to-back on a
+    small battery, charging them consecutively overflows capacity, so
+    `_validate_schedule_soc` drops one — and the dropped energy is otherwise
+    never re-allocated, leaving the overnight deficit only partly covered
+    (real symptom: a 20 kWh battery under a 40 kWh/day load charged only one
+    of two needed cheap slots, then rode the floor ~9 h earlier than the MILP
+    plan, which placed its second charge *later*, after consumption had freed
+    headroom).
+
+    This walks the remaining slots cheapest-first and adds each candidate that
+    (a) is priced at or below ``max_price`` (the marginal price the selector
+    already committed to), (b) survives a fresh validation against the
+    already-kept set, and (c) increases the delivered charge energy.  Adding a
+    slot *after* prior drain is exactly what lets the second charge fit.
+
+    The ``max_price`` ceiling is the cost-discipline guard: we only re-shop the
+    dropped energy into a slot as cheap as the ones already chosen.  We must
+    NOT reach for a more expensive slot to chase the deficit — if the only
+    feasible later slot is pricier (e.g. a 0.30 evening peak while the chosen
+    slots were 0.15, or while cheap 0.05 night grid follows after midnight),
+    bridging the overnight need by charging that expensive slot costs MORE than
+    just drawing the shortfall from the grid live (round-trip losses on a
+    higher price).  This is the same no-safety-swap economics the two-day
+    selector already applies.  Cheapest-first + the ceiling keep us cost-first;
+    we stop the moment the deficit is covered, so the battery is never charged
+    beyond what overnight survival needs.  In the common case where validation
+    dropped nothing, the delivered energy already meets the deficit and this
+    returns immediately — a no-op for healthy schedules.
+    """
+
+    def delivered(slots: set[int]) -> float:
+        return sum(
+            _slot_grid_charge_kwh(
+                s, pv_hourly_kwh, minutes_per_slot, pv_confidence,
+                energy_per_slot, efficiency, inverter_max_power_kw,
+                safe_power_kw,
+            )
+            for s in slots
+        )
+
+    validated = set(validated_charge)
+    got = delivered(validated)
+    if got >= energy_deficit - 0.01:
+        return validated
+
+    attempted = set(validated)
+    pool = sorted(
+        (
+            (idx, price) for idx, price in remaining
+            if price is not None and idx not in attempted
+            and (max_price is None or price <= max_price + 0.0001)
+        ),
+        key=lambda ip: ip[1],
+    )
+    for idx, _price in pool:
+        if got >= energy_deficit - 0.01:
+            break
+        attempted.add(idx)
+        trial, _ = _validate_schedule_soc(
+            remaining, validated | {idx}, set(),
+            current_kwh, consumption_per_slot, pv_hourly_kwh,
+            minutes_per_slot, pv_confidence, battery_capacity, min_kwh,
+            energy_per_slot, efficiency,
+            inverter_max_power_kw=inverter_max_power_kw,
+            safe_power_kw=safe_power_kw,
+            consumption_hourly_kwh=consumption_hourly_kwh,
+        )
+        new_got = delivered(trial)
+        if new_got > got + 0.01:
+            validated = trial
+            got = new_got
+    return validated
+
+
 def _select_discharges_for_pv_headroom(
     remaining: list[tuple[int, float]],
     current_kwh: float,
@@ -2257,7 +2380,42 @@ def _schedule_from_grid(
         safe_power_kw=config.safe_power_kw,
         keep_all_negative_charges=config.charge_to_full_on_negative_price,
     )
-    selected = [(idx, p) for idx, p in selected if idx in validated_charge]
+
+    # Re-shop any charge energy that validation dropped for overflow into
+    # later slots where prior consumption has freed headroom, so the overnight
+    # deficit is actually covered (see _fill_charge_to_deficit).  Skipped for
+    # charge_to_full_on_negative_price, whose negative-slot handling and
+    # PV-curtailment trade-off are intentionally outside the deficit model.
+    if not config.charge_to_full_on_negative_price:
+        # Bound the re-shop by the SAME PV-aware headroom the selector uses
+        # (max_battery − current − net_pv_surplus).  This is the cost
+        # discriminator: when PV surplus will fill the battery (net_pv > 0),
+        # headroom is small, so we never reach for an expensive evening slot
+        # to chase the deficit — the original cheap slot + solar already
+        # cover it (a small battery at midday under good PV must NOT buy
+        # peak-priced evening grid just to top off; that violates
+        # cost-first).  When PV can't fill the battery (net_pv ≈ 0, heavy
+        # load), headroom is large and the dropped cheap slot is re-shopped.
+        fill_headroom = max(0.0, max_battery_kwh - current_kwh - max(0.0, net_pv))
+        fill_target = min(energy_deficit, fill_headroom)
+        # Marginal price the selector already committed to: never re-shop the
+        # dropped energy into a pricier slot (see _fill_charge_to_deficit).
+        fill_max_price = max((p for _, p in selected if p is not None), default=None)
+        validated_charge = _fill_charge_to_deficit(
+            remaining, validated_charge, fill_target,
+            current_kwh, consumption_per_slot, state.pv_hourly_kwh,
+            minutes_per_slot, pv_confidence, config.battery_capacity_kwh,
+            min_kwh, energy_per_slot, config.efficiency,
+            config.inverter_max_power_kw, config.safe_power_kw,
+            state.consumption_hourly_kwh,
+            max_price=fill_max_price,
+        )
+
+    price_of_remaining = {idx: p for idx, p in remaining}
+    selected = [
+        (idx, price_of_remaining.get(idx, 0.0)) for idx in validated_charge
+    ]
+    selected.sort(key=lambda ip: ip[0])
 
     # discharge_to_make_room_for_negative_price: in from_grid mode we
     # normally don't discharge.  When this opt-in is enabled, schedule
