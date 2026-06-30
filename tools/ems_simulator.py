@@ -217,7 +217,6 @@ def report_one(scenario: dict, results: dict) -> bool:
     pv_disp = effective_pv_per_slot(st, n0)
     pv_total = round(sum(pv_disp), 1)
     pv_src = "hourly" if st.get("pv_hourly_kwh") else ("synthesized" if (st.get("pv_forecast_today") or 0) > 0 else "none")
-    cons_disp = effective_consumption_per_slot(cfg, st, n0)
     cons_src = "hourly" if st.get("consumption_hourly_kwh") else "flat"
     print(f"  grid_mode={cfg.get('grid_mode')} priority={cfg.get('optimization_priority','cost')} "
           f"cap={cfg.get('battery_capacity_kwh')}kWh SOC={st.get('battery_soc_pct')}% "
