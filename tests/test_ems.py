@@ -5378,6 +5378,46 @@ class TestMILPScheduler:
             f"MILP sold a cheap early slot instead of the peak: {sell_prices}"
         )
 
+    @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+    def test_milp_charge_to_full_grabs_all_negative_slots(self):
+        """With charge_to_full_on_negative_price, MILP must force EVERY p<0
+        slot to charge (mirrors greedy), not stop at SOC-max like the LP alone.
+
+        The user opts in for the revenue (paid to charge), accepting that some
+        PV may be curtailed.  The LP can't model charging past full, so the
+        extraction forces the negative slots explicitly.
+        """
+        # 4 negative-price slots in the middle of the day.
+        prices = [0.10] * 10 + [-0.05] * 4 + [0.10] * 10
+        config = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="cost",
+            scheduler_engine="milp",
+            battery_capacity_kwh=20.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=10.0,
+            inverter_max_power_kw=15.0,
+            consumption_est_kwh=10.0,
+            charge_to_full_on_negative_price=True,
+        )
+        state = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=40.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=9,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        assert result.scheduler_active == "milp"
+        charges = {i for i, a in result.scheduled_slots.items() if a == "charge"}
+        for neg_slot in (10, 11, 12, 13):
+            assert neg_slot in charges, (
+                f"MILP did not grab negative slot {neg_slot}: {sorted(charges)}"
+            )
+
 
 def _grid_cost_of_schedule(config, state, today_sched, tomorrow_sched):
     """Evaluate the net grid spend of a schedule over the today+tomorrow

@@ -406,6 +406,18 @@ class HA_FelicitySpecialModeSelect(CoordinatorEntity, SelectEntity):
 
 # Strategy presets: each maps to a set of underlying configuration knobs.
 # Users pick a strategy; the individual knobs still exist for advanced tuning.
+#
+# IMPORTANT: presets set ONLY the knobs that DEFINE the strategy axis
+# (grid_mode, optimization_priority, and the trade economics: reserve,
+# arbitrage delta, cycle cost).  They deliberately do NOT touch the
+# negative-price flags (`block_export_on_negative_price`,
+# `charge_to_full_on_negative_price`,
+# `discharge_to_make_room_for_negative_price`).  Those are orthogonal,
+# user-owned opt-in behaviours — putting them in the presets meant that
+# re-selecting a strategy (or the card re-applying one) silently reset the
+# user's negative-price choices back to "off" every time.  They now persist
+# independently of the strategy; their defaults are written once at install
+# (config_flow / __init__ migration), never re-clobbered here.
 STRATEGY_PRESETS = {
     "save_money": {
         "grid_mode": "from_grid",
@@ -413,9 +425,6 @@ STRATEGY_PRESETS = {
         "reserve_target_pct": 0,
         "arbitrage_price_delta": 0.0,
         "battery_cycle_cost_eur_kwh": 0.0,
-        "block_export_on_negative_price": "on",
-        "charge_to_full_on_negative_price": "off",
-        "discharge_to_make_room_for_negative_price": "off",
     },
     "self_sufficiency": {
         "grid_mode": "from_grid",
@@ -423,9 +432,6 @@ STRATEGY_PRESETS = {
         "reserve_target_pct": 0,
         "arbitrage_price_delta": 0.0,
         "battery_cycle_cost_eur_kwh": 0.0,
-        "block_export_on_negative_price": "on",
-        "charge_to_full_on_negative_price": "off",
-        "discharge_to_make_room_for_negative_price": "off",
     },
     "battery_care": {
         "grid_mode": "from_grid",
@@ -433,9 +439,6 @@ STRATEGY_PRESETS = {
         "reserve_target_pct": 0,
         "arbitrage_price_delta": 0.0,
         "battery_cycle_cost_eur_kwh": 0.05,
-        "block_export_on_negative_price": "on",
-        "charge_to_full_on_negative_price": "off",
-        "discharge_to_make_room_for_negative_price": "off",
     },
     "trader": {
         "grid_mode": "both",
@@ -443,9 +446,6 @@ STRATEGY_PRESETS = {
         "reserve_target_pct": 0,
         "arbitrage_price_delta": 0.0,
         "battery_cycle_cost_eur_kwh": 0.0,
-        "block_export_on_negative_price": "on",
-        "charge_to_full_on_negative_price": "off",
-        "discharge_to_make_room_for_negative_price": "off",
     },
 }
 

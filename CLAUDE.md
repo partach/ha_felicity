@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 244).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 245).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 244 tests for the pure EMS algorithm
+└── test_ems.py              # 245 tests for the pure EMS algorithm
 ```
 
 ---
@@ -800,6 +800,20 @@ knobs remain accessible behind an "Advanced settings" toggle.
 | Trader | both | cost | Buy cheap, sell expensive (auto profitability) |
 | Custom | (unchanged) | (unchanged) | User manages all knobs manually |
 
+**Presets set ONLY the strategy-defining knobs** (`grid_mode`,
+`optimization_priority`, `reserve_target_pct`, `arbitrage_price_delta`,
+`battery_cycle_cost_eur_kwh`).  They must NOT touch the negative-price flags
+(`block_export_on_negative_price`, `charge_to_full_on_negative_price`,
+`discharge_to_make_room_for_negative_price`) — those are orthogonal,
+user-owned opt-in behaviours.  **Bug (fixed):** the presets used to force all
+three to `off`, so re-selecting a strategy (or the card re-applying one)
+silently reset the user's negative-price choices every time — the reported
+"these settings keep resetting to no / aren't stored" symptom.  Removed from
+`STRATEGY_PRESETS` in `select.py`; the flags now persist independently (their
+install-time defaults still come from `config_flow._get_default_options` /
+the `__init__` `defaults_to_set` migration, which only fill MISSING keys and
+never overwrite an existing value).
+
 ### Schedule Reason ("Why" Line)
 Below the chart, a one-line explanation of the current schedule decision
 is shown. Examples:
@@ -1091,7 +1105,7 @@ traces each setting from `config_entry.options` through to its consumers.
 | `battery_cycle_cost_eur_kwh` | `battery_cycle_cost_eur_kwh` | ✅ | ✅ | Wear cost in profitability filter + objective |
 | `optimization_priority` | `optimization_priority` | ✅ | ✅ | longevity → 0.05 floor; self_consumption → 1.25× reserve, top-off gate |
 | `block_export_on_negative_price` | `block_export_on_negative_price` | ✅ | ✅ | Blocks sell at p<0 |
-| `charge_to_full_on_negative_price` | `charge_to_full_on_negative_price` | ✅ | implicit | MILP: LP objective naturally charges at p<0 (it's revenue); no phantom-charge exemption |
+| `charge_to_full_on_negative_price` | `charge_to_full_on_negative_price` | ✅ | ✅ | MILP forces every p<0 slot in the extraction (mirrors greedy); the LP alone stops at SOC-max and would take fewer |
 | `discharge_to_make_room_for_negative_price` | `discharge_to_make_room_for_negative_price` | ✅ | implicit | MILP: joint optimization naturally creates room when profitable |
 | `scheduler_engine` | `scheduler_engine` | ✅ | — | Used by ems.py to dispatch to MILP or greedy |
 | `ev_charge_strategy` | `ev_charge_strategy` | ✅ | ✅ | Applied in flex-load overlay (runs after both engines) |
@@ -1118,7 +1132,7 @@ traces each setting from `config_entry.options` through to its consumers.
 
 | Feature | Greedy | MILP | Impact |
 |---|---|---|---|
-| `charge_to_full_on_negative_price` | Explicit: forces ALL p<0 slots + phantom-charge exemption | Implicit: LP charges at p<0 naturally (revenue); no phantom charges | MILP won't schedule charge when battery is physically full — correct behavior, BMS would reject anyway |
+| `charge_to_full_on_negative_price` | Explicit: forces ALL p<0 slots + phantom-charge exemption | Explicit: forces ALL p<0 slots in the extraction (the LP alone stops at SOC-max) | Both engines now grab every negative slot when the flag is on (user opted in for the revenue, accepting PV curtailment) |
 | `discharge_to_make_room_for_negative_price` | Explicit: `_select_discharges_for_pv_headroom` helper | Implicit: joint optimization sees both sell revenue + negative-buy revenue | MILP may be more or less aggressive depending on price spread |
 | `yesterday_deficit_kwh` | Added as carryover to deficit | Not used; current_kwh already reflects yesterday's shortfall | No impact — same result |
 | Cross-day slot selection | Separate today/tomorrow pools with today-first guard for self_consumption | Single unified horizon with midnight SOC constraint | MILP sees the whole picture; greedy needs explicit guards |
@@ -1229,8 +1243,21 @@ Forward-simulates SOC through every slot.  Drops violations:
 - Per-slot continuous vars: charge energy `c[k]`, discharge `d[k]`, spill, soc.
 - **Constraints**: SOC dynamics, `soc_min ≤ soc ≤ soc_max`,
   `soc[end] ≥ reserve_target`, `soc[midnight] ≥ reserve_target`.
-- **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·soc[end]`
-  where `terminal = avg_price × efficiency`.
+- **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·min(soc[end], reserve)`
+  where `terminal = avg_price × efficiency`.  **The leftover-energy reward is
+  capped at the reserve target** (not all the way to `soc_max`).  Rewarding
+  every leftover kWh up to full made the solver buy any slot below `avg·eff²`
+  to push the battery toward 100% even in pure **cost** mode — over-buying
+  cheap-ish energy the horizon has no modelled use for (real symptom: a
+  duck-curve cost day charged an extra night slot + 3rd midday slot to end at
+  81% where greedy ended 52%, and cost MORE: 0.895 vs 0.600).  Capping the
+  reward at the reserve makes the solver fill to the reserve (reward + soft
+  penalty) but not beyond for leftover value, so it stops over-buying.
+  Arbitrage is unaffected (energy above reserve is sold for the explicit sell
+  *revenue* term, not the terminal reward); self_consumption still fills high
+  because its reserve is the 1.25× boosted value.  The today extraction target
+  is also capped at the LP's allocated charge energy (not just headroom) so the
+  discrete schedule reflects the cost-correct intent.
 - **Price gates**: `arbitrage_price_delta` → charge/discharge UB = 0 for
   slots outside spread.  `block_export_on_negative_price` → discharge UB = 0.
 - **Post-solve (cost-ranked discrete extraction)**: the continuous LP is
@@ -1242,14 +1269,18 @@ Forward-simulates SOC through every slot.  Drops violations:
     then sell again at the peak, so the early cheap slot and the peak tie on
     energy), keep the **highest-price** slots.  (Ranking by LP energy used to
     keep the cheap early slot over the 0.40 peak — `to_grid` bug #3.)
-  - **Charge: cheapest-first, per day.**  Cap each day at the energy the LP
-    allocated to it (preserving the midnight-reserve **today-first** split — a
-    single global cheapest-first cap would let cheap tomorrow slots starve
-    today), then within each day pick the **cheapest** slots.  A **half-slot
-    rule** (only add a slot if the remaining day-target exceeds half its
-    energy) stops a pricier slot being pulled in to cover a tiny remainder —
-    which is how an expensive reserve-top-off slot used to sneak in (MILP
-    charging a 0.30 peak to hit a high self_consumption reserve — bug #2).
+  - **Charge: cheapest-first.**  **Today** is capped at the battery's physical
+    charge headroom (`(soc_max − current)/eff`) and the cheapest slots are
+    taken first, so an expensive reserve-top-off slot the cheaper slots + PV
+    already cover gets dropped (MILP charging a 0.30 peak to hit a high
+    self_consumption reserve — bug #2).  **Tomorrow** is capped at the energy
+    the LP allocated to it, preserving the midnight-reserve **today-first**
+    split (a single global cheapest-first cap would let cheap tomorrow slots
+    starve today).  The dearest slot is reached only when cheaper ones can't
+    fill the battery (heavy load: `cons_heavy_flat` charges both cheap night
+    slots — a per-day half-slot rule was tried and removed because it dropped
+    the genuinely-needed 2nd cheap slot when the remainder fell just under half
+    a slot).
   Pinned by `test_milp_sells_evening_peak_not_cheap_early_slot`,
   `test_milp_no_peak_charge_to_hit_reserve`, and the `to_grid_sell_surplus` /
   `self_suff_flat_low_soc` simulator scenarios.
@@ -1815,7 +1846,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (244 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (245 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

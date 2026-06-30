@@ -297,15 +297,33 @@ def _solve(
     avg_price = max(0.0, sum(prices_h) / len(prices_h))
     terminal_value = avg_price * eff
 
+    # Reward leftover SOC only UP TO the reserve target — the energy genuinely
+    # needed for overnight survival (and, in self_consumption, the boosted
+    # reserve).  Rewarding ALL leftover SOC (up to soc_max) made the solver
+    # buy any slot below avg·eff² to push the battery toward FULL, even in pure
+    # cost mode where that is over-buying: it spends money now to store energy
+    # the horizon has no modelled use for.  Real symptom: on a duck-curve cost
+    # day MILP charged an extra night slot and a 3rd midday slot to end at 81%
+    # where greedy ended at 52% — and cost MORE (0.895 vs 0.600).  Capping the
+    # reward at the reserve makes the solver fill to the reserve (driven by
+    # reward + soft penalty) but never beyond it for the sake of leftover
+    # value, so it stops over-buying.  Arbitrage (both mode) is unaffected:
+    # energy above the reserve is sold for the explicit sell REVENUE term, not
+    # the terminal reward, so the solver still cycles the battery when a peak
+    # pays for it.  Self-consumption still fills high because its reserve is
+    # the 1.25× boosted value.
+    reward_soc = pulp.LpVariable("reward_soc", lowBound=0, upBound=reserve_clamped)
+    prob += reward_soc <= soc[K - 1]
+
     # Objective: minimise net grid spend + wear − value of leftover energy
-    # + reserve-shortfall penalty (drives charging toward the reserve when
-    # physically feasible; absorbs the unreachable remainder instead of
-    # making the model infeasible).
+    # (capped at the reserve) + reserve-shortfall penalty (drives charging
+    # toward the reserve when physically feasible; absorbs the unreachable
+    # remainder instead of making the model infeasible).
     prob += (
         pulp.lpSum(horizon[k]["price"] * c[k] for k in range(K))           # buy cost
         - pulp.lpSum(horizon[k]["price"] * eff * d[k] for k in range(K))   # sell revenue
         + pulp.lpSum(cycle_cost * d[k] for k in range(K))                  # wear
-        - terminal_value * soc[K - 1]                                      # leftover value
+        - terminal_value * reward_soc                                      # leftover value (≤ reserve)
         + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
         + pulp.lpSum(reserve_penalty * imp[k] for k in range(K))           # feasibility slack
     )
@@ -388,32 +406,52 @@ def _solve(
 
     # --- Charge execution: per day, cheapest-first ---
     # Collapse the LP's continuous charge plan to discrete full-power slots.
-    # Cap EACH DAY at the effective energy the LP allocated to it, so the
-    # today/tomorrow split the solver chose is preserved: the midnight-reserve
-    # constraint decides how much MUST charge today (self-sufficiency
-    # "today-first") versus deferring to a cheaper tomorrow — a single global
-    # cap + cheapest-first would let cheap tomorrow slots starve today.
-    # WITHIN each day, execute the CHEAPEST slots, and never pull in a pricier
-    # slot just to cover a sub-half-slot remainder — that half-slot rule is
-    # what stops an expensive reserve-top-off slot from sneaking in (#2: a
-    # 0.30 evening slot used to be added to "finish" a reserve the two cheap
-    # 0.15 slots had effectively already met).
+    # WITHIN each day, execute the CHEAPEST slots first; stop once the
+    # delivered energy reaches the day's target.  TODAY is capped at the
+    # battery's physical charge headroom (so an expensive reserve-top-off slot
+    # the cheap slots already cover gets dropped — #2: a 0.30 evening slot used
+    # to be added after the two 0.15 slots had filled the headroom).  TOMORROW
+    # is capped at the energy the LP allocated to it, which preserves the
+    # midnight-reserve TODAY-FIRST split (self-sufficiency: charge today rather
+    # than defer everything to a cheaper tomorrow — a single global cheapest-
+    # first cap would let cheap tomorrow slots starve today).  Cheapest-first +
+    # the headroom cap means the dearest slot is reached only when the cheaper
+    # ones (plus PV) genuinely can't fill the battery.
     for day, sched in (("today", today_scheduled),
                        ("tomorrow", tomorrow_scheduled)):
         cands = sorted(
             ((h, cv) for (k, h, cv) in charge_candidates if h["day"] == day),
             key=lambda x: (x[0]["price"], -x[1]),
         )
+        # Target = the effective energy the LP actually allocated to this day.
+        # Because the terminal reward is capped at the reserve, that allocation
+        # is the cost-correct amount (fill to the reserve, not toward 100% just
+        # to bank cheap leftover).  Cap TODAY additionally by the battery's
+        # physical charge headroom so a non-slot-multiple LP allocation can't
+        # pull in one slot too many.
         target = eff * sum(cv for _, cv in cands)
         if day == "today":
             target = min(target, charge_target_kwh)
         accum = 0.0
         for h, cv in cands:
-            slot_energy = (h["charge_cap"] or safe_kwh) * eff
-            if target - accum <= slot_energy * 0.5:
-                break  # remaining need < half a slot — don't add a pricier one
-            accum += slot_energy
+            if accum >= target - 0.01:
+                break
+            accum += (h["charge_cap"] or safe_kwh) * eff
             sched[h["slot"]] = "charge"
+
+    # charge_to_full_on_negative_price: the user has explicitly opted to grab
+    # EVERY negative-price slot for the revenue (you're paid to charge),
+    # accepting that some PV may be curtailed.  The LP only charges negatives
+    # up to the SOC-max bound (it can't model charging a battery past full), so
+    # on its own it stops once full and may take fewer than all of them.  Mirror
+    # greedy's explicit behaviour: force every remaining p<0 slot to charge.
+    if getattr(config, "charge_to_full_on_negative_price", False):
+        for k, h in enumerate(horizon):
+            if h["price"] < 0:
+                sched = (today_scheduled if h["day"] == "today"
+                         else tomorrow_scheduled)
+                if sched.get(h["slot"]) != "discharge":
+                    sched[h["slot"]] = "charge"
 
     accum = 0.0
     for k, h, kw in discharge_candidates:

@@ -244,13 +244,12 @@ SCENARIOS = [
                       pv_hourly_kwh={}, pv_actual_today_kwh=0.0,
                       pv_forecast_today=0.0, pv_forecast_remaining=0.0,
                       current_hour=9, current_minute=0),
-        # Documented engine difference: greedy EXPLICITLY forces every p<0 slot;
-        # MILP charges negatives IMPLICITLY (LP revenue) and stops when full, so
-        # it may take fewer.  The harness asserts each engine's real contract.
+        # BOTH engines now honour charge_to_full_on_negative_price explicitly:
+        # every p<0 slot is forced to charge (the user opted in for the revenue,
+        # accepting possible PV curtailment).  MILP forces them in the extraction
+        # (the LP alone stops at SOC-max and would take fewer).
         "expect": lambda r, s: (
-            (all(i in r["charge_slots"] for i in (10, 11, 12, 13)))
-            if "milp" not in r["engine"]
-            else (len([i for i in r["charge_slots"] if i in (10, 11, 12, 13)]) >= 1),
+            all(i in r["charge_slots"] for i in (10, 11, 12, 13)),
             f"negative-price charging ({r['engine']}): got {r['charge_slots']}",
         ),
     },
@@ -476,19 +475,21 @@ SCENARIOS = [
     {
         "name": "manual_from_grid_no_charge_above_threshold",
         "desc": "CUSTOMER CASE: price_mode=manual, from_grid. Must charge ONLY below the "
-                "threshold — never a buy slot above it (the reported regression).",
+                "threshold — never a buy slot above it (the reported regression). "
+                "Shown from start-of-day so the full SOC arc is visible (charge the "
+                "cheap morning, ride midday PV, NO charge into the evening peak).",
         "config": dict(grid_mode="from_grid", price_mode="manual",
                        price_threshold_level=5, optimization_priority="self_consumption",
                        battery_capacity_kwh=48.0, battery_discharge_min_pct=10,
                        battery_charge_max_pct=100, efficiency=0.90,
                        safe_power_kw=10.0, inverter_max_power_kw=10.0,
                        consumption_est_kwh=72.0),
-        "state": dict(battery_soc_pct=81.0,
+        "state": dict(battery_soc_pct=35.0,
                       slot_prices_today=[0.06]*8 + [0.20]*8 + [0.45]*8,  # cheap/mid/peak
                       pv_hourly_kwh=pv_bell(44.0),
                       consumption_hourly_kwh=daytime_ev_profile(),
-                      pv_actual_today_kwh=44.0, pv_forecast_today=58.0,
-                      pv_forecast_remaining=0.0, current_hour=21, current_minute=30),
+                      pv_actual_today_kwh=0.0, pv_forecast_today=44.0,
+                      pv_forecast_remaining=44.0, current_hour=0, current_minute=0),
         "expect": lambda r, s: (
             all(p < (r["threshold"] or 0) for p in r["charge_prices"]),
             f"all charge slots below threshold {round(r['threshold'],3) if r['threshold'] else None} "
