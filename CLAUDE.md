@@ -1243,8 +1243,21 @@ Forward-simulates SOC through every slot.  Drops violations:
 - Per-slot continuous vars: charge energy `c[k]`, discharge `d[k]`, spill, soc.
 - **Constraints**: SOC dynamics, `soc_min ≤ soc ≤ soc_max`,
   `soc[end] ≥ reserve_target`, `soc[midnight] ≥ reserve_target`.
-- **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·soc[end]`
-  where `terminal = avg_price × efficiency`.
+- **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·min(soc[end], reserve)`
+  where `terminal = avg_price × efficiency`.  **The leftover-energy reward is
+  capped at the reserve target** (not all the way to `soc_max`).  Rewarding
+  every leftover kWh up to full made the solver buy any slot below `avg·eff²`
+  to push the battery toward 100% even in pure **cost** mode — over-buying
+  cheap-ish energy the horizon has no modelled use for (real symptom: a
+  duck-curve cost day charged an extra night slot + 3rd midday slot to end at
+  81% where greedy ended 52%, and cost MORE: 0.895 vs 0.600).  Capping the
+  reward at the reserve makes the solver fill to the reserve (reward + soft
+  penalty) but not beyond for leftover value, so it stops over-buying.
+  Arbitrage is unaffected (energy above reserve is sold for the explicit sell
+  *revenue* term, not the terminal reward); self_consumption still fills high
+  because its reserve is the 1.25× boosted value.  The today extraction target
+  is also capped at the LP's allocated charge energy (not just headroom) so the
+  discrete schedule reflects the cost-correct intent.
 - **Price gates**: `arbitrage_price_delta` → charge/discharge UB = 0 for
   slots outside spread.  `block_export_on_negative_price` → discharge UB = 0.
 - **Post-solve (cost-ranked discrete extraction)**: the continuous LP is

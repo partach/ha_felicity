@@ -92,6 +92,18 @@ scenario and/or `tests/test_ems.py`.
    `test_milp_no_peak_charge_to_hit_reserve`, and the two simulator scenarios
    (whose expectations now assert "no peak charge" / "sells the peak" for BOTH
    engines).
+11. **MILP leftover-energy reward is capped at the reserve (July 2026).** The
+    objective's terminal value (`avg·eff × soc[end]`) used to reward leftover
+    SOC all the way to `soc_max`, so in pure **cost** mode the solver bought
+    any slot below `avg·eff²` to push the battery toward 100% — over-buying
+    cheap-ish energy with no modelled use (duck-curve cost day: charged an
+    extra night slot to end 81% vs greedy's 52%, and cost MORE).  The reward is
+    now `terminal × min(soc[end], reserve_target)`, and the today extraction
+    target is capped at the LP's allocated charge energy.  The solver fills to
+    the reserve but not beyond for leftover value, so cost mode stops
+    over-buying (duck curve now charges just the two cheapest midday slots).
+    Arbitrage (sell revenue) and self_consumption (high boosted reserve) are
+    unaffected.
 
 ---
 

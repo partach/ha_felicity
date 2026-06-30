@@ -297,15 +297,33 @@ def _solve(
     avg_price = max(0.0, sum(prices_h) / len(prices_h))
     terminal_value = avg_price * eff
 
+    # Reward leftover SOC only UP TO the reserve target — the energy genuinely
+    # needed for overnight survival (and, in self_consumption, the boosted
+    # reserve).  Rewarding ALL leftover SOC (up to soc_max) made the solver
+    # buy any slot below avg·eff² to push the battery toward FULL, even in pure
+    # cost mode where that is over-buying: it spends money now to store energy
+    # the horizon has no modelled use for.  Real symptom: on a duck-curve cost
+    # day MILP charged an extra night slot and a 3rd midday slot to end at 81%
+    # where greedy ended at 52% — and cost MORE (0.895 vs 0.600).  Capping the
+    # reward at the reserve makes the solver fill to the reserve (driven by
+    # reward + soft penalty) but never beyond it for the sake of leftover
+    # value, so it stops over-buying.  Arbitrage (both mode) is unaffected:
+    # energy above the reserve is sold for the explicit sell REVENUE term, not
+    # the terminal reward, so the solver still cycles the battery when a peak
+    # pays for it.  Self-consumption still fills high because its reserve is
+    # the 1.25× boosted value.
+    reward_soc = pulp.LpVariable("reward_soc", lowBound=0, upBound=reserve_clamped)
+    prob += reward_soc <= soc[K - 1]
+
     # Objective: minimise net grid spend + wear − value of leftover energy
-    # + reserve-shortfall penalty (drives charging toward the reserve when
-    # physically feasible; absorbs the unreachable remainder instead of
-    # making the model infeasible).
+    # (capped at the reserve) + reserve-shortfall penalty (drives charging
+    # toward the reserve when physically feasible; absorbs the unreachable
+    # remainder instead of making the model infeasible).
     prob += (
         pulp.lpSum(horizon[k]["price"] * c[k] for k in range(K))           # buy cost
         - pulp.lpSum(horizon[k]["price"] * eff * d[k] for k in range(K))   # sell revenue
         + pulp.lpSum(cycle_cost * d[k] for k in range(K))                  # wear
-        - terminal_value * soc[K - 1]                                      # leftover value
+        - terminal_value * reward_soc                                      # leftover value (≤ reserve)
         + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
         + pulp.lpSum(reserve_penalty * imp[k] for k in range(K))           # feasibility slack
     )
@@ -405,10 +423,15 @@ def _solve(
             ((h, cv) for (k, h, cv) in charge_candidates if h["day"] == day),
             key=lambda x: (x[0]["price"], -x[1]),
         )
+        # Target = the effective energy the LP actually allocated to this day.
+        # Because the terminal reward is capped at the reserve, that allocation
+        # is the cost-correct amount (fill to the reserve, not toward 100% just
+        # to bank cheap leftover).  Cap TODAY additionally by the battery's
+        # physical charge headroom so a non-slot-multiple LP allocation can't
+        # pull in one slot too many.
+        target = eff * sum(cv for _, cv in cands)
         if day == "today":
-            target = charge_target_kwh
-        else:
-            target = eff * sum(cv for _, cv in cands)
+            target = min(target, charge_target_kwh)
         accum = 0.0
         for h, cv in cands:
             if accum >= target - 0.01:
