@@ -117,7 +117,7 @@ class EMSConfig:
     # "milp" (the solver in milp.py).  When "milp", calculate_schedule tries
     # the MILP first and silently falls back to greedy on any failure
     # (pulp missing, infeasible, timeout).
-    scheduler_engine: str = "milp"
+    scheduler_engine: str = "greedy"
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -1875,11 +1875,22 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     if (not state.pv_hourly_kwh
             and forecast_total and forecast_total > 0
             and forecast_remaining and forecast_remaining > 0):
+        # Preserve/synthesize TOMORROW's hourly PV too.  The old rebuild
+        # didn't pass pv_hourly_kwh_tomorrow at all → it was silently dropped
+        # to None, so when today's hourly was absent (forecast gives daily
+        # totals only) the MILP saw tomorrow PV = 0 and planned the whole next
+        # day with NO sun: the SOC trajectory declined all day and it barely
+        # charged (real customer report).  Mirror the today synthesis.
+        pv_hourly_kwh_tomorrow = state.pv_hourly_kwh_tomorrow
+        if (not pv_hourly_kwh_tomorrow
+                and state.pv_forecast_tomorrow and state.pv_forecast_tomorrow > 0):
+            pv_hourly_kwh_tomorrow = _synthesize_pv_hourly(state.pv_forecast_tomorrow)
         state = EMSState(
             battery_soc_pct=state.battery_soc_pct,
             slot_prices_today=state.slot_prices_today,
             slot_prices_tomorrow=state.slot_prices_tomorrow,
             pv_hourly_kwh=_synthesize_pv_hourly(forecast_total),
+            pv_hourly_kwh_tomorrow=pv_hourly_kwh_tomorrow,
             pv_forecast_remaining=forecast_remaining,
             pv_forecast_today=forecast_total,
             pv_forecast_tomorrow=state.pv_forecast_tomorrow,

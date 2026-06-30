@@ -679,6 +679,71 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             previous_pv_confidence=self._last_pv_confidence,
         )
 
+    def _build_manual_schedule(self) -> None:
+        """Build `scheduled_slots` from the price threshold (manual mode).
+
+        Manual price mode is a simple rule — NOT the optimizer:
+          - from_grid / both: charge every remaining slot whose price is
+            BELOW the threshold.
+          - to_grid / both:   sell every remaining slot whose price is
+            ABOVE the threshold.
+        This keeps the card's displayed schedule consistent with what the
+        manual-mode `_determine_energy_state` actually executes, and ensures
+        we never show a charge slot above the threshold (the optimizer's plan
+        is irrelevant in manual mode).  Past slots are left unscheduled.
+        """
+        opts = self.config_entry.options
+        grid_mode = opts.get("grid_mode", "off")
+        prices = self.slot_prices_today
+        if grid_mode == "off" or not prices or self.price_threshold is None:
+            self.scheduled_slots = {}
+            self._tomorrow_scheduled_slots = {}
+            self.schedule_status = "manual"
+            self.schedule_reason = "Manual mode — follows price threshold"
+            return
+
+        current_slot = self._current_slot_index() or 0
+        allow_charge = grid_mode in ("from_grid", "both")
+        allow_sell = grid_mode in ("to_grid", "both")
+        threshold = self.price_threshold
+
+        sched: dict[int, str] = {}
+        for i in range(current_slot, len(prices)):
+            price = prices[i]
+            if price is None:
+                continue
+            if allow_charge and price < threshold:
+                sched[i] = "charge"
+            elif allow_sell and price > threshold:
+                sched[i] = "discharge"
+
+        self.scheduled_slots = sched
+        # Tomorrow: same threshold rule across all of tomorrow's slots.
+        tmr: dict[int, str] = {}
+        if self.slot_prices_tomorrow:
+            for i, price in enumerate(self.slot_prices_tomorrow):
+                if price is None:
+                    continue
+                if allow_charge and price < threshold:
+                    tmr[i] = "charge"
+                elif allow_sell and price > threshold:
+                    tmr[i] = "discharge"
+        self._tomorrow_scheduled_slots = tmr
+
+        # Clear the optimizer's SOC trajectory so the card doesn't draw a
+        # stale auto-mode line; it falls back to its own client-side
+        # trajectory built from the threshold schedule above.
+        self._backend_soc_trajectory = []
+        self._backend_soc_trajectory_tomorrow = []
+
+        n_charge = sum(1 for v in sched.values() if v == "charge")
+        n_sell = sum(1 for v in sched.values() if v == "discharge")
+        self.schedule_status = "manual"
+        self.schedule_reason = (
+            f"Manual mode: {n_charge} charge / {n_sell} sell slot(s) "
+            f"vs threshold {threshold:.3f}"
+        )
+
     async def _calculate_schedule(self, battery_soc: float | None) -> None:
         """Calculate optimal charge/discharge schedule.
 
@@ -759,7 +824,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             )).lower() in ("on", "true", "1"),
             flexible_loads=self._build_flex_load_configs(),
             ev_charge_strategy=str(opts.get("ev_charge_strategy", "smart")),
-            scheduler_engine=str(opts.get("scheduler_engine", "milp")),
+            scheduler_engine=str(opts.get("scheduler_engine", "greedy")),
         )
 
         # What did the previous schedule predict the SOC would be at this slot?
@@ -849,7 +914,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
             safe_power_kw,
             opts.get("ev_charge_strategy", "smart"),
-            opts.get("scheduler_engine", "milp"),
+            opts.get("scheduler_engine", "greedy"),
         ))
         if (input_hash == self._last_schedule_input_hash
                 and current_slot_idx == self._last_schedule_slot_idx):
@@ -2471,6 +2536,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 await self._calculate_schedule(battery_soc)
                                 # Schedule may have updated self.price_threshold
                                 new_data["price_threshold"] = self.price_threshold
+                            else:
+                                # Manual mode: the displayed schedule must follow
+                                # the PRICE THRESHOLD, not a stale optimizer plan.
+                                # _calculate_schedule only runs in auto, so
+                                # scheduled_slots would otherwise keep showing the
+                                # last MILP/greedy plan — including charge slots
+                                # ABOVE the threshold, which manual mode must
+                                # never do.  Rebuild it from the threshold here.
+                                self._build_manual_schedule()
 
                             # Always calculate available info (visible in both modes)
                             self._calculate_available_info(battery_soc)

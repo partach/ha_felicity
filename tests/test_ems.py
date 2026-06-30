@@ -5058,10 +5058,11 @@ class TestSellCoverage:
 class TestMILPScheduler:
     """Tests for the optional MILP scheduler (milp.py)."""
 
-    def test_default_engine_is_milp(self):
-        """MILP is now the default engine (robust joint 2-day optimiser)."""
+    def test_default_engine_is_greedy(self):
+        """Greedy is the default engine (proven track record, no solver dep).
+        MILP is opt-in until the day-simulator harness validates it."""
         config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10)
-        assert config.scheduler_engine == "milp"
+        assert config.scheduler_engine == "greedy"
 
     def test_milp_never_infeasible_extreme_drain(self):
         """MILP must stay feasible (not fall back) even when consumption would
