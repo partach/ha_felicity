@@ -75,15 +75,19 @@ scenario and/or `tests/test_ems.py`.
      energy), the extraction keeps the **highest-price** slots.  Fixes MILP
      selling a cheap 0.18 slot instead of the 0.40 evening peak
      (`to_grid_sell_surplus`).
-   - **Charges cheapest-first, per day.** Charge selection is capped **per day**
-     at the energy the LP allocated to that day (preserving the midnight-reserve
-     "today-first" split — a single global cheapest-first cap would let cheap
-     tomorrow slots starve today), and within each day picks the cheapest slots.
-     A **half-slot rule** stops it pulling in a pricier slot to cover a
-     sub-half-slot remainder — which is how an expensive reserve-top-off slot
-     used to sneak in.  Fixes MILP charging a 0.30 evening peak to hit a high
-     self_consumption reserve (`self_suff_flat_low_soc`); it now charges the
-     0.15 slots and accepts the cheaper round-trip, like greedy.
+   - **Charges cheapest-first.** Within **today** the charge is capped at the
+     battery's physical charge headroom (`(soc_max − current)/eff`) and the
+     cheapest slots are taken first; an expensive reserve-top-off slot the
+     cheaper slots + PV already cover is therefore dropped (fixes MILP charging
+     a 0.30 evening peak to hit a high self_consumption reserve —
+     `self_suff_flat_low_soc` now charges the 0.15 slots, like greedy).
+     **Tomorrow** is capped at the energy the LP allocated to it, which
+     preserves the midnight-reserve "today-first" split (self-sufficiency:
+     charge today rather than defer everything to a cheaper tomorrow — a single
+     global cheapest-first cap would let cheap tomorrow slots starve today).
+     The dearest slot is reached only when the cheaper ones genuinely can't
+     fill the battery (e.g. heavy load: `cons_heavy_flat` correctly charges
+     both cheap night slots).
    Pinned by `test_milp_sells_evening_peak_not_cheap_early_slot`,
    `test_milp_no_peak_charge_to_hit_reserve`, and the two simulator scenarios
    (whose expectations now assert "no peak charge" / "sells the peak" for BOTH

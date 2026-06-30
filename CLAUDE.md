@@ -800,6 +800,20 @@ knobs remain accessible behind an "Advanced settings" toggle.
 | Trader | both | cost | Buy cheap, sell expensive (auto profitability) |
 | Custom | (unchanged) | (unchanged) | User manages all knobs manually |
 
+**Presets set ONLY the strategy-defining knobs** (`grid_mode`,
+`optimization_priority`, `reserve_target_pct`, `arbitrage_price_delta`,
+`battery_cycle_cost_eur_kwh`).  They must NOT touch the negative-price flags
+(`block_export_on_negative_price`, `charge_to_full_on_negative_price`,
+`discharge_to_make_room_for_negative_price`) — those are orthogonal,
+user-owned opt-in behaviours.  **Bug (fixed):** the presets used to force all
+three to `off`, so re-selecting a strategy (or the card re-applying one)
+silently reset the user's negative-price choices every time — the reported
+"these settings keep resetting to no / aren't stored" symptom.  Removed from
+`STRATEGY_PRESETS` in `select.py`; the flags now persist independently (their
+install-time defaults still come from `config_flow._get_default_options` /
+the `__init__` `defaults_to_set` migration, which only fill MISSING keys and
+never overwrite an existing value).
+
 ### Schedule Reason ("Why" Line)
 Below the chart, a one-line explanation of the current schedule decision
 is shown. Examples:
@@ -1242,14 +1256,18 @@ Forward-simulates SOC through every slot.  Drops violations:
     then sell again at the peak, so the early cheap slot and the peak tie on
     energy), keep the **highest-price** slots.  (Ranking by LP energy used to
     keep the cheap early slot over the 0.40 peak — `to_grid` bug #3.)
-  - **Charge: cheapest-first, per day.**  Cap each day at the energy the LP
-    allocated to it (preserving the midnight-reserve **today-first** split — a
-    single global cheapest-first cap would let cheap tomorrow slots starve
-    today), then within each day pick the **cheapest** slots.  A **half-slot
-    rule** (only add a slot if the remaining day-target exceeds half its
-    energy) stops a pricier slot being pulled in to cover a tiny remainder —
-    which is how an expensive reserve-top-off slot used to sneak in (MILP
-    charging a 0.30 peak to hit a high self_consumption reserve — bug #2).
+  - **Charge: cheapest-first.**  **Today** is capped at the battery's physical
+    charge headroom (`(soc_max − current)/eff`) and the cheapest slots are
+    taken first, so an expensive reserve-top-off slot the cheaper slots + PV
+    already cover gets dropped (MILP charging a 0.30 peak to hit a high
+    self_consumption reserve — bug #2).  **Tomorrow** is capped at the energy
+    the LP allocated to it, preserving the midnight-reserve **today-first**
+    split (a single global cheapest-first cap would let cheap tomorrow slots
+    starve today).  The dearest slot is reached only when cheaper ones can't
+    fill the battery (heavy load: `cons_heavy_flat` charges both cheap night
+    slots — a per-day half-slot rule was tried and removed because it dropped
+    the genuinely-needed 2nd cheap slot when the remainder fell just under half
+    a slot).
   Pinned by `test_milp_sells_evening_peak_not_cheap_early_slot`,
   `test_milp_no_peak_charge_to_hit_reserve`, and the `to_grid_sell_surplus` /
   `self_suff_flat_low_soc` simulator scenarios.

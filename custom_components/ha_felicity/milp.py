@@ -388,31 +388,32 @@ def _solve(
 
     # --- Charge execution: per day, cheapest-first ---
     # Collapse the LP's continuous charge plan to discrete full-power slots.
-    # Cap EACH DAY at the effective energy the LP allocated to it, so the
-    # today/tomorrow split the solver chose is preserved: the midnight-reserve
-    # constraint decides how much MUST charge today (self-sufficiency
-    # "today-first") versus deferring to a cheaper tomorrow — a single global
-    # cap + cheapest-first would let cheap tomorrow slots starve today.
-    # WITHIN each day, execute the CHEAPEST slots, and never pull in a pricier
-    # slot just to cover a sub-half-slot remainder — that half-slot rule is
-    # what stops an expensive reserve-top-off slot from sneaking in (#2: a
-    # 0.30 evening slot used to be added to "finish" a reserve the two cheap
-    # 0.15 slots had effectively already met).
+    # WITHIN each day, execute the CHEAPEST slots first; stop once the
+    # delivered energy reaches the day's target.  TODAY is capped at the
+    # battery's physical charge headroom (so an expensive reserve-top-off slot
+    # the cheap slots already cover gets dropped — #2: a 0.30 evening slot used
+    # to be added after the two 0.15 slots had filled the headroom).  TOMORROW
+    # is capped at the energy the LP allocated to it, which preserves the
+    # midnight-reserve TODAY-FIRST split (self-sufficiency: charge today rather
+    # than defer everything to a cheaper tomorrow — a single global cheapest-
+    # first cap would let cheap tomorrow slots starve today).  Cheapest-first +
+    # the headroom cap means the dearest slot is reached only when the cheaper
+    # ones (plus PV) genuinely can't fill the battery.
     for day, sched in (("today", today_scheduled),
                        ("tomorrow", tomorrow_scheduled)):
         cands = sorted(
             ((h, cv) for (k, h, cv) in charge_candidates if h["day"] == day),
             key=lambda x: (x[0]["price"], -x[1]),
         )
-        target = eff * sum(cv for _, cv in cands)
         if day == "today":
-            target = min(target, charge_target_kwh)
+            target = charge_target_kwh
+        else:
+            target = eff * sum(cv for _, cv in cands)
         accum = 0.0
         for h, cv in cands:
-            slot_energy = (h["charge_cap"] or safe_kwh) * eff
-            if target - accum <= slot_energy * 0.5:
-                break  # remaining need < half a slot — don't add a pricier one
-            accum += slot_energy
+            if accum >= target - 0.01:
+                break
+            accum += (h["charge_cap"] or safe_kwh) * eff
             sched[h["slot"]] = "charge"
 
     accum = 0.0
