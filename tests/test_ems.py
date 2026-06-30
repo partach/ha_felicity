@@ -5379,6 +5379,68 @@ class TestMILPScheduler:
         )
 
     @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+    def test_milp_synthesizes_daily_only_tomorrow_pv(self):
+        """MILP must see tomorrow's PV even when the forecast gives only a
+        DAILY total (no hourly).  Otherwise it plans the next day with NO sun
+        and over-buys grid to fill a battery the solar would fill for free
+        (real customer on Trader: "buying 18/24 slots tomorrow with 42.9 kWh PV
+        coming").  The today-rebuild only synthesizes tomorrow PV when today's
+        hourly is ALSO absent; in the evening today's hourly is present, so the
+        daily-only tomorrow total must be synthesized unconditionally.
+
+        Invariant: a daily-only tomorrow forecast produces the SAME plan as
+        passing the equivalent synthesized hourly explicitly.
+        """
+        base = dict(
+            grid_mode="both",
+            optimization_priority="cost",
+            scheduler_engine="milp",
+            battery_capacity_kwh=63.0,
+            battery_discharge_min_pct=10,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=17.5,
+            inverter_max_power_kw=25.0,
+            consumption_est_kwh=25.0,
+        )
+        prices_tmr = [0.10] * 6 + [0.08] * 4 + [0.05] * 6 + [0.30] * 8
+        common = dict(
+            battery_soc_pct=95.0,
+            slot_prices_today=[0.20] * 24,
+            slot_prices_tomorrow=prices_tmr,
+            pv_hourly_kwh=ems._synthesize_pv_hourly(2.0),  # today hourly present (evening)
+            pv_forecast_today=2.0,
+            pv_forecast_remaining=0.1,
+            pv_forecast_tomorrow=42.9,
+            pv_actual_today_kwh=2.0,
+            current_hour=21,
+            current_minute=0,
+        )
+        # Daily-only tomorrow (hourly absent) vs explicit synthesized hourly.
+        r_daily = calculate_schedule(
+            EMSConfig(**base),
+            EMSState(pv_hourly_kwh_tomorrow=None, **common),
+        )
+        r_hourly = calculate_schedule(
+            EMSConfig(**base),
+            EMSState(
+                pv_hourly_kwh_tomorrow=ems._synthesize_pv_hourly(42.9),
+                **common,
+            ),
+        )
+        assert r_daily.tomorrow_scheduled_slots == r_hourly.tomorrow_scheduled_slots, (
+            "daily-only tomorrow PV must be synthesized to match explicit "
+            f"hourly: daily={sorted(r_daily.tomorrow_scheduled_slots)} "
+            f"hourly={sorted(r_hourly.tomorrow_scheduled_slots)}"
+        )
+        # And it must NOT buy the whole next day (PV covers the midday need).
+        tmr_charge = [i for i, a in r_daily.tomorrow_scheduled_slots.items()
+                      if a == "charge"]
+        assert len(tmr_charge) < 12, (
+            f"MILP over-bought tomorrow despite 42.9 kWh PV: {sorted(tmr_charge)}"
+        )
+
+    @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
     def test_milp_charge_to_full_grabs_all_negative_slots(self):
         """With charge_to_full_on_negative_price, MILP must force EVERY p<0
         slot to charge (mirrors greedy), not stop at SOC-max like the LP alone.

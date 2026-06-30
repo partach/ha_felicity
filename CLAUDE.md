@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 247).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 248).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 247 tests for the pure EMS algorithm
+└── test_ems.py              # 248 tests for the pure EMS algorithm
 ```
 
 ---
@@ -1424,6 +1424,21 @@ hour slot. This was especially painful at midnight when stale
 `state.state` still reports the previous day's stale total, the coordinator
 falls back to the filtered hourly sum.
 
+**Consequence — tomorrow's PV is daily-total-only.** Because `wh_hours` is
+filtered to *today's* date, `pv_hourly_kwh_tomorrow` arrives empty; only the
+daily total `pv_forecast_tomorrow` is known.  The MILP reads
+`pv_hourly_kwh_tomorrow` directly (no internal synthesis), so when it's empty
+the solver plans the WHOLE next day with **PV = 0** and over-buys grid to fill
+a battery the sun would fill for free — even a Trader with a big forecast
+(real customer: "buying 18/24 slots tomorrow with 42.9 kWh PV coming").  Fixed
+in `calculate_schedule`: tomorrow's hourly PV is now synthesized from the daily
+total **unconditionally** (`_synthesize_pv_hourly(pv_forecast_tomorrow)` via
+`dataclasses.replace`) whenever it's absent — not only inside the today-rebuild
+branch (which is skipped in the evening when today's hourly is present).
+Greedy's `_compute_tomorrow_schedule` already synthesized internally; this
+makes both engines consistent.  Pinned by
+`test_milp_synthesizes_daily_only_tomorrow_pv`.
+
 ### 8. Midnight should not force inverter to idle
 The day-rollover block in `_async_update_data` used to unconditionally
 call `_transition_to_state("idle")` and then skip the normal cycle for
@@ -1871,7 +1886,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (247 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (248 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

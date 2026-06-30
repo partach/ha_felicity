@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -2063,6 +2063,27 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
                 "Synthesized hourly PV from daily forecast (%.1f kWh)",
                 forecast_total,
             )
+
+    # Tomorrow's hourly PV for BOTH engines (independent of today's rebuild
+    # above).  The forecast frequently supplies only tomorrow's DAILY total —
+    # the coordinator filters wh_hours to today's date (known issue #7), so
+    # pv_hourly_kwh_tomorrow arrives empty.  The MILP reads it directly with no
+    # internal synthesis, so without this it plans the WHOLE next day with NO
+    # sun and over-buys grid to "fill" a battery the solar would fill for free —
+    # even a trader with a big solar forecast (real customer: "buying 18/24
+    # slots tomorrow with 42.9 kWh PV coming").  The today-rebuild branch only
+    # synthesizes tomorrow PV when TODAY's hourly is also absent; in the evening
+    # today's hourly is present, so that branch is skipped and tomorrow PV was
+    # silently 0.  Synthesize from the daily total here so the solver sees the
+    # midday hump and stops buying what the sun provides.  (Greedy's
+    # _compute_tomorrow_schedule already synthesizes internally; this makes the
+    # two engines consistent.)
+    if (not state.pv_hourly_kwh_tomorrow
+            and state.pv_forecast_tomorrow and state.pv_forecast_tomorrow > 0):
+        state = replace(
+            state,
+            pv_hourly_kwh_tomorrow=_synthesize_pv_hourly(state.pv_forecast_tomorrow),
+        )
 
     battery_soc = state.battery_soc_pct
     current_kwh = (battery_soc / 100.0) * config.battery_capacity_kwh if battery_soc is not None else 0.0
