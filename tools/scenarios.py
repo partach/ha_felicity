@@ -244,13 +244,12 @@ SCENARIOS = [
                       pv_hourly_kwh={}, pv_actual_today_kwh=0.0,
                       pv_forecast_today=0.0, pv_forecast_remaining=0.0,
                       current_hour=9, current_minute=0),
-        # Documented engine difference: greedy EXPLICITLY forces every p<0 slot;
-        # MILP charges negatives IMPLICITLY (LP revenue) and stops when full, so
-        # it may take fewer.  The harness asserts each engine's real contract.
+        # BOTH engines now honour charge_to_full_on_negative_price explicitly:
+        # every p<0 slot is forced to charge (the user opted in for the revenue,
+        # accepting possible PV curtailment).  MILP forces them in the extraction
+        # (the LP alone stops at SOC-max and would take fewer).
         "expect": lambda r, s: (
-            (all(i in r["charge_slots"] for i in (10, 11, 12, 13)))
-            if "milp" not in r["engine"]
-            else (len([i for i in r["charge_slots"] if i in (10, 11, 12, 13)]) >= 1),
+            all(i in r["charge_slots"] for i in (10, 11, 12, 13)),
             f"negative-price charging ({r['engine']}): got {r['charge_slots']}",
         ),
     },

@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 244).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 245).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 244 tests for the pure EMS algorithm
+└── test_ems.py              # 245 tests for the pure EMS algorithm
 ```
 
 ---
@@ -1105,7 +1105,7 @@ traces each setting from `config_entry.options` through to its consumers.
 | `battery_cycle_cost_eur_kwh` | `battery_cycle_cost_eur_kwh` | ✅ | ✅ | Wear cost in profitability filter + objective |
 | `optimization_priority` | `optimization_priority` | ✅ | ✅ | longevity → 0.05 floor; self_consumption → 1.25× reserve, top-off gate |
 | `block_export_on_negative_price` | `block_export_on_negative_price` | ✅ | ✅ | Blocks sell at p<0 |
-| `charge_to_full_on_negative_price` | `charge_to_full_on_negative_price` | ✅ | implicit | MILP: LP objective naturally charges at p<0 (it's revenue); no phantom-charge exemption |
+| `charge_to_full_on_negative_price` | `charge_to_full_on_negative_price` | ✅ | ✅ | MILP forces every p<0 slot in the extraction (mirrors greedy); the LP alone stops at SOC-max and would take fewer |
 | `discharge_to_make_room_for_negative_price` | `discharge_to_make_room_for_negative_price` | ✅ | implicit | MILP: joint optimization naturally creates room when profitable |
 | `scheduler_engine` | `scheduler_engine` | ✅ | — | Used by ems.py to dispatch to MILP or greedy |
 | `ev_charge_strategy` | `ev_charge_strategy` | ✅ | ✅ | Applied in flex-load overlay (runs after both engines) |
@@ -1132,7 +1132,7 @@ traces each setting from `config_entry.options` through to its consumers.
 
 | Feature | Greedy | MILP | Impact |
 |---|---|---|---|
-| `charge_to_full_on_negative_price` | Explicit: forces ALL p<0 slots + phantom-charge exemption | Implicit: LP charges at p<0 naturally (revenue); no phantom charges | MILP won't schedule charge when battery is physically full — correct behavior, BMS would reject anyway |
+| `charge_to_full_on_negative_price` | Explicit: forces ALL p<0 slots + phantom-charge exemption | Explicit: forces ALL p<0 slots in the extraction (the LP alone stops at SOC-max) | Both engines now grab every negative slot when the flag is on (user opted in for the revenue, accepting PV curtailment) |
 | `discharge_to_make_room_for_negative_price` | Explicit: `_select_discharges_for_pv_headroom` helper | Implicit: joint optimization sees both sell revenue + negative-buy revenue | MILP may be more or less aggressive depending on price spread |
 | `yesterday_deficit_kwh` | Added as carryover to deficit | Not used; current_kwh already reflects yesterday's shortfall | No impact — same result |
 | Cross-day slot selection | Separate today/tomorrow pools with today-first guard for self_consumption | Single unified horizon with midnight SOC constraint | MILP sees the whole picture; greedy needs explicit guards |
@@ -1846,7 +1846,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (244 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (245 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

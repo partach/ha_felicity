@@ -439,6 +439,20 @@ def _solve(
             accum += (h["charge_cap"] or safe_kwh) * eff
             sched[h["slot"]] = "charge"
 
+    # charge_to_full_on_negative_price: the user has explicitly opted to grab
+    # EVERY negative-price slot for the revenue (you're paid to charge),
+    # accepting that some PV may be curtailed.  The LP only charges negatives
+    # up to the SOC-max bound (it can't model charging a battery past full), so
+    # on its own it stops once full and may take fewer than all of them.  Mirror
+    # greedy's explicit behaviour: force every remaining p<0 slot to charge.
+    if getattr(config, "charge_to_full_on_negative_price", False):
+        for k, h in enumerate(horizon):
+            if h["price"] < 0:
+                sched = (today_scheduled if h["day"] == "today"
+                         else tomorrow_scheduled)
+                if sched.get(h["slot"]) != "discharge":
+                    sched[h["slot"]] = "charge"
+
     accum = 0.0
     for k, h, kw in discharge_candidates:
         if accum >= discharge_target_kwh:
