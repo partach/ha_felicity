@@ -217,7 +217,6 @@ def report_one(scenario: dict, results: dict) -> bool:
     pv_disp = effective_pv_per_slot(st, n0)
     pv_total = round(sum(pv_disp), 1)
     pv_src = "hourly" if st.get("pv_hourly_kwh") else ("synthesized" if (st.get("pv_forecast_today") or 0) > 0 else "none")
-    cons_disp = effective_consumption_per_slot(cfg, st, n0)
     cons_src = "hourly" if st.get("consumption_hourly_kwh") else "flat"
     print(f"  grid_mode={cfg.get('grid_mode')} priority={cfg.get('optimization_priority','cost')} "
           f"cap={cfg.get('battery_capacity_kwh')}kWh SOC={st.get('battery_soc_pct')}% "
@@ -345,11 +344,17 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
         if 0 < cur_slot0 < n:
             ax.axvline(cur_slot0, color="#e57373", lw=1.2, ls=":", alpha=0.8)
 
-        # SOC trajectory on a twin axis
+        # SOC trajectory on a twin axis — plotted only from "now" forward.
+        # The simulator has no recorder history, so the past portion of the
+        # trajectory is a flat placeholder (current SOC); drawing it looked
+        # like "the battery sits flat / consumption is ignored".  Show only the
+        # meaningful future part.
         traj = r["trajectory"]
         if traj:
             ax2 = ax.twinx()
-            ax2.plot([i + 0.5 for i in range(len(traj))], traj, color="#08b2c9", lw=2, label="SOC%")
+            start = max(0, min(cur_slot0, len(traj) - 1))
+            xs_soc = [i + 0.5 for i in range(start, len(traj))]
+            ax2.plot(xs_soc, traj[start:], color="#08b2c9", lw=2, label="SOC% (from now)")
             ax2.set_ylim(0, 100)
             ax2.set_ylabel("SOC %")
             if r["reserve_pct"]:
