@@ -6242,3 +6242,83 @@ class TestGreedyReshopAfterOverflow:
             f"{list(zip(charge, prices_used))} (reason={r.schedule_reason!r})"
         )
 
+
+
+class TestGreedyPartialChargeNoSun:
+    """Greedy must charge enough cheap night energy to cover an expensive,
+    PV-less day — not stop after the reserve deficit and ride the floor
+    through the peak.
+
+    Real symptom (pv_no_sun_winter_relies_on_grid): a 10 kWh battery, zero PV,
+    12 kWh/day load, cheap 0.05 night / 0.15 day / 0.30 evening.  Greedy
+    charged only 1 slot (covered the 4 kWh reserve deficit), drained to the
+    floor by early afternoon, then paid 0.30 evening grid via passthrough —
+    roughly DOUBLE the MILP cost (1.53 vs 0.77).  The two cheapest night slots
+    are consecutive, so the 2nd overflowed the small battery and SOC validation
+    dropped it.  With keep_partial_charges the inverter charges what FITS (the
+    slot still stores cheap energy that displaces pricier daytime grid), so
+    greedy charges both — matching MILP.
+    """
+
+    def test_greedy_charges_two_cheap_night_slots_no_pv(self):
+        prices = [0.05] * 6 + [0.15] * 11 + [0.30] * 7
+        cfg = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            scheduler_engine="greedy",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=12.0,
+        )
+        st = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=30.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=3,
+            current_minute=0,
+        )
+        r = calculate_schedule(cfg, st)
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        prices_used = [prices[i] for i in charge]
+        assert len(charge) >= 2, (
+            f"greedy under-charged on a no-PV day (got {charge}); should pack "
+            f"a 2nd cheap night slot (partial charge) to cover the expensive day"
+        )
+        # Cost discipline preserved: only cheap night slots, never the peak.
+        assert all(p <= 0.05 + 1e-6 for p in prices_used), (
+            f"greedy charged a non-cheap slot: {list(zip(charge, prices_used))}"
+        )
+
+    def test_partial_charge_not_kept_when_near_full(self):
+        """A near-full battery must NOT schedule a sliver charge slot — the
+        partial-charge keep only applies to a SUBSTANTIAL partial (>= half the
+        slot), not a 2% top-off."""
+        prices = [0.05] * 12 + [0.20] * 12
+        cfg = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            scheduler_engine="greedy",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=4.0,
+        )
+        st = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=98.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        r = calculate_schedule(cfg, st)
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        assert charge == [], f"near-full battery should not charge, got {charge}"

@@ -738,6 +738,7 @@ def _validate_schedule_soc(
     safe_power_kw: float = 0.0,
     consumption_hourly_kwh: dict[int, float] | None = None,
     keep_all_negative_charges: bool = False,
+    keep_partial_charges: bool = False,
 ) -> tuple[set[int], set[int]]:
     """Validate schedule by simulating SOC at every slot, pruning violations.
 
@@ -855,6 +856,32 @@ def _validate_schedule_soc(
                 if (keep_all_negative_charges
                         and charge_contribution > 0
                         and slot_price < 0):
+                    soc = battery_capacity
+                    continue
+                # Partial-charge keep (from_grid consumption arbitrage): when
+                # the charge action itself causes the overflow but the battery
+                # had real room entering the slot (soc_before < capacity), the
+                # inverter simply charges what FITS (capacity − soc_before) and
+                # the rest spills — the slot still stores cheap grid energy that
+                # displaces pricier later consumption.  Dropping the whole slot
+                # (the default) throws that partial charge away and leaves the
+                # battery to ride the floor through expensive hours (the greedy
+                # "myopia" on undersized-battery / no-PV days: two cheap night
+                # slots are consecutive, the 2nd overflows and was dropped, so
+                # only 1 of 2 needed cheap slots charged).  Keep it; only a
+                # charge on an ALREADY-full battery (phantom, below) is wasted.
+                # Scoped via keep_partial_charges so to_grid/both/override
+                # validation keep their stricter overflow pruning.
+                if (keep_partial_charges
+                        and charge_contribution > 0
+                        and not pv_alone_overflows
+                        and (battery_capacity - soc_before)
+                            >= 0.5 * charge_contribution):
+                    # Substantial partial charge (stores >= half the slot's
+                    # energy): worth keeping.  A near-full battery where the
+                    # slot would store only a sliver is NOT kept (falls through
+                    # to the normal drop), so we don't schedule a charge for a
+                    # negligible top-off.
                     soc = battery_capacity
                     continue
                 if pv_alone_overflows:
@@ -2379,6 +2406,7 @@ def _schedule_from_grid(
         inverter_max_power_kw=config.inverter_max_power_kw,
         safe_power_kw=config.safe_power_kw,
         keep_all_negative_charges=config.charge_to_full_on_negative_price,
+        keep_partial_charges=not config.charge_to_full_on_negative_price,
     )
 
     # Re-shop any charge energy that validation dropped for overflow into

@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 245).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 247).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 245 tests for the pure EMS algorithm
+└── test_ems.py              # 247 tests for the pure EMS algorithm
 ```
 
 ---
@@ -584,6 +584,23 @@ PV-caused — pruning negative-price slots won't prevent it, and the
 negative-price income is pure profit.  When PV is insufficient to cause
 overflow on its own, negative-price charge slots are still pruned to
 prevent forced grid export at penalty rates.
+
+**Partial-charge keep (greedy from_grid — consumption arbitrage, July 2026)**:
+when a charge slot *causes* an overflow but the battery had real room entering
+it (`soc_before < capacity`), the inverter physically charges what FITS
+(`capacity − soc_before`) and the rest spills — the slot still stores cheap
+grid energy.  The default validation drops the whole slot; in from_grid that
+threw away a genuinely-useful partial charge and left the battery to ride the
+floor through expensive hours (greedy "myopia": a 10 kWh battery, zero PV,
+12 kWh/day load charged only **1 of 2** cheap night slots because the two
+cheapest were consecutive and the 2nd overflowed — then paid 0.30 evening
+grid, ~2× the MILP cost).  `keep_partial_charges` (passed True only by
+`_schedule_from_grid`, off for to_grid/both/override validation) keeps a
+**substantial** partial charge (stores ≥ half the slot's energy); a near-full
+battery where the slot would store only a sliver still falls through to the
+normal drop, so we never schedule a charge for a negligible top-off.  Greedy
+now charges both cheap slots (matching MILP) on no-PV / undersized-battery
+days.  Pinned by `TestGreedyPartialChargeNoSun`.
 
 **Phantom-charge detection**: when a charge slot is scheduled at a
 moment the battery is already at capacity (`soc_before >= capacity - 0.01`),
@@ -1854,7 +1871,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (245 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (247 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
