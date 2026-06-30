@@ -262,7 +262,8 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
         ax = axes[row][0]
         xs = list(range(n))
         colors = []
-        cset = set(r["charge_slots"]); sset = set(r["sell_slots"])
+        cset = set(r["charge_slots"])
+        sset = set(r["sell_slots"])
         for i in xs:
             colors.append("#4CAF50" if i in cset else "#FF9800" if i in sset else "#cfcfcf")
         pr = [p if p is not None else 0 for p in prices]
