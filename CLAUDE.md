@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 228).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 242).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 234 tests for the pure EMS algorithm
+└── test_ems.py              # 242 tests for the pure EMS algorithm
 ```
 
 ---
@@ -1797,7 +1797,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (234 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (242 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

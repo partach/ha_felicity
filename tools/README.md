@@ -111,6 +111,23 @@ specific knobs and asserts the intended outcome.  The current set covers:
 | `pv_surplus_sold_to_grid` | to_grid, big PV | sells the solar surplus at peak |
 | `manual_from_grid_no_charge_above_threshold` | **price_mode=manual**, from_grid | **customer case**: never charge above the threshold |
 | `manual_both_sell_above_charge_below` | **price_mode=manual**, both | charge below / sell above the threshold, no overlap |
+| `duck_curve_save_money` | from_grid, **realistic duck-curve tariff** | charges the cheap midday solar trough, never the peaks |
+| `duck_curve_sell_evening_peak` | to_grid, **realistic duck-curve tariff** | sells into the evening peak, not a mid slot |
+
+`cons_heavy_flat` additionally pins the greedy **re-shop after overflow** fix:
+on a 20 kWh battery under a 40 kWh/day load greedy re-allocates the charge slot
+that SOC-validation drops (back-to-back overflow) into a later slot, reaching
+the same planned kWh as the MILP plan — without ever buying an expensive slot.
+
+### Price shapes — flat tiers vs the realistic duck curve
+
+Most scenarios use simple step tariffs (`cheap_night_expensive_day`, etc.) so
+the asserted behaviour is easy to read.  For fine-grained, *realistic* pricing
+use `inverse_solar_prices(...)`: a smooth **duck curve** that tracks the inverse
+of the solar bell — deep midday trough (PV glut), morning shoulder, high evening
+peak, gentle overnight decline.  Pair it with `pv_bell(...)` over the same
+sunrise/sunset so "cheap when sunny, expensive when not" lines up visually (the
+yellow PV hump sits right over the price trough).
 
 Every chart overlays, on a shared kWh/h right axis:
 - the **PV production** as a translucent yellow "solar hump" (synthesized from

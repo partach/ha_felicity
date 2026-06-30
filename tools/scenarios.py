@@ -53,6 +53,39 @@ def cheap_day_expensive_evening(n=24):
     return out
 
 
+def inverse_solar_prices(low=0.03, mid=0.16, peak=0.38, sunrise=6, sunset=20, n=24):
+    """Realistic 'duck curve' dynamic tariff, inversely correlated with solar.
+
+    Real day-ahead prices are NOT flat tiers — they vary smoothly hour to hour
+    and track the inverse of the solar curve: a deep MIDDAY TROUGH when PV
+    floods the grid (price near `low`, sometimes negative), a MORNING SHOULDER
+    as demand wakes before the sun, a high EVENING PEAK (`peak`) when the sun
+    sets but demand stays high, and a gentle OVERNIGHT decline toward a
+    small-hours minimum.  Use this (instead of the 2-3 level step functions)
+    when a scenario should exercise fine-grained slot-by-slot price ranking.
+
+    Pair with `pv_bell(...)` over the same sunrise/sunset for a coherent
+    "cheap when sunny, expensive when not" day.
+    """
+    import math
+    peak_hour = (sunrise + sunset) / 2.0
+    spread = (sunset - sunrise) / 2.0
+    out = []
+    for h in range(n):
+        solar = (max(0.0, math.cos((h - peak_hour) / spread * math.pi / 2) ** 2)
+                 if sunrise <= h <= sunset else 0.0)
+        eve = math.exp(-((h - 19.0) ** 2) / (2 * 1.8 ** 2))      # evening peak
+        morn = math.exp(-((h - 7.5) ** 2) / (2 * 1.1 ** 2))      # morning shoulder
+        night = math.exp(-((h - 3.0) ** 2) / (2 * 2.5 ** 2))     # small-hours dip
+        p = (mid
+             - (mid - low) * solar          # solar glut pulls price down
+             + (peak - mid) * eve           # evening peak up
+             + (peak - mid) * 0.45 * morn   # morning shoulder up (smaller)
+             - (mid - low) * 0.35 * night)  # overnight decline
+        out.append(round(max(0.0, p), 3))
+    return out
+
+
 def pv_bell(total_kwh, sunrise=7, sunset=19):
     """Bell-curve hourly PV summing to total_kwh."""
     import math
@@ -494,6 +527,49 @@ SCENARIOS = [
         "expect": lambda r, s: (
             len(r["sell_slots"]) == 0,
             f"no sells when spread (0.08) < delta (0.20) — got {len(r['sell_slots'])}",
+        ),
+    },
+
+    {
+        "name": "duck_curve_save_money",
+        "desc": "from_grid/cost on a REALISTIC duck-curve tariff (smooth, inverse-solar): "
+                "must charge in the cheap midday solar trough / small hours, never the peaks.",
+        "config": dict(grid_mode="from_grid", optimization_priority="cost",
+                       battery_capacity_kwh=15.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=12.0, reserve_target_pct=60),
+        "state": dict(battery_soc_pct=30.0,
+                      slot_prices_today=inverse_solar_prices(),
+                      pv_hourly_kwh=pv_bell(8.0, sunrise=6, sunset=20),
+                      pv_actual_today_kwh=0.0, pv_forecast_today=8.0,
+                      pv_forecast_remaining=8.0,
+                      current_hour=0, current_minute=0),
+        "expect": lambda r, s: (
+            (max(r["charge_prices"]) <= 0.20) if r["charge_prices"] else True,
+            f"charges only the cheaper half of the duck curve "
+            f"(max charge price={max(r['charge_prices']) if r['charge_prices'] else None})",
+        ),
+    },
+
+    {
+        "name": "duck_curve_sell_evening_peak",
+        "desc": "to_grid/cost on a REALISTIC duck-curve tariff, full battery midday: "
+                "must sell into the EVENING PEAK (highest part of the curve), not a mid slot.",
+        "config": dict(grid_mode="to_grid", optimization_priority="cost",
+                       battery_capacity_kwh=20.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=10.0, inverter_max_power_kw=15.0,
+                       consumption_est_kwh=6.0),
+        "state": dict(battery_soc_pct=95.0,
+                      slot_prices_today=inverse_solar_prices(),
+                      pv_hourly_kwh=pv_bell(6.0, sunrise=6, sunset=20),
+                      pv_actual_today_kwh=3.0, pv_forecast_today=6.0,
+                      pv_forecast_remaining=3.0,
+                      current_hour=12, current_minute=0),
+        "expect": lambda r, s: (
+            (min(r["sell_prices"]) >= 0.30) if r["sell_prices"] else False,
+            f"sells into the evening peak (sell prices={r['sell_prices']})",
         ),
     },
 ]
