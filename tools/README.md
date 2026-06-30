@@ -49,6 +49,18 @@ specific knobs and asserts the intended outcome.  The current set covers:
 | `tomorrow_pv_daily_only` | daily-only forecast, two-day | tomorrow's PV is synthesised (not zero) |
 | `longevity_cycle_cost` | both, longevity | wear floor suppresses marginal trades |
 | `arbitrage_delta_gate` | both, arbitrage_price_delta | no sells below the required spread |
+| `manual_from_grid_no_charge_above_threshold` | **price_mode=manual**, from_grid | **customer case**: never charge above the threshold |
+| `manual_both_sell_above_charge_below` | **price_mode=manual**, both | charge below / sell above the threshold, no overlap |
+
+### Manual price mode
+
+Scenarios with `price_mode: "manual"` in their `config` run a separate lane:
+manual mode is a **threshold rule**, not the optimizer.  The harness mirrors
+`coordinator._build_manual_schedule` (from_grid/both charge below the threshold,
+to_grid/both sell above) and reuses the real `_compute_scheduled_soc_trajectory`
+for the SOC line.  The threshold is derived from `price_threshold_level` (1-10)
+exactly as the coordinator does.  These scenarios show one `[manual]` lane
+(engine-agnostic) instead of greedy vs MILP.
 
 ## Add your own
 

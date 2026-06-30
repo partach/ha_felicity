@@ -66,8 +66,31 @@ sys.path.insert(0, _HERE)
 from scenarios import SCENARIOS  # noqa: E402
 
 
+def _result_dict(engine, prices, sched, traj, cur_slot, *,
+                 planned_kwh=0.0, reserve_pct=0.0, overnight_need=0.0,
+                 status=None, reason=None, threshold=None):
+    charge = sorted(i for i, a in (sched or {}).items() if a == "charge")
+    sell = sorted(i for i, a in (sched or {}).items() if a == "discharge")
+    future = [traj[i] for i in range(min(cur_slot, len(traj)), len(traj))] if traj else []
+    return {
+        "engine": engine,
+        "charge_slots": charge,
+        "sell_slots": sell,
+        "charge_prices": [round(prices[i], 3) for i in charge if i < len(prices) and prices[i] is not None],
+        "sell_prices": [round(prices[i], 3) for i in sell if i < len(prices) and prices[i] is not None],
+        "planned_kwh": round(planned_kwh or 0.0, 2),
+        "reserve_pct": round(reserve_pct or 0.0, 1),
+        "overnight_need_kwh": round(overnight_need or 0.0, 2),
+        "projected_low_pct": round(min(future), 1) if future else None,
+        "status": status,
+        "reason": reason,
+        "threshold": threshold,
+        "trajectory": traj,
+    }
+
+
 def run_one(scenario: dict, engine: str) -> dict:
-    """Run one scenario through one engine; return a flat result dict."""
+    """Run one scenario through one optimizer engine; return a flat result dict."""
     cfg_kwargs = dict(scenario["config"])
     cfg_kwargs["scheduler_engine"] = engine
     config = ems.EMSConfig(**cfg_kwargs)
@@ -75,29 +98,75 @@ def run_one(scenario: dict, engine: str) -> dict:
     result = ems.calculate_schedule(config, state)
 
     prices = state.slot_prices_today or []
-    cap = config.battery_capacity_kwh
-    charge = sorted(i for i, a in (result.scheduled_slots or {}).items() if a == "charge")
-    sell = sorted(i for i, a in (result.scheduled_slots or {}).items() if a == "discharge")
-    traj = result.soc_trajectory or []
-    # Projected low over the FUTURE part of the trajectory.
     num = len(prices)
     cur_slot = int((state.current_hour * 60 + state.current_minute) / ((24 * 60) / num)) if num else 0
-    future = [traj[i] for i in range(min(cur_slot, len(traj)), len(traj))] if traj else []
-    return {
-        "engine": result.scheduler_active or engine,
-        "charge_slots": charge,
-        "sell_slots": sell,
-        "charge_prices": [round(prices[i], 3) for i in charge if i < len(prices) and prices[i] is not None],
-        "sell_prices": [round(prices[i], 3) for i in sell if i < len(prices) and prices[i] is not None],
-        "planned_kwh": round(result.grid_energy_planned or 0.0, 2),
-        "reserve_pct": round(result.reserve_target_pct or 0.0, 1),
-        "overnight_need_kwh": round(result.self_consumption_reserve or 0.0, 2),
-        "projected_low_pct": round(min(future), 1) if future else None,
-        "status": result.status,
-        "reason": result.schedule_reason,
-        "trajectory": traj,
-        "_result": result,
-    }
+    return _result_dict(
+        result.scheduler_active or engine, prices, result.scheduled_slots,
+        result.soc_trajectory or [], cur_slot,
+        planned_kwh=result.grid_energy_planned, reserve_pct=result.reserve_target_pct,
+        overnight_need=result.self_consumption_reserve, status=result.status,
+        reason=result.schedule_reason, threshold=result.price_threshold,
+    )
+
+
+def _manual_threshold(prices, level):
+    """Mirror of coordinator's manual threshold formula (price_threshold_level 1-10)."""
+    vals = [p for p in prices if p is not None]
+    if not vals:
+        return None
+    pmin, pmax = min(vals), max(vals)
+    pavg = sum(vals) / len(vals)
+    if level <= 5:
+        return pmin + (pavg - pmin) * ((level - 1) / 4.0)
+    return pavg + (pmax - pavg) * ((level - 5) / 5.0)
+
+
+def run_manual(scenario: dict) -> dict:
+    """Manual price mode — a THRESHOLD rule, not the optimizer.
+
+    Mirrors coordinator._build_manual_schedule: from_grid/both charge every
+    remaining slot BELOW the threshold, to_grid/both sell every remaining slot
+    ABOVE it.  Reuses ems._compute_scheduled_soc_trajectory for the SOC line so
+    the trajectory math never drifts from the real code.
+    """
+    cfg = scenario["config"]
+    # price_mode / price_threshold_level are coordinator options, not EMSConfig fields.
+    _coord_only = {"price_mode", "price_threshold_level"}
+    config = ems.EMSConfig(**{k: v for k, v in cfg.items() if k not in _coord_only})
+    state = ems.EMSState(**scenario["state"])
+    prices = state.slot_prices_today or []
+    n = len(prices)
+    grid_mode = cfg.get("grid_mode", "off")
+    level = cfg.get("price_threshold_level", 5)
+    threshold = _manual_threshold(prices, level)
+    cur_slot = int((state.current_hour * 60 + state.current_minute) / ((24 * 60) / n)) if n else 0
+    allow_charge = grid_mode in ("from_grid", "both")
+    allow_sell = grid_mode in ("to_grid", "both")
+
+    sched = {}
+    if threshold is not None:
+        for i in range(cur_slot, n):
+            p = prices[i]
+            if p is None:
+                continue
+            if allow_charge and p < threshold:
+                sched[i] = "charge"
+            elif allow_sell and p > threshold:
+                sched[i] = "discharge"
+
+    cap = config.battery_capacity_kwh
+    cur_kwh = (state.battery_soc_pct / 100.0) * cap if state.battery_soc_pct is not None else 0.0
+    mps = (24 * 60) / n if n else 60.0
+    traj = ems._compute_scheduled_soc_trajectory(
+        prices, n, mps, cur_kwh, cur_slot, sched, config, state) if n else []
+    n_c = sum(1 for v in sched.values() if v == "charge")
+    n_s = sum(1 for v in sched.values() if v == "discharge")
+    return _result_dict(
+        "manual", prices, sched, traj, cur_slot,
+        reason=f"Manual: {n_c} charge / {n_s} sell vs threshold "
+               f"{threshold:.3f}" if threshold is not None else "Manual: no threshold",
+        threshold=threshold,
+    )
 
 
 def _fmt_slots(slots, prices):
@@ -169,6 +238,10 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
         ax.bar(xs, pr, color=colors, width=0.9, align="edge")
         ax.set_ylabel("price")
         ax.set_xlim(0, n)
+        if r.get("threshold") is not None:
+            ax.axhline(r["threshold"], color="#d4b106", ls="--", lw=1,
+                       label=f"threshold {r['threshold']:.3f}")
+            ax.legend(loc="upper left", fontsize=7)
         ax.set_title(f"{scenario['name']} — {engine} (charge=green sell=orange)  reason: {r['reason']}", fontsize=8)
         # SOC trajectory on a twin axis
         traj = r["trajectory"]
@@ -210,7 +283,11 @@ def main():
     all_ok = True
     plotted = []
     for sc in scenarios:
-        results = {e: run_one(sc, e) for e in engines}
+        if sc["config"].get("price_mode") == "manual":
+            # Manual mode is engine-agnostic (a threshold rule, not the optimizer).
+            results = {"manual": run_manual(sc)}
+        else:
+            results = {e: run_one(sc, e) for e in engines}
         ok = report_one(sc, results)
         all_ok = all_ok and ok
         if not args.no_plot:
