@@ -1734,18 +1734,18 @@ def _run_milp_or_none(
         _LOGGER.warning("MILP module unavailable — falling back to greedy: %s", err)
         return None
 
-    # Time-aware + night-boost-drop reserve, applied to ALL grid modes here.
-    # (The greedy path scopes the same treatment to from_grid because its
-    # fragile two-day reconstruction destabilises in both/to_grid at night.
-    # The MILP is a single joint 2-day optimisation with a SOFT reserve, so
-    # it stays robust with the night-aware reserve in every mode — verified
-    # by the full test + MILP-parity suite.  This is exactly why the MILP is
-    # the more robust engine: cross-mode/cross-day behaviour is uniform.)
+    # Time-aware + night-boost-drop reserve, scoped to from_grid — SAME as the
+    # greedy path, so the two engines compute the SAME reserve for the same
+    # inputs (predictable, no cross-engine divergence on the displayed reserve).
+    # In both/to_grid the reserve also gates SELLING, where shrinking it at
+    # night changes trade economics; keeping the full-night reserve there
+    # matches greedy and avoids surprising differences between engines.
+    from_grid = config.grid_mode == "from_grid"
     reserve_kwh = calculate_self_consumption_reserve(
         config.consumption_est_kwh, state.pv_hourly_kwh,
-        state.current_hour, state.current_minute,
+        state.current_hour if from_grid else None, state.current_minute,
         consumption_hourly_kwh=state.consumption_hourly_kwh)
-    milp_night = _is_night(
+    milp_night = from_grid and _is_night(
         state.pv_hourly_kwh, state.current_hour, state.current_minute)
     reserve_target = _compute_reserve_target(
         config, reserve_kwh, apply_boost=not milp_night)

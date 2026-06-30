@@ -70,6 +70,27 @@ def daytime_ev_profile(base=1.0, ev_kw=6.0, ev_start=9, ev_end=17):
     return {h: (base + ev_kw if ev_start <= h <= ev_end else base) for h in range(24)}
 
 
+def morning_evening_peak_profile(total=12.0):
+    """Classic household: low overnight, morning peak (7-9), evening peak (17-22)."""
+    weights = {}
+    for h in range(24):
+        if 7 <= h <= 9:
+            weights[h] = 2.5
+        elif 17 <= h <= 22:
+            weights[h] = 3.0
+        elif 0 <= h <= 5:
+            weights[h] = 0.4   # low overnight
+        else:
+            weights[h] = 1.0
+    tot = sum(weights.values())
+    return {h: round(total * w / tot, 3) for h, w in weights.items()}
+
+
+def heavy_flat_profile(total=40.0):
+    """Heavy but roughly flat load (e.g. always-on industrial / heat pump)."""
+    return {h: round(total / 24.0, 3) for h in range(24)}
+
+
 # ── scenarios ────────────────────────────────────────────────────────────────
 
 SCENARIOS = [
@@ -252,6 +273,66 @@ SCENARIOS = [
         "expect": lambda r, s: (
             True,
             f"longevity: {len(r['sell_slots'])} sells on a small spread (expect few/none)",
+        ),
+    },
+
+    # ── Consumption variants ────────────────────────────────────────────────
+    {
+        "name": "cons_low_flat",
+        "desc": "from_grid, LOW flat consumption (4 kWh/d): small overnight need → little charging.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=4.0),
+        "state": dict(battery_soc_pct=60.0, slot_prices_today=cheap_night_expensive_day(),
+                      pv_hourly_kwh=pv_bell(8.0), pv_actual_today_kwh=4.0,
+                      pv_forecast_today=8.0, pv_forecast_remaining=4.0,
+                      current_hour=11, current_minute=0),
+        "expect": lambda r, s: (
+            (r["overnight_need_kwh"] or 0) < 5.0,
+            f"low consumption → small overnight need ({r['overnight_need_kwh']}kWh)",
+        ),
+    },
+
+    {
+        "name": "cons_heavy_flat",
+        "desc": "from_grid, HEAVY flat consumption (40 kWh/d): large overnight need → more charging.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=20.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=10.0, inverter_max_power_kw=15.0,
+                       consumption_est_kwh=40.0),
+        "state": dict(battery_soc_pct=40.0, slot_prices_today=cheap_night_expensive_day(),
+                      pv_hourly_kwh=pv_bell(6.0),
+                      consumption_hourly_kwh=heavy_flat_profile(40.0),
+                      pv_actual_today_kwh=3.0, pv_forecast_today=6.0,
+                      pv_forecast_remaining=3.0, current_hour=2, current_minute=0),
+        "expect": lambda r, s: (
+            len(r["charge_slots"]) > 0,
+            f"heavy consumption → charges ({len(r['charge_slots'])} slots, "
+            f"overnight_need={r['overnight_need_kwh']}kWh)",
+        ),
+    },
+
+    {
+        "name": "cons_morning_evening_peak",
+        "desc": "from_grid, classic household profile (low night, morning + evening peaks). "
+                "Evening peak drain should be anticipated by the profile-aware trajectory.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=12.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=6.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=12.0),
+        "state": dict(battery_soc_pct=60.0, slot_prices_today=cheap_night_expensive_day(),
+                      pv_hourly_kwh=pv_bell(10.0),
+                      consumption_hourly_kwh=morning_evening_peak_profile(12.0),
+                      pv_actual_today_kwh=5.0, pv_forecast_today=10.0,
+                      pv_forecast_remaining=5.0, current_hour=14, current_minute=0),
+        "expect": lambda r, s: (
+            True,
+            f"informational: evening peak — projected_low={r['projected_low_pct']}%, "
+            f"overnight_need={r['overnight_need_kwh']}kWh",
         ),
     },
 

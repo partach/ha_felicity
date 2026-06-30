@@ -36,7 +36,17 @@ scenario and/or `tests/test_ems.py`.
    the LP never returns Infeasible (which used to drop ~24% of runs to greedy).
 6. **Manual price mode is a threshold rule, not the optimizer.** `scheduled_slots`
    in manual mode is rebuilt from the threshold (from_grid/both charge BELOW it,
-   to_grid/both sell ABOVE it) — never the stale optimizer plan.
+   to_grid/both sell ABOVE it) — never the stale optimizer plan. It is also
+   **SOC-aware**: a forward simulation (PV + consumption) stops marking 'charge'
+   once the battery is full (a low-price slot then *holds* the battery full —
+   grid serves the load) and stops marking 'sell' once it's empty — so the card
+   never shows charging-while-full or selling-while-empty.
+6b. **Both engines compute the SAME reserve** for the same inputs: the
+   time-aware + night-boost-drop reserve is scoped to `from_grid` in BOTH greedy
+   and MILP. (Earlier the MILP applied it to all modes, producing a different
+   reserve % than greedy for the same both/to_grid scenario — confusing and
+   unpredictable.) Greedy and MILP are still different optimizers and may pick
+   different slots, but the reserve they protect is identical.
 7. **No charge deferral in the coordinator.** Every scheduled charge slot
    executes; the cheapest-slot decision lives entirely in `ems.py`.
 8. **Manual slot picks are grid-mode-aware.** from_grid → any picked slot is a

@@ -707,27 +707,70 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         allow_sell = grid_mode in ("to_grid", "both")
         threshold = self.price_threshold
 
+        # SOC-aware: the inverter physically stops charging at charge_max and
+        # stops discharging at discharge_min.  Forward-simulate so the DISPLAYED
+        # manual schedule only marks a slot 'charge' while the battery isn't
+        # full, and 'sell' while it isn't empty — instead of painting green/
+        # orange on slots that can't execute ("charging while full / selling
+        # while empty").  PV + consumption drift are included so the picture
+        # matches the SOC line.
+        num = len(prices)
+        mps = (24 * 60) / num
+        slot_h = mps / 60.0
+        eff = opts.get("efficiency_factor", 0.90)
+        cap = (opts.get("battery_capacity_kwh", 10) or 10) * self._battery_soh_factor
+        soc = (self.battery_soc / 100.0) * cap if self.battery_soc is not None else 0.0
+        max_kwh = (opts.get("battery_charge_max_level", 100) / 100.0) * cap
+        min_kwh = (opts.get("battery_discharge_min_level", 20) / 100.0) * cap
+        safe_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
+        inv_max = self._inverter_max_power_kw
+        cons_profile = self._hourly_consumption_profile or {}
+        cons_flat = self._get_consumption_estimate() / 24.0
+        pv_hourly = self.pv_hourly_kwh or {}
+        conf = self._last_pv_confidence or 1.0
+
+        def _step(i, soc_in, sched_out, p_arr, pv_src, _slot_h, _mps, tomorrow):
+            hour = int((i * _mps) / 60) % 24
+            pv_kw = pv_src.get(hour, 0.0) * (1.0 if tomorrow else conf)
+            pv_e = pv_kw * _slot_h
+            cons = (cons_profile.get(hour, cons_flat) if cons_profile else cons_flat) * _slot_h
+            price = p_arr[i] if i < len(p_arr) else None
+            charge_ok = price is not None and allow_charge and price < threshold
+            sell_ok = price is not None and allow_sell and price > threshold
+            near_full = soc_in >= max_kwh - 0.1
+            near_empty = soc_in <= min_kwh + 0.1
+            if charge_ok and not near_full:
+                sched_out[i] = "charge"
+                grid_kw = min(safe_kw, max(0.0, inv_max - pv_kw))
+                soc_v = soc_in + grid_kw * _slot_h * eff + pv_e - cons
+            elif sell_ok and not near_empty:
+                sched_out[i] = "discharge"
+                soc_v = soc_in - safe_kw * _slot_h + pv_e - cons
+            elif charge_ok:
+                # Battery full + low price → inverter holds it full (grid serves
+                # the load).  NOT a charge — no green bar, SOC stays at max.
+                soc_v = soc_in + pv_e
+            else:
+                # Empty+sell (grid serves load) or idle (between thresholds).
+                soc_v = soc_in + pv_e - cons
+            return max(min_kwh, min(max_kwh, soc_v))
+
         sched: dict[int, str] = {}
-        for i in range(current_slot, len(prices)):
-            price = prices[i]
-            if price is None:
-                continue
-            if allow_charge and price < threshold:
-                sched[i] = "charge"
-            elif allow_sell and price > threshold:
-                sched[i] = "discharge"
+        for i in range(current_slot, num):
+            soc = _step(i, soc, sched, prices, pv_hourly, slot_h, mps, False)
 
         self.scheduled_slots = sched
-        # Tomorrow: same threshold rule across all of tomorrow's slots.
+        # Tomorrow: continue the forward sim across midnight (same threshold rule).
         tmr: dict[int, str] = {}
         if self.slot_prices_tomorrow:
-            for i, price in enumerate(self.slot_prices_tomorrow):
-                if price is None:
-                    continue
-                if allow_charge and price < threshold:
-                    tmr[i] = "charge"
-                elif allow_sell and price > threshold:
-                    tmr[i] = "discharge"
+            tprices = self.slot_prices_tomorrow
+            tnum = len(tprices)
+            tmps = (24 * 60) / tnum
+            tslot_h = tmps / 60.0
+            pv_tmr = self.pv_hourly_kwh_tomorrow or {}
+            soc_t = soc
+            for i in range(tnum):
+                soc_t = _step(i, soc_t, tmr, tprices, pv_tmr, tslot_h, tmps, True)
         self._tomorrow_scheduled_slots = tmr
 
         # Clear the optimizer's SOC trajectory so the card doesn't draw a

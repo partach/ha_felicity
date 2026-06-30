@@ -101,6 +101,9 @@ specific knobs and asserts the intended outcome.  The current set covers:
 | `tomorrow_pv_daily_only` | daily-only forecast, two-day | tomorrow's PV is synthesised (not zero) |
 | `longevity_cycle_cost` | both, longevity | wear floor suppresses marginal trades |
 | `arbitrage_delta_gate` | both, arbitrage_price_delta | no sells below the required spread |
+| `cons_low_flat` | low flat consumption | small overnight need → little charging |
+| `cons_heavy_flat` | heavy flat consumption | large overnight need → more charging |
+| `cons_morning_evening_peak` | household profile | morning + evening peaks visible in the load line |
 | `pv_sunny_fills_battery_no_grid` | from_grid, big PV | solar fills the battery → no grid charge |
 | `pv_cloudy_low_confidence_charges_more` | PV forecast vs actual | low PV confidence → charges more |
 | `pv_daily_total_only_today` | daily-only forecast | hourly PV is **synthesized** (SOC still rises) |
@@ -109,10 +112,15 @@ specific knobs and asserts the intended outcome.  The current set covers:
 | `manual_from_grid_no_charge_above_threshold` | **price_mode=manual**, from_grid | **customer case**: never charge above the threshold |
 | `manual_both_sell_above_charge_below` | **price_mode=manual**, both | charge below / sell above the threshold, no overlap |
 
-Every chart overlays the **PV production** as a translucent yellow "solar hump"
-(kWh/h, on its own right axis) — synthesized from the daily total when the
-forecast has no hourly breakdown — so you can see the SOC line rise as the sun
-produces and confirm the algorithm is using the solar.
+Every chart overlays, on a shared kWh/h right axis:
+- the **PV production** as a translucent yellow "solar hump" (synthesized from
+  the daily total when the forecast has no hourly breakdown), and
+- the **consumption** as a red line (hourly profile when supplied, else flat).
+
+Where the yellow PV rises above the red load line there's a **surplus** (the
+SOC climbs); where load exceeds PV the battery **drains**.  A red dotted **"now"
+line** marks the current time — everything to its left is the past (the SOC
+there is a flat placeholder, since the simulator has no recorder history).
 
 ### Manual price mode
 

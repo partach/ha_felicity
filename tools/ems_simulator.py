@@ -143,20 +143,47 @@ def run_manual(scenario: dict) -> dict:
     allow_charge = grid_mode in ("from_grid", "both")
     allow_sell = grid_mode in ("to_grid", "both")
 
-    sched = {}
-    if threshold is not None:
-        for i in range(cur_slot, n):
-            p = prices[i]
-            if p is None:
-                continue
-            if allow_charge and p < threshold:
-                sched[i] = "charge"
-            elif allow_sell and p > threshold:
-                sched[i] = "discharge"
-
     cap = config.battery_capacity_kwh
     cur_kwh = (state.battery_soc_pct / 100.0) * cap if state.battery_soc_pct is not None else 0.0
     mps = (24 * 60) / n if n else 60.0
+
+    # SOC-aware (mirrors coordinator._build_manual_schedule): only mark a slot
+    # 'charge' while the battery isn't full and 'sell' while it isn't empty, so
+    # the chart never shows charging-while-full or selling-while-empty.
+    sched = {}
+    if threshold is not None and n:
+        slot_h = mps / 60.0
+        eff = config.efficiency
+        max_kwh = (config.battery_charge_max_pct / 100.0) * cap
+        min_kwh = (config.battery_discharge_min_pct / 100.0) * cap
+        safe_kw = config.safe_power_kw
+        inv_max = config.inverter_max_power_kw
+        cons_profile = state.consumption_hourly_kwh or {}
+        cons_flat = config.consumption_est_kwh / 24.0
+        pv_hourly = state.pv_hourly_kwh or {}
+        soc = cur_kwh
+        for i in range(cur_slot, n):
+            hour = int((i * mps) / 60) % 24
+            pv_kw = pv_hourly.get(hour, pv_hourly.get(str(hour), 0.0))
+            pv_e = pv_kw * slot_h
+            cons = (cons_profile.get(hour, cons_flat) if cons_profile else cons_flat) * slot_h
+            p = prices[i]
+            charge_ok = p is not None and allow_charge and p < threshold
+            sell_ok = p is not None and allow_sell and p > threshold
+            near_full = soc >= max_kwh - 0.1
+            near_empty = soc <= min_kwh + 0.1
+            if charge_ok and not near_full:
+                sched[i] = "charge"
+                soc = soc + min(safe_kw, max(0.0, inv_max - pv_kw)) * slot_h * eff + pv_e - cons
+            elif sell_ok and not near_empty:
+                sched[i] = "discharge"
+                soc = soc - safe_kw * slot_h + pv_e - cons
+            elif charge_ok:
+                soc = soc + pv_e   # full + low price → held full, no charge mark
+            else:
+                soc = soc + pv_e - cons
+            soc = max(min_kwh, min(max_kwh, soc))
+
     traj = ems._compute_scheduled_soc_trajectory(
         prices, n, mps, cur_kwh, cur_slot, sched, config, state) if n else []
     n_c = sum(1 for v in sched.values() if v == "charge")
@@ -190,10 +217,12 @@ def report_one(scenario: dict, results: dict) -> bool:
     pv_disp = effective_pv_per_slot(st, n0)
     pv_total = round(sum(pv_disp), 1)
     pv_src = "hourly" if st.get("pv_hourly_kwh") else ("synthesized" if (st.get("pv_forecast_today") or 0) > 0 else "none")
+    cons_disp = effective_consumption_per_slot(cfg, st, n0)
+    cons_src = "hourly" if st.get("consumption_hourly_kwh") else "flat"
     print(f"  grid_mode={cfg.get('grid_mode')} priority={cfg.get('optimization_priority','cost')} "
           f"cap={cfg.get('battery_capacity_kwh')}kWh SOC={st.get('battery_soc_pct')}% "
           f"time={st.get('current_hour',0):02d}:{st.get('current_minute',0):02d} "
-          f"consumption={cfg.get('consumption_est_kwh')}kWh/d "
+          f"consumption={cfg.get('consumption_est_kwh')}kWh/d({cons_src}) "
           f"PV_today={pv_total}kWh({pv_src})")
     prices = st.get("slot_prices_today") or []
     for engine, r in results.items():
@@ -243,6 +272,21 @@ def effective_pv_per_slot(state_kwargs: dict, n: int, tomorrow: bool = False):
     return out
 
 
+def effective_consumption_per_slot(config_kwargs: dict, state_kwargs: dict, n: int):
+    """Per-slot consumption (kWh) — hourly profile when present, else flat."""
+    if n == 0:
+        return []
+    profile = state_kwargs.get("consumption_hourly_kwh") or {}
+    flat = (config_kwargs.get("consumption_est_kwh") or 0.0) / 24.0
+    mps = (24 * 60) / n
+    out = []
+    for i in range(n):
+        hour = int((i * mps) / 60) % 24
+        per_hour = profile.get(hour, profile.get(str(hour), flat)) if profile else flat
+        out.append(per_hour * (mps / 60.0))
+    return out
+
+
 def plot_scenario(scenario: dict, results: dict, outdir: str):
     try:
         import matplotlib
@@ -276,19 +320,30 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
             ax.legend(loc="upper left", fontsize=7)
         ax.set_title(f"{scenario['name']} — {engine} (charge=green sell=orange)  reason: {r['reason']}", fontsize=8)
 
-        # PV production (kWh/h) as a translucent yellow solar hump on its own
-        # right-offset axis — synthesized from the daily total when the forecast
-        # has no hourly breakdown (so it's never invisibly flat).
+        # PV production (yellow hump) AND consumption (red line) on a shared
+        # kWh/h axis — so you can see where PV exceeds consumption (surplus
+        # charges the battery) vs where consumption exceeds PV (battery drains).
         pv = effective_pv_per_slot(scenario["state"], n)
-        if any(v > 0 for v in pv):
+        cons = effective_consumption_per_slot(scenario["config"], scenario["state"], n)
+        kwh_max = max(max(pv, default=0), max(cons, default=0))
+        if kwh_max > 0.001:
             axpv = ax.twinx()
             axpv.spines["right"].set_position(("outward", 38))
             axpv.fill_between([i + 0.5 for i in range(n)], pv, color="#ffd400",
                               alpha=0.30, step="mid", label="PV kWh/h")
-            axpv.set_ylim(0, max(pv) * 1.4 if max(pv) > 0 else 1)
-            axpv.set_ylabel("PV kWh/h", color="#b59500")
+            axpv.plot([i + 0.5 for i in range(n)], cons, color="#e53935", lw=1.3,
+                      ls="-", label="consumption kWh/h")
+            axpv.set_ylim(0, kwh_max * 1.4)
+            axpv.set_ylabel("PV / load kWh/h", color="#b59500")
             axpv.tick_params(axis="y", labelcolor="#b59500")
             axpv.legend(loc="upper center", fontsize=7)
+
+        # "now" marker — everything left of it is PAST (the SOC there is a flat
+        # placeholder, not a real history, since the simulator has no recorder).
+        cur_slot0 = int((scenario["state"].get("current_hour", 0) * 60
+                         + scenario["state"].get("current_minute", 0)) / ((24 * 60) / n))
+        if 0 < cur_slot0 < n:
+            ax.axvline(cur_slot0, color="#e57373", lw=1.2, ls=":", alpha=0.8)
 
         # SOC trajectory on a twin axis
         traj = r["trajectory"]
