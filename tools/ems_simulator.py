@@ -68,9 +68,11 @@ from scenarios import SCENARIOS  # noqa: E402
 
 def _result_dict(engine, prices, sched, traj, cur_slot, *,
                  planned_kwh=0.0, reserve_pct=0.0, overnight_need=0.0,
-                 status=None, reason=None, threshold=None):
+                 status=None, reason=None, threshold=None, tomorrow_sched=None):
     charge = sorted(i for i, a in (sched or {}).items() if a == "charge")
     sell = sorted(i for i, a in (sched or {}).items() if a == "discharge")
+    tmr_charge = sorted(i for i, a in (tomorrow_sched or {}).items() if a == "charge")
+    tmr_sell = sorted(i for i, a in (tomorrow_sched or {}).items() if a == "discharge")
     future = [traj[i] for i in range(min(cur_slot, len(traj)), len(traj))] if traj else []
     return {
         "engine": engine,
@@ -86,6 +88,8 @@ def _result_dict(engine, prices, sched, traj, cur_slot, *,
         "reason": reason,
         "threshold": threshold,
         "trajectory": traj,
+        "tomorrow_charge_slots": tmr_charge,
+        "tomorrow_sell_slots": tmr_sell,
     }
 
 
@@ -106,6 +110,7 @@ def run_one(scenario: dict, engine: str) -> dict:
         planned_kwh=result.grid_energy_planned, reserve_pct=result.reserve_target_pct,
         overnight_need=result.self_consumption_reserve, status=result.status,
         reason=result.schedule_reason, threshold=result.price_threshold,
+        tomorrow_sched=result.tomorrow_scheduled_slots,
     )
 
 

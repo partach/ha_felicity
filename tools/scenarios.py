@@ -297,6 +297,34 @@ SCENARIOS = [
     },
 
     {
+        "name": "trader_tomorrow_pv_daily_only",
+        "desc": "CUSTOMER CASE: Trader (both), evening, tomorrow forecast is DAILY-only (no hourly) "
+                "with a big 42.9 kWh sun coming.  MILP must SEE that sun (synthesized) and not "
+                "over-buy the whole next day to fill a battery the solar will fill for free.",
+        "config": dict(grid_mode="both", optimization_priority="cost",
+                       battery_capacity_kwh=67.0, battery_discharge_min_pct=10,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=17.5, inverter_max_power_kw=25.0,
+                       consumption_est_kwh=25.0),
+        "state": dict(battery_soc_pct=89.0,
+                      slot_prices_today=[0.30]*16 + [0.62]*8,        # expensive evening today
+                      slot_prices_tomorrow=[0.15]*6+[0.10]*4+[0.06]*6+[0.28]*8,
+                      pv_hourly_kwh={},                              # today done (evening)
+                      pv_hourly_kwh_tomorrow=None,                   # DAILY-only tomorrow
+                      pv_actual_today_kwh=17.3, pv_forecast_today=17.3,
+                      pv_forecast_remaining=0.0, pv_forecast_tomorrow=42.9,
+                      current_hour=20, current_minute=0),
+        # With tomorrow's 42.9 kWh sun synthesized, MILP must NOT buy the whole
+        # next day (that was the bug: 18-21 buy slots ignoring the forecast).
+        "expect": lambda r, s: (
+            len([i for i in r.get("tomorrow_charge_slots", []) ]) < 12
+            if "tomorrow_charge_slots" in r else True,
+            f"tomorrow buying bounded by the solar forecast "
+            f"(tomorrow_charge={len(r.get('tomorrow_charge_slots', []))})",
+        ),
+    },
+
+    {
         "name": "longevity_cycle_cost",
         "desc": "both/longevity: 0.05 €/kWh wear floor should suppress marginal trades.",
         "config": dict(grid_mode="both", optimization_priority="longevity",
