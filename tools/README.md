@@ -101,8 +101,18 @@ specific knobs and asserts the intended outcome.  The current set covers:
 | `tomorrow_pv_daily_only` | daily-only forecast, two-day | tomorrow's PV is synthesised (not zero) |
 | `longevity_cycle_cost` | both, longevity | wear floor suppresses marginal trades |
 | `arbitrage_delta_gate` | both, arbitrage_price_delta | no sells below the required spread |
+| `pv_sunny_fills_battery_no_grid` | from_grid, big PV | solar fills the battery → no grid charge |
+| `pv_cloudy_low_confidence_charges_more` | PV forecast vs actual | low PV confidence → charges more |
+| `pv_daily_total_only_today` | daily-only forecast | hourly PV is **synthesized** (SOC still rises) |
+| `pv_no_sun_winter_relies_on_grid` | zero PV | charges the cheapest grid slots |
+| `pv_surplus_sold_to_grid` | to_grid, big PV | sells the solar surplus at peak |
 | `manual_from_grid_no_charge_above_threshold` | **price_mode=manual**, from_grid | **customer case**: never charge above the threshold |
 | `manual_both_sell_above_charge_below` | **price_mode=manual**, both | charge below / sell above the threshold, no overlap |
+
+Every chart overlays the **PV production** as a translucent yellow "solar hump"
+(kWh/h, on its own right axis) — synthesized from the daily total when the
+forecast has no hourly breakdown — so you can see the SOC line rise as the sun
+produces and confirm the algorithm is using the solar.
 
 ### Manual price mode
 

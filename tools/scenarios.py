@@ -255,6 +255,103 @@ SCENARIOS = [
         ),
     },
 
+    # ── PV variants ─────────────────────────────────────────────────────────
+    {
+        "name": "pv_sunny_fills_battery_no_grid",
+        "desc": "from_grid, morning, big PV remaining: solar will fill the battery → "
+                "no grid charging needed (solar protection).",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=8.0),
+        "state": dict(battery_soc_pct=55.0, slot_prices_today=cheap_night_expensive_day(),
+                      pv_hourly_kwh=pv_bell(30.0),           # big sunny day
+                      pv_actual_today_kwh=2.0, pv_forecast_today=30.0,
+                      pv_forecast_remaining=28.0, current_hour=8, current_minute=0),
+        "expect": lambda r, s: (
+            len(r["charge_slots"]) == 0,
+            f"solar fills battery → no grid charge (got {len(r['charge_slots'])}; "
+            f"projected_low={r['projected_low_pct']}%)",
+        ),
+    },
+
+    {
+        "name": "pv_cloudy_low_confidence_charges_more",
+        "desc": "Forecast said sunny but ACTUAL is low → PV confidence drops → must grid-charge "
+                "more than the sunny case to stay safe.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=12.0),
+        "state": dict(battery_soc_pct=35.0, slot_prices_today=cheap_night_expensive_day(),
+                      pv_hourly_kwh=pv_bell(30.0),           # forecast: sunny
+                      pv_actual_today_kwh=0.5,               # actual: barely producing
+                      pv_forecast_today=30.0, pv_forecast_remaining=20.0,
+                      current_hour=12, current_minute=0),
+        "expect": lambda r, s: (
+            len(r["charge_slots"]) > 0,
+            f"low PV confidence → charges to cover deficit (got {len(r['charge_slots'])})",
+        ),
+    },
+
+    {
+        "name": "pv_daily_total_only_today",
+        "desc": "Forecast gives only a DAILY total today (no hourly) → algorithm must SYNTHESIZE "
+                "the hourly curve so the SOC accounts for solar (chart shows a yellow hump).",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=8.0),
+        "state": dict(battery_soc_pct=50.0, slot_prices_today=cheap_night_expensive_day(),
+                      pv_hourly_kwh={},                      # NO hourly breakdown
+                      pv_actual_today_kwh=1.0, pv_forecast_today=25.0,
+                      pv_forecast_remaining=22.0, current_hour=8, current_minute=0),
+        "expect": lambda r, s: (
+            (r["projected_low_pct"] or 0) >= 40.0,
+            f"synthesized PV keeps SOC up (projected_low={r['projected_low_pct']}%, "
+            f"expected >=40 since 25 kWh PV on a 10 kWh battery)",
+        ),
+    },
+
+    {
+        "name": "pv_no_sun_winter_relies_on_grid",
+        "desc": "Zero PV (winter), low SOC: must charge from the cheapest grid slots.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=12.0),
+        "state": dict(battery_soc_pct=30.0, slot_prices_today=cheap_night_expensive_day(),
+                      pv_hourly_kwh={}, pv_actual_today_kwh=0.0,
+                      pv_forecast_today=0.0, pv_forecast_remaining=0.0,
+                      current_hour=3, current_minute=0),
+        "expect": lambda r, s: (
+            len(r["charge_slots"]) > 0 and all(p <= 0.16 for p in r["charge_prices"]),
+            f"no PV → charges cheap grid slots (got {r['charge_prices']})",
+        ),
+    },
+
+    {
+        "name": "pv_surplus_sold_to_grid",
+        "desc": "to_grid, big PV fills the battery past reserve → sell the solar surplus at peak.",
+        "config": dict(grid_mode="to_grid", optimization_priority="cost",
+                       battery_capacity_kwh=15.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=12.0,
+                       consumption_est_kwh=6.0),
+        "state": dict(battery_soc_pct=70.0, slot_prices_today=cheap_day_expensive_evening(),
+                      pv_hourly_kwh=pv_bell(30.0), pv_actual_today_kwh=1.0,
+                      pv_forecast_today=30.0, pv_forecast_remaining=28.0,
+                      current_hour=7, current_minute=0),
+        "expect": lambda r, s: (
+            len(r["sell_slots"]) > 0 and all(p >= 0.30 for p in r["sell_prices"]),
+            f"sells solar surplus at peak prices (got {r['sell_prices']})",
+        ),
+    },
+
     {
         "name": "manual_from_grid_no_charge_above_threshold",
         "desc": "CUSTOMER CASE: price_mode=manual, from_grid. Must charge ONLY below the "

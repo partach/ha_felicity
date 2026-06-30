@@ -185,10 +185,16 @@ def report_one(scenario: dict, results: dict) -> bool:
     print(f"  {scenario.get('desc', '')}")
     cfg = scenario["config"]
     st = scenario["state"]
+    prices0 = st.get("slot_prices_today") or []
+    n0 = len(prices0)
+    pv_disp = effective_pv_per_slot(st, n0)
+    pv_total = round(sum(pv_disp), 1)
+    pv_src = "hourly" if st.get("pv_hourly_kwh") else ("synthesized" if (st.get("pv_forecast_today") or 0) > 0 else "none")
     print(f"  grid_mode={cfg.get('grid_mode')} priority={cfg.get('optimization_priority','cost')} "
           f"cap={cfg.get('battery_capacity_kwh')}kWh SOC={st.get('battery_soc_pct')}% "
           f"time={st.get('current_hour',0):02d}:{st.get('current_minute',0):02d} "
-          f"consumption={cfg.get('consumption_est_kwh')}kWh/d")
+          f"consumption={cfg.get('consumption_est_kwh')}kWh/d "
+          f"PV_today={pv_total}kWh({pv_src})")
     prices = st.get("slot_prices_today") or []
     for engine, r in results.items():
         print(f"  [{engine:>6}] charge={_fmt_slots(r['charge_slots'], prices)}")
@@ -210,6 +216,31 @@ def report_one(scenario: dict, results: dict) -> bool:
             print(f"  >>> [{engine:>6}] {tag}: {msg}")
             ok = ok and passed
     return ok
+
+
+def effective_pv_per_slot(state_kwargs: dict, n: int, tomorrow: bool = False):
+    """The per-slot PV (kWh) the algorithm effectively sees, for plotting.
+
+    Uses the supplied hourly PV when present, otherwise SYNTHESIZES it from the
+    daily forecast total with the SAME helper the algorithm uses
+    (ems._synthesize_pv_hourly) — so 'daily-only forecast' scenarios still show
+    a realistic solar hump instead of a flat zero.
+    """
+    if n == 0:
+        return [0.0] * 0
+    key = "pv_hourly_kwh_tomorrow" if tomorrow else "pv_hourly_kwh"
+    hourly = state_kwargs.get(key)
+    if not hourly:
+        total_key = "pv_forecast_tomorrow" if tomorrow else "pv_forecast_today"
+        total = state_kwargs.get(total_key) or 0.0
+        hourly = ems._synthesize_pv_hourly(total) if total > 0 else {}
+    mps = (24 * 60) / n
+    out = []
+    for i in range(n):
+        hour = int((i * mps) / 60) % 24
+        val = hourly.get(hour, hourly.get(str(hour), 0.0)) if hourly else 0.0
+        out.append(val * (mps / 60.0))
+    return out
 
 
 def plot_scenario(scenario: dict, results: dict, outdir: str):
@@ -243,6 +274,21 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
                        label=f"threshold {r['threshold']:.3f}")
             ax.legend(loc="upper left", fontsize=7)
         ax.set_title(f"{scenario['name']} — {engine} (charge=green sell=orange)  reason: {r['reason']}", fontsize=8)
+
+        # PV production (kWh/h) as a translucent yellow solar hump on its own
+        # right-offset axis — synthesized from the daily total when the forecast
+        # has no hourly breakdown (so it's never invisibly flat).
+        pv = effective_pv_per_slot(scenario["state"], n)
+        if any(v > 0 for v in pv):
+            axpv = ax.twinx()
+            axpv.spines["right"].set_position(("outward", 38))
+            axpv.fill_between([i + 0.5 for i in range(n)], pv, color="#ffd400",
+                              alpha=0.30, step="mid", label="PV kWh/h")
+            axpv.set_ylim(0, max(pv) * 1.4 if max(pv) > 0 else 1)
+            axpv.set_ylabel("PV kWh/h", color="#b59500")
+            axpv.tick_params(axis="y", labelcolor="#b59500")
+            axpv.legend(loc="upper center", fontsize=7)
+
         # SOC trajectory on a twin axis
         traj = r["trajectory"]
         if traj:
