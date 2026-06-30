@@ -5379,6 +5379,68 @@ class TestMILPScheduler:
         )
 
     @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+    def test_milp_synthesizes_daily_only_tomorrow_pv(self):
+        """MILP must see tomorrow's PV even when the forecast gives only a
+        DAILY total (no hourly).  Otherwise it plans the next day with NO sun
+        and over-buys grid to fill a battery the solar would fill for free
+        (real customer on Trader: "buying 18/24 slots tomorrow with 42.9 kWh PV
+        coming").  The today-rebuild only synthesizes tomorrow PV when today's
+        hourly is ALSO absent; in the evening today's hourly is present, so the
+        daily-only tomorrow total must be synthesized unconditionally.
+
+        Invariant: a daily-only tomorrow forecast produces the SAME plan as
+        passing the equivalent synthesized hourly explicitly.
+        """
+        base = dict(
+            grid_mode="both",
+            optimization_priority="cost",
+            scheduler_engine="milp",
+            battery_capacity_kwh=63.0,
+            battery_discharge_min_pct=10,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=17.5,
+            inverter_max_power_kw=25.0,
+            consumption_est_kwh=25.0,
+        )
+        prices_tmr = [0.10] * 6 + [0.08] * 4 + [0.05] * 6 + [0.30] * 8
+        common = dict(
+            battery_soc_pct=95.0,
+            slot_prices_today=[0.20] * 24,
+            slot_prices_tomorrow=prices_tmr,
+            pv_hourly_kwh=ems._synthesize_pv_hourly(2.0),  # today hourly present (evening)
+            pv_forecast_today=2.0,
+            pv_forecast_remaining=0.1,
+            pv_forecast_tomorrow=42.9,
+            pv_actual_today_kwh=2.0,
+            current_hour=21,
+            current_minute=0,
+        )
+        # Daily-only tomorrow (hourly absent) vs explicit synthesized hourly.
+        r_daily = calculate_schedule(
+            EMSConfig(**base),
+            EMSState(pv_hourly_kwh_tomorrow=None, **common),
+        )
+        r_hourly = calculate_schedule(
+            EMSConfig(**base),
+            EMSState(
+                pv_hourly_kwh_tomorrow=ems._synthesize_pv_hourly(42.9),
+                **common,
+            ),
+        )
+        assert r_daily.tomorrow_scheduled_slots == r_hourly.tomorrow_scheduled_slots, (
+            "daily-only tomorrow PV must be synthesized to match explicit "
+            f"hourly: daily={sorted(r_daily.tomorrow_scheduled_slots)} "
+            f"hourly={sorted(r_hourly.tomorrow_scheduled_slots)}"
+        )
+        # And it must NOT buy the whole next day (PV covers the midday need).
+        tmr_charge = [i for i, a in r_daily.tomorrow_scheduled_slots.items()
+                      if a == "charge"]
+        assert len(tmr_charge) < 12, (
+            f"MILP over-bought tomorrow despite 42.9 kWh PV: {sorted(tmr_charge)}"
+        )
+
+    @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
     def test_milp_charge_to_full_grabs_all_negative_slots(self):
         """With charge_to_full_on_negative_price, MILP must force EVERY p<0
         slot to charge (mirrors greedy), not stop at SOC-max like the LP alone.
@@ -6242,3 +6304,83 @@ class TestGreedyReshopAfterOverflow:
             f"{list(zip(charge, prices_used))} (reason={r.schedule_reason!r})"
         )
 
+
+
+class TestGreedyPartialChargeNoSun:
+    """Greedy must charge enough cheap night energy to cover an expensive,
+    PV-less day — not stop after the reserve deficit and ride the floor
+    through the peak.
+
+    Real symptom (pv_no_sun_winter_relies_on_grid): a 10 kWh battery, zero PV,
+    12 kWh/day load, cheap 0.05 night / 0.15 day / 0.30 evening.  Greedy
+    charged only 1 slot (covered the 4 kWh reserve deficit), drained to the
+    floor by early afternoon, then paid 0.30 evening grid via passthrough —
+    roughly DOUBLE the MILP cost (1.53 vs 0.77).  The two cheapest night slots
+    are consecutive, so the 2nd overflowed the small battery and SOC validation
+    dropped it.  With keep_partial_charges the inverter charges what FITS (the
+    slot still stores cheap energy that displaces pricier daytime grid), so
+    greedy charges both — matching MILP.
+    """
+
+    def test_greedy_charges_two_cheap_night_slots_no_pv(self):
+        prices = [0.05] * 6 + [0.15] * 11 + [0.30] * 7
+        cfg = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            scheduler_engine="greedy",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=12.0,
+        )
+        st = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=30.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=3,
+            current_minute=0,
+        )
+        r = calculate_schedule(cfg, st)
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        prices_used = [prices[i] for i in charge]
+        assert len(charge) >= 2, (
+            f"greedy under-charged on a no-PV day (got {charge}); should pack "
+            f"a 2nd cheap night slot (partial charge) to cover the expensive day"
+        )
+        # Cost discipline preserved: only cheap night slots, never the peak.
+        assert all(p <= 0.05 + 1e-6 for p in prices_used), (
+            f"greedy charged a non-cheap slot: {list(zip(charge, prices_used))}"
+        )
+
+    def test_partial_charge_not_kept_when_near_full(self):
+        """A near-full battery must NOT schedule a sliver charge slot — the
+        partial-charge keep only applies to a SUBSTANTIAL partial (>= half the
+        slot), not a 2% top-off."""
+        prices = [0.05] * 12 + [0.20] * 12
+        cfg = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            scheduler_engine="greedy",
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=4.0,
+        )
+        st = EMSState(
+            slot_prices_today=prices,
+            battery_soc_pct=98.0,
+            pv_hourly_kwh={},
+            pv_actual_today_kwh=0,
+            current_hour=0,
+            current_minute=0,
+        )
+        r = calculate_schedule(cfg, st)
+        charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
+        assert charge == [], f"near-full battery should not charge, got {charge}"

@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 245).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 248).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 245 tests for the pure EMS algorithm
+└── test_ems.py              # 248 tests for the pure EMS algorithm
 ```
 
 ---
@@ -584,6 +584,23 @@ PV-caused — pruning negative-price slots won't prevent it, and the
 negative-price income is pure profit.  When PV is insufficient to cause
 overflow on its own, negative-price charge slots are still pruned to
 prevent forced grid export at penalty rates.
+
+**Partial-charge keep (greedy from_grid — consumption arbitrage, July 2026)**:
+when a charge slot *causes* an overflow but the battery had real room entering
+it (`soc_before < capacity`), the inverter physically charges what FITS
+(`capacity − soc_before`) and the rest spills — the slot still stores cheap
+grid energy.  The default validation drops the whole slot; in from_grid that
+threw away a genuinely-useful partial charge and left the battery to ride the
+floor through expensive hours (greedy "myopia": a 10 kWh battery, zero PV,
+12 kWh/day load charged only **1 of 2** cheap night slots because the two
+cheapest were consecutive and the 2nd overflowed — then paid 0.30 evening
+grid, ~2× the MILP cost).  `keep_partial_charges` (passed True only by
+`_schedule_from_grid`, off for to_grid/both/override validation) keeps a
+**substantial** partial charge (stores ≥ half the slot's energy); a near-full
+battery where the slot would store only a sliver still falls through to the
+normal drop, so we never schedule a charge for a negligible top-off.  Greedy
+now charges both cheap slots (matching MILP) on no-PV / undersized-battery
+days.  Pinned by `TestGreedyPartialChargeNoSun`.
 
 **Phantom-charge detection**: when a charge slot is scheduled at a
 moment the battery is already at capacity (`soc_before >= capacity - 0.01`),
@@ -1407,6 +1424,21 @@ hour slot. This was especially painful at midnight when stale
 `state.state` still reports the previous day's stale total, the coordinator
 falls back to the filtered hourly sum.
 
+**Consequence — tomorrow's PV is daily-total-only.** Because `wh_hours` is
+filtered to *today's* date, `pv_hourly_kwh_tomorrow` arrives empty; only the
+daily total `pv_forecast_tomorrow` is known.  The MILP reads
+`pv_hourly_kwh_tomorrow` directly (no internal synthesis), so when it's empty
+the solver plans the WHOLE next day with **PV = 0** and over-buys grid to fill
+a battery the sun would fill for free — even a Trader with a big forecast
+(real customer: "buying 18/24 slots tomorrow with 42.9 kWh PV coming").  Fixed
+in `calculate_schedule`: tomorrow's hourly PV is now synthesized from the daily
+total **unconditionally** (`_synthesize_pv_hourly(pv_forecast_tomorrow)` via
+`dataclasses.replace`) whenever it's absent — not only inside the today-rebuild
+branch (which is skipped in the evening when today's hourly is present).
+Greedy's `_compute_tomorrow_schedule` already synthesized internally; this
+makes both engines consistent.  Pinned by
+`test_milp_synthesizes_daily_only_tomorrow_pv`.
+
 ### 8. Midnight should not force inverter to idle
 The day-rollover block in `_async_update_data` used to unconditionally
 call `_transition_to_state("idle")` and then skip the normal cycle for
@@ -1854,7 +1886,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (245 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (248 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -738,6 +738,7 @@ def _validate_schedule_soc(
     safe_power_kw: float = 0.0,
     consumption_hourly_kwh: dict[int, float] | None = None,
     keep_all_negative_charges: bool = False,
+    keep_partial_charges: bool = False,
 ) -> tuple[set[int], set[int]]:
     """Validate schedule by simulating SOC at every slot, pruning violations.
 
@@ -855,6 +856,32 @@ def _validate_schedule_soc(
                 if (keep_all_negative_charges
                         and charge_contribution > 0
                         and slot_price < 0):
+                    soc = battery_capacity
+                    continue
+                # Partial-charge keep (from_grid consumption arbitrage): when
+                # the charge action itself causes the overflow but the battery
+                # had real room entering the slot (soc_before < capacity), the
+                # inverter simply charges what FITS (capacity − soc_before) and
+                # the rest spills — the slot still stores cheap grid energy that
+                # displaces pricier later consumption.  Dropping the whole slot
+                # (the default) throws that partial charge away and leaves the
+                # battery to ride the floor through expensive hours (the greedy
+                # "myopia" on undersized-battery / no-PV days: two cheap night
+                # slots are consecutive, the 2nd overflows and was dropped, so
+                # only 1 of 2 needed cheap slots charged).  Keep it; only a
+                # charge on an ALREADY-full battery (phantom, below) is wasted.
+                # Scoped via keep_partial_charges so to_grid/both/override
+                # validation keep their stricter overflow pruning.
+                if (keep_partial_charges
+                        and charge_contribution > 0
+                        and not pv_alone_overflows
+                        and (battery_capacity - soc_before)
+                            >= 0.5 * charge_contribution):
+                    # Substantial partial charge (stores >= half the slot's
+                    # energy): worth keeping.  A near-full battery where the
+                    # slot would store only a sliver is NOT kept (falls through
+                    # to the normal drop), so we don't schedule a charge for a
+                    # negligible top-off.
                     soc = battery_capacity
                     continue
                 if pv_alone_overflows:
@@ -2037,6 +2064,27 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
                 forecast_total,
             )
 
+    # Tomorrow's hourly PV for BOTH engines (independent of today's rebuild
+    # above).  The forecast frequently supplies only tomorrow's DAILY total —
+    # the coordinator filters wh_hours to today's date (known issue #7), so
+    # pv_hourly_kwh_tomorrow arrives empty.  The MILP reads it directly with no
+    # internal synthesis, so without this it plans the WHOLE next day with NO
+    # sun and over-buys grid to "fill" a battery the solar would fill for free —
+    # even a trader with a big solar forecast (real customer: "buying 18/24
+    # slots tomorrow with 42.9 kWh PV coming").  The today-rebuild branch only
+    # synthesizes tomorrow PV when TODAY's hourly is also absent; in the evening
+    # today's hourly is present, so that branch is skipped and tomorrow PV was
+    # silently 0.  Synthesize from the daily total here so the solver sees the
+    # midday hump and stops buying what the sun provides.  (Greedy's
+    # _compute_tomorrow_schedule already synthesizes internally; this makes the
+    # two engines consistent.)
+    if (not state.pv_hourly_kwh_tomorrow
+            and state.pv_forecast_tomorrow and state.pv_forecast_tomorrow > 0):
+        state = replace(
+            state,
+            pv_hourly_kwh_tomorrow=_synthesize_pv_hourly(state.pv_forecast_tomorrow),
+        )
+
     battery_soc = state.battery_soc_pct
     current_kwh = (battery_soc / 100.0) * config.battery_capacity_kwh if battery_soc is not None else 0.0
     net_pv = calculate_net_pv_surplus(
@@ -2379,6 +2427,7 @@ def _schedule_from_grid(
         inverter_max_power_kw=config.inverter_max_power_kw,
         safe_power_kw=config.safe_power_kw,
         keep_all_negative_charges=config.charge_to_full_on_negative_price,
+        keep_partial_charges=not config.charge_to_full_on_negative_price,
     )
 
     # Re-shop any charge energy that validation dropped for overflow into

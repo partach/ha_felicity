@@ -104,6 +104,19 @@ scenario and/or `tests/test_ems.py`.
     over-buying (duck curve now charges just the two cheapest midday slots).
     Arbitrage (sell revenue) and self_consumption (high boosted reserve) are
     unaffected.
+12. **Greedy keeps substantial partial charges (from_grid, July 2026).** When a
+    charge slot causes overflow but the battery had room entering it, the
+    inverter charges what fits and the rest spills — the slot still stores
+    cheap energy.  The default validation dropped the whole slot, so on a
+    no-PV / undersized-battery day (two cheapest night slots consecutive)
+    greedy charged only 1 of 2 needed cheap slots and rode the floor through
+    the expensive evening (~2× the MILP cost: 1.53 vs 0.77).
+    `keep_partial_charges` (from_grid only) keeps a partial charge that stores
+    ≥ half the slot; a near-full sliver top-off is still dropped.  Greedy now
+    charges both cheap slots, matching MILP.  This is the greedy
+    "consumption-arbitrage myopia" fix — greedy buys cheap night energy to
+    displace pricier daytime/evening consumption, which the joint MILP did
+    natively.
 
 ---
 
