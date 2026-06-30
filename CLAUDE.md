@@ -721,6 +721,15 @@ Also detects external changes (user adjusting via inverter app).
 ### Display Elements
 - Battery indicator (10-segment, color-coded by SOC)
 - Price chart (canvas) — bars per slot, colored by action
+- **PV production overlay** (very light yellow solar hump) — drawn on top of
+  the price bars but UNDER the SOC line, so the SOC visibly rises as the sun
+  produces.  Per-slot PV from `sim_params.pv_hourly_kwh` (× pv_confidence),
+  SYNTHESIZED from the daily forecast total when no hourly breakdown exists
+  (`_synthPvHourly`, mirrors `ems._synthesize_pv_hourly`) so PV is never
+  invisibly flat.  Toggled by the **☀ PV** button in the chart header
+  (`_showPv`, persisted to localStorage; default on).  Not drawn in the
+  tomorrow PV-only preview (which already shows PV bars).  Mirrors the
+  day-simulator's PV visualization.
 - SOC trajectory line (blue dotted)
 - Projected overnight-minimum line (purple dashed) — the lowest SOC% the
   battery is predicted to reach before tomorrow's sun refills it
