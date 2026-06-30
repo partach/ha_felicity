@@ -344,11 +344,17 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
         if 0 < cur_slot0 < n:
             ax.axvline(cur_slot0, color="#e57373", lw=1.2, ls=":", alpha=0.8)
 
-        # SOC trajectory on a twin axis
+        # SOC trajectory on a twin axis — plotted only from "now" forward.
+        # The simulator has no recorder history, so the past portion of the
+        # trajectory is a flat placeholder (current SOC); drawing it looked
+        # like "the battery sits flat / consumption is ignored".  Show only the
+        # meaningful future part.
         traj = r["trajectory"]
         if traj:
             ax2 = ax.twinx()
-            ax2.plot([i + 0.5 for i in range(len(traj))], traj, color="#08b2c9", lw=2, label="SOC%")
+            start = max(0, min(cur_slot0, len(traj) - 1))
+            xs_soc = [i + 0.5 for i in range(start, len(traj))]
+            ax2.plot(xs_soc, traj[start:], color="#08b2c9", lw=2, label="SOC% (from now)")
             ax2.set_ylim(0, 100)
             ax2.set_ylabel("SOC %")
             if r["reserve_pct"]:
