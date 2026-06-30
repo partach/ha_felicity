@@ -13,6 +13,7 @@ class FelicityEMSCard extends LitElement {
       _slotOverrides: { type: Object }, // manual slot overrides: { today: {idx: action}, tomorrow: {idx: action} }
       _pendingClick: { type: Object },  // first click for two-click override selection
       _showAdvanced: { type: Boolean }, // toggle for advanced controls
+      _showPv: { type: Boolean },       // toggle the PV production overlay
     };
   }
 
@@ -29,6 +30,33 @@ class FelicityEMSCard extends LitElement {
     this._slotOverrides = { today: {}, tomorrow: {} };  // manual slot overrides
     this._pendingClick = null;     // { slotIdx, action, day } — first click of two-click selection
     this._showAdvanced = false;     // advanced controls hidden by default
+    // PV overlay on by default; remember the user's choice across reloads.
+    let pvPref = true;
+    try { pvPref = localStorage.getItem("ha_felicity_show_pv") !== "0"; } catch (e) {}
+    this._showPv = pvPref;
+  }
+
+  _togglePv() {
+    this._showPv = !this._showPv;
+    try { localStorage.setItem("ha_felicity_show_pv", this._showPv ? "1" : "0"); } catch (e) {}
+    this._drawSlotTimeline();
+    this.requestUpdate();
+  }
+
+  // Mirror of ems._synthesize_pv_hourly — a solar bell curve from a daily total,
+  // used for the PV overlay when the forecast has no hourly breakdown.
+  _synthPvHourly(total, sunrise = 6, sunset = 20) {
+    if (!(total > 0)) return {};
+    const totalMin = (sunset - sunrise) * 60;
+    const out = {};
+    for (let h = sunrise; h < sunset; h++) {
+      const fS = ((h - sunrise) * 60) / totalMin;
+      const fE = (((h - sunrise) * 60) + 60) / totalMin;
+      const pS = (1 - Math.cos(Math.PI * fS)) / 2;
+      const pE = (1 - Math.cos(Math.PI * fE)) / 2;
+      out[h] = total * (pE - pS);
+    }
+    return out;
   }
 
   static getConfigElement() {
@@ -1017,6 +1045,52 @@ class FelicityEMSCard extends LitElement {
       ctx.fillText(actualMinPrice.toFixed(2), marginLeft - 2, minY + 3);
     }
 
+    // ── PV production overlay (very light yellow solar hump) ──────────
+    // Drawn on top of the price bars but UNDER the SOC line, so you can see
+    // the SOC rise as the sun produces.  Toggle with the ☀ PV button.
+    // Synthesized from the daily forecast total when no hourly breakdown is
+    // available (mirrors ems._synthesize_pv_hourly), so PV is never invisibly
+    // flat.  Not shown in the tomorrow PV-only preview (which already draws PV
+    // bars).
+    if (this._showPv && !isPvOnlyView) {
+      const simPv = this._getAttr("schedule_status", "sim_params") || {};
+      const pvConf = (!showTomorrow && simPv.pv_confidence != null) ? simPv.pv_confidence : 1.0;
+      let pvHourly = showTomorrow
+        ? (simPv.pv_hourly_kwh_tomorrow || null)
+        : (simPv.pv_hourly_kwh || null);
+      if (!pvHourly || Object.keys(pvHourly).length === 0) {
+        const total = showTomorrow
+          ? (this._getNumericState("pv_forecast_tomorrow") || 0)
+          : (this._getNumericState("pv_forecast_today") || 0);
+        pvHourly = this._synthPvHourly(total);
+      }
+      if (pvHourly && Object.keys(pvHourly).length) {
+        const slotsPerHour = numSlots / 24;
+        const pvPerSlot = [];
+        for (let i = 0; i < numSlots; i++) {
+          const hour = Math.floor(i / slotsPerHour);
+          const conf = showTomorrow ? 1.0 : pvConf;
+          const kwh = ((pvHourly[hour] ?? pvHourly[String(hour)] ?? 0) * conf) / slotsPerHour;
+          pvPerSlot.push(Math.max(0, kwh));
+        }
+        const pvMax = Math.max(...pvPerSlot, 0);
+        if (pvMax > 0.001) {
+          const baseY = marginTop + chartH;
+          const pvScaleH = chartH * 0.55;   // peak reaches ~55% of chart height
+          ctx.fillStyle = "rgba(255, 221, 64, 0.16)";  // very light yellow
+          ctx.beginPath();
+          ctx.moveTo(marginLeft, baseY);
+          for (let i = 0; i < numSlots; i++) {
+            const x = marginLeft + (i + 0.5) * barW;
+            ctx.lineTo(x, baseY - (pvPerSlot[i] / pvMax) * pvScaleH);
+          }
+          ctx.lineTo(marginLeft + numSlots * barW, baseY);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+    }
+
     // ── SOC trajectory (solid past / dotted future) ──────────────────
     // Prefer the backend-computed trajectory: it includes any manual slot
     // overrides (recomputed server-side), the real per-hour PV, SOC
@@ -1973,9 +2047,14 @@ class FelicityEMSCard extends LitElement {
           <div class="timeline-container">
             <div class="timeline-header">
               <div class="timeline-label">Today's Schedule</div>
-              <div class="timeline-toggle" @click=${this._toggleDayView}>
-                <span class="toggle-btn ${!this._showingTomorrow ? 'active' : ''}">Today</span>
-                <span class="toggle-btn ${this._showingTomorrow ? 'active' : ''} ${!this._hasTomorrowData ? 'disabled' : ''}">Tomorrow</span>
+              <div class="header-controls">
+                <span class="pv-toggle ${this._showPv ? 'active' : ''}"
+                      title="Show/hide PV production overlay"
+                      @click=${this._togglePv}>☀ PV</span>
+                <div class="timeline-toggle" @click=${this._toggleDayView}>
+                  <span class="toggle-btn ${!this._showingTomorrow ? 'active' : ''}">Today</span>
+                  <span class="toggle-btn ${this._showingTomorrow ? 'active' : ''} ${!this._hasTomorrowData ? 'disabled' : ''}">Tomorrow</span>
+                </div>
               </div>
             </div>
             <canvas id="slot-timeline"></canvas>
@@ -2776,6 +2855,27 @@ class FelicityEMSCard extends LitElement {
       .timeline-label {
         font-size: 0.8em;
         color: var(--secondary-text-color);
+      }
+      .header-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .pv-toggle {
+        font-size: 0.7em;
+        padding: 2px 8px;
+        border: 1px solid var(--divider-color);
+        border-radius: 12px;
+        color: var(--secondary-text-color);
+        cursor: pointer;
+        user-select: none;
+        transition: all 0.2s;
+      }
+      .pv-toggle.active {
+        background: rgba(255, 221, 64, 0.25);
+        border-color: #d4b106;
+        color: #b59500;
+        font-weight: 600;
       }
       .timeline-toggle {
         display: flex;
