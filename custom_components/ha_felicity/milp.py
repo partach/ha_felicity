@@ -315,10 +315,15 @@ def _solve(
     reward_soc = pulp.LpVariable("reward_soc", lowBound=0, upBound=reserve_clamped)
     prob += reward_soc <= soc[K - 1]
 
-    # Objective: minimise net grid spend + wear − value of leftover energy
-    # (capped at the reserve) + reserve-shortfall penalty (drives charging
-    # toward the reserve when physically feasible; absorbs the unreachable
-    # remainder instead of making the model infeasible).
+    # Earliness preference: when several slots share the SAME price, charge the
+    # EARLIER one.  The cost objective is indifferent between equal-price slots,
+    # so the solver would otherwise pick arbitrarily (often the latest, right
+    # before a sell) — leaving the battery low for hours and exposed to a sudden
+    # unexpected load (less buffer, less ability to anticipate).  A tiny per-
+    # slot deferral penalty on charging (scaled far below any real price
+    # granularity, so it NEVER flips a genuine price difference — only breaks
+    # ties) nudges charging earlier, giving the same-cost plan a safety buffer.
+    early = (avg_price + 0.01) * 1e-4
     prob += (
         pulp.lpSum(horizon[k]["price"] * c[k] for k in range(K))           # buy cost
         - pulp.lpSum(horizon[k]["price"] * eff * d[k] for k in range(K))   # sell revenue
@@ -326,6 +331,7 @@ def _solve(
         - terminal_value * reward_soc                                      # leftover value (≤ reserve)
         + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
         + pulp.lpSum(reserve_penalty * imp[k] for k in range(K))           # feasibility slack
+        + pulp.lpSum(early * k * c[k] for k in range(K))                   # charge earlier (tie-break)
     )
 
     solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=_SOLVE_TIME_LIMIT)

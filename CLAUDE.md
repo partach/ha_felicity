@@ -1258,6 +1258,14 @@ Forward-simulates SOC through every slot.  Drops violations:
   because its reserve is the 1.25× boosted value.  The today extraction target
   is also capped at the LP's allocated charge energy (not just headroom) so the
   discrete schedule reflects the cost-correct intent.
+- **Earliness tie-break**: a tiny per-slot deferral penalty on charging
+  (`(avg+0.01)·1e-4 · k · c[k]`, far below any real price granularity) makes
+  the solver charge the EARLIER of two equal-price slots.  Without it the LP is
+  indifferent between same-price slots and tends to charge at the LAST cheap
+  slot before a sell — leaving the battery low for hours and exposed to a
+  sudden unexpected load.  Charging earlier gives the same-cost plan a safety
+  buffer (a real customer preference: "don't hold off to the last minute").
+  Never flips a genuine price difference (only breaks ties).
 - **Price gates**: `arbitrage_price_delta` → charge/discharge UB = 0 for
   slots outside spread.  `block_export_on_negative_price` → discharge UB = 0.
 - **Post-solve (cost-ranked discrete extraction)**: the continuous LP is
