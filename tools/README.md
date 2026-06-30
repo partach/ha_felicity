@@ -5,7 +5,59 @@ does** — for both engines (greedy and MILP) — without Home Assistant.  It ru
 `ems.calculate_schedule` on a library of realistic scenarios, prints a report,
 checks per-scenario expectations, and (optionally) renders a chart per scenario.
 
-## Run it (Windows / macOS / Linux)
+## Do I need Home Assistant or the integration installed?
+
+**No.** You do **not** need Home Assistant, a running inverter, or the
+integration installed anywhere.  The two algorithm files — `ems.py` and
+`milp.py` — import only the Python standard library (`logging`, `math`,
+`dataclasses`, `typing`) plus `pulp` (for MILP).  The simulator loads those two
+files *directly* and feeds them plain Python data.  Everything runs locally on
+your Windows machine in plain Python.  (The HA-specific code — `coordinator.py`,
+Modbus, sensors — is never imported.)
+
+## Complete setup on a fresh Windows machine (no HA)
+
+**1. Install Python 3.11+** from <https://www.python.org/downloads/windows/>.
+   On the first installer screen tick **"Add python.exe to PATH"**.
+   Verify in a new Command Prompt / PowerShell:
+   ```bat
+   python --version
+   ```
+
+**2. Get the code.** You only need the repository files (not an HA install).
+   Either with Git:
+   ```bat
+   git clone https://github.com/partach/ha_felicity.git
+   cd ha_felicity
+   git checkout claude/expand-felicity-card-B7dl4
+   ```
+   …or download the branch as a ZIP from GitHub ("Code → Download ZIP"),
+   unzip it, and `cd` into the unzipped folder (the one that contains the
+   `tools\` and `custom_components\` folders side by side).
+
+**3. Install the two Python packages the simulator uses:**
+   ```bat
+   python -m pip install pulp matplotlib
+   ```
+   - `pulp` = the MILP solver (bundles its own CBC binary — no extra install).
+   - `matplotlib` = the charts.  Skip it and you still get the full text report.
+
+**4. Run it** from the repository root (the folder containing `tools\`):
+   ```bat
+   python tools\ems_simulator.py
+   ```
+   You'll see a per-scenario report and `RESULT: ALL EXPECTATIONS PASSED`, and
+   (with matplotlib) PNG charts under `tools\sim_output\`.
+
+### Also run the unit tests (same — no HA needed)
+
+The 240 unit tests load `ems.py`/`milp.py` the same direct way:
+```bat
+python -m pip install pytest
+python -m pytest tests\test_ems.py -q
+```
+
+## Run it (quick reference)
 
 ```bat
 cd ha_felicity
@@ -49,6 +101,18 @@ specific knobs and asserts the intended outcome.  The current set covers:
 | `tomorrow_pv_daily_only` | daily-only forecast, two-day | tomorrow's PV is synthesised (not zero) |
 | `longevity_cycle_cost` | both, longevity | wear floor suppresses marginal trades |
 | `arbitrage_delta_gate` | both, arbitrage_price_delta | no sells below the required spread |
+| `manual_from_grid_no_charge_above_threshold` | **price_mode=manual**, from_grid | **customer case**: never charge above the threshold |
+| `manual_both_sell_above_charge_below` | **price_mode=manual**, both | charge below / sell above the threshold, no overlap |
+
+### Manual price mode
+
+Scenarios with `price_mode: "manual"` in their `config` run a separate lane:
+manual mode is a **threshold rule**, not the optimizer.  The harness mirrors
+`coordinator._build_manual_schedule` (from_grid/both charge below the threshold,
+to_grid/both sell above) and reuses the real `_compute_scheduled_soc_trajectory`
+for the SOC line.  The threshold is derived from `price_threshold_level` (1-10)
+exactly as the coordinator does.  These scenarios show one `[manual]` lane
+(engine-agnostic) instead of greedy vs MILP.
 
 ## Add your own
 

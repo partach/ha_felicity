@@ -256,6 +256,51 @@ SCENARIOS = [
     },
 
     {
+        "name": "manual_from_grid_no_charge_above_threshold",
+        "desc": "CUSTOMER CASE: price_mode=manual, from_grid. Must charge ONLY below the "
+                "threshold — never a buy slot above it (the reported regression).",
+        "config": dict(grid_mode="from_grid", price_mode="manual",
+                       price_threshold_level=5, optimization_priority="self_consumption",
+                       battery_capacity_kwh=48.0, battery_discharge_min_pct=10,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=10.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=72.0),
+        "state": dict(battery_soc_pct=81.0,
+                      slot_prices_today=[0.06]*8 + [0.20]*8 + [0.45]*8,  # cheap/mid/peak
+                      pv_hourly_kwh=pv_bell(44.0),
+                      consumption_hourly_kwh=daytime_ev_profile(),
+                      pv_actual_today_kwh=44.0, pv_forecast_today=58.0,
+                      pv_forecast_remaining=0.0, current_hour=21, current_minute=30),
+        "expect": lambda r, s: (
+            all(p < (r["threshold"] or 0) for p in r["charge_prices"]),
+            f"all charge slots below threshold {round(r['threshold'],3) if r['threshold'] else None} "
+            f"(charge prices={r['charge_prices']})",
+        ),
+    },
+
+    {
+        "name": "manual_both_sell_above_charge_below",
+        "desc": "price_mode=manual, both: charge below threshold, sell above — and the two never overlap.",
+        "config": dict(grid_mode="both", price_mode="manual",
+                       price_threshold_level=5, optimization_priority="cost",
+                       battery_capacity_kwh=20.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=10.0, inverter_max_power_kw=15.0,
+                       consumption_est_kwh=8.0),
+        "state": dict(battery_soc_pct=60.0,
+                      slot_prices_today=[0.05]*8 + [0.20]*8 + [0.40]*8,
+                      pv_hourly_kwh={}, pv_actual_today_kwh=0.0,
+                      pv_forecast_today=0.0, pv_forecast_remaining=0.0,
+                      current_hour=0, current_minute=0),
+        "expect": lambda r, s: (
+            (all(p < r["threshold"] for p in r["charge_prices"])
+             and all(p > r["threshold"] for p in r["sell_prices"])
+             and not (set(r["charge_slots"]) & set(r["sell_slots"]))),
+            f"charge<thr {r['charge_prices']}, sell>thr {r['sell_prices']}, no overlap",
+        ),
+    },
+
+    {
         "name": "arbitrage_delta_gate",
         "desc": "both + arbitrage_price_delta=0.20: must NOT sell when spread < 0.20.",
         "config": dict(grid_mode="both", optimization_priority="cost",
