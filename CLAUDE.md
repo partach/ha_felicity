@@ -195,18 +195,31 @@ infeasible drain.  Both slacks carry a high penalty (`5× max price`) so they're
 0 in normal cases (parity preserved) and only activate to keep the LP feasible.
 Pinned by `test_milp_never_infeasible_extreme_drain`.
 
+**Multi-solver selection** (`_pick_solver`): pulp ships a prebuilt CBC binary,
+but it is not published for every platform/interpreter — on brand-new Python
+versions or uncommon CPU arches the path simply doesn't exist (real customer on
+Python 3.14: `.../pulp/apis/../solverdir/cbc/linux/i64/cbc` → FileNotFoundError).
+Instead of hard-disabling MILP the moment the bundled binary is missing,
+`_pick_solver` probes solvers in order — `PULP_CBC_CMD` (bundled),
+`COIN_CMD` (a SYSTEM CBC, e.g. `apt install coinor-cbc` or `pip install
+pulp[cbc]`; also what pulp's own deprecation notice now recommends), then
+anything `listSolvers(onlyAvailable=True)` reports — using each solver's cheap
+`.available()` check (path/PATH existence, no solve).  MILP runs wherever ANY
+solver exists.  Only when none is available does it fall through to the disable
+path below.
+
 **Permanent disable on unrecoverable failure** (`_MILP_DISABLED` module
-flag): when the CBC solver binary is missing/unrunnable (`FileNotFoundError`
-from `subprocess.Popen` — happens on uncommon CPU arches or new Python
-versions where pulp's prebuilt CBC path doesn't exist) or pulp import fails,
-the failure is **structural** — it recurs on every 10s tick and never
-recovers within the process.  Without a guard it logs a full traceback
-~8600×/day (one user saw 1100+).  `solve_schedule` now sets a process-
+flag): when NO solver is available (bundled CBC missing AND no system CBC) or
+the solver binary is unrunnable (`FileNotFoundError` from `subprocess.Popen`)
+or pulp import fails, the failure is **structural** — it recurs on every 10s
+tick and never recovers within the process.  Without a guard it logs a full
+traceback ~8600×/day (one user saw 1100+).  `solve_schedule` sets a process-
 lifetime flag on these unrecoverable errors and short-circuits to greedy
-immediately on subsequent calls — no rebuild, no traceback spam.  The flag
-resets only on a fresh process start (HA restart/reload), so installing CBC
-is re-checked on the next boot.  Non-optimal/infeasible results do NOT set
-the flag (they can be input-dependent and recover next slot).
+immediately on subsequent calls — no rebuild, no traceback spam (one clean
+warning: "MILP CBC solver binary not found — … greedy is fully functional").
+The flag resets only on a fresh process start (HA restart/reload), so
+installing CBC is re-checked on the next boot.  Non-optimal/infeasible results
+do NOT set the flag (they can be input-dependent and recover next slot).
 
 **Model** (`milp.solve_schedule`, a pure LP):
 - Horizon = today's remaining slots + all of tomorrow (when prices known).
@@ -817,19 +830,28 @@ knobs remain accessible behind an "Advanced settings" toggle.
 | Trader | both | cost | Buy cheap, sell expensive (auto profitability) |
 | Custom | (unchanged) | (unchanged) | User manages all knobs manually |
 
-**Presets set ONLY the strategy-defining knobs** (`grid_mode`,
-`optimization_priority`, `reserve_target_pct`, `arbitrage_price_delta`,
-`battery_cycle_cost_eur_kwh`).  They must NOT touch the negative-price flags
-(`block_export_on_negative_price`, `charge_to_full_on_negative_price`,
-`discharge_to_make_room_for_negative_price`) — those are orthogonal,
-user-owned opt-in behaviours.  **Bug (fixed):** the presets used to force all
-three to `off`, so re-selecting a strategy (or the card re-applying one)
-silently reset the user's negative-price choices every time — the reported
-"these settings keep resetting to no / aren't stored" symptom.  Removed from
-`STRATEGY_PRESETS` in `select.py`; the flags now persist independently (their
-install-time defaults still come from `config_flow._get_default_options` /
-the `__init__` `defaults_to_set` migration, which only fill MISSING keys and
-never overwrite an existing value).
+**Presets set ONLY the two knobs that DEFINE a strategy** — `grid_mode` and
+`optimization_priority`.  They must NOT touch any user-owned preference:
+`reserve_target_pct`, `arbitrage_price_delta`, `battery_cycle_cost_eur_kwh`,
+or the negative-price flags (`block_export_on_negative_price`,
+`charge_to_full_on_negative_price`,
+`discharge_to_make_room_for_negative_price`).  **Bug (fixed twice):** the
+presets used to also write those five, so re-selecting a strategy (or the card
+re-applying one, or the user re-picking their strategy after a re-install)
+silently reset the user's tuning every time — the reported "arbitrage_price_delta
+/ negative-price / cycle-cost settings aren't remembered" symptom.  All five
+removed from `STRATEGY_PRESETS` in `select.py`; they now persist independently.
+`battery_care` still works with only `optimization_priority=longevity` because
+both engines enforce a 0.05 €/kWh cycle-cost floor from the priority itself
+(`max(cycle_cost, 0.05)`); `self_sufficiency` applies its 1.25× reserve boost
+from the `self_consumption` priority, so neither needs an explicit numeric
+knob in the preset.  Install-time defaults still come from
+`config_flow._get_default_options` / the `__init__` `defaults_to_set` migration
+(which only fill MISSING keys, never overwrite).  **Audit (all writers
+checked):** the number/select/text entities each write only their own key via
+`dict(options)` + one update; the two `slot_overrides` writers use
+`{**entry.options, …}` (preserve everything); `defaults_to_set` fills missing
+only.  The strategy preset was the sole clobbering path.
 
 ### Schedule Reason ("Why" Line)
 Below the chart, a one-line explanation of the current schedule decision

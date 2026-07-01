@@ -407,45 +407,44 @@ class HA_FelicitySpecialModeSelect(CoordinatorEntity, SelectEntity):
 # Strategy presets: each maps to a set of underlying configuration knobs.
 # Users pick a strategy; the individual knobs still exist for advanced tuning.
 #
-# IMPORTANT: presets set ONLY the knobs that DEFINE the strategy axis
-# (grid_mode, optimization_priority, and the trade economics: reserve,
-# arbitrage delta, cycle cost).  They deliberately do NOT touch the
-# negative-price flags (`block_export_on_negative_price`,
-# `charge_to_full_on_negative_price`,
-# `discharge_to_make_room_for_negative_price`).  Those are orthogonal,
-# user-owned opt-in behaviours — putting them in the presets meant that
-# re-selecting a strategy (or the card re-applying one) silently reset the
-# user's negative-price choices back to "off" every time.  They now persist
-# independently of the strategy; their defaults are written once at install
-# (config_flow / __init__ migration), never re-clobbered here.
+# IMPORTANT: presets set ONLY the two knobs that DEFINE the strategy axis —
+# `grid_mode` and `optimization_priority`.  They deliberately do NOT touch any
+# user-owned preference: `reserve_target_pct`, `arbitrage_price_delta`,
+# `battery_cycle_cost_eur_kwh`, or the negative-price flags
+# (`block_export_on_negative_price`, `charge_to_full_on_negative_price`,
+# `discharge_to_make_room_for_negative_price`).  Putting those in the presets
+# meant that re-selecting a strategy (or the card re-applying one) silently
+# reset the user's tuning every time — the reported "arbitrage_price_delta /
+# negative-price settings aren't remembered on re-install" symptom (the user
+# re-picks their strategy after re-adding the integration, which clobbered
+# them).  They now persist independently; their defaults are written once at
+# install (config_flow / __init__ migration), never re-clobbered here.
+# Each preset sets ONLY the two knobs that DEFINE the strategy axis:
+# grid_mode and optimization_priority.  Everything else — reserve_target_pct,
+# arbitrage_price_delta, battery_cycle_cost_eur_kwh, and the negative-price
+# flags — is a user-owned preference and is NEVER written here, so re-selecting
+# (or the card re-applying) a strategy can't wipe the user's tuning.
+#   • battery_care needs NO explicit cycle cost: the "longevity" priority itself
+#     enforces a 0.05 EUR/kWh cycle-cost floor in both engines
+#     (ems.py `max(cycle_cost, 0.05)`, milp.py likewise).
+#   • self_sufficiency needs NO reserve_target_pct: the "self_consumption"
+#     priority applies the 1.25x reserve boost on its own.
 STRATEGY_PRESETS = {
     "save_money": {
         "grid_mode": "from_grid",
         "optimization_priority": "cost",
-        "reserve_target_pct": 0,
-        "arbitrage_price_delta": 0.0,
-        "battery_cycle_cost_eur_kwh": 0.0,
     },
     "self_sufficiency": {
         "grid_mode": "from_grid",
         "optimization_priority": "self_consumption",
-        "reserve_target_pct": 0,
-        "arbitrage_price_delta": 0.0,
-        "battery_cycle_cost_eur_kwh": 0.0,
     },
     "battery_care": {
         "grid_mode": "from_grid",
         "optimization_priority": "longevity",
-        "reserve_target_pct": 0,
-        "arbitrage_price_delta": 0.0,
-        "battery_cycle_cost_eur_kwh": 0.05,
     },
     "trader": {
         "grid_mode": "both",
         "optimization_priority": "cost",
-        "reserve_target_pct": 0,
-        "arbitrage_price_delta": 0.0,
-        "battery_cycle_cost_eur_kwh": 0.0,
     },
 }
 
