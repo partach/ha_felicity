@@ -817,19 +817,28 @@ knobs remain accessible behind an "Advanced settings" toggle.
 | Trader | both | cost | Buy cheap, sell expensive (auto profitability) |
 | Custom | (unchanged) | (unchanged) | User manages all knobs manually |
 
-**Presets set ONLY the strategy-defining knobs** (`grid_mode`,
-`optimization_priority`, `reserve_target_pct`, `arbitrage_price_delta`,
-`battery_cycle_cost_eur_kwh`).  They must NOT touch the negative-price flags
-(`block_export_on_negative_price`, `charge_to_full_on_negative_price`,
-`discharge_to_make_room_for_negative_price`) — those are orthogonal,
-user-owned opt-in behaviours.  **Bug (fixed):** the presets used to force all
-three to `off`, so re-selecting a strategy (or the card re-applying one)
-silently reset the user's negative-price choices every time — the reported
-"these settings keep resetting to no / aren't stored" symptom.  Removed from
-`STRATEGY_PRESETS` in `select.py`; the flags now persist independently (their
-install-time defaults still come from `config_flow._get_default_options` /
-the `__init__` `defaults_to_set` migration, which only fill MISSING keys and
-never overwrite an existing value).
+**Presets set ONLY the two knobs that DEFINE a strategy** — `grid_mode` and
+`optimization_priority`.  They must NOT touch any user-owned preference:
+`reserve_target_pct`, `arbitrage_price_delta`, `battery_cycle_cost_eur_kwh`,
+or the negative-price flags (`block_export_on_negative_price`,
+`charge_to_full_on_negative_price`,
+`discharge_to_make_room_for_negative_price`).  **Bug (fixed twice):** the
+presets used to also write those five, so re-selecting a strategy (or the card
+re-applying one, or the user re-picking their strategy after a re-install)
+silently reset the user's tuning every time — the reported "arbitrage_price_delta
+/ negative-price / cycle-cost settings aren't remembered" symptom.  All five
+removed from `STRATEGY_PRESETS` in `select.py`; they now persist independently.
+`battery_care` still works with only `optimization_priority=longevity` because
+both engines enforce a 0.05 €/kWh cycle-cost floor from the priority itself
+(`max(cycle_cost, 0.05)`); `self_sufficiency` applies its 1.25× reserve boost
+from the `self_consumption` priority, so neither needs an explicit numeric
+knob in the preset.  Install-time defaults still come from
+`config_flow._get_default_options` / the `__init__` `defaults_to_set` migration
+(which only fill MISSING keys, never overwrite).  **Audit (all writers
+checked):** the number/select/text entities each write only their own key via
+`dict(options)` + one update; the two `slot_overrides` writers use
+`{**entry.options, …}` (preserve everything); `defaults_to_set` fills missing
+only.  The strategy preset was the sole clobbering path.
 
 ### Schedule Reason ("Why" Line)
 Below the chart, a one-line explanation of the current schedule decision
