@@ -60,6 +60,61 @@ _MILP_DISABLED = False
 _MILP_DISABLED_REASON = ""
 
 
+def _pick_solver(pulp):
+    """Return an available CBC-class LP solver, or None.
+
+    pulp ships a prebuilt CBC binary, but it is not published for every
+    platform/interpreter — on brand-new Python versions or uncommon CPU arches
+    the path simply doesn't exist (real customer on Python 3.14:
+    ``.../pulp/apis/../solverdir/cbc/linux/i64/cbc`` → FileNotFoundError).
+    Rather than hard-disable MILP the moment the bundled binary is missing, try
+    in order:
+
+      1. ``PULP_CBC_CMD`` — pulp's bundled CBC (the common case).
+      2. ``COIN_CMD`` — a SYSTEM-installed CBC (e.g. ``apt install coinor-cbc``,
+         or ``pip install pulp[cbc]``), which pulp's own deprecation notice now
+         recommends over the bundled path.
+      3. anything ``pulp.listSolvers(onlyAvailable=True)`` reports.
+
+    ``.available()`` only checks that the binary exists / is on PATH (it does
+    not solve), so this probe is cheap and side-effect-free.  Returns the first
+    solver that is actually runnable, so MILP works wherever ANY solver exists
+    instead of giving up on the bundled-binary gap.
+    """
+    tried: list[str] = []
+
+    def _try(name: str, **kw):
+        cls = getattr(pulp, name, None)
+        if cls is None:
+            return None
+        try:
+            solver = cls(msg=0, **kw)
+            if solver.available():
+                return solver
+        except Exception:  # pragma: no cover - defensive: probe never solves
+            pass
+        tried.append(name)
+        return None
+
+    for name in ("PULP_CBC_CMD", "COIN_CMD"):
+        solver = _try(name, timeLimit=_SOLVE_TIME_LIMIT)
+        if solver is not None:
+            return solver
+
+    try:
+        available = list(pulp.listSolvers(onlyAvailable=True) or [])
+    except Exception:  # pragma: no cover - defensive
+        available = []
+    for name in available:
+        if name in tried:
+            continue
+        solver = _try(name)
+        if solver is not None:
+            _LOGGER.info("MILP using fallback LP solver: %s", name)
+            return solver
+    return None
+
+
 def solve_schedule(
     config: Any,
     state: Any,
@@ -334,7 +389,15 @@ def _solve(
         + pulp.lpSum(early * k * c[k] for k in range(K))                   # charge earlier (tie-break)
     )
 
-    solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=_SOLVE_TIME_LIMIT)
+    solver = _pick_solver(pulp)
+    if solver is None:
+        # No usable LP solver on this platform — structural, so the caller
+        # disables MILP for the session (one warning, greedy runs).  Reuse the
+        # FileNotFoundError path in solve_schedule for the flag + message.
+        raise FileNotFoundError(
+            "no available LP solver — pulp's bundled CBC binary is missing and "
+            "no system CBC (COIN_CMD) was found"
+        )
     prob.solve(solver)
 
     status = pulp.LpStatus[prob.status]

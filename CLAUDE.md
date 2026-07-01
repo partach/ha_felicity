@@ -195,18 +195,31 @@ infeasible drain.  Both slacks carry a high penalty (`5× max price`) so they're
 0 in normal cases (parity preserved) and only activate to keep the LP feasible.
 Pinned by `test_milp_never_infeasible_extreme_drain`.
 
+**Multi-solver selection** (`_pick_solver`): pulp ships a prebuilt CBC binary,
+but it is not published for every platform/interpreter — on brand-new Python
+versions or uncommon CPU arches the path simply doesn't exist (real customer on
+Python 3.14: `.../pulp/apis/../solverdir/cbc/linux/i64/cbc` → FileNotFoundError).
+Instead of hard-disabling MILP the moment the bundled binary is missing,
+`_pick_solver` probes solvers in order — `PULP_CBC_CMD` (bundled),
+`COIN_CMD` (a SYSTEM CBC, e.g. `apt install coinor-cbc` or `pip install
+pulp[cbc]`; also what pulp's own deprecation notice now recommends), then
+anything `listSolvers(onlyAvailable=True)` reports — using each solver's cheap
+`.available()` check (path/PATH existence, no solve).  MILP runs wherever ANY
+solver exists.  Only when none is available does it fall through to the disable
+path below.
+
 **Permanent disable on unrecoverable failure** (`_MILP_DISABLED` module
-flag): when the CBC solver binary is missing/unrunnable (`FileNotFoundError`
-from `subprocess.Popen` — happens on uncommon CPU arches or new Python
-versions where pulp's prebuilt CBC path doesn't exist) or pulp import fails,
-the failure is **structural** — it recurs on every 10s tick and never
-recovers within the process.  Without a guard it logs a full traceback
-~8600×/day (one user saw 1100+).  `solve_schedule` now sets a process-
+flag): when NO solver is available (bundled CBC missing AND no system CBC) or
+the solver binary is unrunnable (`FileNotFoundError` from `subprocess.Popen`)
+or pulp import fails, the failure is **structural** — it recurs on every 10s
+tick and never recovers within the process.  Without a guard it logs a full
+traceback ~8600×/day (one user saw 1100+).  `solve_schedule` sets a process-
 lifetime flag on these unrecoverable errors and short-circuits to greedy
-immediately on subsequent calls — no rebuild, no traceback spam.  The flag
-resets only on a fresh process start (HA restart/reload), so installing CBC
-is re-checked on the next boot.  Non-optimal/infeasible results do NOT set
-the flag (they can be input-dependent and recover next slot).
+immediately on subsequent calls — no rebuild, no traceback spam (one clean
+warning: "MILP CBC solver binary not found — … greedy is fully functional").
+The flag resets only on a fresh process start (HA restart/reload), so
+installing CBC is re-checked on the next boot.  Non-optimal/infeasible results
+do NOT set the flag (they can be input-dependent and recover next slot).
 
 **Model** (`milp.solve_schedule`, a pure LP):
 - Horizon = today's remaining slots + all of tomorrow (when prices known).
