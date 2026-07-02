@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 248).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 250).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 248 tests for the pure EMS algorithm
+└── test_ems.py              # 250 tests for the pure EMS algorithm
 ```
 
 ---
@@ -995,6 +995,20 @@ making all entities unavailable and taking the inverter out of eco mode.
 `flexible_load_1_switch_entity`) shapes *when* the EV charger runs in
 `_schedule_flexible_loads`.  It applies only to the load with
 `is_ev_charger`; loads 2-3 always use the `smart` overlay.
+
+**`is_ev_charger` = `bool(current_entity)` (fixed).** A load is an EV charger
+as soon as it has a **current-control entity** — the amp-step list
+(`current_steps`) is OPTIONAL and only enables *current stepping* (variable-amp
+smart charging, safe-power step-down, boost-to-max).  It used to require BOTH
+(`current_entity and current_steps`), so a blank/mistyped steps text field
+silently disabled the ENTIRE EV feature — the EV Boost button vanished and
+`ev_charge_strategy` stopped applying — even though the user had wired up a
+switch + current entity (real customer report).  All `current_steps` consumers
+already degrade gracefully when empty (they guard or fall back to
+`default_current`: boost force-turns the charger on without setting amps,
+stepping/step-down no-op, the sensor uses `default_current`), so recognising
+the charger from the current entity alone is safe.  Add `current_steps` to get
+variable-amp control; without it the charger runs on/off and Boost forces it on.
 
 | Strategy | Slots scheduled |
 |---|---|
@@ -1918,7 +1932,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (248 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (250 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

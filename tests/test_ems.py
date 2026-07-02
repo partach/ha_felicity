@@ -4394,6 +4394,28 @@ class TestFlexibleLoadScheduling:
         # Nearest step for 1 kW target → 6A (minimum)
         assert ev.nearest_step_for_power(1.0) == 6
 
+    def test_is_ev_charger_from_current_entity_alone(self):
+        """A current-control entity marks the load as an EV charger even when
+        the amp-step list is blank — steps only enable current stepping, they
+        are NOT required for EV recognition / the EV Boost button.  Regression:
+        a blank steps text field used to silently hide the whole EV feature."""
+        ev = FlexibleLoadConfig(
+            enabled=True, name="EV", switch_entity="switch.ev",
+            current_entity="number.ev_current", current_steps=[],
+        )
+        assert ev.is_ev_charger, "current_entity alone must mark it an EV charger"
+        # No steps → stepping helpers degrade gracefully (no crash).
+        assert ev.nearest_step_at_or_below(16) is None
+        assert ev.nearest_step_for_power(5.0) is None
+
+    def test_not_ev_charger_without_current_entity(self):
+        """A plain switch load (no current entity) is NOT an EV charger."""
+        load = FlexibleLoadConfig(
+            enabled=True, name="Boiler", switch_entity="switch.boiler",
+            current_steps=[6, 10, 16],  # steps without a current entity
+        )
+        assert not load.is_ev_charger
+
     def test_load_scheduled_during_pv_surplus(self):
         """Loads should run during PV surplus slots."""
         load = FlexibleLoadConfig(
