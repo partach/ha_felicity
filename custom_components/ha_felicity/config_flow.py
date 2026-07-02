@@ -412,9 +412,8 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         """Initialize options flow."""
         # self.config_entry = config_entry  # read only!! HA config fails if this is not removed!
 
-    # Optional entity pickers.  The HA frontend omits a cleared optional
-    # field from the submitted form, so absence must be treated as an
-    # explicit clear — otherwise an assigned entity can never be removed.
+    # Optional entity pickers.  (Kept for reference; NO LONGER force-cleared on
+    # absence — see async_step_init.)
     _OPTIONAL_ENTITY_KEYS = (
         "nordpool_entity",
         "nordpool_override",
@@ -432,10 +431,20 @@ class FelicityOptionsFlowHandler(config_entries.OptionsFlow):
         try:
             my_options = dict(self.config_entry.options)
             if user_input is not None:
+                # Merge the submitted form onto the EXISTING options.  We do NOT
+                # force-clear optional entity pickers that are absent from
+                # user_input: the HA frontend can omit an UNTOUCHED
+                # suggested-value optional entity selector, so force-clearing on
+                # absence wiped every entity assignment the user didn't re-touch
+                # on any unrelated Save.  Real customer symptom: opening Settings
+                # to change one thing silently cleared
+                # `flexible_load_1_current_entity`, which flipped the EV charger
+                # off (is_ev_charger=False) and made the EV Boost button vanish;
+                # likewise it could drop the Nordpool / forecast entities.  An
+                # EXPLICIT clear still works — the frontend submits a cleared
+                # picker as None/"" (present in user_input), so `.update()`
+                # applies it — but an untouched assignment is now preserved.
                 my_options.update(user_input)
-                for key in self._OPTIONAL_ENTITY_KEYS:
-                    if key not in user_input:
-                        my_options[key] = ""
                 return self.async_create_entry(title="", data=my_options)
             # Get current values from options (with defaults)
             current_register_set = my_options.get(CONF_REGISTER_SET, DEFAULT_REGISTER_SET)

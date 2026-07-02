@@ -1853,9 +1853,19 @@ wiring) found and fixed:
   slider state parsing.
 
 **Config wiring**
-- Options-flow entity pickers use `description={"suggested_value": ...}`
-  with explicit absent→clear handling — assigned entities can now be
-  unassigned (was a one-way ratchet via `default=`).
+- Options-flow entity pickers use `description={"suggested_value": ...}` and
+  are merged onto the existing options with `my_options.update(user_input)` —
+  **absence is NOT treated as a clear** (fixed).  The old "absent→clear" loop
+  wiped every entity assignment the user didn't re-touch on ANY unrelated
+  Settings save, because the HA frontend can omit an untouched suggested-value
+  optional selector from the submitted form.  Real customer symptom: an update
+  during which Settings was opened+saved silently cleared
+  `flexible_load_1_current_entity` → `is_ev_charger` went false → the EV Boost
+  button disappeared (and Nordpool/forecast assignments could vanish the same
+  way).  An EXPLICIT clear still works (the frontend submits a cleared picker
+  as `None`/`""`, which `.update()` applies); an untouched one is preserved.
+  `__init__.async_setup_entry` also logs the load-1 EV config at startup so
+  "button disappeared" reports can be diagnosed from the log directly.
 - `_get_default_options` includes the negative-price + rule1 keys.
 - `select.py current_option` normalizes legacy bool values.
 - `number.py` nested f-string quote fixed (Python <3.12 tooling).
