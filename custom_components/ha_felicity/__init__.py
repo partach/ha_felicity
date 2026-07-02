@@ -248,20 +248,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if updated_options != options:
         hass.config_entries.async_update_entry(entry, options=updated_options)
 
-    # Diagnostic: surface whether load 1 is recognised as an EV charger (needs
-    # BOTH a current entity and current steps).  If a user reports "the EV Boost
-    # button disappeared", this line in the log tells us immediately whether the
-    # persisted config still has those two fields after an update.
+    # Diagnostic: surface the load-1 EV config.  An EV charger is recognised
+    # from its current-control ENTITY (the EV Boost button + ev_charge_strategy
+    # follow that); current_steps is OPTIONAL and only enables variable-amp
+    # current stepping.  If a user reports "the EV Boost button disappeared",
+    # this line tells us immediately what the persisted config actually has.
     _ev_current_entity = updated_options.get("flexible_load_1_current_entity", "")
     _ev_current_steps = updated_options.get("flexible_load_1_current_steps", "")
     _LOGGER.info(
         "Flex load 1 EV config: switch=%s current_entity=%s current_steps=%r "
-        "→ EV charger %s (EV Boost button %s)",
+        "→ EV charger %s, EV Boost button %s, current-stepping %s",
         updated_options.get("flexible_load_1_switch_entity", "") or "(unset)",
         _ev_current_entity or "(unset)",
         _ev_current_steps or "",
-        "RECOGNISED" if (_ev_current_entity and _ev_current_steps) else "NOT recognised",
-        "shown" if (_ev_current_entity and _ev_current_steps) else "hidden",
+        "RECOGNISED" if _ev_current_entity else "NOT recognised",
+        "shown" if _ev_current_entity else "hidden",
+        "on" if _ev_current_steps else "OFF (add current steps for amp control)",
     )
 
     nordpool_entity = updated_options.get("nordpool_entity")

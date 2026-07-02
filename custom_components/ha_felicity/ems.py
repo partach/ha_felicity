@@ -31,7 +31,18 @@ class FlexibleLoadConfig:
 
     @property
     def is_ev_charger(self) -> bool:
-        return bool(self.current_entity and self.current_steps)
+        # A load with a current-control entity IS an EV charger.  The amp-step
+        # list (current_steps) is OPTIONAL — it enables *current stepping*
+        # (smart amp control + safe-power step-down + boost-to-max), not EV
+        # recognition.  Requiring it here used to silently hide the whole EV
+        # feature (the EV Boost button vanished, ev_charge_strategy stopped
+        # applying) whenever the steps text field was blank or mistyped —
+        # confusing for a user who HAS wired up a switch + current entity.  All
+        # current_steps consumers already degrade gracefully when it's empty
+        # (they guard / fall back to default_current), so with no steps the
+        # charger simply runs on/off and Boost force-turns it on; add steps to
+        # get variable-amp control.
+        return bool(self.current_entity)
 
     def power_at_current(self, amps: int) -> float:
         """Calculate kW at a given current step."""
