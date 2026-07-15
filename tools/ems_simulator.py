@@ -68,7 +68,8 @@ from scenarios import SCENARIOS  # noqa: E402
 
 def _result_dict(engine, prices, sched, traj, cur_slot, *,
                  planned_kwh=0.0, reserve_pct=0.0, overnight_need=0.0,
-                 status=None, reason=None, threshold=None, tomorrow_sched=None):
+                 status=None, reason=None, threshold=None, tomorrow_sched=None,
+                 tomorrow_traj=None):
     charge = sorted(i for i, a in (sched or {}).items() if a == "charge")
     sell = sorted(i for i, a in (sched or {}).items() if a == "discharge")
     tmr_charge = sorted(i for i, a in (tomorrow_sched or {}).items() if a == "charge")
@@ -88,6 +89,7 @@ def _result_dict(engine, prices, sched, traj, cur_slot, *,
         "reason": reason,
         "threshold": threshold,
         "trajectory": traj,
+        "tomorrow_trajectory": tomorrow_traj or [],
         "tomorrow_charge_slots": tmr_charge,
         "tomorrow_sell_slots": tmr_sell,
     }
@@ -111,6 +113,7 @@ def run_one(scenario: dict, engine: str) -> dict:
         overnight_need=result.self_consumption_reserve, status=result.status,
         reason=result.schedule_reason, threshold=result.price_threshold,
         tomorrow_sched=result.tomorrow_scheduled_slots,
+        tomorrow_traj=result.tomorrow_soc_trajectory,
     )
 
 
@@ -299,67 +302,110 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
     except Exception:
         return None
     st = scenario["state"]
-    prices = st.get("slot_prices_today") or []
-    n = len(prices)
+    prices_today = st.get("slot_prices_today") or []
+    n = len(prices_today)
     if n == 0:
         return None
+
+    # Two-day window: render TOMORROW alongside today whenever the scenario
+    # supplies tomorrow's prices (the algorithm already plans it — the MILP over
+    # the joint horizon, greedy via _compute_tomorrow_schedule).  Slots n..2n-1
+    # are tomorrow; a midnight divider separates the days.  When there are no
+    # tomorrow prices the plot is the single-day view as before.
+    prices_tomorrow = st.get("slot_prices_tomorrow") or []
+    has_tmr = bool(prices_tomorrow)
+    n_tmr = len(prices_tomorrow)
+    total = n + (n_tmr if has_tmr else 0)
+
+    prices_all = [p if p is not None else 0 for p in prices_today]
+    if has_tmr:
+        prices_all += [p if p is not None else 0 for p in prices_tomorrow]
+
+    # PV + consumption across the whole window.  Consumption is day-agnostic
+    # (same hourly profile), PV uses the tomorrow forecast (synthesized from the
+    # daily total when no hourly breakdown exists — the real algorithm's fix).
+    pv = effective_pv_per_slot(st, n)
+    cons = effective_consumption_per_slot(scenario["config"], st, n)
+    if has_tmr:
+        pv = pv + effective_pv_per_slot(st, n_tmr, tomorrow=True)
+        cons = cons + effective_consumption_per_slot(scenario["config"], st, n_tmr)
+
+    cur_slot0 = int((st.get("current_hour", 0) * 60 + st.get("current_minute", 0))
+                    / ((24 * 60) / n))
+
     engines = list(results.keys())
-    fig, axes = plt.subplots(len(engines), 1, figsize=(12, 3.2 * len(engines)), squeeze=False)
+    fig, axes = plt.subplots(len(engines), 1,
+                             figsize=(14 if has_tmr else 12, 3.2 * len(engines)),
+                             squeeze=False)
     for row, engine in enumerate(engines):
         r = results[engine]
         ax = axes[row][0]
-        xs = list(range(n))
-        colors = []
         cset = set(r["charge_slots"])
         sset = set(r["sell_slots"])
-        for i in xs:
-            colors.append("#4CAF50" if i in cset else "#FF9800" if i in sset else "#cfcfcf")
-        pr = [p if p is not None else 0 for p in prices]
-        ax.bar(xs, pr, color=colors, width=0.9, align="edge")
+        if has_tmr:
+            cset |= {n + i for i in r.get("tomorrow_charge_slots", [])}
+            sset |= {n + i for i in r.get("tomorrow_sell_slots", [])}
+        colors = ["#4CAF50" if i in cset else "#FF9800" if i in sset else "#cfcfcf"
+                  for i in range(total)]
+        ax.bar(range(total), prices_all, color=colors, width=0.9, align="edge")
         ax.set_ylabel("price")
-        ax.set_xlim(0, n)
+        ax.set_xlim(0, total)
+        # Hour-of-day ticks (each day restarts at 0) so a 48h axis stays readable.
+        ticks = list(range(0, total + 1, 6))
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([str(t % 24) for t in ticks], fontsize=7)
         if r.get("threshold") is not None:
             ax.axhline(r["threshold"], color="#d4b106", ls="--", lw=1,
                        label=f"threshold {r['threshold']:.3f}")
             ax.legend(loc="upper left", fontsize=7)
-        ax.set_title(f"{scenario['name']} — {engine} (charge=green sell=orange)  reason: {r['reason']}", fontsize=8)
+        span = " (today | tomorrow)" if has_tmr else ""
+        ax.set_title(f"{scenario['name']} — {engine}{span} (charge=green sell=orange)  "
+                     f"reason: {r['reason']}", fontsize=8)
 
         # PV production (yellow hump) AND consumption (red line) on a shared
-        # kWh/h axis — so you can see where PV exceeds consumption (surplus
-        # charges the battery) vs where consumption exceeds PV (battery drains).
-        pv = effective_pv_per_slot(scenario["state"], n)
-        cons = effective_consumption_per_slot(scenario["config"], scenario["state"], n)
+        # kWh/h axis — surplus (PV > load) charges the battery, deficit drains it.
         kwh_max = max(max(pv, default=0), max(cons, default=0))
         if kwh_max > 0.001:
             axpv = ax.twinx()
             axpv.spines["right"].set_position(("outward", 38))
-            axpv.fill_between([i + 0.5 for i in range(n)], pv, color="#ffd400",
+            axpv.fill_between([i + 0.5 for i in range(total)], pv, color="#ffd400",
                               alpha=0.30, step="mid", label="PV kWh/h")
-            axpv.plot([i + 0.5 for i in range(n)], cons, color="#e53935", lw=1.3,
+            axpv.plot([i + 0.5 for i in range(total)], cons, color="#e53935", lw=1.3,
                       ls="-", label="consumption kWh/h")
             axpv.set_ylim(0, kwh_max * 1.4)
             axpv.set_ylabel("PV / load kWh/h", color="#b59500")
             axpv.tick_params(axis="y", labelcolor="#b59500")
             axpv.legend(loc="upper center", fontsize=7)
 
+        # Midnight divider + day labels.
+        if has_tmr:
+            ax.axvline(n, color="#607d8b", lw=1.3, ls="-", alpha=0.7)
+            ax.text(n * 0.5, ax.get_ylim()[1] * 0.97, "TODAY", ha="center",
+                    va="top", fontsize=7, color="#78909c")
+            ax.text(n + n_tmr * 0.5, ax.get_ylim()[1] * 0.97, "TOMORROW",
+                    ha="center", va="top", fontsize=7, color="#78909c")
+
         # "now" marker — everything left of it is PAST (the SOC there is a flat
         # placeholder, not a real history, since the simulator has no recorder).
-        cur_slot0 = int((scenario["state"].get("current_hour", 0) * 60
-                         + scenario["state"].get("current_minute", 0)) / ((24 * 60) / n))
         if 0 < cur_slot0 < n:
             ax.axvline(cur_slot0, color="#e57373", lw=1.2, ls=":", alpha=0.8)
 
-        # SOC trajectory on a twin axis — plotted only from "now" forward.
-        # The simulator has no recorder history, so the past portion of the
-        # trajectory is a flat placeholder (current SOC); drawing it looked
-        # like "the battery sits flat / consumption is ignored".  Show only the
-        # meaningful future part.
+        # SOC trajectory on a twin axis — plotted from "now" through TOMORROW.
+        # today's trajectory runs cur_slot..n; tomorrow's continues at n..2n
+        # (the algorithm's tomorrow_soc_trajectory), so the whole two-day SOC
+        # arc is visible — exactly what the card's Tomorrow tab shows.
         traj = r["trajectory"]
         if traj:
             ax2 = ax.twinx()
             start = max(0, min(cur_slot0, len(traj) - 1))
             xs_soc = [i + 0.5 for i in range(start, len(traj))]
-            ax2.plot(xs_soc, traj[start:], color="#08b2c9", lw=2, label="SOC% (from now)")
+            ys_soc = list(traj[start:])
+            tmr_traj = r.get("tomorrow_trajectory") or []
+            if has_tmr and tmr_traj:
+                xs_soc += [n + i + 0.5 for i in range(len(tmr_traj))]
+                ys_soc += list(tmr_traj)
+            lbl = "SOC% (now → tomorrow)" if (has_tmr and tmr_traj) else "SOC% (from now)"
+            ax2.plot(xs_soc, ys_soc, color="#08b2c9", lw=2, label=lbl)
             ax2.set_ylim(0, 100)
             ax2.set_ylabel("SOC %")
             if r["reserve_pct"]:
