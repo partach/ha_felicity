@@ -139,6 +139,29 @@ SOC climbs); where load exceeds PV the battery **drains**.  A red dotted **"now"
 line** marks the current time — everything to its left is the past (the SOC
 there is a flat placeholder, since the simulator has no recorder history).
 
+### Simulated window — today, or today **+ tomorrow**
+
+The scheduler's real horizon is **today's remaining slots plus all of tomorrow**
+(the MILP optimises the two days jointly; greedy reconstructs tomorrow via
+`_compute_tomorrow_schedule`).  The chart matches that:
+
+- A scenario with **only `slot_prices_today`** renders a single **24 h** panel
+  (now → end of today).
+- A scenario that also sets **`slot_prices_tomorrow`** renders the full **48 h**
+  window: today on the left, **tomorrow** on the right, a grey **midnight
+  divider** between them, and `TODAY` / `TOMORROW` labels.  Prices, the PV hump
+  (tomorrow's is synthesized from `pv_forecast_tomorrow` when no hourly
+  breakdown is given — exactly as the algorithm does), consumption, and the
+  charge/sell bars are drawn for both days, and the blue **SOC line runs
+  continuously from "now" through tomorrow** (`SOC% (now → tomorrow)`) using the
+  algorithm's `tomorrow_soc_trajectory` — so you can see the whole cross-day
+  plan (e.g. a Trader selling today's peak and re-charging under tomorrow's
+  sun).  The x-axis shows hour-of-day and restarts at 0 at midnight.
+
+To exercise the two-day view in your own scenario, just add `slot_prices_tomorrow`
+(and optionally `pv_forecast_tomorrow` / `pv_hourly_kwh_tomorrow`) to its
+`state`.  See `tomorrow_pv_daily_only` and `trader_tomorrow_pv_daily_only`.
+
 ### Manual price mode
 
 Scenarios with `price_mode: "manual"` in their `config` run a separate lane:
