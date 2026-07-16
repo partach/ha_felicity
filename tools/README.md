@@ -143,24 +143,30 @@ there is a flat placeholder, since the simulator has no recorder history).
 
 The scheduler's real horizon is **today's remaining slots plus all of tomorrow**
 (the MILP optimises the two days jointly; greedy reconstructs tomorrow via
-`_compute_tomorrow_schedule`).  The chart matches that:
+`_compute_tomorrow_schedule`).  **The chart matches that by default:** every
+optimizer scenario renders the full **48 h** window — today on the left,
+**tomorrow** on the right, a grey **midnight divider** between them, and
+`TODAY` / `TOMORROW` labels.  Prices, the PV hump (tomorrow's synthesized from
+`pv_forecast_tomorrow` when no hourly breakdown is given — exactly as the
+algorithm does), consumption, and the charge/sell bars are drawn for both days,
+and the blue **SOC line runs continuously from "now" through tomorrow**
+(`SOC% (now → tomorrow)`) using the algorithm's `tomorrow_soc_trajectory` — so
+you see the whole cross-day plan (e.g. a Trader selling today's peak and
+re-charging under tomorrow's sun).  The x-axis shows hour-of-day and restarts at
+0 at midnight.
 
-- A scenario with **only `slot_prices_today`** renders a single **24 h** panel
-  (now → end of today).
-- A scenario that also sets **`slot_prices_tomorrow`** renders the full **48 h**
-  window: today on the left, **tomorrow** on the right, a grey **midnight
-  divider** between them, and `TODAY` / `TOMORROW` labels.  Prices, the PV hump
-  (tomorrow's is synthesized from `pv_forecast_tomorrow` when no hourly
-  breakdown is given — exactly as the algorithm does), consumption, and the
-  charge/sell bars are drawn for both days, and the blue **SOC line runs
-  continuously from "now" through tomorrow** (`SOC% (now → tomorrow)`) using the
-  algorithm's `tomorrow_soc_trajectory` — so you can see the whole cross-day
-  plan (e.g. a Trader selling today's peak and re-charging under tomorrow's
-  sun).  The x-axis shows hour-of-day and restarts at 0 at midnight.
+Scenarios that don't define their own `slot_prices_tomorrow` get a realistic
+"tomorrow" auto-added (today's price/PV shape — a *typical similar day*), so the
+two-day view is the norm.  A scenario renders a **single 24 h** panel only when
+it opts out:
+- `"single_day": True` in the scenario dict (e.g. `pv_daily_total_only_today`,
+  which specifically tests the pre-tomorrow / no-next-day-prices path), or
+- `price_mode: "manual"` (the manual lane is a threshold rule, today-only).
 
-To exercise the two-day view in your own scenario, just add `slot_prices_tomorrow`
-(and optionally `pv_forecast_tomorrow` / `pv_hourly_kwh_tomorrow`) to its
-`state`.  See `tomorrow_pv_daily_only` and `trader_tomorrow_pv_daily_only`.
+To give a scenario a *specific* tomorrow (cross-day arbitrage, a cheaper next
+day, a bigger solar day…), set `slot_prices_tomorrow` (and optionally
+`pv_forecast_tomorrow` / `pv_hourly_kwh_tomorrow`) explicitly — see
+`tomorrow_pv_daily_only` and `trader_tomorrow_pv_daily_only`.
 
 ### Manual price mode
 

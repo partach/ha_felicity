@@ -446,6 +446,7 @@ SCENARIOS = [
 
     {
         "name": "pv_daily_total_only_today",
+        "single_day": True,  # explicitly tests the pre-tomorrow (today-only) path
         "desc": "Forecast gives only a DAILY total today (no hourly) → algorithm must SYNTHESIZE "
                 "the hourly curve so the SOC accounts for solar (chart shows a yellow hump).",
         "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
@@ -609,3 +610,31 @@ SCENARIOS = [
         ),
     },
 ]
+
+
+# ── Two-day horizon by default ───────────────────────────────────────────────
+# The scheduler's real horizon is today's remaining slots PLUS all of tomorrow,
+# so — unless a scenario opts out — give it a realistic "tomorrow" and let the
+# simulator render the full 48h view (today | tomorrow) the algorithm plans over.
+# Tomorrow mirrors today's price shape and PV (a "typical similar day"); this was
+# verified not to change any scenario's asserted outcome.  Exemptions:
+#   • `price_mode == "manual"` — the manual lane is a threshold rule, today-only.
+#   • `"single_day": True` — scenarios that specifically test the pre-tomorrow
+#     (no next-day prices) path, e.g. `pv_daily_total_only_today`.
+#   • scenarios that already define their own `slot_prices_tomorrow`.
+def _add_default_tomorrow(scn: dict) -> None:
+    st = scn["state"]
+    if (scn.get("single_day")
+            or scn["config"].get("price_mode") == "manual"
+            or st.get("slot_prices_tomorrow")):
+        return
+    st["slot_prices_tomorrow"] = list(st["slot_prices_today"])
+    if "pv_forecast_tomorrow" not in st:
+        total = st.get("pv_forecast_today")
+        if total is None and st.get("pv_hourly_kwh"):
+            total = round(sum(st["pv_hourly_kwh"].values()), 1)
+        st["pv_forecast_tomorrow"] = total or 0.0
+
+
+for _scn in SCENARIOS:
+    _add_default_tomorrow(_scn)
