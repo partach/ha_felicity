@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 250).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 252).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 250 tests for the pure EMS algorithm
+└── test_ems.py              # 252 tests for the pure EMS algorithm
 ```
 
 ---
@@ -1360,6 +1360,21 @@ Forward-simulates SOC through every slot.  Drops violations:
 
 ### 6. Post-Processing (both engines)
 
+- **Spill reduction** (`_reduce_charge_spill`, July 2026): relocate a charge
+  slot to an equal-or-cheaper-priced slot when that buys LESS grid for the
+  same end/min SOC — i.e. charging right before a PV peak fills the battery so
+  the solar surplus spills, while the same-priced slot after the peak lets the
+  sun fill first.  Slot selectors rank by price, so equal-price placement was
+  arbitrary (and the earliness tie-break preferred early); on a small battery
+  under a solar hump that bought energy the sun was about to deliver free
+  (measured: slots 11+12 = 7.3 kWh bought / 0.7 kWh spilled vs 11+15 =
+  6.5 kWh / zero spill — 11% cheaper, same SOC).  Hard guards: simulated grid
+  cost must strictly drop, end-of-day SOC must not drop, minimum SOC must not
+  drop (the early-charge safety buffer is never traded away), target price ≤
+  source price, negative-price and currently-executing slots never move.
+  Best-improvement-first, so the LAST redundant slot moves past the peak and
+  the earliest stays put.  Runs before urgent recovery (forced immediate slots
+  never move).  Pinned by `TestSpillReduction` (both engines).
 - **Urgent recovery**: if SOC < discharge_min, force immediate charge slots.
 - **SOC trajectory**: `_compute_scheduled_soc_trajectory` for today.
 - **Tomorrow schedule**: MILP provides it directly; greedy runs
@@ -1943,7 +1958,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (250 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (252 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests

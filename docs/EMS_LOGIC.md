@@ -130,6 +130,18 @@ scenario and/or `tests/test_ems.py`.
     is allowed, mirroring greedy (`test_cost_mode_may_defer_to_tomorrow`).
     Self_consumption keeps the midnight constraint
     (`TestSelfSufficiencyTodayFirst`).
+14. **Spill reduction — equal-price charges placed to absorb PV (July 2026).**
+    Shared post-processing (`_reduce_charge_spill`, both engines): a charge
+    slot is relocated to an equal-or-cheaper-priced slot when that buys less
+    grid for the same end/min SOC.  Charging just before a solar peak fills
+    the battery so the PV surplus spills; the same-priced slot after the peak
+    lets the sun fill first (measured 11% cheaper, zero spill on
+    `self_suff_flat_low_soc`).  Guards: cost strictly drops, end SOC and
+    minimum SOC never drop (the early-charge buffer is never traded away),
+    never to a dearer slot, negative-price / currently-executing slots never
+    move, and it runs before urgent recovery.  Best-improvement order keeps
+    the earliest slot in place and moves the last redundant one past the
+    peak.  Pinned by `TestSpillReduction`.
 
 ---
 
