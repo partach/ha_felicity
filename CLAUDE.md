@@ -228,7 +228,14 @@ do NOT set the flag (they can be input-dependent and recover next slot).
   power), `spill[k]` (PV curtailment), `soc[k]`.
 - SOC dynamics: `soc[k] = soc[k-1] + net_pv[k] - load[k] + eff·c[k] - d[k] - spill[k]`.
 - Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`;
-  `soc[midnight] ≥ reserve_target` (prevents cross-day deferral).
+  `soc[midnight] ≥ reserve_target` **(self_consumption only, July 2026)** —
+  the full-reserve-by-midnight demand is the self-sufficiency contract.  In
+  cost/longevity it forced expensive-evening charging when cheap slots came
+  right after midnight (low-SOC recovery at 18:00 charged 3× 0.30 slots;
+  greedy correctly charged 1 + cheap after 00:00).  Cost mode relies on the
+  per-slot `soc ≥ soc_min` floor (still forces SOME today charging for
+  survival) + the end-of-horizon reserve, mirroring greedy's
+  may-defer-to-tomorrow economics.
 - Objective: minimise `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal_value·soc[end]`.
   Terminal value = `avg_price × efficiency`.  No per-priority boost — pushing
   terminal value higher (e.g. P90) would charge at uneconomic prices.
@@ -582,7 +589,10 @@ overrides the no-swap rule.  `select_unified_charge_slots` forces today's
 `energy_deficit` onto today's slots even when tomorrow is cheaper.  Without
 this, the user sees "tomorrow never comes" — every day defers to the next.
 The MILP enforces this via a midnight SOC boundary constraint
-(`soc[midnight_slot] >= reserve_target`).
+(`soc[midnight_slot] >= reserve_target`) — scoped to **self_consumption
+only** (in cost mode it forced expensive-evening charging when cheap slots
+came right after midnight; cost survival is covered by the per-slot
+`soc >= soc_min` floor instead).
 `TestSelfSufficiencyTodayFirst` pins both.
 
 ### Per-Slot SOC Validation
@@ -1295,7 +1305,8 @@ Forward-simulates SOC through every slot.  Drops violations:
 - Builds horizon: today's remaining + all of tomorrow.
 - Per-slot continuous vars: charge energy `c[k]`, discharge `d[k]`, spill, soc.
 - **Constraints**: SOC dynamics, `soc_min ≤ soc ≤ soc_max`,
-  `soc[end] ≥ reserve_target`, `soc[midnight] ≥ reserve_target`.
+  `soc[end] ≥ reserve_target`; `soc[midnight] ≥ reserve_target`
+  (self_consumption only — see model section above).
 - **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·min(soc[end], reserve)`
   where `terminal = avg_price × efficiency`.  **The leftover-energy reward is
   capped at the reserve target** (not all the way to `soc_max`).  Rewarding

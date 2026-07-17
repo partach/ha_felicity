@@ -117,6 +117,19 @@ scenario and/or `tests/test_ems.py`.
     "consumption-arbitrage myopia" fix — greedy buys cheap night energy to
     displace pricier daytime/evening consumption, which the joint MILP did
     natively.
+13. **MILP midnight reserve is self_consumption-only (July 2026).** The
+    `soc[midnight] ≥ reserve` soft constraint is the self-sufficiency
+    contract ("battery full tonight" / today-first).  Applied to ALL
+    priorities it forced cost-mode to charge EXPENSIVE evening slots to hit
+    the reserve by 00:00 even when cheap slots came right after midnight
+    (low-SOC recovery at 18:00: MILP charged 3× 0.30 slots; greedy correctly
+    charged 1 + cheap after midnight — the same no-safety-swap economics).
+    Now cost/longevity keep only the per-slot `soc ≥ soc_min` hardware floor
+    (which still forces SOME today charging for survival) and the
+    end-of-horizon reserve; deferring the reserve fill to a cheaper tomorrow
+    is allowed, mirroring greedy (`test_cost_mode_may_defer_to_tomorrow`).
+    Self_consumption keeps the midnight constraint
+    (`TestSelfSufficiencyTodayFirst`).
 
 ---
 
