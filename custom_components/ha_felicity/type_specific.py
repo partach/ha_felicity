@@ -332,7 +332,7 @@ class TypeSpecificHandler:
             else:            # idle / unknown → disable both
                 self.peak_shaving_enabled = False
                 await self.async_write_register("grid_peak_shaving_enable",1) # customer wants this on ... 
-                await self.async_write_register("econ_rule_1_sell_enable", 1) # Do we want to sell when in idle? Maybe to offload excessive power?
+                await self.async_write_register("econ_rule_1_sell_enable", 0) # Do we want to sell when in idle? Maybe to offload excessive power?
                 result = await self.async_write_register("econ_rule_1_grid_charge_enable", 0) # we need to set to off else it will allow from grid?
                 if not result:
                     _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=0 for idle on %s", self._inverter_model)
