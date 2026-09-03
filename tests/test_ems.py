@@ -6406,3 +6406,82 @@ class TestGreedyPartialChargeNoSun:
         r = calculate_schedule(cfg, st)
         charge = [i for i, a in r.scheduled_slots.items() if a == "charge"]
         assert charge == [], f"near-full battery should not charge, got {charge}"
+
+
+class TestSpillReduction:
+    """Equal-price charge slots must be placed to AVOID PV spill: charging
+    right before a solar peak fills the battery so the surplus spills, while
+    the same-priced slot after the peak lets the sun fill first and buys less
+    grid.  Measured on the motivating case: 11+12 bought 7.3 kWh / spilled
+    0.7 kWh; 11+15 bought 6.5 kWh / spilled none — 11% cheaper, same end SOC.
+    The first slot stays early (safety buffer preserved)."""
+
+    @staticmethod
+    def _scenario(engine):
+        prices = [0.05] * 6 + [0.15] * 11 + [0.30] * 7
+        cfg = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            scheduler_engine=engine,
+            battery_capacity_kwh=10.0,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=5.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=12.0,
+        )
+        st = EMSState(
+            battery_soc_pct=30.0,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(5.0),
+            pv_actual_today_kwh=2.0,
+            pv_forecast_today=5.0,
+            pv_forecast_remaining=3.0,
+            current_hour=11,
+            current_minute=0,
+        )
+        return cfg, st, prices
+
+    def _grid_bought(self, cfg, st, sched):
+        eff = cfg.efficiency
+        cap = cfg.battery_capacity_kwh
+        smax = cfg.battery_charge_max_pct / 100 * cap
+        soc = st.battery_soc_pct / 100 * cap
+        bought = 0.0
+        n = len(st.slot_prices_today)
+        for k in range(st.current_hour, n):
+            pv = (st.pv_hourly_kwh or {}).get(k % 24, 0.0)
+            net = pv - cfg.consumption_est_kwh / n * (n / 24.0)
+            if sched.get(k) == "charge":
+                gk = min(cfg.safe_power_kw, max(0.0, cfg.inverter_max_power_kw - pv))
+                stored = min(eff * gk, max(0.0, smax - (soc + net)))
+                bought += stored / eff
+                soc = soc + net + stored
+            else:
+                soc = soc + net
+            soc = max(0.0, min(smax, soc))
+        return bought
+
+    @pytest.mark.parametrize("engine", ["greedy", "milp"])
+    def test_second_charge_moved_past_pv_peak(self, engine):
+        if engine == "milp" and not _HAS_PULP:
+            pytest.skip("pulp not installed")
+        cfg, st, prices = self._scenario(engine)
+        r = calculate_schedule(cfg, st)
+        charge = sorted(i for i, a in r.scheduled_slots.items() if a == "charge")
+        assert len(charge) == 2, f"expected 2 charge slots, got {charge}"
+        # All at the 0.15 tier — never the 0.30 evening.
+        assert all(prices[i] <= 0.15 + 1e-9 for i in charge)
+        # NOT the naive back-to-back 11+12 placement (which spills ~0.7 kWh);
+        # the second slot must sit past the PV peak (>= 14).
+        assert charge != [11, 12], "spill reduction did not run"
+        assert charge[1] >= 14, (
+            f"second charge slot should move past the PV peak, got {charge}"
+        )
+        # And it genuinely buys less grid than the naive placement.
+        bought_opt = self._grid_bought(cfg, st, dict.fromkeys(charge, "charge"))
+        bought_naive = self._grid_bought(cfg, st, {11: "charge", 12: "charge"})
+        assert bought_opt < bought_naive - 0.3, (
+            f"expected less grid bought: opt={bought_opt:.2f} naive={bought_naive:.2f}"
+        )

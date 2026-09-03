@@ -1,7 +1,10 @@
 # Registers for the TREXF KLP / KHP
 _REGISTERS_TREX_FIVE = {
     "setting_data_sn": {"address": 4352, "name": "Setting Data Sn", "precision": 0, "index": 0},
-    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 0, "type": "select", "options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
+    # 4353 is the inverter's RUNNING-STATUS report (see trex_ten.py) — a
+    # read-only enum sensor ("status"), not a settable select.  The settable
+    # mode is operating_mode @ 8451.
+    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 0, "type": "status", "options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
     "warning_state_1": {"address": 4354, "name": "Warning State 1", "precision": 0, "index": 0, "size": 2, "endian": "big"},
     "warning_state_2": {"address": 4356, "name": "Warning State 2", "precision": 0, "index": 0, "size": 2, "endian": "big"},
     "warning_state_3": {"address": 4358, "name": "Warning State 3", "precision": 0, "index": 0, "size": 2, "endian": "big"},

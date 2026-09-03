@@ -117,6 +117,31 @@ scenario and/or `tests/test_ems.py`.
     "consumption-arbitrage myopia" fix — greedy buys cheap night energy to
     displace pricier daytime/evening consumption, which the joint MILP did
     natively.
+13. **MILP midnight reserve is self_consumption-only (July 2026).** The
+    `soc[midnight] ≥ reserve` soft constraint is the self-sufficiency
+    contract ("battery full tonight" / today-first).  Applied to ALL
+    priorities it forced cost-mode to charge EXPENSIVE evening slots to hit
+    the reserve by 00:00 even when cheap slots came right after midnight
+    (low-SOC recovery at 18:00: MILP charged 3× 0.30 slots; greedy correctly
+    charged 1 + cheap after midnight — the same no-safety-swap economics).
+    Now cost/longevity keep only the per-slot `soc ≥ soc_min` hardware floor
+    (which still forces SOME today charging for survival) and the
+    end-of-horizon reserve; deferring the reserve fill to a cheaper tomorrow
+    is allowed, mirroring greedy (`test_cost_mode_may_defer_to_tomorrow`).
+    Self_consumption keeps the midnight constraint
+    (`TestSelfSufficiencyTodayFirst`).
+14. **Spill reduction — equal-price charges placed to absorb PV (July 2026).**
+    Shared post-processing (`_reduce_charge_spill`, both engines): a charge
+    slot is relocated to an equal-or-cheaper-priced slot when that buys less
+    grid for the same end/min SOC.  Charging just before a solar peak fills
+    the battery so the PV surplus spills; the same-priced slot after the peak
+    lets the sun fill first (measured 11% cheaper, zero spill on
+    `self_suff_flat_low_soc`).  Guards: cost strictly drops, end SOC and
+    minimum SOC never drop (the early-charge buffer is never traded away),
+    never to a dearer slot, negative-price / currently-executing slots never
+    move, and it runs before urgent recovery.  Best-improvement order keeps
+    the earliest slot in place and moves the last redundant one past the
+    peak.  Pinned by `TestSpillReduction`.
 
 ---
 

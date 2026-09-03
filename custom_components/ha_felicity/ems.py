@@ -1970,6 +1970,124 @@ def _run_milp_or_none(
     return result
 
 
+def _reduce_charge_spill(
+    config: EMSConfig,
+    state: EMSState,
+    scheduled: dict[int, str],
+    remaining: list[tuple[int, float]],
+    current_kwh: float,
+    current_slot: int,
+    minutes_per_slot: float,
+    pv_confidence: float,
+    num_slots: int,
+) -> dict[int, str]:
+    """Relocate charge slots to equal-or-cheaper slots when that lowers the
+    real grid cost — i.e. when charging BEFORE a PV peak fills the battery so
+    the solar surplus spills, while the same-priced slot AFTER the peak lets
+    PV fill first and buys less grid.
+
+    The slot selectors rank by price, so among EQUAL-price slots the placement
+    is arbitrary (and the earliness tie-break prefers early).  On a small
+    battery under a solar hump that ordering buys energy the sun was about to
+    deliver for free (measured: charging 11+12 instead of 11+15 bought
+    7.3 kWh and spilled 0.7 kWh vs 6.5 kWh and zero spill — 11% dearer for the
+    same end SOC).  This pass fixes exactly that, with hard guards so it can
+    only ever help:
+
+    - a move is accepted ONLY if the simulated grid cost strictly drops, the
+      end-of-day SOC does not drop, and the minimum SOC along the way does not
+      drop (the early-charge safety buffer is never traded away — a move that
+      would deepen any dip is rejected);
+    - the target slot must be priced at or below the source slot (never moves
+      to a dearer slot);
+    - negative-price slots (forced / revenue) and the currently-executing slot
+      never move;
+    - swaps run best-improvement-first, so the LAST redundant slot moves past
+      the PV peak while the earliest slots stay put (buffer preserved).
+
+    Shared post-processing: runs on the final schedule of BOTH engines.
+    No-op whenever no relocation strictly improves cost (flat prices, no PV,
+    healthy placements).
+    """
+    if config.grid_mode not in ("from_grid", "both"):
+        return scheduled
+    if not any(a == "charge" for a in scheduled.values()):
+        return scheduled
+
+    slot_h = minutes_per_slot / 60.0
+    cap = config.battery_capacity_kwh
+    eff = config.efficiency if config.efficiency > 0 else 1.0
+    energy_per_slot = config.safe_power_kw * slot_h
+    flat_cons = config.consumption_est_kwh / num_slots if num_slots else 0.0
+    price_of = {i: p for i, p in remaining}
+
+    def measure(sched: dict[int, str]) -> tuple[float, float, float]:
+        """Simulate: returns (grid_cost, end_soc, min_soc)."""
+        soc = current_kwh
+        cost = 0.0
+        low = soc
+        for idx, price in remaining:
+            hour = int((idx * minutes_per_slot) / 60)
+            pv_kw = (state.pv_hourly_kwh or {}).get(hour, 0.0) * pv_confidence
+            if state.consumption_hourly_kwh and hour in state.consumption_hourly_kwh:
+                cons = state.consumption_hourly_kwh[hour] * slot_h
+            else:
+                cons = flat_cons
+            soc += pv_kw * slot_h - cons
+            action = sched.get(idx)
+            if action == "charge":
+                if config.inverter_max_power_kw > 0:
+                    grid_kw = min(config.safe_power_kw,
+                                  max(0.0, config.inverter_max_power_kw - pv_kw))
+                else:
+                    grid_kw = config.safe_power_kw
+                stored = min(grid_kw * slot_h * eff, max(0.0, cap - soc))
+                cost += (stored / eff) * (price or 0.0)
+                soc += stored
+            elif action == "discharge":
+                soc -= energy_per_slot
+            soc = max(0.0, min(cap, soc))
+            low = min(low, soc)
+        return cost, soc, low
+
+    moved: list[tuple[int, int]] = []
+    base_cost, base_end, base_low = measure(scheduled)
+    for _ in range(16):  # each accepted move strictly lowers cost — converges
+        best = None  # (cost, end, low, src, dst)
+        for src in sorted((i for i, a in scheduled.items() if a == "charge"),
+                          reverse=True):
+            p_src = price_of.get(src)
+            if p_src is None or p_src < 0 or src <= current_slot:
+                continue
+            for dst, p_dst in remaining:
+                if dst in scheduled or p_dst is None or p_dst < 0:
+                    continue
+                if p_dst > p_src + 1e-9:
+                    continue
+                trial = dict(scheduled)
+                del trial[src]
+                trial[dst] = "charge"
+                c, e, lo = measure(trial)
+                if (c < base_cost - 0.005
+                        and e >= base_end - 0.01
+                        and lo >= base_low - 0.01
+                        and (best is None or c < best[0] - 1e-9)):
+                    best = (c, e, lo, src, dst)
+        if best is None:
+            break
+        base_cost, base_end, base_low = best[0], best[1], best[2]
+        del scheduled[best[3]]
+        scheduled[best[4]] = "charge"
+        moved.append((best[3], best[4]))
+    if moved:
+        _LOGGER.info(
+            "Spill reduction: moved charge slot(s) %s — same/cheaper price, "
+            "less PV spilled (grid cost now %.3f)",
+            ", ".join(f"{a}→{b}" for a, b in moved), base_cost,
+        )
+    return scheduled
+
+
 def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     """Calculate optimal charge/discharge schedule.
 
@@ -2135,6 +2253,21 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             result.scheduler_active = "greedy_fallback"
     else:
         result = _run_greedy()
+
+    # Spill reduction (both engines): relocate equal/cheaper-priced charge
+    # slots past a PV peak when that buys less grid for the same end/min SOC.
+    # Runs BEFORE urgent recovery so forced immediate slots are never moved.
+    if result.scheduled_slots:
+        _spill_conf = _calculate_pv_confidence(
+            state.pv_hourly_kwh, state.pv_actual_today_kwh,
+            state.current_hour, state.current_minute,
+            previous_confidence=state.previous_pv_confidence,
+        )
+        result.scheduled_slots = _reduce_charge_spill(
+            config, state, result.scheduled_slots, remaining,
+            current_kwh, current_slot, minutes_per_slot,
+            _spill_conf, num_slots,
+        )
 
     # Urgent recovery: when battery is below discharge_min, force immediate
     # charge slots starting from the current slot.  The cheapest-slot optimizer

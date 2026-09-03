@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 250).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 252).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 250 tests for the pure EMS algorithm
+└── test_ems.py              # 252 tests for the pure EMS algorithm
 ```
 
 ---
@@ -228,7 +228,14 @@ do NOT set the flag (they can be input-dependent and recover next slot).
   power), `spill[k]` (PV curtailment), `soc[k]`.
 - SOC dynamics: `soc[k] = soc[k-1] + net_pv[k] - load[k] + eff·c[k] - d[k] - spill[k]`.
 - Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`;
-  `soc[midnight] ≥ reserve_target` (prevents cross-day deferral).
+  `soc[midnight] ≥ reserve_target` **(self_consumption only, July 2026)** —
+  the full-reserve-by-midnight demand is the self-sufficiency contract.  In
+  cost/longevity it forced expensive-evening charging when cheap slots came
+  right after midnight (low-SOC recovery at 18:00 charged 3× 0.30 slots;
+  greedy correctly charged 1 + cheap after 00:00).  Cost mode relies on the
+  per-slot `soc ≥ soc_min` floor (still forces SOME today charging for
+  survival) + the end-of-horizon reserve, mirroring greedy's
+  may-defer-to-tomorrow economics.
 - Objective: minimise `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal_value·soc[end]`.
   Terminal value = `avg_price × efficiency`.  No per-priority boost — pushing
   terminal value higher (e.g. P90) would charge at uneconomic prices.
@@ -582,7 +589,10 @@ overrides the no-swap rule.  `select_unified_charge_slots` forces today's
 `energy_deficit` onto today's slots even when tomorrow is cheaper.  Without
 this, the user sees "tomorrow never comes" — every day defers to the next.
 The MILP enforces this via a midnight SOC boundary constraint
-(`soc[midnight_slot] >= reserve_target`).
+(`soc[midnight_slot] >= reserve_target`) — scoped to **self_consumption
+only** (in cost mode it forced expensive-evening charging when cheap slots
+came right after midnight; cost survival is covered by the per-slot
+`soc >= soc_min` floor instead).
 `TestSelfSufficiencyTodayFirst` pins both.
 
 ### Per-Slot SOC Validation
@@ -1295,7 +1305,8 @@ Forward-simulates SOC through every slot.  Drops violations:
 - Builds horizon: today's remaining + all of tomorrow.
 - Per-slot continuous vars: charge energy `c[k]`, discharge `d[k]`, spill, soc.
 - **Constraints**: SOC dynamics, `soc_min ≤ soc ≤ soc_max`,
-  `soc[end] ≥ reserve_target`, `soc[midnight] ≥ reserve_target`.
+  `soc[end] ≥ reserve_target`; `soc[midnight] ≥ reserve_target`
+  (self_consumption only — see model section above).
 - **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·min(soc[end], reserve)`
   where `terminal = avg_price × efficiency`.  **The leftover-energy reward is
   capped at the reserve target** (not all the way to `soc_max`).  Rewarding
@@ -1349,6 +1360,21 @@ Forward-simulates SOC through every slot.  Drops violations:
 
 ### 6. Post-Processing (both engines)
 
+- **Spill reduction** (`_reduce_charge_spill`, July 2026): relocate a charge
+  slot to an equal-or-cheaper-priced slot when that buys LESS grid for the
+  same end/min SOC — i.e. charging right before a PV peak fills the battery so
+  the solar surplus spills, while the same-priced slot after the peak lets the
+  sun fill first.  Slot selectors rank by price, so equal-price placement was
+  arbitrary (and the earliness tie-break preferred early); on a small battery
+  under a solar hump that bought energy the sun was about to deliver free
+  (measured: slots 11+12 = 7.3 kWh bought / 0.7 kWh spilled vs 11+15 =
+  6.5 kWh / zero spill — 11% cheaper, same SOC).  Hard guards: simulated grid
+  cost must strictly drop, end-of-day SOC must not drop, minimum SOC must not
+  drop (the early-charge safety buffer is never traded away), target price ≤
+  source price, negative-price and currently-executing slots never move.
+  Best-improvement-first, so the LAST redundant slot moves past the peak and
+  the earliest stays put.  Runs before urgent recovery (forced immediate slots
+  never move).  Pinned by `TestSpillReduction` (both engines).
 - **Urgent recovery**: if SOC < discharge_min, force immediate charge slots.
 - **SOC trajectory**: `_compute_scheduled_soc_trajectory` for today.
 - **Tomorrow schedule**: MILP provides it directly; greedy runs
@@ -1485,6 +1511,24 @@ now does only the bookkeeping (yesterday deficit, daily consumption,
 SOC history reset, slot overrides rotation) and falls through to the
 normal cycle, which re-determines the desired state and only writes a
 transition if the state actually changes.
+
+### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
+TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
+Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
+report** — note "Fault" in the enum, and it sits in the 4xxx telemetry block
+(every settable config register is 8xxx).  It was wrongly exposed as a
+writable `select`: the user picked a mode, the integration wrote the option
+index to 4353, the firmware ignored it, and the next 10 s poll snapped the
+entity back to the actual state — customer report: "whatever I choose, it
+switches back to *Line*" (Line = running grid-tied, the normal state).  Now
+`"type": "status"` → a read-only **ENUM sensor** (`HA_FelicitySensor` maps the
+value to the option label; unknown values render unavailable rather than an
+invalid enum state).  The *settable* mode remains **Operating Mode @ 8451**
+(General / Backup / Economic) — and note that while the EMS is active, the
+Economic-mode self-heal deliberately re-asserts Economic there, so manual
+changes to 8451 revert BY DESIGN until the EMS is turned off.  After updating,
+the old `select.*_working_mode` entity shows as orphaned ("no longer
+provided") and can be removed; the new `sensor.*_working_mode` replaces it.
 
 ---
 
@@ -1932,7 +1976,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (250 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (252 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
