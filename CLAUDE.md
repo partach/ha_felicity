@@ -1512,6 +1512,24 @@ SOC history reset, slot overrides rotation) and falls through to the
 normal cycle, which re-determines the desired state and only writes a
 transition if the state actually changes.
 
+### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
+TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
+Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
+report** — note "Fault" in the enum, and it sits in the 4xxx telemetry block
+(every settable config register is 8xxx).  It was wrongly exposed as a
+writable `select`: the user picked a mode, the integration wrote the option
+index to 4353, the firmware ignored it, and the next 10 s poll snapped the
+entity back to the actual state — customer report: "whatever I choose, it
+switches back to *Line*" (Line = running grid-tied, the normal state).  Now
+`"type": "status"` → a read-only **ENUM sensor** (`HA_FelicitySensor` maps the
+value to the option label; unknown values render unavailable rather than an
+invalid enum state).  The *settable* mode remains **Operating Mode @ 8451**
+(General / Backup / Economic) — and note that while the EMS is active, the
+Economic-mode self-heal deliberately re-asserts Economic there, so manual
+changes to 8451 revert BY DESIGN until the EMS is turned off.  After updating,
+the old `select.*_working_mode` entity shows as orphaned ("no longer
+provided") and can be removed; the new `sensor.*_working_mode` replaces it.
+
 ---
 
 ## Algorithm Assessment and Improvement Recommendations

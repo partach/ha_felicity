@@ -1,7 +1,13 @@
 # Registers for the TREX10 KLP / KHP
 _REGISTERS_TREX_TEN = {
     "setting_data_sn": {"address": 4352, "name": "Setting Data Sn", "precision": 0, "index": 0},
-    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 0, "type": "select", "options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
+    # 4353 is the inverter's RUNNING-STATUS report (note "Fault" in the enum —
+    # not a command set).  It sits in the 4xxx telemetry block; writes to it are
+    # ignored by the firmware.  Exposed as a read-only enum sensor ("status"),
+    # NOT a select: as a select, every user choice was "reverted to Line" on the
+    # next poll (the inverter simply kept reporting its actual state).  The
+    # settable mode is operating_mode @ 8451 (General/Backup/Economic).
+    "working_mode": {"address": 4353, "name": "Working Mode", "precision": 0, "index": 0, "type": "status", "options": ["Power On", "Standby", "Bypass", "Off-grid", "Fault", "Line", "PV Charge"]},
     "warning_state_1": {"address": 4354, "name": "Warning State 1", "precision": 0, "index": 0, "size": 2, "endian": "big"},
     "warning_state_2": {"address": 4356, "name": "Warning State 2", "precision": 0, "index": 0, "size": 2, "endian": "big"},
     "warning_state_3": {"address": 4358, "name": "Warning State 3", "precision": 0, "index": 0, "size": 2, "endian": "big"},
