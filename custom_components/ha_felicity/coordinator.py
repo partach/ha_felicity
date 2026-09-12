@@ -2302,15 +2302,31 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         else:
             return
 
+        rule_enable = self.data.get("econ_rule_1_enable")
         _LOGGER.warning(
-            "Self-heal: inverter dropped out of Economic mode (register=%s) "
-            "while state=%s — re-asserting operating mode so Rule 1 resumes "
-            "(battery was likely sitting inert)",
-            register_val, self._current_energy_state,
+            "Self-heal: inverter dropped out of Economic mode (register=%s, "
+            "rule_1_enable=%s) while state=%s — re-applying the full Rule 1 "
+            "state so charging actually resumes (battery was likely sitting "
+            "inert)",
+            register_val,
+            "unknown" if rule_enable is None else rule_enable,
+            self._current_energy_state,
         )
-        ok = await self.TypeSpecificHandler.write_type_specific_register(
-            "operating_mode", enable_value
-        )
+        # Re-apply the FULL active state, not just the operating mode.
+        #
+        # Whatever knocked the inverter out of Economic mode (firmware quirk,
+        # Felicity app, power blip) can also have cleared `econ_rule_1_enable`
+        # and the rule's SOC/voltage/power parameters.  Restoring only the mode
+        # would then leave Rule 1 disabled — the battery stays inert AND the
+        # watchdog goes quiet, because the mode register now reads Economic
+        # again.  A silent, unrecoverable-until-next-state-change failure.
+        #
+        # `_transition_to_state` is the single atomic write path (mode first,
+        # then enable, then the rule parameters) and every write in it is
+        # idempotent, so re-applying the current state is safe.  The trigger is
+        # unchanged — this only runs when the mode register actually reads
+        # non-Economic — so it adds no extra write traffic in the normal case.
+        ok = await self._transition_to_state(self._current_energy_state)
         if ok:
             # Reflect the re-assertion in cached data so we don't re-trigger
             # before the next read.
@@ -2320,6 +2336,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.data["eco_timeofuse"] = 1
             else:
                 self.data["operating_mode"] = 2
+            self.data["econ_rule_1_enable"] = enable_value
         else:
             _LOGGER.error(
                 "Self-heal: failed to re-assert Economic mode for state %s",

@@ -367,8 +367,34 @@ inverter can drop out of Economic mode *after* a successful transition
 believes it's charging/discharging.  No state change → nothing re-writes the
 mode → battery sits inert.  This check runs every cycle: when in an active
 state but the Economic-mode register reads off (`eco_timeofuse`!=1 on
-TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-asserts the operating
-mode.  Idempotent (only writes when the register actually shows General).
+TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-applies the state.
+Idempotent (only fires when the register actually shows General).
+
+**It re-applies the FULL state, not just the mode (fixed Sept 2026).** The heal
+used to write only the operating mode.  But whatever knocked the inverter out
+of Economic mode can also have cleared `econ_rule_1_enable` and the rule's
+SOC/voltage/power parameters — and restoring only the mode then leaves Rule 1
+*disabled*: the battery stays inert **and the watchdog goes quiet**, because the
+mode register now reads Economic again.  That's a silent failure that persists
+until the next real state change.  The heal now calls `_transition_to_state(
+current_state)` — the single atomic write path (mode → enable → rule params),
+every write idempotent — so Rule 1 genuinely resumes.  The trigger is unchanged
+(mode register non-Economic), so it adds no write traffic in the normal case.
+The warning now also reports the observed `econ_rule_1_enable`.
+
+⚠️ **The watchdog register must be POLLED or the self-heal silently does
+nothing.** It reads the mode from `self.data`; when the register isn't in the
+selected register set it reads `None` and returns early — protection absent,
+no log.  The shipped sets had real gaps: `operating_mode` was missing from
+`basic_plus` (TREX-5/10) and `eco_timeofuse` from **both `basic` (the DEFAULT)
+and `basic_plus`** on TREX-25/50 — i.e. TREX-25/50 users on the default set had
+**no self-heal at all**, on exactly the models where the inert
+"enable=charge, mode=General" bug was first reported.  Fixed centrally in
+`__init__.async_setup_entry` (step 3b), which force-includes
+`operating_mode` / `eco_timeofuse` / `econ_rule_1_enable` into the selected
+register set regardless of the chosen set — a handful of registers, negligible
+poll cost, and it can't drift when a future register set is added.  **If you
+add a register the control loop depends on, add it there too.**
 
 **Minimum charge commitment (anti flip-flop)**: when SOC hovers near the
 reserve target, the schedule's marginal deficit can flip in/out of "charge"
