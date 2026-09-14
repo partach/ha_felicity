@@ -3,7 +3,6 @@
 import importlib.util as _ilu
 import os
 import sys
-import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -42,25 +41,16 @@ _mock_entity.DeviceInfo = dict
 _mock_entity.EntityCategory = MagicMock()
 _mock_entity.EntityCategory.CONFIG = "config"
 
-# Create ha_felicity package namespace
+# The package namespace and the REAL const module come from tests/conftest.py
+# (a hand-typed const replica drifts — see the conftest docstring).
 _pkg_root = os.path.join(
     os.path.dirname(__file__), "..", "custom_components", "ha_felicity"
 )
-_pkg = types.ModuleType("custom_components.ha_felicity")
-_pkg.__path__ = [_pkg_root]
-_pkg.__package__ = "custom_components.ha_felicity"
 
-_const_mod = types.ModuleType("custom_components.ha_felicity.const")
-_const_mod.DOMAIN = "ha_felicity"
-_const_mod.CONF_INVERTER_MODEL = "inverter_model"
-_const_mod.DEFAULT_INVERTER_MODEL = "TREX-10"
-
+# coordinator IS stubbed: these tests exercise the select entity in isolation
+# and only need the attribute to exist for select.py's import to resolve.
 _coord_mock = MagicMock()
 _coord_mock.__name__ = "custom_components.ha_felicity.coordinator"
-
-sys.modules.setdefault("custom_components", types.ModuleType("custom_components"))
-sys.modules["custom_components.ha_felicity"] = _pkg
-sys.modules["custom_components.ha_felicity.const"] = _const_mod
 sys.modules["custom_components.ha_felicity.coordinator"] = _coord_mock
 
 

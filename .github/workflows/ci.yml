@@ -36,6 +36,22 @@ jobs:
       - name: Lint Python (Ruff)
         run: ruff check .
 
+      # CI previously ran NO tests at all, so a broken test harness was
+      # invisible: tests/test_coordinator.py had stopped collecting entirely
+      # (a hand-typed `const` stub drifted from production) and nothing noticed.
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -q
+
+      # The simulator is the project's behavioural gate (see CLAUDE.md): it runs
+      # the real scheduler over the scenario library for BOTH engines and exits
+      # non-zero when any scenario's expectation fails.  Unit tests pin the
+      # functions; this pins what the EMS actually decides.
+      - name: Run EMS scenario simulator (both engines)
+        run: python tools/ems_simulator.py --no-plot
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:

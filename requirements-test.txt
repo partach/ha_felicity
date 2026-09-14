@@ -1,0 +1,9 @@
+# Dev/CI-only dependencies for the HA-free unit tests.
+#
+# The suite deliberately does NOT install Home Assistant: ems.py, milp.py and
+# const.py are pure Python, and the two HA-dependent modules (coordinator.py,
+# select.py) are loaded against stubs from tests/conftest.py.  That keeps the
+# tests fast and installable anywhere — see the conftest docstring.
+pytest>=8.0
+pytest-asyncio>=0.24        # the select/coordinator tests are async
+pulp>=2.7.0,<4.0            # MILP engine; its tests skip if absent, CI should run them

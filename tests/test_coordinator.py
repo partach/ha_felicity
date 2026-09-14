@@ -4,7 +4,6 @@ import asyncio
 import importlib.util as _ilu
 import os
 import sys
-import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -35,24 +34,15 @@ _mock_duc.DataUpdateCoordinator = type(
 _mock_duc.UpdateFailed = Exception
 sys.modules["homeassistant.helpers.update_coordinator"] = _mock_duc
 
-# Create the ha_felicity package namespace so relative imports work
-_pkg = types.ModuleType("custom_components.ha_felicity")
-_pkg.__path__ = [
-    os.path.join(os.path.dirname(__file__), "..", "custom_components", "ha_felicity")
-]
-_pkg.__package__ = "custom_components.ha_felicity"
-
-# Mock sub-modules that coordinator imports relatively
-_const_mod = types.ModuleType("custom_components.ha_felicity.const")
-_const_mod.DOMAIN = "ha_felicity"
-_const_mod.INVERTER_MODEL_TREX_TEN = "TREX-10"
-
+# The package namespace and the REAL const module come from tests/conftest.py.
+# const is deliberately NOT stubbed here: a hand-typed copy drifts the moment a
+# constant is added to production, and when it did, this whole file stopped
+# collecting (see the conftest docstring).
+#
+# type_specific IS stubbed — these tests drive the coordinator's own logic and
+# assert on the Modbus writes it requests, so the translation layer is a mock.
 _type_specific_mod = MagicMock()
 _type_specific_mod.__name__ = "custom_components.ha_felicity.type_specific"
-
-sys.modules["custom_components"] = types.ModuleType("custom_components")
-sys.modules["custom_components.ha_felicity"] = _pkg
-sys.modules["custom_components.ha_felicity.const"] = _const_mod
 sys.modules["custom_components.ha_felicity.type_specific"] = _type_specific_mod
 
 # ems module — import the real one (already tested separately)

@@ -15,6 +15,13 @@ This document traces the complete decision path of the Felicity EMS, from raw in
 These refine/override the older sections below. Each is pinned by a simulator
 scenario and/or `tests/test_ems.py`.
 
+Both gates now run in CI (Sept 2026): `pytest tests/` and
+`python tools/ems_simulator.py --no-plot`, the latter exit-code gated on every
+scenario expectation. Previously CI ran lint only, so a behavioural regression
+could merge unseen — and a test file that had stopped collecting entirely went
+unnoticed for weeks (see CLAUDE.md, "Test harness"). If you change scheduling
+behaviour, the simulator is the gate that decides whether you were right.
+
 1. **Engine default = greedy; MILP opt-in.** Greedy has a multi-month track
    record and no solver dependency. MILP is the joint 2-day optimiser but is
    validated per-scenario before it can become default again.
