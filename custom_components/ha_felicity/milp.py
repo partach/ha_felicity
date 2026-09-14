@@ -201,7 +201,7 @@ def solve_schedule(
         return None
 
     try:
-        import pulp  # noqa: PLC0415 — lazy import so ems.py works without pulp
+        import pulp
     except Exception as err:  # pragma: no cover - import guard
         _MILP_DISABLED = True
         _MILP_DISABLED_REASON = f"pulp import failed: {err}"
@@ -551,7 +551,7 @@ def _solve(
     for k, h in enumerate(horizon):
         cv = pulp.value(c[k]) or 0.0
         dv = pulp.value(d[k]) or 0.0
-        peak_soc = min(soc_max, peak_soc + horizon[k]["net"] + eff * cv - dv)
+        peak_soc = min(soc_max, peak_soc + h["net"] + eff * cv - dv)
     discharge_headroom_kwh = max(discharge_headroom_kwh,
                                   max(0.0, peak_soc - reserve_target))
 

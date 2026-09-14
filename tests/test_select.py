@@ -1,10 +1,11 @@
 """Tests for select entity resilience fixes."""
 
-import sys
+import importlib.util as _ilu
 import os
+import sys
 import types
 from unittest.mock import AsyncMock, MagicMock
-import importlib.util as _ilu
+
 import pytest
 
 # ---------------------------------------------------------------------------

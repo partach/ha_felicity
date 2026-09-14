@@ -1,0 +1,55 @@
+# Ruff configuration for ha_felicity.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The repo had no ruff config, so `ruff check .` in CI inherited whatever the
+# newest ruff release happened to enable by default.  Ruff 0.16 expanded that
+# default set from 59 rules to 413 — and because the workflow installed ruff
+# unpinned (`pip install ruff`), CI went from green to 211 errors with no code
+# change at all.  Pinning the version in .github/workflows/ci.yml makes the run
+# reproducible; this file makes the ENFORCED SET explicit so a future default
+# change is a deliberate decision rather than a surprise build break.
+#
+# Everything ignored below is a deliberate design choice with a reason, not
+# debt.  If you disagree with one, change the code AND this file together.
+
+target-version = "py312"   # Home Assistant's minimum; shapes the UP (pyupgrade) rules
+
+[lint]
+ignore = [
+    # --- Broad `except Exception` is FAULT ISOLATION, not laziness -----------
+    # The coordinator runs a 10-second control loop driving real hardware.  A
+    # single unexpected error anywhere (a flex-load entity going offline, a
+    # malformed forecast payload, a Modbus hiccup) must NOT propagate: it would
+    # raise UpdateFailed, mark every entity unavailable, and take the inverter
+    # out of Economic mode — a real customer-facing outage we already fixed
+    # once (see CLAUDE.md, "Fault isolation").  Each of these handlers logs and
+    # degrades gracefully by design.  Narrowing them would reintroduce the bug.
+    "BLE001",
+
+    # --- The EMS runs on LOCAL WALL-CLOCK time, deliberately -----------------
+    # Price slots are indexed by local hour because that is how Nordpool
+    # publishes day-ahead prices (a 24/48/96-element array covering the local
+    # day) and how the inverter's Rule 1 time window is expressed.  Making
+    # these calls timezone-aware/UTC would shift every slot index and silently
+    # mis-schedule the whole day.  Naive local time is the correct model here.
+    "DTZ005",   # datetime.now() without tz
+    "DTZ011",   # date.today()
+
+    # --- Readability judgements we disagree with ----------------------------
+    # The suggested rewrites collapse clear, separately-commented branches into
+    # long mixed and/or conditions (one becomes a 130-character line where the
+    # operator precedence is doing load-bearing work).  The explicit form is
+    # easier to review, and these are control-flow decisions on real hardware.
+    "SIM102",   # collapsible-if
+    "SIM114",   # if-with-same-arms
+]
+
+[lint.per-file-ignores]
+# Scenario and test definitions use `dict(key=value, ...)` deliberately: the
+# kwargs form reads as a configuration block, lines up with the EMSConfig /
+# EMSState constructor signatures it mirrors, and diffs cleanly when a knob is
+# added.  Rewriting ~85 of them to `{"key": value}` is pure churn that makes
+# the scenario library harder to scan.  Production code keeps the rule.
+"tests/*" = ["C408"]
+"tools/*" = ["C408"]

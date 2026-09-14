@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from homeassistant.components.select import SelectEntity
-from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL
+from .const import CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL, DOMAIN
 from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -458,7 +459,7 @@ class HA_FelicityStrategySelect(CoordinatorEntity, SelectEntity):
 
     _attr_icon = "mdi:strategy"
     _attr_entity_category = EntityCategory.CONFIG
-    _STRATEGY_OPTIONS = ["save_money", "self_sufficiency", "battery_care", "trader", "custom"]
+    _STRATEGY_OPTIONS: ClassVar[list[str]] = ["save_money", "self_sufficiency", "battery_care", "trader", "custom"]
 
     def __init__(self, coordinator, entry: ConfigEntry):
         super().__init__(coordinator)

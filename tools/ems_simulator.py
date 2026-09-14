@@ -57,13 +57,13 @@ ems = _load("ems", "ems.py")
 try:
     _load("milp", "milp.py")
     _HAS_MILP = True
-except Exception as err:  # noqa: BLE001
+except Exception as err:
     print(f"[warn] MILP engine unavailable ({err}); only greedy will run.")
     _HAS_MILP = False
 
 # Scenario library lives next to this runner.
 sys.path.insert(0, _HERE)
-from scenarios import SCENARIOS  # noqa: E402
+from scenarios import SCENARIOS
 
 
 def _result_dict(engine, prices, sched, traj, cur_slot, *,
@@ -246,7 +246,7 @@ def report_one(scenario: dict, results: dict) -> bool:
         for engine, r in results.items():
             try:
                 passed, msg = expect(r, scenario)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 passed, msg = False, f"expectation raised: {e}"
             tag = "PASS" if passed else "FAIL"
             print(f"  >>> [{engine:>6}] {tag}: {msg}")

@@ -18,10 +18,10 @@ Tests cover:
 - Various slot granularities (24, 48, 96)
 """
 
-import math
-import sys
-import os
 import importlib.util
+import math
+import os
+import sys
 
 import pytest
 
@@ -339,7 +339,7 @@ class TestUnifiedSlotSelection:
         remaining_today = [(i, 0.30) for i in range(18, 24)]  # expensive today
         tomorrow_prices = [0.05] * 24  # cheap tomorrow
 
-        today, tomorrow, tmr_kwh = select_unified_charge_slots(
+        today, tomorrow, _tmr_kwh = select_unified_charge_slots(
             remaining_today=remaining_today,
             energy_deficit=5.0,
             effective_per_slot=4.5,
@@ -363,7 +363,7 @@ class TestUnifiedSlotSelection:
         remaining_today = [(i, 0.05) for i in range(12, 24)]  # cheap today
         tomorrow_prices = [0.40] * 24  # expensive tomorrow
 
-        today, tomorrow, tmr_kwh = select_unified_charge_slots(
+        today, tomorrow, _tmr_kwh = select_unified_charge_slots(
             remaining_today=remaining_today,
             energy_deficit=5.0,
             effective_per_slot=4.5,
@@ -386,7 +386,7 @@ class TestUnifiedSlotSelection:
         remaining_today = [(i, 0.05) for i in range(12, 24)]
         tomorrow_prices = [0.30] * 24
 
-        today, tomorrow, tmr_kwh = select_unified_charge_slots(
+        today, _tomorrow, _tmr_kwh = select_unified_charge_slots(
             remaining_today=remaining_today,
             energy_deficit=0.0,  # no deficit, battery is full
             effective_per_slot=4.5,
@@ -409,7 +409,7 @@ class TestUnifiedSlotSelection:
         """Negative price slots are always included."""
         remaining_today = [(0, -0.10), (1, -0.05), (2, 0.30), (3, 0.35)]
 
-        today, tomorrow, _ = select_unified_charge_slots(
+        today, _tomorrow, _ = select_unified_charge_slots(
             remaining_today=remaining_today,
             energy_deficit=0.0,  # no deficit
             effective_per_slot=4.5,
@@ -436,7 +436,7 @@ class TestUnifiedSlotSelection:
         tomorrow_low_pv = [0.10] * 24
 
         # High PV tomorrow → smaller deficit
-        _, tmr_high, kwh_high = select_unified_charge_slots(
+        _, tmr_high, _kwh_high = select_unified_charge_slots(
             remaining_today=remaining_today,
             energy_deficit=5.0,
             effective_per_slot=4.5,
@@ -454,7 +454,7 @@ class TestUnifiedSlotSelection:
         )
 
         # Low PV tomorrow → bigger deficit due to daytime_gap
-        _, tmr_low, kwh_low = select_unified_charge_slots(
+        _, tmr_low, _kwh_low = select_unified_charge_slots(
             remaining_today=remaining_today,
             energy_deficit=5.0,
             effective_per_slot=4.5,
@@ -567,7 +567,7 @@ class TestUnifiedSlotSelection:
         remaining_today = [(i, 0.15) for i in range(20, 24)]
         tomorrow_prices = [0.10] * 24
 
-        today, tomorrow, tmr_kwh = select_unified_charge_slots(
+        _today, tomorrow, tmr_kwh = select_unified_charge_slots(
             remaining_today=remaining_today,
             energy_deficit=0.0,
             effective_per_slot=4.5,
@@ -1382,7 +1382,7 @@ class TestSOCTrajectory:
         """PV boosts battery during day."""
         pv = {h: 4.0 for h in range(10, 16)}  # 6h × 4kWh = 24 kWh
         remaining = [(i, 0.20) for i in range(24)]
-        proj, min_soc, max_soc = _project_soc_trajectory(
+        _proj, min_soc, max_soc = _project_soc_trajectory(
             remaining, 30.0, 1.0, pv, 60.0, 1.0, 100.0,
         )
         # Should peak during PV hours
@@ -1394,7 +1394,7 @@ class TestSOCTrajectory:
         """SOC projection capped at battery capacity."""
         pv = {h: 10.0 for h in range(6, 18)}  # huge PV
         remaining = [(i, 0.20) for i in range(24)]
-        proj, _, max_soc = _project_soc_trajectory(
+        _proj, _, max_soc = _project_soc_trajectory(
             remaining, 90.0, 0.5, pv, 60.0, 1.0, 100.0,
         )
         assert max_soc <= 100.0
@@ -1705,7 +1705,7 @@ class TestValidateScheduleSOC:
         charge = set()
         discharge = {1, 2, 3, 4, 5}  # 5 discharge slots, 5 kWh each = 25 kWh
 
-        vc, vd = _validate_schedule_soc(
+        _vc, vd = _validate_schedule_soc(
             remaining, charge, discharge,
             current_kwh=20.0,   # just above min
             consumption_per_slot=1.0,
@@ -1733,7 +1733,7 @@ class TestValidateScheduleSOC:
         charge = {0, 1, 2, 3, 4}  # 5 charge slots, 5*0.9=4.5 kWh each = 22.5 kWh
         discharge = set()
 
-        vc, vd = _validate_schedule_soc(
+        vc, _vd = _validate_schedule_soc(
             remaining, charge, discharge,
             current_kwh=55.0,   # near capacity of 60
             consumption_per_slot=0.5,
@@ -2631,7 +2631,7 @@ class TestPowerAwareSlotSelection:
         """10 kW on hourly slots covers a 4 kWh deficit with ONE slot —
         only the single cheapest is selected."""
         remaining = [(i, 0.10 + i * 0.01) for i in range(10)]
-        today, tomorrow, _ = select_unified_charge_slots(
+        today, _tomorrow, _ = select_unified_charge_slots(
             remaining, 4.0, 9.0, 60.0, 20.0, 10.0, 0.9, 10.0,
             current_kwh=20.0, net_pv=0.0,
             safe_power_kw=10.0, inverter_max_power_kw=10.0,
@@ -2888,7 +2888,7 @@ class TestIntegrationCustomerScenarios:
         """Verify SOC trajectory isn't completely flat (consumption should drain)."""
         if not result.soc_trajectory or len(result.soc_trajectory) < 3:
             return
-        unique = set(round(s, 0) for s in result.soc_trajectory)
+        unique = {round(s, 0) for s in result.soc_trajectory}
         assert len(unique) > 1, "SOC trajectory is flat — consumption isn't draining battery"
 
     def test_trex25_both_mode_low_battery_no_pv(self):
@@ -5126,7 +5126,6 @@ class TestMILPStatusDiagnosis:
 
         def counting(pulp):
             probes["n"] += 1
-            return None
 
         mod._pick_solver = counting
         args = dict(
@@ -5758,7 +5757,7 @@ class TestMILPvsGreedy:
             current_hour=0,
             current_minute=0,
         )
-        cfg_m, r_m, cfg_g, r_g = self._run(base, st)
+        _cfg_m, r_m, _cfg_g, r_g = self._run(base, st)
         self._assert_milp_sane(base, st)
         # Both should charge from the cheap end of the day (slots 0,1,5...).
         charges_m = {i for i, a in r_m.scheduled_slots.items() if a == "charge"}
@@ -5875,7 +5874,7 @@ class TestMILPvsGreedy:
             current_hour=0,
             current_minute=0,
         )
-        cfg_m, r_m, cfg_g, r_g = self._run(base, st)
+        _cfg_m, r_m, _cfg_g, _r_g = self._run(base, st)
         # Skip cost dominance on large batteries — the LP→full-power
         # extraction necessarily loses some LP optimality, and greedy
         # sometimes wins by cost.  The MILP's value is robustness against
