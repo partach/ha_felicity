@@ -5,23 +5,25 @@ from typing import Any
 
 import serial.tools.list_ports
 import voluptuous as vol
-from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
-from pymodbus.exceptions import ModbusException
 from homeassistant import config_entries
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
-from homeassistant.core import callback
-from homeassistant.components.sensor import SensorDeviceClass
+from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
+from pymodbus.exceptions import ModbusException
 
 from .const import (
     CONF_BAUDRATE,
     CONF_BYTESIZE,
     CONF_CONNECTION_TYPE,
     CONF_HOST,
+    CONF_INVERTER_MODEL,
     CONF_PARITY,
     CONF_PORT,
+    CONF_REGISTER_SET,
     CONF_SERIAL_PORT,
     CONF_SLAVE_ID,
     CONF_STOPBITS,
@@ -29,23 +31,21 @@ from .const import (
     CONNECTION_TYPE_TCP,
     DEFAULT_BAUDRATE,
     DEFAULT_BYTESIZE,
+    DEFAULT_INVERTER_MODEL,
     DEFAULT_PARITY,
+    DEFAULT_REGISTER_SET,
     DEFAULT_SLAVE_ID,
     DEFAULT_STOPBITS,
     DEFAULT_TCP_PORT,
-    CONF_REGISTER_SET,
-    DEFAULT_REGISTER_SET,
+    DOMAIN,
+    INVERTER_MODEL_TREX_FIFTY,
+    INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_TEN,
+    INVERTER_MODEL_TREX_TWENTY_FIVE,
+    MODEL_REGISTRY,
     REGISTER_SET_BASIC,
     REGISTER_SET_BASIC_PLUS,
     REGISTER_SET_FULL,
-    INVERTER_MODEL_TREX_FIVE,
-    INVERTER_MODEL_TREX_TEN,
-    INVERTER_MODEL_TREX_FIFTY,
-    INVERTER_MODEL_TREX_TWENTY_FIVE,
-    CONF_INVERTER_MODEL,
-    DEFAULT_INVERTER_MODEL,
-    MODEL_REGISTRY,
-    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -274,9 +274,9 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "read_error"
             except ValueError:
                 errors["base"] = "read_error"
-            except Exception as err:
+            except Exception:
                 errors["base"] = "unknown"
-                _LOGGER.exception("Unexpected error during Felicity serial setup: %s", err)
+                _LOGGER.exception("Unexpected error during Felicity serial setup")
 
         return self.async_show_form(step_id="serial", data_schema=data_schema, errors=errors)
 
@@ -324,9 +324,9 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "read_error"
             except ValueError:
                 errors["base"] = "read_error"
-            except Exception as err:
+            except Exception:
                 errors["base"] = "unknown"
-                _LOGGER.exception("Unexpected error during Felicity TCP setup: %s", err)
+                _LOGGER.exception("Unexpected error during Felicity TCP setup")
 
         return self.async_show_form(step_id="tcp", data_schema=data_schema, errors=errors)
 

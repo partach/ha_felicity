@@ -4,12 +4,17 @@ from __future__ import annotations
 import logging
 
 from homeassistant.components.number import NumberEntity, NumberMode
-from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
-from homeassistant.core import callback
-from .const import DOMAIN, CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import (
+    CONF_INVERTER_MODEL,
+    DEFAULT_INVERTER_MODEL,
+    DOMAIN,
+    INVERTER_MAX_POWER_KW,
+)
 from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)

@@ -1,5 +1,7 @@
-from your_const import _REGISTERS
 import json
+
+from your_const import _REGISTERS
+
 # Sort by address
 sorted_regs = sorted((info["address"], key) for key, info in _REGISTERS.items())
 

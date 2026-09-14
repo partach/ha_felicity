@@ -197,8 +197,8 @@ SCENARIOS = [
         # just to hit a high self_consumption reserve (both engines: cost-first).
         "expect": lambda r, s: (
             len(r["charge_slots"]) > 0 and (max(r["charge_prices"]) <= 0.15 + 1e-6),
-            f"charges cheap to cover deficit, no evening peak "
-            f"(slots={len(r['charge_slots'])}, prices={r['charge_prices']})",
+            (f"charges cheap to cover deficit, no evening peak "
+            f"(slots={len(r['charge_slots'])}, prices={r['charge_prices']})"),
         ),
     },
 
@@ -237,8 +237,8 @@ SCENARIOS = [
         "expect": lambda r, s: (
             len(r["charge_slots"]) == 0
             and bool(r["sell_prices"]) and min(r["sell_prices"]) >= 0.30,
-            f"no grid charge; sells the peak (charge={len(r['charge_slots'])}, "
-            f"sell_prices={r['sell_prices']})",
+            (f"no grid charge; sells the peak (charge={len(r['charge_slots'])}, "
+            f"sell_prices={r['sell_prices']})"),
         ),
     },
 
@@ -331,8 +331,8 @@ SCENARIOS = [
         "expect": lambda r, s: (
             len([i for i in r.get("tomorrow_charge_slots", []) ]) < 12
             if "tomorrow_charge_slots" in r else True,
-            f"tomorrow buying bounded by the solar forecast "
-            f"(tomorrow_charge={len(r.get('tomorrow_charge_slots', []))})",
+            (f"tomorrow buying bounded by the solar forecast "
+            f"(tomorrow_charge={len(r.get('tomorrow_charge_slots', []))})"),
         ),
     },
 
@@ -389,8 +389,8 @@ SCENARIOS = [
                       pv_forecast_remaining=3.0, current_hour=2, current_minute=0),
         "expect": lambda r, s: (
             len(r["charge_slots"]) > 0,
-            f"heavy consumption → charges ({len(r['charge_slots'])} slots, "
-            f"overnight_need={r['overnight_need_kwh']}kWh)",
+            (f"heavy consumption → charges ({len(r['charge_slots'])} slots, "
+            f"overnight_need={r['overnight_need_kwh']}kWh)"),
         ),
     },
 
@@ -410,8 +410,8 @@ SCENARIOS = [
                       pv_forecast_remaining=5.0, current_hour=14, current_minute=0),
         "expect": lambda r, s: (
             True,
-            f"informational: evening peak — projected_low={r['projected_low_pct']}%, "
-            f"overnight_need={r['overnight_need_kwh']}kWh",
+            (f"informational: evening peak — projected_low={r['projected_low_pct']}%, "
+            f"overnight_need={r['overnight_need_kwh']}kWh"),
         ),
     },
 
@@ -431,8 +431,8 @@ SCENARIOS = [
                       pv_forecast_remaining=28.0, current_hour=8, current_minute=0),
         "expect": lambda r, s: (
             len(r["charge_slots"]) == 0,
-            f"solar fills battery → no grid charge (got {len(r['charge_slots'])}; "
-            f"projected_low={r['projected_low_pct']}%)",
+            (f"solar fills battery → no grid charge (got {len(r['charge_slots'])}; "
+            f"projected_low={r['projected_low_pct']}%)"),
         ),
     },
 
@@ -472,8 +472,8 @@ SCENARIOS = [
                       pv_forecast_remaining=22.0, current_hour=8, current_minute=0),
         "expect": lambda r, s: (
             (r["projected_low_pct"] or 0) >= 40.0,
-            f"synthesized PV keeps SOC up (projected_low={r['projected_low_pct']}%, "
-            f"expected >=40 since 25 kWh PV on a 10 kWh battery)",
+            (f"synthesized PV keeps SOC up (projected_low={r['projected_low_pct']}%, "
+            f"expected >=40 since 25 kWh PV on a 10 kWh battery)"),
         ),
     },
 
@@ -533,8 +533,8 @@ SCENARIOS = [
                       pv_forecast_remaining=44.0, current_hour=0, current_minute=0),
         "expect": lambda r, s: (
             all(p < (r["threshold"] or 0) for p in r["charge_prices"]),
-            f"all charge slots below threshold {round(r['threshold'],3) if r['threshold'] else None} "
-            f"(charge prices={r['charge_prices']})",
+            (f"all charge slots below threshold {round(r['threshold'],3) if r['threshold'] else None} "
+            f"(charge prices={r['charge_prices']})"),
         ),
     },
 
@@ -596,8 +596,8 @@ SCENARIOS = [
                       current_hour=0, current_minute=0),
         "expect": lambda r, s: (
             (max(r["charge_prices"]) <= 0.20) if r["charge_prices"] else True,
-            f"charges only the cheaper half of the duck curve "
-            f"(max charge price={max(r['charge_prices']) if r['charge_prices'] else None})",
+            (f"charges only the cheaper half of the duck curve "
+            f"(max charge price={max(r['charge_prices']) if r['charge_prices'] else None})"),
         ),
     },
 
@@ -646,8 +646,8 @@ SCENARIOS = [
                       current_hour=11, current_minute=0),
         "expect": lambda r, s: (
             len(r["charge_slots"]) == 0,
-            f"no expensive top-off when 47 kWh of sun is forecast for tomorrow "
-            f"(got {len(r['charge_slots'])} slots: {r['charge_prices']})",
+            (f"no expensive top-off when 47 kWh of sun is forecast for tomorrow "
+            f"(got {len(r['charge_slots'])} slots: {r['charge_prices']})"),
         ),
     },
 
@@ -680,9 +680,9 @@ SCENARIOS = [
         "expect": lambda r, s: (
             (max(r["charge_prices"]) <= 0.34 + 1e-6) if r["charge_prices"]
             else r["engine"] != "greedy",
-            f"tops off from the cheap end when tomorrow is dark "
+            (f"tops off from the cheap end when tomorrow is dark "
             f"(engine={r['engine']}, slots={len(r['charge_slots'])}, "
-            f"prices={r['charge_prices']})",
+            f"prices={r['charge_prices']})"),
         ),
     },
 ]

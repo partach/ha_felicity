@@ -1995,9 +1995,9 @@ def _run_milp_or_none(
     """
     try:
         try:
-            from . import milp  # type: ignore  # noqa: PLC0415
+            from . import milp  # type: ignore
         except ImportError:
-            import milp  # type: ignore  # noqa: PLC0415
+            import milp  # type: ignore
     except Exception as err:  # pragma: no cover - import guard
         _LOGGER.warning("MILP module unavailable — falling back to greedy: %s", err)
         return None

@@ -1,6 +1,13 @@
 import logging
 from typing import Any
-from .const import INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN, INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
+
+from .const import (
+    INVERTER_MODEL_TREX_FIFTY,
+    INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_TEN,
+    INVERTER_MODEL_TREX_TWENTY_FIVE,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 class TypeSpecificHandler:
@@ -328,7 +335,7 @@ class TypeSpecificHandler:
                 if not result:
                     _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=0 for discharging on %s", self._inverter_model)
                     return False
-                await self.async_write_register("grid_peak_shaving_power", int(0))  # needs to be switched off when idle or discharging?
+                await self.async_write_register("grid_peak_shaving_power", 0)  # needs to be switched off when idle or discharging?
             else:            # idle / unknown → disable both
                 self.peak_shaving_enabled = False
                 await self.async_write_register("grid_peak_shaving_enable",1) # customer wants this on ... 
@@ -338,7 +345,7 @@ class TypeSpecificHandler:
                 if not result:
                     _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=0 for idle on %s", self._inverter_model)
                     return False
-                await self.async_write_register("grid_peak_shaving_power", int(0)) # needs to be switched off when idle or discharging?
+                await self.async_write_register("grid_peak_shaving_power", 0) # needs to be switched off when idle or discharging?
 
             return True
 
@@ -368,10 +375,10 @@ class TypeSpecificHandler:
             return True
       
         elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
-            await self.async_write_register("econ_rule_1_power", int(round(value / 1000.0))) # for trex fifty it is in kW
+            await self.async_write_register("econ_rule_1_power", round(value / 1000.0)) # for trex fifty it is in kW
             # in testing it seemed that this register also needs to be set to the same amount to enable charging at least. Not sure for selling...
             if self.peak_shaving_enabled: # only when in charging mode
-               await self.async_write_register("grid_peak_shaving_power", int(round(value / 1000.0))) # for trex fifty it is in kW
+               await self.async_write_register("grid_peak_shaving_power", round(value / 1000.0)) # for trex fifty it is in kW
             return True
       
         return False
@@ -382,8 +389,13 @@ class TypeSpecificHandler:
         Ensures value is always a clean integer before writing.
         For TREX-25/50: validates voltage against battery system (LV vs HV).
         """
-        # Ensure clean integer — HA options can store floats
-        value = int(round(value))
+        # Ensure clean integer.  The `value: int` annotation is aspirational:
+        # HA options round-trip through JSON, so a voltage set in the UI comes
+        # back as a float (58.0) and writing a float to a Modbus register
+        # fails.  float() first so this reads as the real conversion it is —
+        # writing `int(round(value))` made ruff trust the annotation and
+        # "simplify" the whole line away to `value = value`.
+        value = round(float(value))
 
         if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
             _LOGGER.debug("Writing econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
@@ -415,15 +427,15 @@ class TypeSpecificHandler:
     #     type = info.get("type", "") # Not yet use this, later maybe we also make sure we use the type specifics here like time8bit, etc.
 
         if index in (1, 8):    # /10 fields
-            value = int(round(value * 10.0))   # 12.3 → 123
+            value = round(value * 10.0)   # 12.3 → 123
         elif index in (2, 9):  # /100 fields (including power factor 0.01)
-            value = int(round(value * 100.0))  # 0.95 → 95
+            value = round(value * 100.0)  # 0.95 → 95
         elif index in (4, 10):  # /100 fields
-            value = int(round(value * 1000.0))  # 0.095 → 95
+            value = round(value * 1000.0)  # 0.095 → 95
         elif index == 3:       # signed – usually no scaling needed, but cast to int
             value = int(value)
         else:
-            value = int(round(value)) # just ensure we deal with whole number 
+            value = round(value) # just ensure we deal with whole number 
         
         if size == 1:
             values = [value]

@@ -6,20 +6,26 @@ import json
 import logging
 import math
 import time
-from datetime import timedelta, datetime
-from typing import Dict, Any
-from homeassistant.core import HomeAssistant
+from datetime import UTC, datetime, timedelta
+from typing import Any, ClassVar
+
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from pymodbus.exceptions import ModbusException, ConnectionException
+from pymodbus.exceptions import ConnectionException, ModbusException
+
+from . import ems as ems_module
 from .const import (
-    DOMAIN, INVERTER_MODEL_TREX_TEN, CONF_INVERTER_MODEL,
-    DEFAULT_INVERTER_MODEL, INVERTER_MAX_POWER_KW,
+    CONF_INVERTER_MODEL,
+    DEFAULT_INVERTER_MODEL,
+    DOMAIN,
+    INVERTER_MAX_POWER_KW,
+    INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_FIVE,
-    INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY,
+    INVERTER_MODEL_TREX_TEN,
+    INVERTER_MODEL_TREX_TWENTY_FIVE,
 )
 from .type_specific import TypeSpecificHandler
-from . import ems as ems_module
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +38,7 @@ def _milp_status_snapshot() -> dict | None:
     able to cause one.
     """
     try:
-        from . import milp as milp_module  # noqa: PLC0415
+        from . import milp as milp_module
 
         return milp_module.milp_status()
     except Exception as err:  # pragma: no cover - diagnostic must never raise
@@ -377,7 +383,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return raw  # index 0,4,5,6,7 – raw
 
     #obsolete, think about removing.
-    def _group_addresses(self, reg_map: dict) -> Dict[int, list]:
+    def _group_addresses(self, reg_map: dict) -> dict[int, list]:
         """Group consecutive register addresses to minimize requests."""
         # Note: This method returns a Dict, but _async_update_data expects a list of dicts 
         # with "start", "count", and "keys". Ensure input 'groups' matches that structure.
@@ -673,7 +679,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     def _parse_forecast_time(time_str: str):
         """Try to parse a forecast timestamp string to naive datetime."""
         try:
-            return datetime.fromisoformat(str(time_str).replace("Z", "+00:00")).replace(tzinfo=None)
+            return datetime.fromisoformat(str(time_str)).replace(tzinfo=None)
         except (ValueError, TypeError):
             return None
 
@@ -1182,7 +1188,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         self._last_pv_confidence = smoothed_pv_confidence
 
-    _WEEKDAY_NAMES = [
+    # Inverter bit0=Sunday..bit6=Saturday (see _check_rule1_window_conflict).
+    _WEEKDAY_NAMES: ClassVar[list[str]] = [
         "Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday",
     ]
@@ -1403,7 +1410,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         if not self._ev_boost_max_applied and load.current_steps:
                             await self._set_ev_charger_current(load, max(load.current_steps))
                             self._ev_boost_max_applied = True
-                    except Exception as err:  # noqa: BLE001
+                    except Exception as err:
                         _LOGGER.error("EV boost actuation failed for '%s': %s", load.name, err)
                     break
         else:
@@ -1414,7 +1421,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if is_on:
                     try:
                         await self._set_flex_load(load_idx, False)
-                    except Exception as err:  # noqa: BLE001
+                    except Exception as err:
                         _LOGGER.error("Failed to turn off flex load %d: %s", load_idx, err)
             return
 
@@ -1426,7 +1433,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if self._flex_load_states.get(load_idx, False):
                     try:
                         await self._set_flex_load(load_idx, False, load)
-                    except Exception as err:  # noqa: BLE001
+                    except Exception as err:
                         _LOGGER.error("Failed to turn off flex load '%s': %s", load.name, err)
             return
 
@@ -1443,7 +1450,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                 if should_be_on and load.is_ev_charger and not currently_on:
                     await self._set_ev_charger_current(load, load.default_current)
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 _LOGGER.error("Flex load '%s' actuation failed: %s", load.name, err)
 
     async def _set_flex_load(self, load_idx: int, turn_on: bool,
@@ -1925,14 +1932,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def _query_hourly_from_history(self, entity_id: str, date_str: str) -> dict[str, float]:
         """Query HA recorder for hourly energy breakdown on a given date."""
         try:
+
             from homeassistant.components.recorder import get_instance
             from homeassistant.components.recorder.statistics import (
                 statistics_during_period,
             )
-            from datetime import timezone
 
             start = datetime.strptime(date_str, "%Y-%m-%d").replace(
-                hour=0, minute=0, second=0, tzinfo=timezone.utc
+                hour=0, minute=0, second=0, tzinfo=UTC
             )
             end = start + timedelta(hours=24)
 
@@ -2122,7 +2129,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # Try shedding flexible loads first before reducing battery power
             try:
                 load_shed = await self._safe_power_shed_loads(max_current, max_amperage)
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 _LOGGER.error("Load shedding failed (non-fatal): %s", err)
                 load_shed = False
             if not load_shed:
@@ -2143,7 +2150,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # --- 6. Write if level changed OR user explicitly changed power_level ---
         if safe_level != base_level or user_level_changed:
-            target_watts = int(round(safe_level * 1000))
+            target_watts = round(safe_level * 1000)
             _LOGGER.info("Writing safe power limit: %dW (level %d)%s",
                          target_watts, safe_level,
                          " (user change)" if user_level_changed else "")
@@ -2175,7 +2182,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # In auto mode, use the computed reserve target as the inverter
             # SOC floor so the hardware enforces the same floor the schedule
             # was planned around — not just the lower discharge_min_level.
-            soc_limit = int(round(self._reserve_target_pct))
+            soc_limit = round(self._reserve_target_pct)
             _LOGGER.info(
                 "Discharge SOC floor set to reserve target %d%% "
                 "(discharge_min=%d%%)",
@@ -2231,7 +2238,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 ("econ_rule_1_start_day", date_16bit),
                 ("econ_rule_1_stop_day", date_16bit),
                 ("econ_rule_1_voltage", voltage_level),
-                ("econ_rule_1_power", int(round(self.safe_max_power * 1000))),
+                ("econ_rule_1_power", round(self.safe_max_power * 1000)),
             ]:
                 ok = await self.TypeSpecificHandler.write_type_specific_register(reg, val)
                 if not ok:
@@ -2816,7 +2823,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # charge/discharge schedule regardless of accessory loads.
             try:
                 await self._actuate_flex_loads()
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 _LOGGER.error("Flex load actuation failed (non-fatal): %s", err)
 
             return new_data

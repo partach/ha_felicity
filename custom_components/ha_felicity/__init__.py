@@ -1,13 +1,13 @@
 """The Felicity integration."""
+import logging
 import os
 import shutil
-import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 from homeassistant.helpers import entity_registry as er
-
+from pymodbus.client import AsyncModbusSerialClient, AsyncModbusTcpClient
 
 from .const import (
     CONF_BAUDRATE,
@@ -354,7 +354,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from homeassistant.loader import async_get_integration
         integration = await async_get_integration(hass, DOMAIN)
         coordinator.integration_version = str(integration.version)
-    except Exception as err:  # noqa: BLE001 — version display is non-critical
+    except Exception as err:
         _LOGGER.debug("Could not resolve integration version: %s", err)
 
     # First refresh
@@ -547,8 +547,8 @@ class FelicitySerialHub:
             if self.client.connected:
                 try:
                     self.client.close()
-                except Exception as err:
-                    _LOGGER.exception("Unexpected error closing Felicity connection for serial: %s", err)
+                except Exception:
+                    _LOGGER.exception("Unexpected error closing Felicity connection for serial")
             self.client = None
 
 class FelicityTcpHub:
@@ -571,6 +571,6 @@ class FelicityTcpHub:
             if self.client.connected:
                 try:
                     self.client.close()
-                except Exception as err:
-                    _LOGGER.exception("Unexpected error closing Felicity connection for tcp: %s", err)
+                except Exception:
+                    _LOGGER.exception("Unexpected error closing Felicity connection for tcp")
             self.client = None

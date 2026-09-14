@@ -74,7 +74,12 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 268).
+- Run `python -m pytest tests/` (must stay green; currently **298**) — the whole
+  directory, not just `test_ems.py`.  A broken harness once stopped
+  `test_coordinator.py` collecting entirely while the rest still said "passed";
+  `tests/test_harness_integrity.py` now guards against that, but only if you run it.
+- Run `python tools/ems_simulator.py --no-plot` (exit 0 = all scenarios green).
+  Both are now CI steps, so a red build tells you which one broke.
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +120,16 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 268 tests for the pure EMS algorithm
+├── conftest.py              # Shared HA-free bootstrap: stubs HA/pymodbus, loads the
+│                            #   REAL const.py (never a hand-typed replica — see below)
+├── test_ems.py              # 268 tests for the pure EMS algorithm
+├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
+├── test_select.py           # Select-entity optimistic update (async)
+└── test_harness_integrity.py # Guards the harness itself can't silently stop testing
+
+pytest.ini                   # testpaths + asyncio mode
+requirements-test.txt        # pytest, pytest-asyncio, pulp (no Home Assistant)
+ruff.toml                    # explicit lint rule set (see "Lint & CI" below)
 ```
 
 ---
@@ -2110,7 +2124,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (268 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/` (**298 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2156,12 +2170,58 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - MILP solver diagnosis (`milp_status`: active/disabled/degraded/unknown, names the
   solver, records why each probe failed, disabled engine re-probes only once)
 
-**Not tested**: coordinator.py runtime logic (requires HA mocking).  Since
-the coordinator now delegates to `ems.calculate_schedule()`, algorithm
-drift is structurally prevented.  What remains untested is the coordinator's
-own logic: EMSConfig/EMSState construction, `_determine_energy_state`
-(slot deferral, override bypass), `_transition_to_state` (Modbus writes),
-`_check_safe_power` (current monitoring), and `_actuate_flex_loads`.
+### Test harness: never hand-type a copy of production code
+
+`coordinator.py` and `select.py` import Home Assistant, so the tests stub HA and
+load the module by file path.  That bootstrap lives ONCE in `tests/conftest.py`.
+
+⚠️ **The `const` module is loaded for REAL, never stubbed.** It used to be a
+hand-typed replica in each test file:
+
+```python
+_const_mod = types.ModuleType("custom_components.ha_felicity.const")
+_const_mod.DOMAIN = "ha_felicity"
+_const_mod.INVERTER_MODEL_TREX_TEN = "TREX-10"
+```
+
+A replica is a duplicate of production maintained by hand, so it drifts the
+moment a constant is added — and it did.  `coordinator.py` grew imports for
+`CONF_INVERTER_MODEL`, `DEFAULT_INVERTER_MODEL`, `INVERTER_MAX_POWER_KW` and
+three more model ids; the two-name stub couldn't satisfy them; `ImportError`
+killed collection of the **whole file**.  The failure mode is the dangerous
+part: pytest reported a collection error but everything else still said
+"passed", so **coordinator coverage silently sat at zero** — and CI ran no tests
+at all, so nothing surfaced it.  `const.py` and the four `trex_*.py` register
+maps are HA-free, so `conftest.load_component("const")` imports the genuine
+article.  It cannot drift from itself.
+
+**`tests/test_harness_integrity.py` guards this**: it asserts `const` is the real
+module (not a MagicMock), statically scans every component module for
+`from .const import ...` and fails if any name is missing, and checks each HA-free
+module still loads for real.  Verified by reintroducing the old stub — all three
+tests fail.  The static scan would have caught the original drift on the *first*
+commit that added `CONF_INVERTER_MODEL`.
+
+`pymodbus.client` is stubbed alongside `pymodbus`/`pymodbus.exceptions` even
+though no test reaches it today — `__init__.py` and `config_flow.py` already
+import from it, so any test that loads one of those (or a module later split out
+of `coordinator.py`) would otherwise fail on an unstubbed import.
+
+**Still not covered**: `_transition_to_state` Modbus writes, `_check_safe_power`
+current monitoring and `_actuate_flex_loads` — `test_coordinator.py` covers
+resilience paths (stale data, fault isolation, register grouping) rather than
+the full control loop.  Since the coordinator delegates scheduling to
+`ems.calculate_schedule()`, algorithm drift is structurally prevented regardless.
+
+### Lint & CI
+
+CI (`.github/workflows/ci.yml`) runs, in order: **ruff** (pinned `0.16.7`, rules
+in `ruff.toml`), **pytest** (`tests/`), then the **EMS scenario simulator**
+(`tools/ems_simulator.py --no-plot`, exit-code gated).  Pytest and the simulator
+were added Sept 2026 — CI previously ran lint only, which is why a dead test file
+went unnoticed.  The ruff pin is deliberate: it was unpinned, and ruff 0.16
+expanded its default rule set from 59 rules to 413, turning a green build into
+211 errors with no code change.
 
 ---
 
