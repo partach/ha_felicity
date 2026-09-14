@@ -18,6 +18,18 @@ scenario and/or `tests/test_ems.py`.
 1. **Engine default = greedy; MILP opt-in.** Greedy has a multi-month track
    record and no solver dependency. MILP is the joint 2-day optimiser but is
    validated per-scenario before it can become default again.
+   **Selecting MILP is a request, not a guarantee** — when no LP solver is
+   runnable the EMS falls back to greedy and the card's engine chip reads
+   "Greedy (fallback)".  The schedule is still correct; only the optimiser
+   differs.  Since Sept 2026 the *reason* is reported rather than buried in a
+   log line: `milp.milp_status()` → the **`milp_status`** attribute on
+   `schedule_status` → the chip's hover tooltip, with `state` one of
+   `active` / `disabled` (structural, until restart) / `degraded` (a
+   non-Optimal slot, cleared by the next healthy solve) / `unknown`, plus the
+   solver in use and why every probed solver was rejected.
+   `tools/check_milp.py` gives the same verdict standalone.
+   Note `pulp` is pinned `<4.0`: PuLP 4.0 removes the bundled `PULP_CBC_CMD`,
+   which would otherwise disable MILP for every install at once.
 2. **Reserve is time-aware (from_grid + MILP all modes).** Past sunset the
    overnight reserve covers only the REMAINING hours to sunrise, not the full
    night — so a high-consumption house isn't forced to charge at peak evening
@@ -117,6 +129,67 @@ scenario and/or `tests/test_ems.py`.
     "consumption-arbitrage myopia" fix — greedy buys cheap night energy to
     displace pricier daytime/evening consumption, which the joint MILP did
     natively.
+13. **MILP midnight reserve is self_consumption-only (July 2026).** The
+    `soc[midnight] ≥ reserve` soft constraint is the self-sufficiency
+    contract ("battery full tonight" / today-first).  Applied to ALL
+    priorities it forced cost-mode to charge EXPENSIVE evening slots to hit
+    the reserve by 00:00 even when cheap slots came right after midnight
+    (low-SOC recovery at 18:00: MILP charged 3× 0.30 slots; greedy correctly
+    charged 1 + cheap after midnight — the same no-safety-swap economics).
+    Now cost/longevity keep only the per-slot `soc ≥ soc_min` hardware floor
+    (which still forces SOME today charging for survival) and the
+    end-of-horizon reserve; deferring the reserve fill to a cheaper tomorrow
+    is allowed, mirroring greedy (`test_cost_mode_may_defer_to_tomorrow`).
+    Self_consumption keeps the midnight constraint
+    (`TestSelfSufficiencyTodayFirst`).
+14. **Spill reduction — equal-price charges placed to absorb PV (July 2026).**
+    Shared post-processing (`_reduce_charge_spill`, both engines): a charge
+    slot is relocated to an equal-or-cheaper-priced slot when that buys less
+    grid for the same end/min SOC.  Charging just before a solar peak fills
+    the battery so the PV surplus spills; the same-priced slot after the peak
+    lets the sun fill first (measured 11% cheaper, zero spill on
+    `self_suff_flat_low_soc`).  Guards: cost strictly drops, end SOC and
+    minimum SOC never drop (the early-charge buffer is never traded away),
+    never to a dearer slot, negative-price / currently-executing slots never
+    move, and it runs before urgent recovery.  Best-improvement order keeps
+    the earliest slot in place and moves the last redundant one past the
+    peak.  Pinned by `TestSpillReduction`.
+15. **Self-consumption top-off is bounded by the HORIZON NEED, not by
+    physical headroom (Sept 2026).**  The top-off buys above the survival
+    deficit to store energy for later self-use — but only while there IS a
+    later shortfall for it to cover.  Before it buys, the greedy selector
+    computes the two-day energy balance (`_topoff_horizon_need_kwh`):
+
+        need = (rest-of-today + tomorrow consumption)
+             - (rest-of-today PV + trusted tomorrow PV)
+             - the battery's usable energy right now
+
+    and caps the fill at `need`.  When `need <= 0` the house is already
+    covered by the battery plus the forecast, so a kWh bought now has no
+    consumer inside the horizon: it sits through a whole solar day, pays the
+    round trip plus a cycle of wear, and then has to make room for PV that
+    arrives free — ending up spilled or exported at midday prices.
+    Customer case: 76.8 kWh battery at 78% SOC at 11:00, 9.4 kWh of PV left
+    today but **47 kWh forecast for tomorrow**, cheapest remaining slot still
+    0.30 EUR/kWh, deficit 0.0 kWh — greedy still booked 10 slots / 18 kWh
+    (~EUR 6) purely to reach 100%.  MILP bought nothing on identical inputs
+    (its terminal reward is capped at the reserve — decision #11 above), so
+    this brings greedy in line rather than inventing new behaviour.
+    **Scope is strictly discretionary**: the survival deficit, the reserve
+    target and urgent recovery are computed separately and are never reduced
+    by the cap — it can lower what we buy for comfort, never what we buy to
+    survive the night (`test_survival_deficit_still_covered_under_big_pv_tomorrow`).
+    Tomorrow's PV is credited only up to tomorrow's OWN consumption (surplus
+    beyond that displaces no purchase we were going to make) and only at
+    `_TOMORROW_PV_TRUST = 0.8` of the forecast, so an optimistic forecast can
+    never talk the EMS out of a genuinely-needed top-off.  With no tomorrow
+    forecast the credit is 0 and behaviour is unchanged.  Same battery and
+    prices with a DARK tomorrow still tops off — pinned in both directions by
+    `TestTopOffHorizonNeed` and the `self_suff_big_pv_tomorrow_no_topoff` /
+    `self_suff_dark_tomorrow_still_tops_off` simulator scenarios.
+    `pv_forecast_tomorrow` was added to the coordinator's skip-recalc hash at
+    the same time: tomorrow's forecast is now a first-class input to TODAY's
+    plan, so a front moving in must re-plan immediately.
 
 ---
 
@@ -380,6 +453,17 @@ Excess today slots are replaced with tomorrow slots when possible. Negative-pric
 
 **Bridge to tomorrow — intentionally no swap**: When tomorrow slots are selected and the overnight projection would dip toward the floor, the algorithm does NOT swap them for expensive today slots. The inverter switches the house to grid passthrough once SOC reaches `discharge_min_kwh`, so the battery cannot drain below the floor from consumption. Forcing today-charging to "bridge" the night would cost more than simply consuming from grid overnight (round-trip losses on top of the same prices) — charging stays deferred to tomorrow's cheaper slots.
 
+**Self-consumption top-off** (`optimization_priority = self_consumption` only): after the deficit is covered, the battery is filled toward max SOC from slots cheap enough to beat round-trip losses (`price <= efficiency² × mean remaining price`). It is bounded by **two** caps, and takes the smaller:
+
+```
+physical headroom = max_battery_kwh - current_kwh - net_pv_surplus - already committed
+horizon need      = (rest-of-today + tomorrow consumption)
+                  - (rest-of-today PV + min(0.8 × pv_forecast_tomorrow, tomorrow consumption))
+                  - (current_kwh - min_kwh)
+```
+
+The horizon need answers "is there actually a shortfall left for this energy to cover before tomorrow's sun has refilled the battery?". When it is `<= 0`, nothing is bought: the energy would sit through a whole solar day, lose the round trip, and then displace free PV. This is what stops a big-solar-tomorrow day from filling the battery with expensive grid (see decision #15). It bounds the **discretionary** top-off only — the deficit, the reserve target and urgent recovery are untouched.
+
 **Charge-to-full on negative price**: When `charge_to_full_on_negative_price = on`, every negative-price slot in the remaining window is added to the charge set after normal selection (deduplicated).
 
 ### Step 3: SOC Validation
@@ -561,7 +645,11 @@ The schedule is recalculated periodically. Every 10 seconds, the coordinator:
 
 ### Skip-Recalc Optimization
 
-A hash of the schedule inputs (prices, SOC, PV forecast, deficit, overrides, power) is computed each cycle. When the hash and the current slot index are both unchanged from the previous cycle, the expensive schedule recalculation is skipped entirely. The hash resets on grid_mode changes.
+A hash of the schedule inputs (grid mode, SOC to 0.1%, today's and tomorrow's prices, today's and **tomorrow's** PV forecast, PV actual, yesterday's deficit, slot overrides, safe power, EV strategy, engine) is computed each cycle. When the hash and the current slot index are both unchanged from the previous cycle, the expensive schedule recalculation is skipped entirely. The hash resets on grid_mode changes, and the recalc always runs on a slot boundary.
+
+This is what makes the EMS react to new information as it arrives rather than on a fixed timer: tomorrow's prices publishing (~13:00), a revised solar forecast, or the SOC moving because an EV started charging all change the hash and trigger an immediate re-plan on the next 10 s tick. `pv_forecast_tomorrow` was added to the hash in Sept 2026 — it became a first-class input to *today's* plan when the self-consumption top-off gained the horizon-need cap (decision #15), so a front moving in must re-plan today immediately instead of waiting for the next slot boundary.
+
+Sustained-load detection is separate and deliberately slower: the coordinator only hands the algorithm a `predicted_soc_pct` (which enables the consumption-deviation correction) once the actual SOC has run significantly below the predicted trajectory for `DEVIATION_MIN_DURATION_S` = **30 minutes**. That filters kettles and oven preheats while still catching a real EV or air-conditioning load, and it resets the moment consumption returns to trend.
 
 ### Slot Override Validation
 

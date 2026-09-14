@@ -175,6 +175,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     key
                 )
 
+    # ── 3b. Safety net: EMS control registers are ALWAYS polled ────────────
+    # The Economic-mode self-heal watchdog
+    # (`coordinator._ensure_economic_mode_when_active`) reads the operating-mode
+    # register every cycle and re-applies Rule 1 when the inverter has silently
+    # dropped back to General mode — in which case it ignores Rule 1 and the
+    # battery sits inert.  That watchdog is a NO-OP when the register isn't in
+    # the selected register set: it reads `None` and returns early, so the
+    # protection is silently absent.  Audit of the shipped sets:
+    #   TREX-5/10  `operating_mode`: basic ✓, basic_plus ✗, full ✓
+    #   TREX-25/50 `eco_timeofuse` : basic ✗, basic_plus ✗, full ✓
+    # i.e. TREX-25/50 on the DEFAULT ("basic") set had no self-heal at all —
+    # and those are exactly the models the inert "enable=charge, mode=General"
+    # bug was first reported on.  `econ_rule_1_enable` is included too so the
+    # heal can report whether Rule 1 was actually still armed.
+    # Force-include them regardless of the chosen set: a handful of registers,
+    # negligible poll cost, and it can't drift out of sync with a future set.
+    ems_control_keys = ("operating_mode", "eco_timeofuse", "econ_rule_1_enable")
+    forced_keys = [
+        key for key in ems_control_keys
+        if key in registers and key not in selected_registers
+    ]
+    for key in forced_keys:
+        selected_registers[key] = registers[key]
+    if forced_keys:
+        _LOGGER.debug(
+            "Safety net: force-included EMS control register(s) %s in set '%s' "
+            "(required by the Economic-mode self-heal watchdog)",
+            ", ".join(forced_keys), register_set_key,
+        )
+
     # ── 4. Nordpool & options migration/defaults ───────────────────────────
     updated_options = dict(options)
     defaults_to_set = {

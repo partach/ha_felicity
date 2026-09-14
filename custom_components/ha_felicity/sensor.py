@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -173,6 +173,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
         return {
             "schedule_reason": self.coordinator.schedule_reason,
             "scheduler_active": self.coordinator.scheduler_active,
+            "milp_status": self.coordinator.milp_status,
             "cheap_slots_remaining": self.coordinator.cheap_slots_remaining,
             "grid_energy_planned_kwh": self.coordinator.grid_energy_planned,
             "scheduled_slot_count": len(scheduled),
@@ -323,6 +324,18 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
         self._attr_device_class = info.get("device_class")
         self._attr_state_class = info.get("state_class")
 
+        # Read-only enum register (e.g. type "status" with an options list,
+        # like working_mode @ 4353): render the option LABEL ("Line") instead
+        # of the raw register value (5), as a proper HA enum sensor.
+        self._enum_options: list[str] | None = None
+        if info.get("options") and info.get("type") not in (
+            "select", "select_multi",
+        ):
+            self._enum_options = list(info["options"])
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = self._enum_options
+            self._attr_state_class = None  # enum sensors carry no state class
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
@@ -330,6 +343,13 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
 
         if value is None:
             self._attr_native_value = None
+        elif self._enum_options is not None:
+            try:
+                self._attr_native_value = self._enum_options[int(value)]
+            except (IndexError, ValueError, TypeError):
+                # Unknown enum value — surface nothing rather than an invalid
+                # state (ENUM sensors reject states outside their options).
+                self._attr_native_value = None
         else:
             # Value is already scaled in the coordinator
             # Only apply precision rounding if it's a float

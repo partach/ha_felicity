@@ -119,6 +119,18 @@ def morning_evening_peak_profile(total=12.0):
     return {h: round(total * w / tot, 3) for h, w in weights.items()}
 
 
+def low_night_daytime_profile(total=38.5, night_w=0.85, day_w=2.1):
+    """Low overnight, steady daytime load (heat pump / home-office household).
+
+    Matches the customer card that reported ~38.5 kWh/d with only ~9.4 kWh of
+    it overnight — the shape that makes the profile-aware overnight reserve
+    (and the top-off horizon balance) meaningfully different from a flat average.
+    """
+    weights = {h: (night_w if (h >= 21 or h < 7) else day_w) for h in range(24)}
+    tot = sum(weights.values())
+    return {h: round(total * w / tot, 3) for h, w in weights.items()}
+
+
 def heavy_flat_profile(total=40.0):
     """Heavy but roughly flat load (e.g. always-on industrial / heat pump)."""
     return {h: round(total / 24.0, 3) for h in range(24)}
@@ -607,6 +619,70 @@ SCENARIOS = [
         "expect": lambda r, s: (
             (min(r["sell_prices"]) >= 0.30) if r["sell_prices"] else False,
             f"sells into the evening peak (sell prices={r['sell_prices']})",
+        ),
+    },
+
+    {
+        "name": "self_suff_big_pv_tomorrow_no_topoff",
+        "desc": "CUSTOMER CASE (Sept 2026): 77 kWh battery at 78% SOC, 11:00, dull day "
+                "(9.4 kWh PV) but 47 kWh of sun forecast for TOMORROW, and today's "
+                "cheapest remaining slot is still 0.30/kWh.  Deficit is 0 — the "
+                "battery plus tomorrow's sun already cover everything we will use. "
+                "Topping off to 100% here buys ~18 kWh of expensive grid that the "
+                "sun is about to deliver free, so it must NOT charge.",
+        "single_day": True,      # 11:00 — tomorrow's PRICES aren't published yet
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=76.8, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=38.5),
+        "state": dict(battery_soc_pct=78.0,
+                      slot_prices_today=inverse_solar_prices(
+                          low=0.30, mid=0.40, peak=0.65, sunrise=6, sunset=20),
+                      pv_hourly_kwh=pv_bell(9.4, sunrise=7, sunset=19),
+                      consumption_hourly_kwh=low_night_daytime_profile(38.5),
+                      pv_actual_today_kwh=0.3, pv_forecast_today=9.4,
+                      pv_forecast_remaining=6.8, pv_forecast_tomorrow=47.0,
+                      current_hour=11, current_minute=0),
+        "expect": lambda r, s: (
+            len(r["charge_slots"]) == 0,
+            f"no expensive top-off when 47 kWh of sun is forecast for tomorrow "
+            f"(got {len(r['charge_slots'])} slots: {r['charge_prices']})",
+        ),
+    },
+
+    {
+        "name": "self_suff_dark_tomorrow_still_tops_off",
+        "desc": "MIRROR of self_suff_big_pv_tomorrow_no_topoff — identical inputs except "
+                "tomorrow is DARK (4 kWh).  Now there IS a shortfall coming, so the "
+                "self-consumption top-off must still buy the cheap end of the curve. "
+                "Pins that the horizon cap suppresses only pointless buying, and "
+                "hasn't simply disabled the top-off.\n"
+                "        Greedy-only assertion: the top-off is a greedy construct.  At 11:00 "
+                "tomorrow's PRICES aren't published yet, so the MILP's horizon is today "
+                "alone and its terminal reward is capped at the reserve — with SOC above "
+                "reserve it has nothing to optimise for and correctly buys nothing.  Both "
+                "engines are still required not to touch the expensive slots.",
+        "single_day": True,
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=76.8, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=38.5),
+        "state": dict(battery_soc_pct=78.0,
+                      slot_prices_today=inverse_solar_prices(
+                          low=0.30, mid=0.40, peak=0.65, sunrise=6, sunset=20),
+                      pv_hourly_kwh=pv_bell(9.4, sunrise=7, sunset=19),
+                      consumption_hourly_kwh=low_night_daytime_profile(38.5),
+                      pv_actual_today_kwh=0.3, pv_forecast_today=9.4,
+                      pv_forecast_remaining=6.8, pv_forecast_tomorrow=4.0,
+                      current_hour=11, current_minute=0),
+        "expect": lambda r, s: (
+            (max(r["charge_prices"]) <= 0.34 + 1e-6) if r["charge_prices"]
+            else r["engine"] != "greedy",
+            f"tops off from the cheap end when tomorrow is dark "
+            f"(engine={r['engine']}, slots={len(r['charge_slots'])}, "
+            f"prices={r['charge_prices']})",
         ),
     },
 ]

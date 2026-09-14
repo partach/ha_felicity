@@ -202,6 +202,23 @@ class FelicityEMSCard extends LitElement {
     return entity.attributes?.[attr];
   }
 
+  // Explain the engine chip on hover. "Greedy (fallback)" on its own tells the
+  // user the MILP solver failed but not WHY \u2014 the reason used to exist only in
+  // a single HA log warning, long rotated away by the time anyone looks.
+  _milpTooltip() {
+    const st = this._getAttr("schedule_status", "milp_status");
+    if (!st || !st.state) return "Scheduler engine";
+    if (st.state === "active") {
+      return `MILP running${st.solver ? ` (solver: ${st.solver})` : ""}`;
+    }
+    const tried = Array.isArray(st.tried) && st.tried.length
+      ? `\nProbed: ${st.tried.join(", ")}` : "";
+    const hint = st.state === "disabled"
+      ? "\nInstall a solver: pip install pulp[cbc]  (or pulp[highs]), then restart HA."
+      : "";
+    return `MILP not running \u2014 ${st.reason || "reason unknown"}${tried}${hint}`;
+  }
+
   // Helper: safely format a number, returns fallback string if value is null/undefined
   _fmt(val, decimals, fallback = "\u2014") {
     if (val == null || (typeof val === "number" && isNaN(val))) return fallback;
@@ -2140,7 +2157,8 @@ class FelicityEMSCard extends LitElement {
             <div class="status-bar">
               ${operationalMode ? html`<span class="status-chip mode">${operationalMode}</span>` : ''}
               ${schedulerEngine === "milp" ? html`
-                <span class="status-chip engine ${schedulerActive === 'greedy_fallback' ? 'fallback' : ''}">${schedulerActive === 'milp' ? 'MILP' : schedulerActive === 'greedy_fallback' ? 'Greedy (fallback)' : 'Greedy'}</span>
+                <span class="status-chip engine ${schedulerActive === 'greedy_fallback' ? 'fallback' : ''}"
+                      title="${this._milpTooltip()}">${schedulerActive === 'milp' ? 'MILP' : schedulerActive === 'greedy_fallback' ? 'Greedy (fallback)' : 'Greedy'}</span>
               ` : ''}
               ${safeMaxKw != null ? html`
                 <span class="status-chip power ${isThrottled ? 'throttled' : ''}">Active power ${this._fmt(safeMaxKw, 1)} kW</span>

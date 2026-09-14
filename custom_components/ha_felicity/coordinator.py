@@ -23,6 +23,26 @@ from . import ems as ems_module
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _milp_status_snapshot() -> dict | None:
+    """Read milp.py's solver diagnosis, tolerating a missing/broken module.
+
+    Imported lazily and defensively: milp.py is optional (it needs pulp), and
+    the whole point of this call is to explain a failure — it must never be
+    able to cause one.
+    """
+    try:
+        from . import milp as milp_module  # noqa: PLC0415
+
+        return milp_module.milp_status()
+    except Exception as err:  # pragma: no cover - diagnostic must never raise
+        return {
+            "state": "disabled",
+            "reason": f"MILP module unavailable: {type(err).__name__}: {err}",
+            "solver": "",
+            "tried": [],
+        }
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -119,6 +139,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.schedule_status: str = "unknown"
         self.schedule_reason: str = ""
         self.scheduler_active: str = "greedy"
+        # {"state","reason","solver","tried"} when scheduler_engine == "milp",
+        # else None.  Surfaced as the `milp_status` schedule_status attribute so
+        # a "Greedy (fallback)" chip can explain itself in the UI.
+        self.milp_status: dict | None = None
 
         # Consumption tracking & persistent storage
         self.consumption_override_entity = consumption_override_entity
@@ -952,6 +976,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             tuple(self.slot_prices_today) if self.slot_prices_today else None,
             tuple(self.slot_prices_tomorrow) if self.slot_prices_tomorrow else None,
             round(self.pv_forecast_today, 2) if self.pv_forecast_today else None,
+            # Tomorrow's forecast is a first-class input to TODAY's plan: the
+            # self-consumption top-off is capped by the horizon energy need
+            # (see ems._topoff_horizon_need_kwh), so a front moving in — 47 kWh
+            # of forecast sun dropping to 10 — must re-plan today immediately,
+            # not wait for the next slot boundary.
+            round(self.pv_forecast_tomorrow, 2) if self.pv_forecast_tomorrow else None,
             round(self.pv_actual_today_kwh, 2) if self.pv_actual_today_kwh else None,
             self._yesterday_deficit,
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
@@ -1087,6 +1117,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 f"Manual override: {action_now} this slot"
             )
         self.scheduler_active = result.scheduler_active
+        # Capture WHY when the MILP engine is selected but greedy is running.
+        # The reason previously lived only in a one-off WARNING that has usually
+        # rotated away by the time anyone asks "why does my card say fallback?".
+        if opts.get("scheduler_engine", "greedy") == "milp":
+            self.milp_status = _milp_status_snapshot()
+        else:
+            self.milp_status = None
         # Recompute SOC trajectory with the finalized schedule (including
         # any merged manual overrides).  Without this, the trajectory shows
         # the pre-override plan — so manually-added charge slots don't
@@ -2302,15 +2339,31 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         else:
             return
 
+        rule_enable = self.data.get("econ_rule_1_enable")
         _LOGGER.warning(
-            "Self-heal: inverter dropped out of Economic mode (register=%s) "
-            "while state=%s — re-asserting operating mode so Rule 1 resumes "
-            "(battery was likely sitting inert)",
-            register_val, self._current_energy_state,
+            "Self-heal: inverter dropped out of Economic mode (register=%s, "
+            "rule_1_enable=%s) while state=%s — re-applying the full Rule 1 "
+            "state so charging actually resumes (battery was likely sitting "
+            "inert)",
+            register_val,
+            "unknown" if rule_enable is None else rule_enable,
+            self._current_energy_state,
         )
-        ok = await self.TypeSpecificHandler.write_type_specific_register(
-            "operating_mode", enable_value
-        )
+        # Re-apply the FULL active state, not just the operating mode.
+        #
+        # Whatever knocked the inverter out of Economic mode (firmware quirk,
+        # Felicity app, power blip) can also have cleared `econ_rule_1_enable`
+        # and the rule's SOC/voltage/power parameters.  Restoring only the mode
+        # would then leave Rule 1 disabled — the battery stays inert AND the
+        # watchdog goes quiet, because the mode register now reads Economic
+        # again.  A silent, unrecoverable-until-next-state-change failure.
+        #
+        # `_transition_to_state` is the single atomic write path (mode first,
+        # then enable, then the rule parameters) and every write in it is
+        # idempotent, so re-applying the current state is safe.  The trigger is
+        # unchanged — this only runs when the mode register actually reads
+        # non-Economic — so it adds no extra write traffic in the normal case.
+        ok = await self._transition_to_state(self._current_energy_state)
         if ok:
             # Reflect the re-assertion in cached data so we don't re-trigger
             # before the next read.
@@ -2320,6 +2373,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self.data["eco_timeofuse"] = 1
             else:
                 self.data["operating_mode"] = 2
+            self.data["econ_rule_1_enable"] = enable_value
         else:
             _LOGGER.error(
                 "Self-heal: failed to re-assert Economic mode for state %s",

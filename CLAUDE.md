@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 250).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 268).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 250 tests for the pure EMS algorithm
+└── test_ems.py              # 268 tests for the pure EMS algorithm
 ```
 
 ---
@@ -228,7 +228,14 @@ do NOT set the flag (they can be input-dependent and recover next slot).
   power), `spill[k]` (PV curtailment), `soc[k]`.
 - SOC dynamics: `soc[k] = soc[k-1] + net_pv[k] - load[k] + eff·c[k] - d[k] - spill[k]`.
 - Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`;
-  `soc[midnight] ≥ reserve_target` (prevents cross-day deferral).
+  `soc[midnight] ≥ reserve_target` **(self_consumption only, July 2026)** —
+  the full-reserve-by-midnight demand is the self-sufficiency contract.  In
+  cost/longevity it forced expensive-evening charging when cheap slots came
+  right after midnight (low-SOC recovery at 18:00 charged 3× 0.30 slots;
+  greedy correctly charged 1 + cheap after 00:00).  Cost mode relies on the
+  per-slot `soc ≥ soc_min` floor (still forces SOME today charging for
+  survival) + the end-of-horizon reserve, mirroring greedy's
+  may-defer-to-tomorrow economics.
 - Objective: minimise `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal_value·soc[end]`.
   Terminal value = `avg_price × efficiency`.  No per-priority boost — pushing
   terminal value higher (e.g. P90) would charge at uneconomic prices.
@@ -256,9 +263,39 @@ as a subprocess — both are blocking operations.  The coordinator runs
 `calculate_schedule` in an executor thread (`async_add_executor_job`)
 so the MILP never blocks the HA event loop.
 
-**Dependency**: `pulp>=2.7.0` (bundles the CBC solver). Lazy-imported so
-`ems.py` works without it. On hardware where the CBC binary won't run, the
-fallback keeps the EMS functional on greedy.
+**Dependency**: `pulp>=2.7.0,<4.0`. Lazy-imported so `ems.py` works without it.
+On hardware where the CBC binary won't run, the fallback keeps the EMS
+functional on greedy.
+
+⚠️ **The `<4.0` bound is deliberate (Sept 2026).** PuLP 3.2+ deprecates
+`PULP_CBC_CMD` and **removes it in PuLP 4.0** — the bundled CBC binary moves to
+a separate `cbcbox` package (`pip install pulp[cbc]`). The manifest previously
+read `pulp>=3.2.0` with no upper bound, so the day PuLP 4.0 ships, HA would
+install it and MILP would break for **every** user at once (no bundled solver,
+and no system CBC inside the HA container). Before relaxing the bound, add
+`pulp[cbc]` or `pulp[highs]` to `requirements` and verify the extra installs on
+ARM. `_pick_solver` already probes `HiGHS`/`HiGHS_CMD` after the two CBC
+variants — HiGHS is a pure pip wheel (`pip install pulp[highs]`), so it is the
+easiest solver to add inside an HA container.
+
+**Diagnosing "Greedy (fallback)"** (`milp.milp_status()`): the engine can fail
+four distinct ways — pulp missing, no runnable solver, the solver binary absent
+despite `.available()`, or a non-Optimal solve. Each logged ONE warning and then
+threw the reason away, so by the time a user asked "why is MILP not loading?"
+the log had rotated and the answer was unrecoverable. `milp_status()` now keeps
+it as `{state, reason, solver, tried}` — `state` is `active` / `disabled`
+(process-lifetime, structural) / `degraded` (a non-Optimal slot; cleared by the
+next healthy solve) / `unknown`. The coordinator snapshots it into
+`self.milp_status` whenever `scheduler_engine == "milp"`, `sensor.py` exposes it
+as the **`milp_status`** attribute on `schedule_status`, and the card's engine
+chip carries it as a hover tooltip (`_milpTooltip`) including the install hint.
+`tried` lists every probed solver with WHY it was rejected
+(`PULP_CBC_CMD(absent)`, `COIN_CMD(not available)`, …) — that one line
+distinguishes "pulp is too new" from "no solver on this arch".
+`tools/check_milp.py` is a standalone probe users can run inside the HA
+interpreter for an immediate verdict without updating first.
+Pinned by `TestMILPStatusDiagnosis` (incl. that a disabled engine re-probes
+exactly **once**, never per-tick).
 
 **Tests**: `TestMILPScheduler` in `test_ems.py` (skipped when pulp absent).
 Loads `milp.py` via the same spec-loader trick as `ems.py` and registers
@@ -360,8 +397,34 @@ inverter can drop out of Economic mode *after* a successful transition
 believes it's charging/discharging.  No state change → nothing re-writes the
 mode → battery sits inert.  This check runs every cycle: when in an active
 state but the Economic-mode register reads off (`eco_timeofuse`!=1 on
-TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-asserts the operating
-mode.  Idempotent (only writes when the register actually shows General).
+TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-applies the state.
+Idempotent (only fires when the register actually shows General).
+
+**It re-applies the FULL state, not just the mode (fixed Sept 2026).** The heal
+used to write only the operating mode.  But whatever knocked the inverter out
+of Economic mode can also have cleared `econ_rule_1_enable` and the rule's
+SOC/voltage/power parameters — and restoring only the mode then leaves Rule 1
+*disabled*: the battery stays inert **and the watchdog goes quiet**, because the
+mode register now reads Economic again.  That's a silent failure that persists
+until the next real state change.  The heal now calls `_transition_to_state(
+current_state)` — the single atomic write path (mode → enable → rule params),
+every write idempotent — so Rule 1 genuinely resumes.  The trigger is unchanged
+(mode register non-Economic), so it adds no write traffic in the normal case.
+The warning now also reports the observed `econ_rule_1_enable`.
+
+⚠️ **The watchdog register must be POLLED or the self-heal silently does
+nothing.** It reads the mode from `self.data`; when the register isn't in the
+selected register set it reads `None` and returns early — protection absent,
+no log.  The shipped sets had real gaps: `operating_mode` was missing from
+`basic_plus` (TREX-5/10) and `eco_timeofuse` from **both `basic` (the DEFAULT)
+and `basic_plus`** on TREX-25/50 — i.e. TREX-25/50 users on the default set had
+**no self-heal at all**, on exactly the models where the inert
+"enable=charge, mode=General" bug was first reported.  Fixed centrally in
+`__init__.async_setup_entry` (step 3b), which force-includes
+`operating_mode` / `eco_timeofuse` / `econ_rule_1_enable` into the selected
+register set regardless of the chosen set — a handful of registers, negligible
+poll cost, and it can't drift when a future register set is added.  **If you
+add a register the control loop depends on, add it there too.**
 
 **Minimum charge commitment (anti flip-flop)**: when SOC hovers near the
 reserve target, the schedule's marginal deficit can flip in/out of "charge"
@@ -582,7 +645,10 @@ overrides the no-swap rule.  `select_unified_charge_slots` forces today's
 `energy_deficit` onto today's slots even when tomorrow is cheaper.  Without
 this, the user sees "tomorrow never comes" — every day defers to the next.
 The MILP enforces this via a midnight SOC boundary constraint
-(`soc[midnight_slot] >= reserve_target`).
+(`soc[midnight_slot] >= reserve_target`) — scoped to **self_consumption
+only** (in cost mode it forced expensive-evening charging when cheap slots
+came right after midnight; cost survival is covered by the per-slot
+`soc >= soc_min` floor instead).
 `TestSelfSufficiencyTodayFirst` pins both.
 
 ### Per-Slot SOC Validation
@@ -655,6 +721,68 @@ delivered energy already meets the target).  Pinned by
 `TestGreedyReshopAfterOverflow` (re-shops a cheap slot; never an expensive
 one).  This closes most of the greedy/MILP gap on undersized-battery /
 heavy-load days without touching MILP.
+
+### Top-Off Horizon Cap (self_consumption, Sept 2026)
+
+**Physical headroom is not a reason to buy.** The self-consumption top-off
+fills the battery toward max SOC for later self-use — but storing energy only
+pays when there IS a later shortfall for it to cover.  Before it buys, the
+selector computes the two-day energy balance (`_topoff_horizon_need_kwh`):
+
+```
+need = (rest-of-today consumption + tomorrow consumption)
+     - (rest-of-today PV + min(0.8 × pv_forecast_tomorrow, tomorrow consumption))
+     - (current_kwh - min_kwh)                 # the battery's usable energy
+room = min(physical headroom - committed, need)
+```
+
+When `need <= 0` the house is already covered by the battery plus the
+forecast, so a kWh bought now has **no consumer inside the horizon**: it sits
+through a whole solar day, pays the round-trip loss and a cycle of wear, and
+then has to make room for PV that arrives free — ending up spilled or exported
+at midday prices.
+
+**Real customer report (the screenshot this was built from):** 76.8 kWh
+battery at **78% SOC at 11:00**, dull day (9.4 kWh PV left) but **47 kWh of sun
+forecast for tomorrow**, on a curve whose cheapest remaining slot was still
+**0.30 €/kWh**.  Survival deficit **0.0 kWh** — yet greedy booked **10 slots /
+18 kWh (~€6)** purely to reach 100%.  The MILP bought **nothing** on identical
+inputs (its terminal reward is capped at the reserve), so this cap brings
+greedy into line rather than inventing new behaviour.  After the fix greedy
+also buys nothing and the card explains why: *"Battery (78%) plus 47 kWh of sun
+forecast for tomorrow already covers what we'll use — buying now would only
+displace free solar."*
+
+**Scope is strictly discretionary.** The survival deficit, the reserve target
+and urgent recovery are computed separately and are never reduced by this cap —
+it can lower what we buy for comfort, never what we buy to survive the night.
+Measured gradient on the customer's inputs (greedy, 11:00):
+
+| SOC | sunny tomorrow (47 kWh) | dark tomorrow (4 kWh) |
+|---|---|---|
+| 90% | 0 slots · €0.00 | 0 slots · €0.00 |
+| 78% | **0 slots · €0.00** | **6 slots · €3.63** |
+| 60% | 4 slots · €2.41 | 17 slots · €10.56 |
+| 45% | 12 slots · €7.33 | 20 slots · €12.60 |
+| 22% | 20 slots · €12.60 | 20 slots · €12.60 |
+
+Guards that keep it conservative:
+- Tomorrow's PV is credited only up to **tomorrow's own consumption** (surplus
+  beyond that displaces no purchase we were going to make anyway).
+- Only `_TOMORROW_PV_TRUST = 0.8` of the forecast is credited — a forecast is a
+  prediction, not a measurement, so one optimistic sunny forecast can never
+  talk the EMS out of a genuinely-needed top-off.  (Today's remaining PV needs
+  no haircut: it is already confidence-scaled from actual-vs-expected output.)
+- **No tomorrow forecast → credit 0 → behaviour unchanged** (back-compat for
+  new installs and installs without a forecast entity).
+- Profile-aware when `consumption_hourly_kwh` exists, flat average otherwise.
+
+Because tomorrow's forecast now drives TODAY's plan, `pv_forecast_tomorrow` was
+added to the coordinator's skip-recalc hash — a front moving in (47 kWh forecast
+dropping to 10) re-plans immediately instead of waiting for the next slot
+boundary.  Pinned in both directions by `TestTopOffHorizonNeed` /
+`TestTopOffHorizonNeedUnit` and the `self_suff_big_pv_tomorrow_no_topoff` /
+`self_suff_dark_tomorrow_still_tops_off` simulator scenarios.
 
 ### Arbitrage Price Delta (both mode) — the TRADE TRIGGER
 
@@ -1262,7 +1390,9 @@ Deficit = max(snapshot_deficit, predictive_deficit) + yesterday_deficit:
   slots when `optimization_priority == "self_consumption"`.
 - **Self-consumption top-off**: after deficit covered, fills toward max
   SOC from cheap slots only: `price ≤ efficiency² × mean_remaining`.
-  Never charges at uneconomic prices.
+  Never charges at uneconomic prices.  **Also capped by the horizon
+  energy need** (`_topoff_horizon_need_kwh`) so it never buys what the
+  battery + forecast already cover — see "Top-off horizon cap" below.
 - **Headroom cap**: `max(0, max_battery − current − net_pv_surplus)`.
   Negative-price slots pass through; SOC validation prunes later.
 
@@ -1295,7 +1425,8 @@ Forward-simulates SOC through every slot.  Drops violations:
 - Builds horizon: today's remaining + all of tomorrow.
 - Per-slot continuous vars: charge energy `c[k]`, discharge `d[k]`, spill, soc.
 - **Constraints**: SOC dynamics, `soc_min ≤ soc ≤ soc_max`,
-  `soc[end] ≥ reserve_target`, `soc[midnight] ≥ reserve_target`.
+  `soc[end] ≥ reserve_target`; `soc[midnight] ≥ reserve_target`
+  (self_consumption only — see model section above).
 - **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·min(soc[end], reserve)`
   where `terminal = avg_price × efficiency`.  **The leftover-energy reward is
   capped at the reserve target** (not all the way to `soc_max`).  Rewarding
@@ -1349,6 +1480,21 @@ Forward-simulates SOC through every slot.  Drops violations:
 
 ### 6. Post-Processing (both engines)
 
+- **Spill reduction** (`_reduce_charge_spill`, July 2026): relocate a charge
+  slot to an equal-or-cheaper-priced slot when that buys LESS grid for the
+  same end/min SOC — i.e. charging right before a PV peak fills the battery so
+  the solar surplus spills, while the same-priced slot after the peak lets the
+  sun fill first.  Slot selectors rank by price, so equal-price placement was
+  arbitrary (and the earliness tie-break preferred early); on a small battery
+  under a solar hump that bought energy the sun was about to deliver free
+  (measured: slots 11+12 = 7.3 kWh bought / 0.7 kWh spilled vs 11+15 =
+  6.5 kWh / zero spill — 11% cheaper, same SOC).  Hard guards: simulated grid
+  cost must strictly drop, end-of-day SOC must not drop, minimum SOC must not
+  drop (the early-charge safety buffer is never traded away), target price ≤
+  source price, negative-price and currently-executing slots never move.
+  Best-improvement-first, so the LAST redundant slot moves past the peak and
+  the earliest stays put.  Runs before urgent recovery (forced immediate slots
+  never move).  Pinned by `TestSpillReduction` (both engines).
 - **Urgent recovery**: if SOC < discharge_min, force immediate charge slots.
 - **SOC trajectory**: `_compute_scheduled_soc_trajectory` for today.
 - **Tomorrow schedule**: MILP provides it directly; greedy runs
@@ -1485,6 +1631,24 @@ now does only the bookkeeping (yesterday deficit, daily consumption,
 SOC history reset, slot overrides rotation) and falls through to the
 normal cycle, which re-determines the desired state and only writes a
 transition if the state actually changes.
+
+### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
+TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
+Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
+report** — note "Fault" in the enum, and it sits in the 4xxx telemetry block
+(every settable config register is 8xxx).  It was wrongly exposed as a
+writable `select`: the user picked a mode, the integration wrote the option
+index to 4353, the firmware ignored it, and the next 10 s poll snapped the
+entity back to the actual state — customer report: "whatever I choose, it
+switches back to *Line*" (Line = running grid-tied, the normal state).  Now
+`"type": "status"` → a read-only **ENUM sensor** (`HA_FelicitySensor` maps the
+value to the option label; unknown values render unavailable rather than an
+invalid enum state).  The *settable* mode remains **Operating Mode @ 8451**
+(General / Backup / Economic) — and note that while the EMS is active, the
+Economic-mode self-heal deliberately re-asserts Economic there, so manual
+changes to 8451 revert BY DESIGN until the EMS is turned off.  After updating,
+the old `select.*_working_mode` entity shows as orphaned ("no longer
+provided") and can be removed; the new `sensor.*_working_mode` replaces it.
 
 ---
 
@@ -1738,8 +1902,11 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
   EMS minimises cost above all).  On a flat or expensive day no slot clears
   the bar, so nothing extra is charged — the battery rides on the reserve the
   survival deficit secured.  PV-aware headroom still skips what solar will
-  supply.  Also multiplies the *reserve floor* by 1.25× (matters in
-  to_grid/both — keeps more stored energy from being sold).
+  supply, and the **horizon-need cap** (Sept 2026) stops it buying what the
+  battery + tomorrow's forecast already cover — "as full as possible" is
+  bounded by "as full as is actually useful before tomorrow's sun refills it"
+  (see "Top-Off Horizon Cap").  Also multiplies the *reserve floor* by 1.25×
+  (matters in to_grid/both — keeps more stored energy from being sold).
 
   The MILP achieves the same automatically: its terminal value
   (`mean × efficiency`) makes the solver charge any slot priced below
@@ -1761,10 +1928,21 @@ discharge slots that would drain below the reserve, are dropped
 (with a log entry).  Previously a user click could set up an
 infeasible schedule.
 
-**Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC,
-prices, PV forecast, deficit, overrides, power) — when unchanged
-AND we're still in the same slot, the algorithm is not re-run.
-Recomputed on slot boundaries.  Cuts CPU on the 10-second tick.
+**Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC to 0.1%,
+today's + tomorrow's prices, today's + **tomorrow's** PV forecast, PV
+actual, yesterday deficit, overrides, safe power, EV strategy, engine) —
+when unchanged AND we're still in the same slot, the algorithm is not
+re-run.  Recomputed on slot boundaries.  Cuts CPU on the 10-second tick.
+
+This is the mechanism that makes the EMS **event-driven rather than
+timer-driven**: tomorrow's prices publishing (~13:00), a revised solar
+forecast, or SOC moving because an EV started all change the hash and
+force a re-plan on the very next 10 s tick.  `pv_forecast_tomorrow` was
+added Sept 2026 — it became an input to *today's* plan via the top-off
+horizon cap, so a weather change must re-plan today immediately.
+Sustained-load detection is deliberately slower (30 min, see C7): the
+hash reacts instantly to *data*, the deviation correction waits for a
+*trend*.
 
 #### C5. Number Entity Default Values — IMPLEMENTED
 `HA_FelicityInternalNumber` now accepts a `default_value` parameter.
@@ -1932,7 +2110,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (250 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (268 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -1973,6 +2151,10 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Self-consumption top-off: charges above reserve, cost-gated, never charges expensive
 - Schedule reason messages
 - Consumption deviation correction (car charger detection, noise filter, below-reserve guard, both mode)
+- Top-off horizon cap (sunny tomorrow suppresses the buy, dark tomorrow still tops off,
+  survival deficit always covered, no-forecast back-compat, cost mode unaffected)
+- MILP solver diagnosis (`milp_status`: active/disabled/degraded/unknown, names the
+  solver, records why each probe failed, disabled engine re-probes only once)
 
 **Not tested**: coordinator.py runtime logic (requires HA mocking).  Since
 the coordinator now delegates to `ems.calculate_schedule()`, algorithm
