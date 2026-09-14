@@ -1344,6 +1344,80 @@ def _schedule_flexible_loads(
     return result
 
 
+# How much of TOMORROW's PV forecast the self-consumption top-off is allowed
+# to count on.  A forecast is a prediction, not a measurement — crediting it
+# in full would let one optimistic sunny forecast talk the EMS out of a
+# top-off the house actually needs.  Today's remaining PV is separately
+# confidence-scaled from actual-vs-expected production, so it needs no haircut.
+_TOMORROW_PV_TRUST = 0.8
+
+
+def _topoff_horizon_need_kwh(
+    current_kwh: float,
+    min_kwh: float,
+    consumption_est: float,
+    consumption_hourly_kwh: dict[int, float] | None,
+    pv_remaining_today: float,
+    pv_forecast_tomorrow: float | None,
+    current_hour: int,
+) -> float:
+    """Grid energy still needed between now and the END OF TOMORROW.
+
+    The self-consumption top-off buys energy ABOVE the survival deficit in
+    order to store it for later self-use.  That only pays off when there IS a
+    later shortfall for it to cover.  This is the horizon energy balance:
+
+        need = (rest-of-today + tomorrow consumption)
+             - (rest-of-today PV + trusted tomorrow PV)
+             - the battery's usable energy right now
+
+    When it comes out <= 0 the house is already covered by the battery plus
+    the forecast, so a kWh bought now has no consumer inside the horizon: it
+    sits through a whole solar day, pays the round-trip loss and a cycle of
+    wear, and then has to make room for PV that arrives free — ending up
+    spilled or exported at midday prices.  Buying it is a guaranteed loss.
+
+    Real customer case (Sept 2026, the report this was written for): a 77 kWh
+    battery at 78% SOC at 11:00, 9.4 kWh of PV left today but **47 kWh
+    forecast for tomorrow**, on a day whose cheapest remaining slot was still
+    0.30 EUR/kWh.  The survival deficit was 0.0 kWh — yet the greedy top-off
+    booked 10 slots / 18 kWh (~EUR 6) purely to reach 100%, energy the sun
+    was about to deliver for nothing.  The MILP declined to buy anything on
+    the same inputs; this brings greedy in line.
+
+    Tomorrow's PV is credited only up to tomorrow's OWN consumption (a
+    surplus beyond that cannot displace grid we were going to buy anyway) and
+    only at `_TOMORROW_PV_TRUST` of the forecast, so the cap stays
+    conservative.  With no tomorrow forecast the credit is 0 and the top-off
+    behaves as before, bounded only by the battery's two-day runway.
+
+    This bounds the DISCRETIONARY top-off only.  The survival deficit and the
+    reserve target are computed separately and are never reduced by it, so
+    the overnight floor — and the urgent-recovery path below it — are
+    unaffected: the cap can lower what we buy for comfort, never what we buy
+    to survive the night.
+    """
+    hour = max(0, min(23, int(current_hour)))
+    if consumption_hourly_kwh:
+        fallback = consumption_est / 24.0
+        rest_today = sum(
+            consumption_hourly_kwh.get(h, fallback) for h in range(hour, 24)
+        )
+        tomorrow_consumption = sum(consumption_hourly_kwh.values())
+    else:
+        rest_today = (consumption_est / 24.0) * (24 - hour)
+        tomorrow_consumption = consumption_est
+
+    pv_tomorrow = max(0.0, pv_forecast_tomorrow or 0.0) * _TOMORROW_PV_TRUST
+    pv_credit = min(pv_tomorrow, tomorrow_consumption)
+
+    usable_now = max(0.0, current_kwh - min_kwh)
+    need = ((rest_today + tomorrow_consumption)
+            - (max(0.0, pv_remaining_today) + pv_credit)
+            - usable_now)
+    return max(0.0, need)
+
+
 def select_unified_charge_slots(
     remaining_today: list[tuple[int, float]],
     energy_deficit: float,
@@ -1367,6 +1441,7 @@ def select_unified_charge_slots(
     pv_confidence: float = 1.0,
     minutes_per_slot: float | None = None,
     pv_hourly_kwh_tomorrow: dict[int, float] | None = None,
+    consumption_hourly_kwh: dict[int, float] | None = None,
 ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], float]:
     """Select charge slots from a unified today+tomorrow pool.
 
@@ -1572,6 +1647,13 @@ def select_unified_charge_slots(
     # the bar, so it charges nothing extra (the battery rides on the reserve
     # the survival deficit already secured).  Tomorrow's fill is handled by
     # the tomorrow-schedule pass and re-planned each day.
+    #
+    # The fill is ALSO bounded by the horizon energy balance
+    # (`_topoff_horizon_need_kwh`): "as full as possible" is only worth paying
+    # for while there is a shortfall left to cover before tomorrow's sun has
+    # done its work.  Physical headroom alone is not a reason to buy — on a
+    # big-solar-tomorrow day it filled the battery with grid energy the
+    # forecast was about to supply free.
     if optimization_priority == "self_consumption":
         round_trip = efficiency * efficiency
         ref_prices = [s[0] for s in (today_pool + tomorrow_pool) if s[0] >= 0]
@@ -1579,6 +1661,31 @@ def select_unified_charge_slots(
             ceiling = round_trip * (sum(ref_prices) / len(ref_prices))
             committed = sum(_slot_charge_energy(s) for s in today_selected)
             room = max(0.0, headroom - committed)
+
+            # Don't buy what the battery + the forecast already cover.
+            pv_rest_today = sum(
+                kwh * pv_confidence
+                for hour, kwh in (pv_hourly_kwh or {}).items()
+                if hour >= int(current_hour)
+            )
+            horizon_need = _topoff_horizon_need_kwh(
+                current_kwh,
+                (discharge_min_pct / 100.0) * battery_capacity,
+                consumption_est, consumption_hourly_kwh,
+                pv_rest_today, pv_forecast_tomorrow, current_hour,
+            )
+            if horizon_need < room:
+                _LOGGER.info(
+                    "Self-consumption top-off capped by horizon need: "
+                    "%.1f kWh needed through end of tomorrow vs %.1f kWh of "
+                    "physical headroom (battery %.1f kWh, PV left today "
+                    "%.1f kWh, PV forecast tomorrow %.1f kWh) — not buying "
+                    "energy the forecast already covers",
+                    horizon_need, room, current_kwh, pv_rest_today,
+                    pv_forecast_tomorrow or 0.0,
+                )
+                room = horizon_need
+
             selected_today_idx = {s[2] for s in today_selected}
             cheap_unused = sorted(
                 [s for s in today_pool
@@ -2502,6 +2609,7 @@ def _schedule_from_grid(
         pv_confidence=pv_confidence,
         minutes_per_slot=minutes_per_slot,
         pv_hourly_kwh_tomorrow=state.pv_hourly_kwh_tomorrow,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
 
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
@@ -2534,21 +2642,41 @@ def _schedule_from_grid(
             )
         elif config.optimization_priority == "self_consumption":
             # Self-consumption targets max SOC, but only via slots cheap
-            # enough to beat round-trip losses (it never charges at a loss).
-            # "No charge" therefore means one of two things — report the
+            # enough to beat round-trip losses (it never charges at a loss)
+            # and only while the horizon still has a shortfall to cover.
+            # "No charge" therefore means one of three things — report the
             # ACTUAL one rather than always claiming "battery near full"
             # (which is plainly wrong at, say, 65% and misleads the user
             # into thinking the optimizer is broken):
             #   • SOC genuinely high → the battery really is (near) full
+            #   • battery + forecast already cover everything we'll use
+            #     before tomorrow's sun has refilled it → buying is waste
             #   • SOC moderate but reserve met and no remaining slot clears
             #     the round-trip economic bar → topping off would lose money
             soc_pct = (
                 current_kwh / config.battery_capacity_kwh * 100
                 if config.battery_capacity_kwh > 0 else 0
             )
+            pv_rest_today = sum(
+                kwh * pv_confidence
+                for hour, kwh in (state.pv_hourly_kwh or {}).items()
+                if hour >= int(state.current_hour)
+            )
+            horizon_need = _topoff_horizon_need_kwh(
+                current_kwh, min_kwh, config.consumption_est_kwh,
+                state.consumption_hourly_kwh, pv_rest_today,
+                state.pv_forecast_tomorrow, state.current_hour,
+            )
             if soc_pct >= 90:
                 result.schedule_reason = (
                     f"Battery near full ({soc_pct:.0f}%) — no more charging needed"
+                )
+            elif horizon_need <= 0.1 and (state.pv_forecast_tomorrow or 0) > 0:
+                result.schedule_reason = (
+                    f"Battery ({soc_pct:.0f}%) plus "
+                    f"{state.pv_forecast_tomorrow:.0f} kWh of sun forecast for "
+                    "tomorrow already covers what we'll use — buying now "
+                    "would only displace free solar"
                 )
             else:
                 result.schedule_reason = (
@@ -2906,6 +3034,7 @@ def _schedule_both(
         pv_confidence=pv_confidence,
         minutes_per_slot=minutes_per_slot,
         pv_hourly_kwh_tomorrow=state.pv_hourly_kwh_tomorrow,
+        consumption_hourly_kwh=state.consumption_hourly_kwh,
     )
 
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0

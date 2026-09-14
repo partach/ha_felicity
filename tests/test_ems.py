@@ -6047,6 +6047,183 @@ class TestSelfConsumptionFillsBattery:
         assert all(p < 0.40 for p in charge_prices), charge_prices
 
 
+class TestTopOffHorizonNeed:
+    """The self-consumption top-off must not buy energy the FORECAST already
+    covers.
+
+    Real customer report (Sept 2026, screenshot): a 76.8 kWh battery at 78%
+    SOC at 11:00 on a dull day (9.4 kWh PV) with **47 kWh of sun forecast for
+    tomorrow**, on a price curve whose cheapest remaining slot was still
+    0.30 EUR/kWh.  The survival deficit was 0.0 kWh, yet greedy booked 10
+    slots / ~18 kWh (~EUR 6) purely to reach 100% — energy tomorrow's sun was
+    about to deliver for free, which then has to be exported at midday prices.
+    The MILP bought nothing on identical inputs.
+
+    The fix caps the top-off by the horizon energy balance
+    (`ems._topoff_horizon_need_kwh`).  These tests pin BOTH directions: it
+    must suppress the pointless buy, and it must NOT have disabled the
+    top-off in general.
+    """
+
+    CAP = 76.8
+
+    @staticmethod
+    def _profile(total=38.5):
+        """Low overnight (~9.4 kWh), steady daytime — the customer's shape."""
+        w = {h: (0.85 if (h >= 21 or h < 7) else 2.1) for h in range(24)}
+        tot = sum(w.values())
+        return {h: total * v / tot for h, v in w.items()}
+
+    @classmethod
+    def _run(cls, pv_forecast_tomorrow, battery_soc_pct=78.0,
+             optimization_priority="self_consumption"):
+        # Duck curve: midday trough ~0.30, evening peak ~0.65 — nothing here
+        # is cheap in absolute terms, which is the user's whole point.
+        prices = ([0.36] * 6 + [0.42, 0.45, 0.40, 0.35, 0.32, 0.30,
+                                0.30, 0.31, 0.32, 0.34, 0.38, 0.45]
+                  + [0.58, 0.65, 0.62, 0.52, 0.44, 0.39])
+        config = EMSConfig(
+            grid_mode="from_grid",
+            optimization_priority=optimization_priority,
+            battery_capacity_kwh=cls.CAP,
+            battery_discharge_min_pct=20,
+            battery_charge_max_pct=100,
+            efficiency=0.90,
+            safe_power_kw=8.0,
+            inverter_max_power_kw=10.0,
+            consumption_est_kwh=38.5,
+            scheduler_engine="greedy",
+        )
+        state = EMSState(
+            battery_soc_pct=battery_soc_pct,
+            slot_prices_today=prices,
+            pv_hourly_kwh=make_pv_hourly(9.4),
+            consumption_hourly_kwh=cls._profile(),
+            pv_actual_today_kwh=0.3,
+            pv_forecast_today=9.4,
+            pv_forecast_remaining=6.8,
+            pv_forecast_tomorrow=pv_forecast_tomorrow,
+            current_hour=11,
+            current_minute=0,
+        )
+        result = calculate_schedule(config, state)
+        charges = [i for i, a in result.scheduled_slots.items() if a == "charge"]
+        return result, charges, [prices[i] for i in charges]
+
+    def test_no_topoff_when_big_pv_tomorrow(self):
+        """THE customer case: 47 kWh of sun forecast → buy nothing today."""
+        result, charges, charge_prices = self._run(47.0)
+        assert not charges, (
+            f"topped off at {charge_prices} despite 47 kWh of sun forecast for "
+            f"tomorrow — that energy arrives free (reason={result.schedule_reason!r})"
+        )
+
+    def test_topoff_still_happens_when_tomorrow_is_dark(self):
+        """Same inputs, dark tomorrow → the top-off must still work."""
+        _, charges, charge_prices = self._run(4.0)
+        assert charges, (
+            "horizon cap disabled the top-off entirely — with only 4 kWh of sun "
+            "forecast there IS a shortfall coming and the cheap slots should be bought"
+        )
+        # ...and only from the cheap end of the curve, never the evening peak.
+        assert max(charge_prices) <= 0.35, charge_prices
+
+    def test_sunny_tomorrow_buys_strictly_less_than_dark_tomorrow(self):
+        """The forecast must actually move the decision, in the right direction."""
+        _, sunny, _ = self._run(47.0)
+        _, dark, _ = self._run(4.0)
+        assert len(sunny) < len(dark), (
+            f"tomorrow's PV forecast did not change today's plan "
+            f"(sunny={len(sunny)}, dark={len(dark)})"
+        )
+
+    def test_survival_deficit_still_covered_under_big_pv_tomorrow(self):
+        """CRITICAL: the cap is discretionary-only.  At a low SOC the battery
+        must still be charged to the reserve even with a sunny tomorrow —
+        never trade the overnight floor away for a forecast."""
+        result, charges, _ = self._run(47.0, battery_soc_pct=25.0)
+        assert charges, "low SOC + sunny tomorrow must still charge to the reserve"
+        traj = result.soc_trajectory or []
+        floor = 20.0  # battery_discharge_min_pct
+        assert min(traj) >= floor - 1e-6, (
+            f"projected SOC dipped below the hardware floor: min={min(traj):.1f}%"
+        )
+
+    def test_no_tomorrow_forecast_behaves_as_before(self):
+        """No forecast → no credit → the top-off is unchanged (back-compat)."""
+        _, none_fc, _ = self._run(None)
+        _, dark, _ = self._run(4.0)
+        assert len(none_fc) >= len(dark) > 0, (
+            f"missing forecast must not suppress the top-off "
+            f"(none={len(none_fc)}, dark={len(dark)})"
+        )
+
+    def test_cost_mode_unaffected(self):
+        """The cap lives inside the self_consumption top-off only."""
+        _, sunny, _ = self._run(47.0, optimization_priority="cost")
+        _, dark, _ = self._run(4.0, optimization_priority="cost")
+        assert sunny == dark == [], (
+            f"cost mode should not top off at all here (sunny={sunny}, dark={dark})"
+        )
+
+
+class TestTopOffHorizonNeedUnit:
+    """Direct unit coverage of the horizon energy balance helper."""
+
+    def test_covered_horizon_returns_zero(self):
+        """Battery + forecast cover everything → nothing left to buy for."""
+        need = ems._topoff_horizon_need_kwh(
+            current_kwh=59.9, min_kwh=15.4, consumption_est=38.5,
+            consumption_hourly_kwh=None, pv_remaining_today=6.8,
+            pv_forecast_tomorrow=47.0, current_hour=11,
+        )
+        assert need == 0.0, need
+
+    def test_dark_tomorrow_leaves_a_need(self):
+        need = ems._topoff_horizon_need_kwh(
+            current_kwh=59.9, min_kwh=15.4, consumption_est=38.5,
+            consumption_hourly_kwh=None, pv_remaining_today=6.8,
+            pv_forecast_tomorrow=4.0, current_hour=11,
+        )
+        assert need > 0, need
+
+    def test_tomorrow_pv_credit_capped_at_tomorrow_consumption(self):
+        """A monster forecast cannot credit more than tomorrow will use —
+        surplus beyond that displaces no grid purchase."""
+        modest = ems._topoff_horizon_need_kwh(
+            current_kwh=30.0, min_kwh=15.4, consumption_est=38.5,
+            consumption_hourly_kwh=None, pv_remaining_today=0.0,
+            pv_forecast_tomorrow=48.2, current_hour=11,
+        )
+        absurd = ems._topoff_horizon_need_kwh(
+            current_kwh=30.0, min_kwh=15.4, consumption_est=38.5,
+            consumption_hourly_kwh=None, pv_remaining_today=0.0,
+            pv_forecast_tomorrow=500.0, current_hour=11,
+        )
+        assert modest == absurd, (modest, absurd)
+
+    def test_forecast_is_haircut_not_trusted_in_full(self):
+        """A forecast exactly equal to tomorrow's consumption must still leave
+        a margin — forecasts are predictions, not measurements."""
+        need = ems._topoff_horizon_need_kwh(
+            current_kwh=15.4, min_kwh=15.4, consumption_est=24.0,
+            consumption_hourly_kwh=None, pv_remaining_today=0.0,
+            pv_forecast_tomorrow=24.0, current_hour=23,
+        )
+        # Empty battery, no PV left today, tomorrow's forecast == consumption.
+        # Today contributes its last hour (24/24 = 1.0 kWh); on top of that the
+        # 0.8 trust factor must leave 20% of tomorrow's need uncovered.
+        assert need == pytest.approx(1.0 + 24.0 * 0.2, abs=1e-6), need
+
+    def test_never_negative(self):
+        need = ems._topoff_horizon_need_kwh(
+            current_kwh=100.0, min_kwh=0.0, consumption_est=1.0,
+            consumption_hourly_kwh=None, pv_remaining_today=500.0,
+            pv_forecast_tomorrow=500.0, current_hour=0,
+        )
+        assert need == 0.0
+
+
 class TestConsumptionDeviationCorrection:
     """When actual SOC drops below the predicted trajectory (unexpected load
     like a car charger), the algorithm should add corrective charging.

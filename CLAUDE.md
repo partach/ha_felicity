@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 252).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 263).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 252 tests for the pure EMS algorithm
+└── test_ems.py              # 263 tests for the pure EMS algorithm
 ```
 
 ---
@@ -691,6 +691,68 @@ delivered energy already meets the target).  Pinned by
 `TestGreedyReshopAfterOverflow` (re-shops a cheap slot; never an expensive
 one).  This closes most of the greedy/MILP gap on undersized-battery /
 heavy-load days without touching MILP.
+
+### Top-Off Horizon Cap (self_consumption, Sept 2026)
+
+**Physical headroom is not a reason to buy.** The self-consumption top-off
+fills the battery toward max SOC for later self-use — but storing energy only
+pays when there IS a later shortfall for it to cover.  Before it buys, the
+selector computes the two-day energy balance (`_topoff_horizon_need_kwh`):
+
+```
+need = (rest-of-today consumption + tomorrow consumption)
+     - (rest-of-today PV + min(0.8 × pv_forecast_tomorrow, tomorrow consumption))
+     - (current_kwh - min_kwh)                 # the battery's usable energy
+room = min(physical headroom - committed, need)
+```
+
+When `need <= 0` the house is already covered by the battery plus the
+forecast, so a kWh bought now has **no consumer inside the horizon**: it sits
+through a whole solar day, pays the round-trip loss and a cycle of wear, and
+then has to make room for PV that arrives free — ending up spilled or exported
+at midday prices.
+
+**Real customer report (the screenshot this was built from):** 76.8 kWh
+battery at **78% SOC at 11:00**, dull day (9.4 kWh PV left) but **47 kWh of sun
+forecast for tomorrow**, on a curve whose cheapest remaining slot was still
+**0.30 €/kWh**.  Survival deficit **0.0 kWh** — yet greedy booked **10 slots /
+18 kWh (~€6)** purely to reach 100%.  The MILP bought **nothing** on identical
+inputs (its terminal reward is capped at the reserve), so this cap brings
+greedy into line rather than inventing new behaviour.  After the fix greedy
+also buys nothing and the card explains why: *"Battery (78%) plus 47 kWh of sun
+forecast for tomorrow already covers what we'll use — buying now would only
+displace free solar."*
+
+**Scope is strictly discretionary.** The survival deficit, the reserve target
+and urgent recovery are computed separately and are never reduced by this cap —
+it can lower what we buy for comfort, never what we buy to survive the night.
+Measured gradient on the customer's inputs (greedy, 11:00):
+
+| SOC | sunny tomorrow (47 kWh) | dark tomorrow (4 kWh) |
+|---|---|---|
+| 90% | 0 slots · €0.00 | 0 slots · €0.00 |
+| 78% | **0 slots · €0.00** | **6 slots · €3.63** |
+| 60% | 4 slots · €2.41 | 17 slots · €10.56 |
+| 45% | 12 slots · €7.33 | 20 slots · €12.60 |
+| 22% | 20 slots · €12.60 | 20 slots · €12.60 |
+
+Guards that keep it conservative:
+- Tomorrow's PV is credited only up to **tomorrow's own consumption** (surplus
+  beyond that displaces no purchase we were going to make anyway).
+- Only `_TOMORROW_PV_TRUST = 0.8` of the forecast is credited — a forecast is a
+  prediction, not a measurement, so one optimistic sunny forecast can never
+  talk the EMS out of a genuinely-needed top-off.  (Today's remaining PV needs
+  no haircut: it is already confidence-scaled from actual-vs-expected output.)
+- **No tomorrow forecast → credit 0 → behaviour unchanged** (back-compat for
+  new installs and installs without a forecast entity).
+- Profile-aware when `consumption_hourly_kwh` exists, flat average otherwise.
+
+Because tomorrow's forecast now drives TODAY's plan, `pv_forecast_tomorrow` was
+added to the coordinator's skip-recalc hash — a front moving in (47 kWh forecast
+dropping to 10) re-plans immediately instead of waiting for the next slot
+boundary.  Pinned in both directions by `TestTopOffHorizonNeed` /
+`TestTopOffHorizonNeedUnit` and the `self_suff_big_pv_tomorrow_no_topoff` /
+`self_suff_dark_tomorrow_still_tops_off` simulator scenarios.
 
 ### Arbitrage Price Delta (both mode) — the TRADE TRIGGER
 
@@ -1298,7 +1360,9 @@ Deficit = max(snapshot_deficit, predictive_deficit) + yesterday_deficit:
   slots when `optimization_priority == "self_consumption"`.
 - **Self-consumption top-off**: after deficit covered, fills toward max
   SOC from cheap slots only: `price ≤ efficiency² × mean_remaining`.
-  Never charges at uneconomic prices.
+  Never charges at uneconomic prices.  **Also capped by the horizon
+  energy need** (`_topoff_horizon_need_kwh`) so it never buys what the
+  battery + forecast already cover — see "Top-off horizon cap" below.
 - **Headroom cap**: `max(0, max_battery − current − net_pv_surplus)`.
   Negative-price slots pass through; SOC validation prunes later.
 
@@ -1808,8 +1872,11 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
   EMS minimises cost above all).  On a flat or expensive day no slot clears
   the bar, so nothing extra is charged — the battery rides on the reserve the
   survival deficit secured.  PV-aware headroom still skips what solar will
-  supply.  Also multiplies the *reserve floor* by 1.25× (matters in
-  to_grid/both — keeps more stored energy from being sold).
+  supply, and the **horizon-need cap** (Sept 2026) stops it buying what the
+  battery + tomorrow's forecast already cover — "as full as possible" is
+  bounded by "as full as is actually useful before tomorrow's sun refills it"
+  (see "Top-Off Horizon Cap").  Also multiplies the *reserve floor* by 1.25×
+  (matters in to_grid/both — keeps more stored energy from being sold).
 
   The MILP achieves the same automatically: its terminal value
   (`mean × efficiency`) makes the solver charge any slot priced below
@@ -1831,10 +1898,21 @@ discharge slots that would drain below the reserve, are dropped
 (with a log entry).  Previously a user click could set up an
 infeasible schedule.
 
-**Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC,
-prices, PV forecast, deficit, overrides, power) — when unchanged
-AND we're still in the same slot, the algorithm is not re-run.
-Recomputed on slot boundaries.  Cuts CPU on the 10-second tick.
+**Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC to 0.1%,
+today's + tomorrow's prices, today's + **tomorrow's** PV forecast, PV
+actual, yesterday deficit, overrides, safe power, EV strategy, engine) —
+when unchanged AND we're still in the same slot, the algorithm is not
+re-run.  Recomputed on slot boundaries.  Cuts CPU on the 10-second tick.
+
+This is the mechanism that makes the EMS **event-driven rather than
+timer-driven**: tomorrow's prices publishing (~13:00), a revised solar
+forecast, or SOC moving because an EV started all change the hash and
+force a re-plan on the very next 10 s tick.  `pv_forecast_tomorrow` was
+added Sept 2026 — it became an input to *today's* plan via the top-off
+horizon cap, so a weather change must re-plan today immediately.
+Sustained-load detection is deliberately slower (30 min, see C7): the
+hash reacts instantly to *data*, the deviation correction waits for a
+*trend*.
 
 #### C5. Number Entity Default Values — IMPLEMENTED
 `HA_FelicityInternalNumber` now accepts a `default_value` parameter.
@@ -2002,7 +2080,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (252 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (263 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -2043,6 +2121,8 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Self-consumption top-off: charges above reserve, cost-gated, never charges expensive
 - Schedule reason messages
 - Consumption deviation correction (car charger detection, noise filter, below-reserve guard, both mode)
+- Top-off horizon cap (sunny tomorrow suppresses the buy, dark tomorrow still tops off,
+  survival deficit always covered, no-forecast back-compat, cost mode unaffected)
 
 **Not tested**: coordinator.py runtime logic (requires HA mocking).  Since
 the coordinator now delegates to `ems.calculate_schedule()`, algorithm

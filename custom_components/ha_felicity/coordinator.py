@@ -952,6 +952,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             tuple(self.slot_prices_today) if self.slot_prices_today else None,
             tuple(self.slot_prices_tomorrow) if self.slot_prices_tomorrow else None,
             round(self.pv_forecast_today, 2) if self.pv_forecast_today else None,
+            # Tomorrow's forecast is a first-class input to TODAY's plan: the
+            # self-consumption top-off is capped by the horizon energy need
+            # (see ems._topoff_horizon_need_kwh), so a front moving in — 47 kWh
+            # of forecast sun dropping to 10 — must re-plan today immediately,
+            # not wait for the next slot boundary.
+            round(self.pv_forecast_tomorrow, 2) if self.pv_forecast_tomorrow else None,
             round(self.pv_actual_today_kwh, 2) if self.pv_actual_today_kwh else None,
             self._yesterday_deficit,
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
