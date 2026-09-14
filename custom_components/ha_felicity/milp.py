@@ -59,6 +59,40 @@ _SOLVE_TIME_LIMIT = 10
 _MILP_DISABLED = False
 _MILP_DISABLED_REASON = ""
 
+# Last observed solver state, for user-facing diagnosis.  "Why is my card
+# showing Greedy (fallback)?" used to be answerable ONLY from a single WARNING
+# in the HA log — which has usually rotated away by the time anyone asks.  These
+# are surfaced as the `milp_status` attribute on `schedule_status` (and in the
+# EMS card's engine chip), so the reason is visible in the UI.
+_MILP_SOLVER_NAME = ""      # solver actually used, e.g. "PULP_CBC_CMD"
+_MILP_LAST_ERROR = ""       # most recent non-fatal failure (infeasible, timeout…)
+_MILP_SOLVERS_TRIED: list[str] = []   # probe results from the last _pick_solver
+
+
+def milp_status() -> dict[str, Any]:
+    """Report why MILP is or isn't running, for the UI and diagnostics.
+
+    Returns a dict with:
+      ``state``   — "active" | "disabled" | "degraded" | "unknown"
+      ``reason``  — human-readable explanation ("" when healthy)
+      ``solver``  — the solver in use, when one was found
+      ``tried``   — solver names probed and rejected (helps spot a missing CBC)
+    """
+    if _MILP_DISABLED:
+        state, reason = "disabled", _MILP_DISABLED_REASON
+    elif _MILP_LAST_ERROR:
+        state, reason = "degraded", _MILP_LAST_ERROR
+    elif _MILP_SOLVER_NAME:
+        state, reason = "active", ""
+    else:
+        state, reason = "unknown", "MILP has not run yet"
+    return {
+        "state": state,
+        "reason": reason,
+        "solver": _MILP_SOLVER_NAME,
+        "tried": list(_MILP_SOLVERS_TRIED),
+    }
+
 
 def _pick_solver(pulp):
     """Return an available CBC-class LP solver, or None.
@@ -81,24 +115,37 @@ def _pick_solver(pulp):
     solver that is actually runnable, so MILP works wherever ANY solver exists
     instead of giving up on the bundled-binary gap.
     """
+    global _MILP_SOLVER_NAME, _MILP_SOLVERS_TRIED
+
     tried: list[str] = []
 
     def _try(name: str, **kw):
         cls = getattr(pulp, name, None)
         if cls is None:
+            # Not even present in this pulp build.  PULP_CBC_CMD is deprecated
+            # and slated for REMOVAL in PuLP 4.0, so this branch is how a future
+            # pulp upgrade would look — record it rather than failing silently.
+            tried.append(f"{name}(absent)")
             return None
         try:
             solver = cls(msg=0, **kw)
             if solver.available():
                 return solver
-        except Exception:  # pragma: no cover - defensive: probe never solves
-            pass
-        tried.append(name)
+            tried.append(f"{name}(not available)")
+        except Exception as err:  # pragma: no cover - defensive: probe never solves
+            tried.append(f"{name}({type(err).__name__})")
+            return None
         return None
 
-    for name in ("PULP_CBC_CMD", "COIN_CMD"):
+    # Explicit order: pulp's bundled CBC, a system CBC (apt coinor-cbc or
+    # `pip install pulp[cbc]`, which pulp's own deprecation notice recommends),
+    # then HiGHS (`pip install pulp[highs]` — a pure pip wheel, so it is the
+    # easiest solver to add inside an HA container).
+    for name in ("PULP_CBC_CMD", "COIN_CMD", "HiGHS", "HiGHS_CMD"):
         solver = _try(name, timeLimit=_SOLVE_TIME_LIMIT)
         if solver is not None:
+            _MILP_SOLVER_NAME = name
+            _MILP_SOLVERS_TRIED = tried
             return solver
 
     try:
@@ -106,12 +153,25 @@ def _pick_solver(pulp):
     except Exception:  # pragma: no cover - defensive
         available = []
     for name in available:
-        if name in tried:
+        if any(t.startswith(f"{name}(") for t in tried):
             continue
-        solver = _try(name)
+        # Keep the wall-clock cap on fallback solvers too — without it a slow
+        # or pathological solver blocks the executor thread indefinitely.
+        solver = _try(name, timeLimit=_SOLVE_TIME_LIMIT) or _try(name)
         if solver is not None:
             _LOGGER.info("MILP using fallback LP solver: %s", name)
+            _MILP_SOLVER_NAME = name
+            _MILP_SOLVERS_TRIED = tried
             return solver
+
+    _MILP_SOLVERS_TRIED = tried
+    _LOGGER.warning(
+        "MILP found no usable LP solver. Probed: %s. Install one with "
+        "`pip install pulp[cbc]` (CBC) or `pip install pulp[highs]` (HiGHS) "
+        "in the Home Assistant environment, then restart HA. "
+        "Greedy is fully functional in the meantime.",
+        ", ".join(tried) or "nothing",
+    )
     return None
 
 
@@ -177,7 +237,9 @@ def solve_schedule(
             "The greedy scheduler is fully functional. Error: %s", err,
         )
         return None
-    except Exception:  # pragma: no cover - solver guard
+    except Exception as err:  # pragma: no cover - solver guard
+        global _MILP_LAST_ERROR
+        _MILP_LAST_ERROR = f"{type(err).__name__}: {err}"
         _LOGGER.warning("MILP solve failed — falling back to greedy", exc_info=True)
         return None
 
@@ -195,6 +257,8 @@ def _solve(
     reserve_target: float,
     pv_confidence: float,
 ) -> dict[int, str] | None:
+    global _MILP_LAST_ERROR
+
     slot_hours = minutes_per_slot / 60.0
     cap = config.battery_capacity_kwh
     eff = config.efficiency
@@ -420,8 +484,14 @@ def _solve(
 
     status = pulp.LpStatus[prob.status]
     if status != "Optimal":
+        _MILP_LAST_ERROR = (
+            f"solver returned {status} (not Optimal) — using greedy for this slot"
+        )
         _LOGGER.warning("MILP non-optimal (%s) — falling back to greedy", status)
         return None
+    # Healthy solve: clear any stale "degraded" note so the status reflects NOW
+    # (a single infeasible slot must not pin the UI to a warning all day).
+    _MILP_LAST_ERROR = ""
 
     # --- Extract slot decisions ------------------------------------------------
     # The LP uses continuous variables, so it may spread energy thinly across

@@ -18,6 +18,18 @@ scenario and/or `tests/test_ems.py`.
 1. **Engine default = greedy; MILP opt-in.** Greedy has a multi-month track
    record and no solver dependency. MILP is the joint 2-day optimiser but is
    validated per-scenario before it can become default again.
+   **Selecting MILP is a request, not a guarantee** — when no LP solver is
+   runnable the EMS falls back to greedy and the card's engine chip reads
+   "Greedy (fallback)".  The schedule is still correct; only the optimiser
+   differs.  Since Sept 2026 the *reason* is reported rather than buried in a
+   log line: `milp.milp_status()` → the **`milp_status`** attribute on
+   `schedule_status` → the chip's hover tooltip, with `state` one of
+   `active` / `disabled` (structural, until restart) / `degraded` (a
+   non-Optimal slot, cleared by the next healthy solve) / `unknown`, plus the
+   solver in use and why every probed solver was rejected.
+   `tools/check_milp.py` gives the same verdict standalone.
+   Note `pulp` is pinned `<4.0`: PuLP 4.0 removes the bundled `PULP_CBC_CMD`,
+   which would otherwise disable MILP for every install at once.
 2. **Reserve is time-aware (from_grid + MILP all modes).** Past sunset the
    overnight reserve covers only the REMAINING hours to sunrise, not the full
    night — so a high-consumption house isn't forced to charge at peak evening

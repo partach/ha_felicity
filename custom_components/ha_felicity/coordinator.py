@@ -23,6 +23,26 @@ from . import ems as ems_module
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _milp_status_snapshot() -> dict | None:
+    """Read milp.py's solver diagnosis, tolerating a missing/broken module.
+
+    Imported lazily and defensively: milp.py is optional (it needs pulp), and
+    the whole point of this call is to explain a failure — it must never be
+    able to cause one.
+    """
+    try:
+        from . import milp as milp_module  # noqa: PLC0415
+
+        return milp_module.milp_status()
+    except Exception as err:  # pragma: no cover - diagnostic must never raise
+        return {
+            "state": "disabled",
+            "reason": f"MILP module unavailable: {type(err).__name__}: {err}",
+            "solver": "",
+            "tried": [],
+        }
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -119,6 +139,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.schedule_status: str = "unknown"
         self.schedule_reason: str = ""
         self.scheduler_active: str = "greedy"
+        # {"state","reason","solver","tried"} when scheduler_engine == "milp",
+        # else None.  Surfaced as the `milp_status` schedule_status attribute so
+        # a "Greedy (fallback)" chip can explain itself in the UI.
+        self.milp_status: dict | None = None
 
         # Consumption tracking & persistent storage
         self.consumption_override_entity = consumption_override_entity
@@ -1093,6 +1117,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 f"Manual override: {action_now} this slot"
             )
         self.scheduler_active = result.scheduler_active
+        # Capture WHY when the MILP engine is selected but greedy is running.
+        # The reason previously lived only in a one-off WARNING that has usually
+        # rotated away by the time anyone asks "why does my card say fallback?".
+        if opts.get("scheduler_engine", "greedy") == "milp":
+            self.milp_status = _milp_status_snapshot()
+        else:
+            self.milp_status = None
         # Recompute SOC trajectory with the finalized schedule (including
         # any merged manual overrides).  Without this, the trajectory shows
         # the pre-override plan — so manually-added charge slots don't

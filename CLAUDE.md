@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/test_ems.py` (must stay green; currently 263).
+- Run `python -m pytest tests/test_ems.py` (must stay green; currently 268).
 - If you added a setting, update the **Settings Traceability Matrix** below
   and confirm it is consumed by the algorithm (no "optimized-out" settings).
 - Keep this document in sync with the code. If status changed, update it.
@@ -115,7 +115,7 @@ custom_components/ha_felicity/
     └── ha_felicity_ems.js   # LitElement EMS dashboard card (1671 lines)
 
 tests/
-└── test_ems.py              # 263 tests for the pure EMS algorithm
+└── test_ems.py              # 268 tests for the pure EMS algorithm
 ```
 
 ---
@@ -263,9 +263,39 @@ as a subprocess — both are blocking operations.  The coordinator runs
 `calculate_schedule` in an executor thread (`async_add_executor_job`)
 so the MILP never blocks the HA event loop.
 
-**Dependency**: `pulp>=2.7.0` (bundles the CBC solver). Lazy-imported so
-`ems.py` works without it. On hardware where the CBC binary won't run, the
-fallback keeps the EMS functional on greedy.
+**Dependency**: `pulp>=2.7.0,<4.0`. Lazy-imported so `ems.py` works without it.
+On hardware where the CBC binary won't run, the fallback keeps the EMS
+functional on greedy.
+
+⚠️ **The `<4.0` bound is deliberate (Sept 2026).** PuLP 3.2+ deprecates
+`PULP_CBC_CMD` and **removes it in PuLP 4.0** — the bundled CBC binary moves to
+a separate `cbcbox` package (`pip install pulp[cbc]`). The manifest previously
+read `pulp>=3.2.0` with no upper bound, so the day PuLP 4.0 ships, HA would
+install it and MILP would break for **every** user at once (no bundled solver,
+and no system CBC inside the HA container). Before relaxing the bound, add
+`pulp[cbc]` or `pulp[highs]` to `requirements` and verify the extra installs on
+ARM. `_pick_solver` already probes `HiGHS`/`HiGHS_CMD` after the two CBC
+variants — HiGHS is a pure pip wheel (`pip install pulp[highs]`), so it is the
+easiest solver to add inside an HA container.
+
+**Diagnosing "Greedy (fallback)"** (`milp.milp_status()`): the engine can fail
+four distinct ways — pulp missing, no runnable solver, the solver binary absent
+despite `.available()`, or a non-Optimal solve. Each logged ONE warning and then
+threw the reason away, so by the time a user asked "why is MILP not loading?"
+the log had rotated and the answer was unrecoverable. `milp_status()` now keeps
+it as `{state, reason, solver, tried}` — `state` is `active` / `disabled`
+(process-lifetime, structural) / `degraded` (a non-Optimal slot; cleared by the
+next healthy solve) / `unknown`. The coordinator snapshots it into
+`self.milp_status` whenever `scheduler_engine == "milp"`, `sensor.py` exposes it
+as the **`milp_status`** attribute on `schedule_status`, and the card's engine
+chip carries it as a hover tooltip (`_milpTooltip`) including the install hint.
+`tried` lists every probed solver with WHY it was rejected
+(`PULP_CBC_CMD(absent)`, `COIN_CMD(not available)`, …) — that one line
+distinguishes "pulp is too new" from "no solver on this arch".
+`tools/check_milp.py` is a standalone probe users can run inside the HA
+interpreter for an immediate verdict without updating first.
+Pinned by `TestMILPStatusDiagnosis` (incl. that a disabled engine re-probes
+exactly **once**, never per-tick).
 
 **Tests**: `TestMILPScheduler` in `test_ems.py` (skipped when pulp absent).
 Loads `milp.py` via the same spec-loader trick as `ems.py` and registers
@@ -2080,7 +2110,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/test_ems.py` (263 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
+Tests are in `tests/test_ems.py` (268 tests). They import `ems.py` directly (bypassing HA dependencies) and test the pure scheduling functions.
 
 ```bash
 # Run all tests
@@ -2123,6 +2153,8 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Consumption deviation correction (car charger detection, noise filter, below-reserve guard, both mode)
 - Top-off horizon cap (sunny tomorrow suppresses the buy, dark tomorrow still tops off,
   survival deficit always covered, no-forecast back-compat, cost mode unaffected)
+- MILP solver diagnosis (`milp_status`: active/disabled/degraded/unknown, names the
+  solver, records why each probe failed, disabled engine re-probes only once)
 
 **Not tested**: coordinator.py runtime logic (requires HA mocking).  Since
 the coordinator now delegates to `ems.calculate_schedule()`, algorithm

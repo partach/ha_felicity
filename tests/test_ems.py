@@ -5077,6 +5077,91 @@ class TestSellCoverage:
 
 
 @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+class TestMILPStatusDiagnosis:
+    """`milp_status()` must explain WHY the engine chip says "Greedy (fallback)".
+
+    Customer question, Sept 2026: "why is MILP not loading?".  The integration
+    already knew (one of four distinct failure modes) but threw the answer away
+    into a single log WARNING that had long since rotated.  `milp_status()` keeps
+    it and the coordinator surfaces it as the `milp_status` attribute, so the
+    reason is readable from the UI.  These tests pin each mode.
+    """
+
+    @staticmethod
+    def _fresh_milp():
+        """Reload milp.py so its process-lifetime flags start clean."""
+        spec = importlib.util.spec_from_file_location("milp_probe", _milp_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_reports_unknown_before_first_run(self):
+        st = self._fresh_milp().milp_status()
+        assert st["state"] == "unknown"
+        assert st["solver"] == ""
+
+    def test_reports_disabled_with_reason_when_no_solver(self):
+        """The PuLP-4.0 / missing-CBC case must name itself, not fail silently."""
+        mod = self._fresh_milp()
+        mod._pick_solver = lambda pulp: None
+        out = mod.solve_schedule(
+            EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10,
+                      safe_power_kw=5, scheduler_engine="milp"),
+            EMSState(battery_soc_pct=30.0, slot_prices_today=[0.1] * 24,
+                     pv_hourly_kwh={}, current_hour=0),
+            remaining=[(i, 0.1) for i in range(24)],
+            current_kwh=3.0, num_slots=24, current_slot=0,
+            minutes_per_slot=60.0, reserve_target=5.0, pv_confidence=1.0,
+        )
+        assert out is None, "no solver must fall back to greedy"
+        st = mod.milp_status()
+        assert st["state"] == "disabled"
+        assert "solver" in st["reason"].lower(), st["reason"]
+
+    def test_disabled_short_circuits_without_reprobing(self):
+        """Once disabled, later ticks must not rebuild the model or re-probe —
+        that is what produced 1100+ tracebacks a day before the flag existed."""
+        mod = self._fresh_milp()
+        probes = {"n": 0}
+
+        def counting(pulp):
+            probes["n"] += 1
+            return None
+
+        mod._pick_solver = counting
+        args = dict(
+            remaining=[(i, 0.1) for i in range(24)], current_kwh=3.0,
+            num_slots=24, current_slot=0, minutes_per_slot=60.0,
+            reserve_target=5.0, pv_confidence=1.0,
+        )
+        config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10,
+                           safe_power_kw=5, scheduler_engine="milp")
+        state = EMSState(battery_soc_pct=30.0, slot_prices_today=[0.1] * 24,
+                         pv_hourly_kwh={}, current_hour=0)
+        for _ in range(6):
+            mod.solve_schedule(config, state, **args)
+        assert probes["n"] == 1, (
+            f"probed {probes['n']}× — the permanent-disable flag is not holding"
+        )
+
+    def test_reports_active_and_names_the_solver(self):
+        """A healthy run must report which solver is doing the work."""
+        pytest.importorskip("pulp")
+        mod = self._fresh_milp()
+        if mod._pick_solver(__import__("pulp")) is None:
+            pytest.skip("no LP solver available in this environment")
+        st = mod.milp_status()
+        assert st["state"] == "active", st
+        assert st["solver"], "solver name must be recorded for the UI"
+
+    def test_status_never_raises(self):
+        """It is a diagnostic — it must never be able to cause a failure."""
+        mod = self._fresh_milp()
+        mod._MILP_DISABLED = True
+        mod._MILP_DISABLED_REASON = "boom"
+        assert mod.milp_status()["reason"] == "boom"
+
+
 class TestMILPScheduler:
     """Tests for the optional MILP scheduler (milp.py)."""
 
