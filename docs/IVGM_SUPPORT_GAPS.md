@@ -11,8 +11,30 @@ Nothing here has been checked against hardware. This file lists every open
 question, **dangerous ones first**, so the unknowns are visible instead of being
 discovered on a live inverter.
 
-**Until items 1–4 are answered, treat both models as read-only**: select the
+**Until items 0–4 are answered, treat both models as read-only**: select the
 model to get sensors, but leave `grid_mode = off` so the EMS never writes.
+`grid_mode` defaults to `off`, so a fresh install is already in that state — the
+owner has to opt in before any register is written.
+
+### The addresses rule
+
+**An IVGM register address must come from the IVGM document.** It is never
+borrowed from a TREX map on the grounds that the families look similar — they
+are different product lines and the layouts genuinely differ: `10minovptime` is
+0x2205 here but 0x2206 on TREX‑25/50, and the telemetry block is offset by one
+versus TREX‑5/10. A borrowed address does not fail loudly; it reads (or writes)
+a neighbouring register and yields a plausible wrong number.
+
+This is enforced, not just intended: `tests/data/ivgm_documented_registers.json`
+is a frozen transcript of every address the document defines, and
+`tests/test_model_coverage.py` fails if any IVGM register uses an address — or
+carries a name — that isn't in it. All 365 addresses in the shipped map are
+document-sourced; zero are borrowed.
+
+Key *names* are shared with the TREX maps on purpose (`eco_timeofuse`,
+`econ_rule_1_power`, …) because the handlers look registers up by key. The key
+is the interface; the **address is per-model data** and comes from that model's
+own document.
 
 ---
 
@@ -32,21 +54,49 @@ and battery 2. Those registers exist precisely because a larger model uses them.
 
 ---
 
-## 1. ⚠️ Is `ECO1_Power` really in watts on the 20K? (DANGEROUS)
+## 0. ⚠️ The document defines no enum VALUES for any control register (DANGEROUS)
+
+The settings section gives address, word size and unit — and **nothing else**.
+There is not a single value table in it. So for every register we actually
+*write*, the meaning of the value is assumed from TREX‑25/50:
+
+| Register | We assume | Documented? |
+|---|---|---|
+| `system_mode` (0x2144, "Work Mode") | 0 Selling / 1 Zero Export To Load / 2 Zero Export To CT | ❌ |
+| `eco_timeofuse` (0x2207) | 1 = Economic mode on | ❌ |
+| `ECO1_GridChargeEnable` (0x2209) | 1 = charge from grid | ❌ |
+| `ECO1_StartTime`/`StopTime` (0x220B/C) | packed `HH<<8 \| MM` | ❌ |
+| `ECO_EffectiveWeek` (0x2208) | bit0=Sunday…bit6=Saturday, 0x7F = all | ❌ |
+
+These are **cross-family assumptions of exactly the kind this project has
+decided not to make** (see "The addresses rule" below). They are unavoidable —
+the integration has to write *something* — but they are assumptions, not facts,
+and a wrong `system_mode` value could put the inverter into an export mode the
+owner did not ask for.
+
+**To resolve:** set each mode from the inverter's own display and read the
+register back. One pass over Work Mode's three positions and the ECO1 enable
+settles the whole table.
+
+## 1. `ECO1_Power` unit — DECIDED: watts (still worth confirming on a 20K)
 
 The document gives `ECO1_Power` (0x220F) and `Grid Peak Shaving Power` (0x2149)
-in **W**. TREX‑25/50 use **kW** at those same addresses — Felicity evidently
-switches unit as models get larger, and the only model this document covers is
-the 8K.
+in **W**, and that is what the integration now assumes for **both** IVGM models
+(`const.WATT_POWER_MODELS`). Decision taken deliberately: the document is the
+only evidence available, and it says W.
 
-**If the 20K is actually kW and we write W, we ask the inverter for 1000× the
-intended charge power.** The reverse under-requests by 1000×.
+The residual risk is the 20K specifically — TREX‑25/50 use **kW** at those
+addresses, so Felicity evidently switches unit as models grow, and this document
+only covers the 8K. **If a 20K is actually kW, writing W asks for 1000× the
+power.** That risk is bounded by `grid_mode` defaulting to **off**: nothing is
+written until the owner turns the EMS on.
 
-Handled in code by `WATT_POWER_MODELS` in `const.py` (both IVGM models are
-listed as watt‑valued) and asserted by `test_power_unit_is_declared`.
+**To confirm:** on a 20K, set a known charge power (say 3 kW) from the display
+and read 0x220F. `3000` ⇒ watts (as assumed), `3` ⇒ kW (change
+`WATT_POWER_MODELS`).
 
-**To resolve:** on a 20K, set a known charge power (say 3 kW) via the inverter's
-own display, then read 0x220F. `3000` ⇒ watts, `3` ⇒ kW.
+Enforced in code by `WATT_POWER_MODELS` and asserted by
+`test_power_unit_is_declared`.
 
 ## 2. ⚠️ The discharge path writes a register the IVGM does not define (DANGEROUS)
 
@@ -156,7 +206,8 @@ them yet:
 
 ## Checklist to promote IVGM from provisional to supported
 
-1. [ ] Read 0xF800/0xF801 on both models; record the IDs here.
+1. [ ] Confirm the control-register enum values from the display (item 0).
+2. [ ] Read 0xF800/0xF801 on both models; record the IDs here.
 2. [ ] Confirm `ECO1_Power` unit on the **20K** (item 1).
 3. [ ] Confirm 0x115A carries current on the 8K (item 4).
 4. [ ] Establish how the IVGM enables export, without touching 0x21FF (item 2).

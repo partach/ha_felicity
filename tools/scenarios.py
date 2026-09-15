@@ -652,6 +652,85 @@ SCENARIOS = [
     },
 
     {
+        "name": "ivgm_eight_1phase_save_money",
+        "desc": "IVGM-8K (1-phase hybrid, 8 kW, 2 MPPT, ONE battery): small LV pack on a "
+                "duck-curve tariff.  The EMS is model-independent — this pins that an 8 kW "
+                "inverter with a 10 kWh battery still charges only the cheap midday trough "
+                "and never the evening peak.  Power is capped at the inverter's 8 kW, which "
+                "is the IVGM's rating (INVERTER_MAX_POWER_KW).",
+        "config": dict(grid_mode="from_grid", optimization_priority="cost",
+                       battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=8.0,
+                       consumption_est_kwh=14.0),
+        "state": dict(battery_soc_pct=35.0,
+                      slot_prices_today=inverse_solar_prices(),
+                      pv_hourly_kwh=pv_bell(12.0, sunrise=7, sunset=19),
+                      consumption_hourly_kwh=morning_evening_peak_profile(14.0),
+                      pv_actual_today_kwh=0.0, pv_forecast_today=12.0,
+                      pv_forecast_remaining=12.0,
+                      current_hour=0, current_minute=0),
+        "expect": lambda r, s: (
+            (max(r["charge_prices"]) <= 0.20) if r["charge_prices"] else True,
+            (f"8 kW / 1 battery: charges only the cheap half of the duck curve "
+             f"(max charge price={max(r['charge_prices']) if r['charge_prices'] else None})"),
+        ),
+    },
+
+    {
+        "name": "ivgm_twenty_3phase_two_batteries",
+        "desc": "IVGM-20K (3-phase, 20 kW, 4 MPPT, TWO batteries): the larger family member. "
+                "Bigger pack + bigger inverter must NOT mean more slots — the power-aware "
+                "selector should cover the deficit from FEWER, cheaper slots because each "
+                "slot delivers more energy.  Pins that scaling the hardware doesn't scale "
+                "the grid spend.",
+        "config": dict(grid_mode="from_grid", optimization_priority="cost",
+                       battery_capacity_kwh=40.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=15.0, inverter_max_power_kw=20.0,
+                       consumption_est_kwh=40.0),
+        "state": dict(battery_soc_pct=30.0,
+                      slot_prices_today=inverse_solar_prices(),
+                      pv_hourly_kwh=pv_bell(30.0, sunrise=6, sunset=20),
+                      consumption_hourly_kwh=heavy_flat_profile(40.0),
+                      pv_actual_today_kwh=0.0, pv_forecast_today=30.0,
+                      pv_forecast_remaining=30.0,
+                      current_hour=0, current_minute=0),
+        "expect": lambda r, s: (
+            (max(r["charge_prices"]) <= 0.20) if r["charge_prices"] else True,
+            (f"20 kW / 2 batteries: still only cheap slots "
+             f"(slots={len(r['charge_slots'])}, "
+             f"max={max(r['charge_prices']) if r['charge_prices'] else None})"),
+        ),
+    },
+
+    {
+        "name": "ivgm_eight_sell_unproven_stays_from_grid",
+        "desc": "IVGM SAFETY PIN: selling is UNPROVEN on this family — the IVGM protocol "
+                "does not define econ_rule_N_sell_enable, and those addresses are grid "
+                "under-frequency protection parameters there (docs/IVGM_SUPPORT_GAPS.md #2). "
+                "Until that is resolved the recommended configuration is from_grid only. "
+                "This scenario documents that a from_grid IVGM NEVER schedules a discharge, "
+                "even with a fat evening peak that would tempt a trader.",
+        "config": dict(grid_mode="from_grid", optimization_priority="cost",
+                       battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=5.0, inverter_max_power_kw=8.0,
+                       consumption_est_kwh=12.0),
+        "state": dict(battery_soc_pct=95.0,      # full battery + high peak = maximum temptation
+                      slot_prices_today=inverse_solar_prices(low=0.05, mid=0.20, peak=0.70),
+                      pv_hourly_kwh=pv_bell(15.0, sunrise=7, sunset=19),
+                      pv_actual_today_kwh=1.0, pv_forecast_today=15.0,
+                      pv_forecast_remaining=14.0,
+                      current_hour=8, current_minute=0),
+        "expect": lambda r, s: (
+            len(r["sell_slots"]) == 0,
+            (f"from_grid IVGM never sells — selling is unproven on this family "
+             f"(got {len(r['sell_slots'])} sell slots)"),
+        ),
+    },
+
+    {
         "name": "self_suff_dark_tomorrow_still_tops_off",
         "desc": "MIRROR of self_suff_big_pv_tomorrow_no_topoff — identical inputs except "
                 "tomorrow is DARK (4 kWh).  Now there IS a shortfall coming, so the "

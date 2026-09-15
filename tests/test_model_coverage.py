@@ -145,3 +145,99 @@ def test_ivgm_never_writes_registers_its_protocol_does_not_define():
                 f"{key} is listed as unsupported on IVGM but IS in {model}'s "
                 "register map — one of the two is wrong"
             )
+
+
+# ---------------------------------------------------------------------------
+# IVGM register provenance
+# ---------------------------------------------------------------------------
+# THE RULE: an IVGM register address must come from the IVGM protocol document.
+# It may never be borrowed from a TREX map because "the families look similar".
+# They are different product lines and the layouts genuinely differ — e.g.
+# `10minovptime` is 0x2205 on IVGM but 0x2206 on TREX-25/50, and the whole
+# telemetry block is offset by one versus TREX-5/10.  A borrowed address does
+# not fail loudly: it reads a neighbouring register and reports a plausible
+# wrong number, or writes one.
+#
+# tests/data/ivgm_documented_registers.json is a frozen transcript of every
+# address the document defines, so this check is against the document itself
+# rather than against the code that was generated from it.
+
+import json
+import os
+
+_DOC_PATH = os.path.join(os.path.dirname(__file__), "data",
+                         "ivgm_documented_registers.json")
+
+
+def _documented():
+    with open(_DOC_PATH, encoding="utf-8") as fh:
+        return json.load(fh)["addresses"]
+
+
+def _ivgm_module():
+    return sys.modules["custom_components.ha_felicity.ivgm"]
+
+
+@pytest.mark.parametrize("model", list(const.IVGM_MODELS))
+def test_every_ivgm_address_is_in_the_protocol_document(model):
+    """No IVGM register may use an address the document doesn't define."""
+    documented = _documented()
+    registers = const.MODEL_REGISTRY[model]["registers"]
+    undocumented = {
+        key: f"0x{info['address']:04X}"
+        for key, info in registers.items()
+        if f"0x{info['address']:04X}" not in documented
+    }
+    assert not undocumented, (
+        f"{model}: these registers use addresses absent from the IVGM protocol "
+        f"document — they must not be inferred from a TREX map: {undocumented}"
+    )
+
+
+def test_ivgm_addresses_are_not_silently_taken_from_trex():
+    """Belt-and-braces on the rule above, stated as intent.
+
+    Recomputes the same property from the other direction: the set of IVGM
+    addresses must be a subset of the documented set, so there is no way for a
+    TREX-only address to enter the map even if someone adds one by hand.
+    """
+    documented = {int(a, 16) for a in _documented()}
+    family = {i["address"] for i in _ivgm_module()._REGISTERS_IVGM_FAMILY.values()}
+    borrowed = sorted(family - documented)
+    assert not borrowed, (
+        "IVGM family map contains addresses not in the protocol document: "
+        + ", ".join(f"0x{a:04X}" for a in borrowed)
+    )
+
+
+def test_ivgm_register_names_match_the_document():
+    """Guards against a mis-transcribed address pointing at the wrong register.
+
+    An address typo usually still lands on a *valid* address, so the previous
+    tests pass; comparing the name we recorded against the document's name for
+    that address is what actually catches it.
+    """
+    documented = _documented()
+    family = _ivgm_module()._REGISTERS_IVGM_FAMILY
+    # The generator strips "(8K donot support)" and the High/Low suffix on the
+    # 32-bit pairs, so compare on a loose, punctuation-free basis.
+    def norm(s):
+        return "".join(ch for ch in s.lower() if ch.isalnum())
+
+    # The four packed date/time words are deliberately renamed: the document
+    # spells them out as bit layouts ("Bit8-15: Year(value+2000) Bit0-7: Month")
+    # which makes a useless entity name.  They are surfaced through the combined
+    # "inverter_time" sensor, and their ADDRESSES are still checked above.
+    renamed = {"time_year_month", "time_day_time", "time_minutes_seconds", "time_week"}
+
+    mismatched = []
+    for key, info in family.items():
+        if key in renamed:
+            continue
+        if info.get("size", 1) != 1:
+            continue                      # 32-bit pair: name intentionally trimmed
+        doc_name = documented.get(f"0x{info['address']:04X}")
+        if doc_name and norm(doc_name) and norm(info["name"]) not in norm(doc_name):
+            mismatched.append(f"{key} @0x{info['address']:04X}: "
+                              f"map={info['name']!r} doc={doc_name!r}")
+    assert not mismatched, "register name does not match the document:\n" + "\n".join(mismatched)
