@@ -1,4 +1,12 @@
 """Constants for the Felicity integration."""
+from .ivgm import (
+    _COMBINED_REGISTERS_IVGM_EIGHT,
+    _COMBINED_REGISTERS_IVGM_TWENTY,
+    _REGISTERS_IVGM_EIGHT,
+    _REGISTERS_IVGM_TWENTY,
+    REGISTER_SETS_IVGM_EIGHT,
+    REGISTER_SETS_IVGM_TWENTY,
+)
 from .trex_fifty import (
     _COMBINED_REGISTERS_TREX_FIFTY,
     _REGISTERS_TREX_FIFTY,
@@ -39,11 +47,19 @@ INVERTER_MODEL_TREX_TEN = "T-REX-10K-P3G01"
 INVERTER_MODEL_TREX_FIFTY = "T-REX-50KHP3G01"
 INVERTER_MODEL_TREX_TWENTY_FIVE = "T-REX-25KHP3G01"
 
+# IVGM family (different product line — see ivgm.py and docs/IVGM_SUPPORT_GAPS.md).
+# Support is PROVISIONAL: built from the 8K RS485 protocol document, not yet
+# validated against hardware.  The 3-phase map in particular is inferred.
+INVERTER_MODEL_IVGM_EIGHT = "IVGM-8KLP1G1"
+INVERTER_MODEL_IVGM_TWENTY = "IVGM-20KLP3G1"
+
 INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_TREX_FIVE: 5,
     INVERTER_MODEL_TREX_TEN: 10,
     INVERTER_MODEL_TREX_TWENTY_FIVE: 25,
     INVERTER_MODEL_TREX_FIFTY: 50,
+    INVERTER_MODEL_IVGM_EIGHT: 8,
+    INVERTER_MODEL_IVGM_TWENTY: 20,
 }
 
 SUPPORTED_MODELS = [
@@ -51,8 +67,60 @@ SUPPORTED_MODELS = [
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_TWENTY_FIVE,
+    INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_TWENTY,
     # add new ones here
 ]
+
+#: Models whose control path follows the ECO_TimeOfUse / ECOn_GridChargeEnable
+#: layout (0x2207 / 0x2209...) rather than the TREX-5/10 operating_mode +
+#: econ_rule_1_enable layout.  type_specific.py branches on this instead of
+#: listing models one by one, so a new family member cannot silently fall
+#: through to "unknown model -> return None".
+ECO_TIMEOFUSE_MODELS = (
+    INVERTER_MODEL_TREX_TWENTY_FIVE,
+    INVERTER_MODEL_TREX_FIFTY,
+    INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_TWENTY,
+)
+
+#: Models using the TREX-5/10 operating_mode(8451) + econ_rule_1_enable path.
+OPERATING_MODE_MODELS = (
+    INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_TEN,
+)
+
+#: IVGM family members.  They share the ECO block with TREX-25/50 but NOT the
+#: sell-enable registers — see IVGM_UNSUPPORTED_WRITES below.
+IVGM_MODELS = (
+    INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_TWENTY,
+)
+
+#: Models whose POWER registers are expressed in WATTS.  This cuts ACROSS the
+#: control-path split above and is the easiest thing to get wrong: the IVGM uses
+#: the TREX-25/50 *register layout* (ECO block) but the TREX-5/10 *power unit*
+#: (the protocol document gives ECO1_Power and Grid Total Power in W, not kW).
+#: Reading a kW value as W under-reports grid power 1000x; writing a W value to
+#: a kW register asks the inverter for 1000x the power.  Anything not listed
+#: here is treated as kW.
+WATT_POWER_MODELS = (
+    INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_TEN,
+    INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_TWENTY,
+)
+
+#: Registers the TREX-25/50 control path writes that the IVGM protocol document
+#: does NOT define.  Writing them on an IVGM would hit an undocumented address:
+#: 0x21FF-0x2204 sit inside the IVGM's GRID UNDER-FREQUENCY PROTECTION block,
+#: so a stray 0/1 there is not a no-op — it could alter a grid-protection
+#: threshold.  type_specific.py must never write these on an IVGM.
+IVGM_UNSUPPORTED_WRITES = frozenset({
+    "econ_rule_1_sell_enable", "econ_rule_2_sell_enable", "econ_rule_3_sell_enable",
+    "econ_rule_4_sell_enable", "econ_rule_5_sell_enable", "econ_rule_6_sell_enable",
+    "zero_export_mode_selection",
+})
 
 # Serial settings
 CONF_SERIAL_PORT = "serial_port"
@@ -123,6 +191,22 @@ def build_groups(registers):
 
 
 MODEL_REGISTRY = {
+    INVERTER_MODEL_IVGM_EIGHT: {
+        "registers":        _REGISTERS_IVGM_EIGHT,
+        "combined":         _COMBINED_REGISTERS_IVGM_EIGHT,
+        "register_groups":  build_groups(_REGISTERS_IVGM_EIGHT),
+        "register_sets":    REGISTER_SETS_IVGM_EIGHT,
+        "default_first_reg": 4352,   # 0x1100 WorkMode — the IVGM block starts one lower
+        "default_slave_id": 1,
+    },
+    INVERTER_MODEL_IVGM_TWENTY: {
+        "registers":        _REGISTERS_IVGM_TWENTY,
+        "combined":         _COMBINED_REGISTERS_IVGM_TWENTY,
+        "register_groups":  build_groups(_REGISTERS_IVGM_TWENTY),
+        "register_sets":    REGISTER_SETS_IVGM_TWENTY,
+        "default_first_reg": 4352,
+        "default_slave_id": 1,
+    },
     INVERTER_MODEL_TREX_FIVE: {
         "registers":        _REGISTERS_TREX_FIVE,
         "combined":         _COMBINED_REGISTERS_TREX_FIVE,

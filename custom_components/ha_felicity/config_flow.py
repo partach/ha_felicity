@@ -38,6 +38,8 @@ from .const import (
     DEFAULT_STOPBITS,
     DEFAULT_TCP_PORT,
     DOMAIN,
+    INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_TWENTY,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TEN,
@@ -164,6 +166,16 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TEN, label=INVERTER_MODEL_TREX_TEN),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TWENTY_FIVE, label=INVERTER_MODEL_TREX_TWENTY_FIVE),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIFTY, label=INVERTER_MODEL_TREX_FIFTY),
+                            # IVGM family — PROVISIONAL, built from the 8K RS485
+                            # protocol document and not yet hardware-validated.
+                            # The label says so, so nobody picks one expecting
+                            # the same maturity as a T-REX.
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVGM_EIGHT,
+                                label=f"{INVERTER_MODEL_IVGM_EIGHT} (1-phase, provisional)"),
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVGM_TWENTY,
+                                label=f"{INVERTER_MODEL_IVGM_TWENTY} (3-phase, provisional)"),
                             # Future models go here
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
