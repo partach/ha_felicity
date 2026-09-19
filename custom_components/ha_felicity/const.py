@@ -43,6 +43,8 @@ CONF_INVERTER_MODEL = "inverter_model"
 
 # Supported inverter models
 INVERTER_MODEL_TREX_FIVE = "T-REX-5K-P1G01"
+INVERTER_MODEL_TREX_SIX = "T-REX-6KLP1G01"
+INVERTER_MODEL_TREX_SIX_ALIAS = "T-REX-6K-P1G01"
 INVERTER_MODEL_TREX_TEN = "T-REX-10K-P3G01"
 INVERTER_MODEL_TREX_FIFTY = "T-REX-50KHP3G01"
 INVERTER_MODEL_TREX_TWENTY_FIVE = "T-REX-25KHP3G01"
@@ -55,6 +57,8 @@ INVERTER_MODEL_IVGM_TWENTY = "IVGM-20KLP3G1"
 
 INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_TREX_FIVE: 5,
+    INVERTER_MODEL_TREX_SIX: 6,
+    INVERTER_MODEL_TREX_SIX_ALIAS: 6,
     INVERTER_MODEL_TREX_TEN: 10,
     INVERTER_MODEL_TREX_TWENTY_FIVE: 25,
     INVERTER_MODEL_TREX_FIFTY: 50,
@@ -64,6 +68,8 @@ INVERTER_MAX_POWER_KW = {
 
 SUPPORTED_MODELS = [
     INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_SIX,
+    INVERTER_MODEL_TREX_SIX_ALIAS,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_TWENTY_FIVE,
@@ -87,6 +93,8 @@ ECO_TIMEOFUSE_MODELS = (
 #: Models using the TREX-5/10 operating_mode(8451) + econ_rule_1_enable path.
 OPERATING_MODE_MODELS = (
     INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_SIX,
+    INVERTER_MODEL_TREX_SIX_ALIAS,
     INVERTER_MODEL_TREX_TEN,
 )
 
@@ -106,6 +114,8 @@ IVGM_MODELS = (
 #: here is treated as kW.
 WATT_POWER_MODELS = (
     INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_SIX,
+    INVERTER_MODEL_TREX_SIX_ALIAS,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_IVGM_EIGHT,
     INVERTER_MODEL_IVGM_TWENTY,
@@ -208,6 +218,22 @@ MODEL_REGISTRY = {
         "default_slave_id": 1,
     },
     INVERTER_MODEL_TREX_FIVE: {
+        "registers":        _REGISTERS_TREX_FIVE,
+        "combined":         _COMBINED_REGISTERS_TREX_FIVE,
+        "register_groups":  build_groups(_REGISTERS_TREX_FIVE),
+        "register_sets":    REGISTER_SETS_TREX_FIVE,
+        "default_first_reg": 4353,
+        "default_slave_id": 1,
+    },
+    INVERTER_MODEL_TREX_SIX: {
+        "registers":        _REGISTERS_TREX_FIVE,
+        "combined":         _COMBINED_REGISTERS_TREX_FIVE,
+        "register_groups":  build_groups(_REGISTERS_TREX_FIVE),
+        "register_sets":    REGISTER_SETS_TREX_FIVE,
+        "default_first_reg": 4353,
+        "default_slave_id": 1,
+    },
+    INVERTER_MODEL_TREX_SIX_ALIAS: {
         "registers":        _REGISTERS_TREX_FIVE,
         "combined":         _COMBINED_REGISTERS_TREX_FIVE,
         "register_groups":  build_groups(_REGISTERS_TREX_FIVE),
