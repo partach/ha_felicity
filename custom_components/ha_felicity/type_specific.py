@@ -275,16 +275,12 @@ class TypeSpecificHandler:
                         Zero-export mode selection (0 CT, 1 Meter)
         """
         if self._inverter_model in OPERATING_MODE_MODELS:
-            if value == 0: # assume idle
-                await self.async_write_register("operating_mode", 0)
-                return True
-            elif value in (1,2): # Economic mode, enabled to_grid or from_grid
-                # operating_mode=2 (Economic) is what makes the inverter obey
-                # Rule 1.  If this write fails the inverter stays in General
-                # mode and silently ignores the rule-1 enable — check it and
-                # propagate failure so the caller doesn't leave the inverter
-                # in the inert "enable=charge, mode=General" state.
-                ok = await self.async_write_register("operating_mode", 2) # skip back-up mode for now
+            if value == 0:  # General mode (self-use)
+                return await self.async_write_register("operating_mode", 0)
+            elif value == 1:  # Backup mode
+                return await self.async_write_register("operating_mode", 1)
+            elif value == 2:  # Economic mode
+                ok = await self.async_write_register("operating_mode", 2)
                 if not ok:
                     _LOGGER.error(
                         "Failed to write operating_mode=2 (Economic) on %s — "
@@ -293,8 +289,8 @@ class TypeSpecificHandler:
                     )
                 return ok
             else:
-              _LOGGER.warning("Operating mode unknown for TREX10 series, not changing registers")
-              return False
+                _LOGGER.warning("Operating mode unknown for TREX10 series, not changing registers: %s", value)
+                return False
     
         elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             if value == 0: # assume idle, we dont control but we need to set things back if we did (but defaults no know atm)
