@@ -200,6 +200,26 @@ behaviour, the simulator is the gate that decides whether you were right.
 
 ---
 
+## 0. Which inverter the EMS is driving
+
+The scheduling logic is model-independent — `ems.py` sees only kWh, kW and
+prices. What *is* model-specific is how the plan reaches the hardware
+(`type_specific.py`), and there are two shapes:
+
+| Control path | Models | Enable sequence |
+|---|---|---|
+| `operating_mode` | T-REX-5 / 10 | `operating_mode=2` (Economic) then `econ_rule_1_enable` 0/1/2 |
+| `ECO_TimeOfUse` | T-REX-25 / 50, **IVGM-8K / 20K** | `system_mode` + `eco_timeofuse=1` then `econ_rule_1_grid_charge_enable` |
+
+Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
+
+The IVGM family (added Sept 2026, **provisional**) uses the ECO layout but
+reports power in **W**, not kW — `const.WATT_POWER_MODELS` is the single source
+for that distinction. It also cannot use `econ_rule_N_sell_enable`, so
+**`to_grid` / `both` is unproven there**; see `docs/IVGM_SUPPORT_GAPS.md`.
+
+---
+
 ## 1. User Configuration: The Settings That Shape Every Decision
 
 These are the user-configurable parameters. Every calculation in the algorithm traces back to one or more of these settings.

@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **298**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **340**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -114,6 +114,7 @@ custom_components/ha_felicity/
 ├── trex_ten.py              # TREX-10 register map
 ├── trex_twenty_five.py      # TREX-25 register map
 ├── trex_fifty.py            # TREX-50 register map
+├── ivgm.py                  # IVGM family map (8K + 3-phase, derived from ONE table)
 ├── date.py                  # Date entities
 ├── time.py                  # Time entities
 └── frontend/
@@ -470,6 +471,73 @@ back to the user's `discharge_min` setting.
 | Power unit | Watts | Watts | Kilowatts (÷1000) | Kilowatts (÷1000) |
 | SOC source | Single register | Single register | `min(bat1_soc, bat2_soc)` | `min(bat1_soc, bat2_soc)` |
 | Date registers | Written | Written | Not used | Not used |
+
+### IVGM family (PROVISIONAL — Sept 2026)
+
+`IVGM-8KLP1G1` and `IVGM-20KLP3G1` are a **different product line**, added from
+the Felicity "Inverter Communication Protocol — Series RS485" document (v01,
+2025-03-13).  **Nothing is hardware-validated** — read `docs/IVGM_SUPPORT_GAPS.md`
+before enabling `grid_mode` on one.  Both appear in the setup dropdown labelled
+"(provisional)".
+
+**The addresses rule: an IVGM address must come from the IVGM document.**  Never
+borrowed from a TREX map because the families "look similar" — they are different
+product lines and the layouts genuinely differ (`10minovptime` is 0x2205 on IVGM
+but 0x2206 on TREX-25/50; the telemetry block is offset by one vs TREX-5/10).  A
+borrowed address doesn't fail loudly — it reads or writes a *neighbouring*
+register and yields a plausible wrong number.  Enforced, not just intended:
+`tests/data/ivgm_documented_registers.json` freezes every address the document
+defines and `test_model_coverage.py` fails on any IVGM register whose address —
+or name — isn't in it.  All 365 shipped addresses are document-sourced, zero
+borrowed.  Key *names* are shared with the TREX maps deliberately (handlers look
+up by key); the key is the interface, the **address is per-model data**.
+
+⚠️ **The document defines no enum VALUES.**  Address, word size and unit only —
+not one value table.  So `system_mode`=0/1/2, `eco_timeofuse`=1,
+`ECO1_GridChargeEnable`=1 and the `HH<<8|MM` time packing are all *assumed* from
+TREX-25/50.  Unavoidable (something must be written) but they are assumptions;
+gaps doc item 0 says how to confirm each from the inverter's display.
+
+**One family map, two models** (`ivgm.py`): the document is 8K-scoped but
+documents the family map, annotating 41 registers "(8K donot support)" (phase C,
+PV3/PV4, battery 2).  So `_REGISTERS_IVGM_FAMILY` is defined ONCE and both models
+derive from it — the 3-phase map is the family, the 8K is the family minus
+`_IVGM_EIGHT_UNSUPPORTED`.  Hand-copying into two files is the duplication that
+caused the const-stub drift; `test_ivgm_eight_is_a_strict_subset_of_the_three_phase_map`
+pins it.  **The 3-phase map is INFERRED — the document never mentions a 20K.**
+
+⚠️ **The IVGM mixes the two existing conventions, and that is the trap:**
+
+| | Register LAYOUT | Power UNIT |
+|---|---|---|
+| TREX-5/10 | `operating_mode`(0x2103) + `econ_rule_1_enable`(0x2178) | **W** |
+| TREX-25/50 | `ECO_TimeOfUse`(0x2207) + `ECOn_GridChargeEnable`(0x2209…) | **kW** |
+| **IVGM** | **TREX-25/50 layout** (0x2103/0x2178 are absent entirely) | **W** |
+
+Inheriting the layout without the unit would request **1000× the intended charge
+power**.  `const.WATT_POWER_MODELS` is the single place that decides W vs kW;
+`type_specific` consults it in `determine_rule_power`, `determine_grid_power`
+(incl. the CT-phase fallback) and `_handle_econ_rule_1_power`.
+
+⚠️ **Never write `econ_rule_N_sell_enable` on an IVGM.**  The TREX-25/50 discharge
+path writes 0x21FF; the IVGM document does not define 0x21FF–0x2204, and in the
+IVGM map those addresses sit **inside the grid under-frequency protection block**.
+A stray 0/1 there is not a no-op.  Blocked by `const.IVGM_UNSUPPORTED_WRITES` +
+`type_specific._write_if_defined()`.  Consequence: **selling is unproven on IVGM**
+(gaps doc item 2).  Note the maintainer's field experience is that the TREX-10
+path is the stable one and TREX-25 less so — the IVGM is *forced* onto the
+less-proven shape, because its protocol offers nothing else.
+
+**`type_specific.py` now branches on CAPABILITY, not on a hand-listed model pair.**
+Every method used to read `if model in (TREX_FIVE, TREX_TEN) … elif model in
+(TREX_25, TREX_50)` with **no else**, so a new model silently returned
+`None`/`False` from every accessor — the integration would load, entities would
+appear, and the EMS would quietly be unable to read the battery or drive the
+inverter.  The branches are now `OPERATING_MODE_MODELS` / `ECO_TIMEOFUSE_MODELS`,
+and `tests/test_model_coverage.py` fails if any supported model is missing from
+exactly one control path, from `MODEL_REGISTRY`, from `INVERTER_MAX_POWER_KW`, or
+lacks the registers its own control path writes.  (Verified by removing IVGM from
+`ECO_TIMEOFUSE_MODELS`: two tests fail.)
 
 `INVERTER_MAX_POWER_KW` in `const.py` maps each model to its max power.
 The power_level slider range and SOC trajectory calculations use this to
@@ -2124,7 +2192,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**298 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**340 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2169,6 +2237,11 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
   survival deficit always covered, no-forecast back-compat, cost mode unaffected)
 - MILP solver diagnosis (`milp_status`: active/disabled/degraded/unknown, names the
   solver, records why each probe failed, disabled engine re-probes only once)
+- Model coverage (every supported model is in MODEL_REGISTRY, has a max power,
+  belongs to exactly ONE control path, its control-path registers exist in its own
+  map, W-vs-kW is declared, IVGM never writes undefined registers)
+- IVGM register provenance (every address AND name traced to the frozen protocol
+  transcript — no address may be borrowed from a TREX map)
 
 ### Test harness: never hand-type a copy of production code
 

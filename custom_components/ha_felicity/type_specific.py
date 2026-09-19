@@ -2,10 +2,11 @@ import logging
 from typing import Any
 
 from .const import (
-    INVERTER_MODEL_TREX_FIFTY,
-    INVERTER_MODEL_TREX_FIVE,
-    INVERTER_MODEL_TREX_TEN,
-    INVERTER_MODEL_TREX_TWENTY_FIVE,
+    ECO_TIMEOFUSE_MODELS,
+    IVGM_MODELS,
+    IVGM_UNSUPPORTED_WRITES,
+    OPERATING_MODE_MODELS,
+    WATT_POWER_MODELS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,6 +25,27 @@ class TypeSpecificHandler:
         self.register_map = register_map
         self.peak_shaving_enabled = False
 
+    async def _write_if_defined(self, key: str, value: int) -> bool:
+        """Write a register, unless this model's protocol doesn't define it.
+
+        The TREX-25/50 control path writes `econ_rule_N_sell_enable` and
+        `zero_export_mode_selection`.  The IVGM protocol document defines
+        NEITHER — and these are not harmless no-ops: 0x21FF-0x2204 fall inside
+        the IVGM's grid UNDER-FREQUENCY protection block, so blindly writing a
+        0/1 there could alter a grid-protection threshold on live hardware.
+
+        Returns True when skipped: "this model has no such register" is not a
+        failure, and must not abort an otherwise-valid state transition.
+        """
+        if self._inverter_model in IVGM_MODELS and key in IVGM_UNSUPPORTED_WRITES:
+            _LOGGER.debug(
+                "Skipping %s on %s — not defined in the IVGM protocol; "
+                "that address is a grid-protection parameter on this family",
+                key, self._inverter_model,
+            )
+            return True
+        return await self.async_write_register(key, value)
+
     def determine_battery_voltage(self, data: dict) -> int | float | None:
         """
         Determine the representative battery voltage.
@@ -33,14 +55,14 @@ class TypeSpecificHandler:
         """
         MIN_VALID_VOLTAGE = 10.0  # Arbitrary but safe threshold (e.g. <10V is unrealistic for a battery pack)
     
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             voltage = data.get("battery_voltage")
             if voltage is not None and voltage > MIN_VALID_VOLTAGE:
                 return voltage
             _LOGGER.debug("battery_voltage missing or invalid (≤%.1fV) on 5/10K model", MIN_VALID_VOLTAGE)
             return None
     
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             bat1 = data.get("bat1_voltage")
             bat2 = data.get("bat2_voltage")
     
@@ -63,10 +85,12 @@ class TypeSpecificHandler:
     def determine_rule_power(self, data: dict) -> int | None:
         power = data.get("econ_rule_1_power")
         if power is not None:
-            if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
-                return round(power / 1000) # these use Watts
-            elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
-                return round(power) # these use kW
+            # Unit, not control path: the IVGM shares the ECO register layout
+            # with TREX-25/50 but reports this register in W like a TREX-10.
+            if self._inverter_model in WATT_POWER_MODELS:
+                return round(power / 1000)   # register is Watts -> report kW
+            elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
+                return round(power)          # register is already kW
         _LOGGER.debug("econ_rule_1_power not found / is None")
         return None
 
@@ -81,7 +105,7 @@ class TypeSpecificHandler:
                         Zero-export mode selection (0 CT, 1 Meter)
         """
         try:
-            if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+            if self._inverter_model in OPERATING_MODE_MODELS:
                 modes = {
                     0:    "General mode",
                     1:    "Backup mode",
@@ -89,7 +113,7 @@ class TypeSpecificHandler:
                 }           
                 mode = data.get("operating_mode", 0)
                 return modes[mode] # should be textual as it is a select
-            elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+            elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
                 modes = {
                     0:    "Selling Mode",
                     1:    "Zero Export To Load",
@@ -99,6 +123,12 @@ class TypeSpecificHandler:
                 mode = data.get("system_mode", 0)
                 loadToSell = data.get("zero_export_to_load_sell_enable", 0)
                 CTtoSell = data.get("zero_export_to_ct_sell_enable", 0)
+                if self._inverter_model in IVGM_MODELS:
+                    # The IVGM protocol document has no zero_export_mode_selection
+                    # (0x214B is undefined there).  Report what we can actually
+                    # read rather than defaulting the field to "CT" and implying
+                    # we polled something.
+                    return f"{modes[mode]} (LtS:{loadToSell},CTtS:{CTtoSell})"
                 modeSelection = data.get("zero_export_mode_selection", 0)
                 return f"{modes[mode]} (LtS:{loadToSell},CTtS:{CTtoSell},Sel:{CT[modeSelection]})"
         except Exception as err:
@@ -112,12 +142,12 @@ class TypeSpecificHandler:
         Uses abs() to detect overcurrent in both directions:
         positive (importing from grid) and negative (exporting to grid).
         """
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             phase_1 = abs(data.get("ac_input_current", 0.0))
             phase_2 = abs(data.get("ac_input_current_l2", 0.0))
             phase_3 = abs(data.get("ac_input_current_l3", 0.0))
             return max(phase_1, phase_2, phase_3)
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             phase_1 = abs(data.get("phase_a_ct_current", 0.0))
             phase_2 = abs(data.get("phase_b_ct_current", 0.0))
             phase_3 = abs(data.get("phase_c_ct_current", 0.0))
@@ -132,18 +162,21 @@ class TypeSpecificHandler:
         Positive = importing from grid, negative = exporting to grid.
         Returns None if no data available.
         """
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             val = data.get("total_ac_input_power")
             if val is not None:
                 return float(val)  # Already in watts, signed (index 3)
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             val = data.get("total_grid_power")
             if val is not None:
+                if self._inverter_model in WATT_POWER_MODELS:
+                    return float(val)       # IVGM: "Grid Total Power" is already W
                 return float(val) * 1000.0  # Convert kW to watts (index 8 = signed/10)
-            # Fallback: sum individual CT phases
+            # Fallback: sum individual CT phases (same unit rule as above)
             powers = [data.get(f"phase_{p}_ct_active_power") for p in ("a", "b", "c")]
             if any(p is not None for p in powers):
-                return sum((p or 0.0) for p in powers) * 1000.0
+                total = sum((p or 0.0) for p in powers)
+                return total if self._inverter_model in WATT_POWER_MODELS else total * 1000.0
         return None
 
     def determine_battery_soc(self, data: dict) -> int | float | None:
@@ -155,14 +188,14 @@ class TypeSpecificHandler:
           - Only one available → return that one
           - Neither → return None
         """
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             soc = data.get("battery_capacity")
             if soc is not None:
                 return soc
             _LOGGER.debug("battery_capacity missing on 10K model")
             return None
         
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             bat1 = data.get("bat1_soc")
             bat2 = data.get("bat2_soc")
         
@@ -218,11 +251,11 @@ class TypeSpecificHandler:
       
     async def _handle_rule_1_start_day(self, value: int) -> bool:
         """Handle writing start day register (model-specific)."""
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             await self.async_write_register("econ_rule_1_start_day", value)
             return True
     
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             # Register not used / not present → silently ignore (no error)
             _LOGGER.debug("Ignoring econ_rule_1_start_day on 50K model (not applicable)")
             return True
@@ -241,7 +274,7 @@ class TypeSpecificHandler:
                         Zero Export To CT Sell Enable (0 Disabled, 1 Enabled)
                         Zero-export mode selection (0 CT, 1 Meter)
         """
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             if value == 0: # assume idle
                 await self.async_write_register("operating_mode", 0)
                 return True
@@ -263,11 +296,11 @@ class TypeSpecificHandler:
               _LOGGER.warning("Operating mode unknown for TREX10 series, not changing registers")
               return False
     
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             if value == 0: # assume idle, we dont control but we need to set things back if we did (but defaults no know atm)
     #            await self.async_write_register("econ_rule_1_grid_charge_enable", 0) # already happens in coordinator
                 await self.async_write_register("system_mode", 2) # default no sell
- #               await self.async_write_register("econ_rule_1_sell_enable", 0) # reset sell flag to prevent stale state on next discharge transition
+ #               await self._write_if_defined("econ_rule_1_sell_enable", 0) # reset sell flag to prevent stale state on next discharge transition
                 await self.async_write_register("zero_export_to_ct_sell_enable", 0) # Would it standard be ok to allow this? No the it seems to prefere selling to loading battery (?)
             elif value == 1: # Charge and we want to control
                 await self.async_write_register("system_mode", 2) # allows charge
@@ -312,16 +345,16 @@ class TypeSpecificHandler:
            Returns True if the critical write succeeded (used by coordinator to verify state transition).
         """
 
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             result = await self.async_write_register("econ_rule_1_enable", value)
             if not result:
                 _LOGGER.error("Failed to write econ_rule_1_enable=%d on %s", value, self._inverter_model)
             return result
 
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             if value == 1:   # charging →
                 await self.async_write_register("grid_peak_shaving_enable",1) # customer wants this on ... 
-                await self.async_write_register("econ_rule_1_sell_enable", 0) # No selling when charging
+                await self._write_if_defined("econ_rule_1_sell_enable", 0) # No selling when charging
                 result = await self.async_write_register("econ_rule_1_grid_charge_enable", 1)
                 if not result:
                     _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=1 for charging on %s", self._inverter_model)
@@ -330,7 +363,7 @@ class TypeSpecificHandler:
             elif value == 2: # discharging →
                 self.peak_shaving_enabled = False
                 await self.async_write_register("grid_peak_shaving_enable",0) # interferes with sell if on 
-                await self.async_write_register("econ_rule_1_sell_enable", 1) # We want to sell
+                await self._write_if_defined("econ_rule_1_sell_enable", 1) # We want to sell
                 result = await self.async_write_register("econ_rule_1_grid_charge_enable", 0)
                 if not result:
                     _LOGGER.error("Failed to write econ_rule_1_grid_charge_enable=0 for discharging on %s", self._inverter_model)
@@ -339,7 +372,7 @@ class TypeSpecificHandler:
             else:            # idle / unknown → disable both
                 self.peak_shaving_enabled = False
                 await self.async_write_register("grid_peak_shaving_enable",1) # customer wants this on ... 
-                await self.async_write_register("econ_rule_1_sell_enable", 0) # Do we want to sell when in idle? Maybe to offload excessive power?
+                await self._write_if_defined("econ_rule_1_sell_enable", 0) # Do we want to sell when in idle? Maybe to offload excessive power?
                 await self.async_write_register("econ_rule_1_power", 0) # As stop gap make sure that we limit in idle the rule power so inverter can not override sell/charge
                 result = await self.async_write_register("econ_rule_1_grid_charge_enable", 0) # we need to set to off else it will allow from grid?
                 if not result:
@@ -354,11 +387,11 @@ class TypeSpecificHandler:
     
     async def _handle_rule_1_stop_day(self, value: int) -> bool:
         """Handle writing stop day register (model-specific)."""
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             await self.async_write_register("econ_rule_1_stop_day", value)
             return True
     
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             _LOGGER.debug("Ignoring econ_rule_1_stop_day on 50K model (not applicable)")
             return True
     
@@ -370,15 +403,20 @@ class TypeSpecificHandler:
           for trex-10: in watts (also used in coordinator)
           for trex-50: in kW and Zero-export Power (assumed rule is leading and this value is independent)
         """
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             await self.async_write_register("econ_rule_1_power", value)
             return True
       
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
-            await self.async_write_register("econ_rule_1_power", round(value / 1000.0)) # for trex fifty it is in kW
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
+            # `value` arrives in WATTS from the coordinator.  TREX-25/50 expect
+            # kW in this register; the IVGM expects W (its protocol document
+            # gives ECO1_Power and Grid Peak Shaving Power in W).  Writing the
+            # W number into a kW register would request 1000x the power.
+            scaled = value if self._inverter_model in WATT_POWER_MODELS else round(value / 1000.0)
+            await self.async_write_register("econ_rule_1_power", scaled)
             # in testing it seemed that this register also needs to be set to the same amount to enable charging at least. Not sure for selling...
             if self.peak_shaving_enabled: # only when in charging mode
-               await self.async_write_register("grid_peak_shaving_power", round(value / 1000.0)) # for trex fifty it is in kW
+               await self.async_write_register("grid_peak_shaving_power", scaled)
             return True
       
         return False
@@ -397,14 +435,14 @@ class TypeSpecificHandler:
         # "simplify" the whole line away to `value = value`.
         value = round(float(value))
 
-        if self._inverter_model in (INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN):
+        if self._inverter_model in OPERATING_MODE_MODELS:
             _LOGGER.debug("Writing econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
             result = await self.async_write_register("econ_rule_1_voltage", value)
             if not result:
                 _LOGGER.error("Failed to write econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
             return result
 
-        elif self._inverter_model in (INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY):
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             _LOGGER.debug("Writing econ_rule_1_voltage=%dV on %s", value, self._inverter_model)
             result = await self.async_write_register("econ_rule_1_voltage", value)
             if not result:
