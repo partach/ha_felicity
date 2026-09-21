@@ -421,13 +421,65 @@ _REGISTERS_IVGM_FAMILY = {
 # both models automatically, and can only be absent from the 8K by being listed
 # in _IVGM_EIGHT_UNSUPPORTED above.
 
-#: 3-phase family member (phase C + PV3/PV4 + battery 2).  INFERRED — see the
-#: module docstring and docs/IVGM_SUPPORT_GAPS.md before trusting on hardware.
-_REGISTERS_IVGM_TWENTY = dict(_REGISTERS_IVGM_FAMILY)
+def _as_centi_kilowatt_power(registers):
+    """Re-express the W-valued power registers as 0.01 kW, for the WHOLE family.
 
-#: The 8K, exactly as documented.
+    WHY (hardware report, Sept 2026 — the first real IVGM feedback):
+    on a 20K, `bat1_power` (0x1131) read **156** raw.  The true value was
+    **1560 W**, so each count is 10 W = 0.01 kW — the register is NOT in watts,
+    even though the protocol document says "W" for it.
+
+    ⚠️ **Applied to the family map, so BOTH models get it.**  This looks like
+    the cross-model inference this project refuses to make (see the T-REX-25
+    freeze), but it is the opposite.  There, two models diverged because the
+    25's firmware was *altered* and its scaling was *field-proven*; borrowing
+    the 50's number would have overwritten measured truth with a guess.  Here
+    neither IVGM has ever been in the field, and both maps are generated from
+    ONE document — the same document, the same "W" column, the same generated
+    entry.  The measurement did not reveal a 20K quirk; it revealed that the
+    document's unit column is wrong.  A source error does not stop at the model
+    that happened to be plugged in first.
+
+    So the 8K stays consistent with its sibling until an 8K is actually
+    measured.  If one is, and it really does report watts, split the family
+    then — with that measurement in the commit message.
+
+    Direction of risk matters too: if this is wrong for the 8K, its power
+    readings are 1000x LOW (harmlessly wrong, obvious on sight) and its
+    setpoints ask for 1000x too LITTLE power.  Leaving it in W when it is
+    really 0.01 kW asks the inverter for 1000x too MUCH.
+
+    The coordinator's scalers only ever DIVIDE (`_apply_scaling`: /10, /100,
+    /1000), so a raw 156 can never be shown as 1560 W.  The only faithful
+    representation is kW with index 9 (signed, /100) — exactly what the
+    T-REX-25/50 maps use at these addresses.
+
+    `precision` is 2, not the 1 the T-REX-25 map uses: precision is applied in
+    the COORDINATOR (`_async_update_data`), so it rounds the value the EMS
+    schedules on, not merely the display.  0.01 kW is the register's real
+    resolution — rounding 1.56 to 1.6 would hand the EMS 1600 W for a
+    1560 W reading.
+    """
+    converted = {}
+    for key, info in registers.items():
+        if info.get("unit") == "W" and info.get("device_class") == "power":
+            info = {**info, "unit": "kW", "index": 9, "precision": 2}
+        converted[key] = info
+    return converted
+
+
+#: The family map with the measured power scale applied — the basis for BOTH
+#: models.  The register SET still differs per model; the SCALE does not.
+_REGISTERS_IVGM_SCALED = _as_centi_kilowatt_power(_REGISTERS_IVGM_FAMILY)
+
+#: 3-phase family member (phase C + PV3/PV4 + battery 2).  The register SET is
+#: inferred from the "(8K donot support)" annotations; the power SCALING is
+#: measured on this model — see _as_centi_kilowatt_power.
+_REGISTERS_IVGM_TWENTY = _REGISTERS_IVGM_SCALED
+
+#: The 8K: the documented register set, on the family's corrected power scale.
 _REGISTERS_IVGM_EIGHT = {
-    key: info for key, info in _REGISTERS_IVGM_FAMILY.items()
+    key: info for key, info in _REGISTERS_IVGM_SCALED.items()
     if key not in _IVGM_EIGHT_UNSUPPORTED
 }
 

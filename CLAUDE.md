@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **340**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **354**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -472,6 +472,61 @@ back to the user's `discharge_min` setting.
 | SOC source | Single register | Single register | `min(bat1_soc, bat2_soc)` | `min(bat1_soc, bat2_soc)` |
 | Date registers | Written | Written | Not used | Not used |
 
+### ⚠️ Power-register scaling — measured, never inherited (Sept 2026)
+
+Power scaling is the highest-consequence number in a register map, the vendor
+documentation is **wrong** about it, and two models that share a document do
+**not** necessarily share a scale.
+
+| Model | Telemetry power | Evidence |
+|---|---|---|
+| T-REX-5/10 | raw **W** | long-standing, unchallenged |
+| T-REX-25 | **/100 → kW**, precision 1 | **FROZEN — do not touch.** Proven in the field; firmware was altered, so it legitimately differs from the 50 |
+| T-REX-50 | **/100 → kW**, precision 2 | customer B, fixed Sept 2026 — was /10, reporting **10× too high** |
+| IVGM-8K | raw **W** | its own document; unverified but uncontradicted |
+| IVGM-20K | **/100 → kW**, precision 2 | customer A, measured |
+
+**The T-REX-50 bug**: all 30 telemetry power registers used index 8 (/10), so a
+50 kW inverter reported up to 500 kW — a single PV string of 6.65 kWp read
+~50 kW.  Root cause is Felicity's own document: the "Multiple" column says `-1`
+for every Kw/KVA row (V01 2025-03-27, V02 2025-05-16, and the IVGM variant
+V02 2026-07-23), but the device uses `-2`.  Corroborated four ways by the
+reporter: nameplate impossibility, Riemann-integrated power vs the (correct)
+day-energy registers, an external sub-meter, and the fact that power factor and
+frequency in the *same table* already use `-2`.
+
+**`precision` is not cosmetic here.** `coordinator._async_update_data` applies
+`round(value, precision)` **before the EMS sees the number**, so precision 1 on
+an 0.01 kW register hands the scheduler 1.6 kW for a 1.56 kW reading.  Index 9
+therefore pairs with precision 2.
+
+⚠️ **The 9 kW SETPOINT registers are deliberately untouched** on T-REX-50
+(`max_export_power_to_grid`, `grid_peak_shaving_power`, `econ_rule_1..6_power`,
+`geninputratepower` — all index 1).  Nobody has measured them; they are
+**written**, and they control export limiting and peak shaving.  Guessing a
+write scale is how you ask an inverter for ten times the power you meant.
+Pinned by `test_trex_fifty_setpoints_are_left_alone` so changing them is a
+deliberate act with evidence attached.
+
+⚠️ **T-REX-25 is FROZEN — maintainer decision, Sept 2026.**  Its scaling is
+proven on real installations, and its firmware was **altered**, so it can
+legitimately differ from the T-REX-50 despite sharing a protocol document.  Do
+not "harmonise" the two — it is a tempting tidy-up (the maps sit side by side and
+differ by one digit) and an actively harmful one.
+
+Note the asymmetry is deliberate: T-REX-25 keeps **precision 1** where the
+T-REX-50 now uses 2.  If the altered firmware reports at 0.1 kW resolution then
+precision 1 is *correct* for it and 2 would invent a digit.  Nobody has measured
+it, so it stays as shipped.  `test_trex_twenty_five_scaling_is_frozen` enforces
+this; changing it means changing that test in the same commit with the
+measurement in the message.
+
+⚠️ **Never assert that two models' maps agree.**  Cross-map equality looks like a
+free consistency check but encodes a false premise — see above.
+`tests/test_power_scaling.py` pins each map *independently*, against what was
+measured on *that* hardware, with the evidence recorded in the test.  Same rule
+as the IVGM addresses rule.
+
 ### IVGM family (PROVISIONAL — Sept 2026)
 
 `IVGM-8KLP1G1` and `IVGM-20KLP3G1` are a **different product line**, added from
@@ -512,12 +567,30 @@ pins it.  **The 3-phase map is INFERRED — the document never mentions a 20K.**
 |---|---|---|
 | TREX-5/10 | `operating_mode`(0x2103) + `econ_rule_1_enable`(0x2178) | **W** |
 | TREX-25/50 | `ECO_TimeOfUse`(0x2207) + `ECOn_GridChargeEnable`(0x2209…) | **kW** |
-| **IVGM** | **TREX-25/50 layout** (0x2103/0x2178 are absent entirely) | **W** |
+| **IVGM** | **TREX-25/50 layout** (0x2103/0x2178 are absent entirely) | **kW** (0.01 kW/count — the document says W and is **wrong**) |
 
 Inheriting the layout without the unit would request **1000× the intended charge
-power**.  `const.WATT_POWER_MODELS` is the single place that decides W vs kW;
-`type_specific` consults it in `determine_rule_power`, `determine_grid_power`
-(incl. the CT-phase fallback) and `_handle_econ_rule_1_power`.
+power**.  `const.POWER_UNIT_BY_MODEL` is the single place that decides W vs kW —
+a *mapping*, so every model declares its unit explicitly and none can acquire one
+by being left off a list (`test_every_model_declares_a_power_unit`).
+`WATT_POWER_MODELS` is derived from it; `type_specific` consults it in
+`determine_rule_power`, `determine_grid_power` (incl. the CT-phase fallback) and
+`_handle_econ_rule_1_power`.
+
+⚠️ **The IVGM power unit is a correction to the DOCUMENT, so it covers the whole
+family.**  A 20K read `bat1_power` raw **156** for a true **1560 W** — 0.01 kW per
+count, not the watts the protocol document claims.  `_as_centi_kilowatt_power` is
+therefore applied to `_REGISTERS_IVGM_FAMILY`, so **both** models get it.  That is
+not the cross-model inference the T-REX-25 freeze forbids — there the two models
+genuinely diverge (altered firmware, field-proven scaling, so copying the 50's
+number would overwrite a measurement with a guess).  Here **no IVGM has ever been
+field-tested** and both maps are generated from one document's one "W" column, so
+the measurement is evidence about the source, and a wrong source does not stop at
+whichever model was plugged in first.  The risk is also asymmetric: wrong towards
+kW undercharges, wrong towards W asks the inverter for **1000× too much**.  Split
+the family only when an 8K is measured — in the same commit as the measurement.
+Pinned by `test_ivgm_eight_follows_the_family_correction` and
+`test_both_ivgm_models_share_one_power_convention`.
 
 ⚠️ **Never write `econ_rule_N_sell_enable` on an IVGM.**  The TREX-25/50 discharge
 path writes 0x21FF; the IVGM document does not define 0x21FF–0x2204, and in the
@@ -2192,7 +2265,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**340 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**354 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2242,6 +2315,9 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
   map, W-vs-kW is declared, IVGM never writes undefined registers)
 - IVGM register provenance (every address AND name traced to the frozen protocol
   transcript — no address may be borrowed from a TREX map)
+- Power scaling per model (T-REX-50 telemetry is /100 not /10; setpoints stay
+  unverified; T-REX-25 frozen as field-proven; IVGM-20K raw 156 = 1560 W;
+  IVGM-8K stays in W; no cross-map equality)
 
 ### Test harness: never hand-type a copy of production code
 

@@ -78,25 +78,56 @@ owner did not ask for.
 register back. One pass over Work Mode's three positions and the ECO1 enable
 settles the whole table.
 
-## 1. `ECO1_Power` unit — DECIDED: watts (still worth confirming on a 20K)
+## 1. Power unit — ANSWERED by hardware: 0.01 kW, not watts
 
-The document gives `ECO1_Power` (0x220F) and `Grid Peak Shaving Power` (0x2149)
-in **W**, and that is what the integration now assumes for **both** IVGM models
-(`const.WATT_POWER_MODELS`). Decision taken deliberately: the document is the
-only evidence available, and it says W.
+**RESOLVED for the family (customer report, Sept 2026).** A 20K read `bat1_power`
+(0x1131) as raw **156** where the true power was **1560 W** — 0.01 kW per count.
+The document's "W" column is wrong. Both models' telemetry power registers are
+now `index 9` (signed, /100) + `kW` + precision 2, and **neither IVGM is in
+`WATT_POWER_MODELS`**.
 
-The residual risk is the 20K specifically — TREX‑25/50 use **kW** at those
-addresses, so Felicity evidently switches unit as models grow, and this document
-only covers the 8K. **If a 20K is actually kW, writing W asks for 1000× the
-power.** That risk is bounded by `grid_mode` defaulting to **off**: nothing is
-written until the owner turns the EMS on.
+A second report corroborates it from another direction: an **IVGM-50K** driven by
+the T-REX-50 map read every power sensor 10× high, and `-2` (not the documented
+`-1`) was confirmed against nameplate capacity, the day-energy registers, and an
+external meter. So across the range: small models in W, large in 0.01 kW —
+T-REX-5/10 vs T-REX-25/50, and IVGM-50K.
 
-**To confirm:** on a 20K, set a known charge power (say 3 kW) from the display
-and read 0x220F. `3000` ⇒ watts (as assumed), `3` ⇒ kW (change
-`WATT_POWER_MODELS`).
+**The 8K follows the 20K**, and this is *not* the cross-model inference the
+T-REX-25 freeze forbids. There, the two models legitimately diverge: the 25's
+firmware was altered and its scaling is field-proven, so borrowing the 50's
+number would overwrite a measurement with a guess. Here **no IVGM has ever been
+field-tested** and both maps are generated from ONE document — the same "W"
+column produced both entries — so the measurement is evidence that the *source*
+is wrong, and a wrong source does not stop at whichever model happened to be
+plugged in first. The correction is applied to `_REGISTERS_IVGM_FAMILY`, so it
+cannot reach one model and not the other.
 
-Enforced in code by `WATT_POWER_MODELS` and asserted by
-`test_power_unit_is_declared`.
+**Still to confirm on an 8K**, and the reason it is safe to wait: if the 8K
+really does report watts, this makes its readings 1000× low — instantly obvious
+and harmless — whereas leaving it in W when it is 0.01 kW asks the inverter for
+1000× too much. If an 8K is ever measured and disagrees, split the family in the
+same commit as the measurement.
+
+**Still open: the SETTING register.** The measurement was of a *telemetry*
+register. `ECO1_Power` (0x220F) is *written*, and nobody has measured it. Both
+models are treated as kW there too, because the two error directions are not
+symmetric:
+
+| If we write | and the register is | result |
+|---|---|---|
+| W | kW | **1000× too much power** — dangerous |
+| kW | W | 1000× too little — undercharges, harmless |
+
+So kW is the side to be wrong on. Bounded further by `grid_mode` defaulting to
+**off** — nothing is written until the owner opts in.
+
+**To confirm:** on either model, set a known charge power (say 3 kW) from the
+display and read 0x220F. `300` ⇒ 0.01 kW (as now assumed), `3000` ⇒ watts,
+`3` ⇒ whole kW.
+
+Enforced in code by `const.POWER_UNIT_BY_MODEL` (every model declares its unit;
+`WATT_POWER_MODELS` is derived from it) and asserted by
+`tests/test_power_scaling.py`.
 
 ## 2. ⚠️ The discharge path writes a register the IVGM does not define (DANGEROUS)
 

@@ -97,18 +97,53 @@ IVGM_MODELS = (
     INVERTER_MODEL_IVGM_TWENTY,
 )
 
-#: Models whose POWER registers are expressed in WATTS.  This cuts ACROSS the
-#: control-path split above and is the easiest thing to get wrong: the IVGM uses
-#: the TREX-25/50 *register layout* (ECO block) but the TREX-5/10 *power unit*
-#: (the protocol document gives ECO1_Power and Grid Total Power in W, not kW).
-#: Reading a kW value as W under-reports grid power 1000x; writing a W value to
-#: a kW register asks the inverter for 1000x the power.  Anything not listed
-#: here is treated as kW.
-WATT_POWER_MODELS = (
-    INVERTER_MODEL_TREX_FIVE,
-    INVERTER_MODEL_TREX_TEN,
-    INVERTER_MODEL_IVGM_EIGHT,
-    INVERTER_MODEL_IVGM_TWENTY,
+#: The unit each model's POWER registers are expressed in.
+#:
+#: EVERY supported model must appear here.  It is a mapping rather than a list
+#: of "the watt ones" on purpose: with a list, a model that is simply absent
+#: silently becomes kW — a decision made by omission, which is how the
+#: type_specific "no else branch" bug worked.  Here a missing model is a test
+#: failure (`test_every_model_declares_a_power_unit`), and a change shows up in
+#: review as a changed VALUE, not as a deleted line that reads like the model
+#: was dropped.
+#:
+#: This split cuts ACROSS the control-path split above and is the easiest thing
+#: in the integration to get wrong: a model's register LAYOUT says nothing about
+#: its power UNIT.  Get the unit wrong and every power the EMS reads — and every
+#: setpoint it writes — is out by 10x or 1000x.
+#:
+#: Evidence per model.  Never inherited from a sibling on the grounds that the
+#: two "look alike" — but a correction to a shared SOURCE does reach every model
+#: generated from it (see the IVGM note below, and CLAUDE.md
+#: "Power-register scaling"):
+#:   T-REX-5/10     W   long-standing, unchallenged
+#:   T-REX-25       kW  field-proven; FROZEN, do not harmonise with the 50
+#:   T-REX-50       kW  customer report, Sept 2026 — was 10x high as W-scaled
+#:   IVGM-20K       kW  customer report, Sept 2026 — bat1_power raw 156 = 1560 W,
+#:                      i.e. 0.01 kW per count, NOT the watts its document claims
+#:   IVGM-8K        kW  SAME DOCUMENT, same generated map, and no IVGM has ever
+#:                      been field-tested — so the 20K report is evidence the
+#:                      document's unit column is wrong, not that the 20K is
+#:                      special.  Split the family only when an 8K is measured.
+#:
+#: ⚠️ Listing a model as kW does NOT remove it from anything.  Model membership
+#: lives in SUPPORTED_MODELS / MODEL_REGISTRY / IVGM_MODELS; this mapping only
+#: answers "what unit are its power registers in".
+POWER_UNIT_BY_MODEL = {
+    INVERTER_MODEL_TREX_FIVE:        "W",
+    INVERTER_MODEL_TREX_TEN:         "W",
+    INVERTER_MODEL_TREX_TWENTY_FIVE: "kW",
+    INVERTER_MODEL_TREX_FIFTY:       "kW",
+    INVERTER_MODEL_IVGM_EIGHT:       "kW",   # follows the 20K measurement
+    INVERTER_MODEL_IVGM_TWENTY:      "kW",   # measured; still fully supported
+}
+
+#: Derived — kept so type_specific.py keeps reading a single, obvious name.
+#: Where a write scale is still unmeasured, kW is the safe side to be wrong on:
+#:   writing W into a kW register  -> asks for 1000x TOO MUCH power (dangerous)
+#:   writing kW into a W register  -> asks for 1000x too little (undercharges)
+WATT_POWER_MODELS = tuple(
+    model for model, unit in POWER_UNIT_BY_MODEL.items() if unit == "W"
 )
 
 #: Registers the TREX-25/50 control path writes that the IVGM protocol document
