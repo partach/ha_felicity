@@ -97,33 +97,50 @@ IVGM_MODELS = (
     INVERTER_MODEL_IVGM_TWENTY,
 )
 
-#: Models whose POWER registers are expressed in WATTS.  This cuts ACROSS the
-#: control-path split above and is the easiest thing to get wrong: the IVGM uses
-#: the TREX-25/50 *register layout* (ECO block) but the TREX-5/10 *power unit*
-#: (the protocol document gives ECO1_Power and Grid Total Power in W, not kW).
-#: Reading a kW value as W under-reports grid power 1000x; writing a W value to
-#: a kW register asks the inverter for 1000x the power.  Anything not listed
-#: here is treated as kW.
-WATT_POWER_MODELS = (
-    INVERTER_MODEL_TREX_FIVE,
-    INVERTER_MODEL_TREX_TEN,
-    INVERTER_MODEL_IVGM_EIGHT,
-    # INVERTER_MODEL_IVGM_TWENTY is deliberately NOT here — see below.
-)
+#: The unit each model's POWER registers are expressed in.
+#:
+#: EVERY supported model must appear here.  It is a mapping rather than a list
+#: of "the watt ones" on purpose: with a list, a model that is simply absent
+#: silently becomes kW — a decision made by omission, which is how the
+#: type_specific "no else branch" bug worked.  Here a missing model is a test
+#: failure (`test_every_model_declares_a_power_unit`), and a change shows up in
+#: review as a changed VALUE, not as a deleted line that reads like the model
+#: was dropped.
+#:
+#: This split cuts ACROSS the control-path split above and is the easiest thing
+#: in the integration to get wrong.  The IVGM uses the TREX-25/50 *register
+#: layout* (the ECO block) while the 8K uses the TREX-5/10 *power unit*.  Get it
+#: wrong and every power the EMS reads — and every setpoint it writes — is out
+#: by 10x or 1000x.
+#:
+#: Evidence per model (never inherited from a sibling — see CLAUDE.md,
+#: "Power-register scaling"):
+#:   T-REX-5/10     W   long-standing, unchallenged
+#:   T-REX-25       kW  field-proven; FROZEN, do not harmonise with the 50
+#:   T-REX-50       kW  customer report, Sept 2026 — was 10x high as W-scaled
+#:   IVGM-8K        W   its own protocol document; unverified but uncontradicted
+#:   IVGM-20K       kW  customer report, Sept 2026 — bat1_power raw 156 = 1560 W,
+#:                      i.e. 0.01 kW per count, NOT the watts its document claims
+#:
+#: ⚠️ Listing a model as kW does NOT remove it from anything.  Model membership
+#: lives in SUPPORTED_MODELS / MODEL_REGISTRY / IVGM_MODELS; this mapping only
+#: answers "what unit are its power registers in".
+POWER_UNIT_BY_MODEL = {
+    INVERTER_MODEL_TREX_FIVE:        "W",
+    INVERTER_MODEL_TREX_TEN:         "W",
+    INVERTER_MODEL_TREX_TWENTY_FIVE: "kW",
+    INVERTER_MODEL_TREX_FIFTY:       "kW",
+    INVERTER_MODEL_IVGM_EIGHT:       "W",
+    INVERTER_MODEL_IVGM_TWENTY:      "kW",   # measured; still fully supported
+}
 
-# ⚠️ The 20K was removed from WATT_POWER_MODELS on hardware evidence (Sept 2026).
-# A customer's 20K read `bat1_power` (0x1131) as raw 156 where the true value was
-# 1560 W, i.e. 0.01 kW per count — so its power registers are NOT watts, despite
-# the 8K protocol document saying "W".  That matches Felicity's range-wide
-# pattern (small models in W, large in 0.01 kW: T-REX-5/10 vs T-REX-25/50).
-#
-# The measurement is of a TELEMETRY register; ECO1_Power (0x220F) is a SETTING
-# and was not measured.  Treating the 20K as kW is nonetheless the correct
-# default, because the two error directions are not symmetric:
-#   writing W into a kW register  -> asks for 1000x TOO MUCH power (dangerous)
-#   writing kW into a W register  -> asks for 1000x too little (undercharges)
-# So when the scaling is uncertain, kW is the side to be wrong on.  The 8K stays
-# in W: it is what its own document says and no measurement contradicts it.
+#: Derived — kept so type_specific.py keeps reading a single, obvious name.
+#: Where a write scale is still unmeasured, kW is the safe side to be wrong on:
+#:   writing W into a kW register  -> asks for 1000x TOO MUCH power (dangerous)
+#:   writing kW into a W register  -> asks for 1000x too little (undercharges)
+WATT_POWER_MODELS = tuple(
+    model for model, unit in POWER_UNIT_BY_MODEL.items() if unit == "W"
+)
 
 #: Registers the TREX-25/50 control path writes that the IVGM protocol document
 #: does NOT define.  Writing them on an IVGM would hit an undocumented address:

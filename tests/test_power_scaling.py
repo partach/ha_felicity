@@ -204,3 +204,52 @@ def test_trex_twenty_five_scaling_is_frozen():
     assert set(setpoints.values()) == {(1, 1)}, (
         f"T-REX-25 setpoints must stay index 1 / precision 1; found {sorted(set(setpoints.values()))}"
     )
+
+
+# --------------------------------------------------------------------------
+# No model's power unit may be decided by omission
+# --------------------------------------------------------------------------
+
+def test_every_model_declares_a_power_unit():
+    """POWER_UNIT_BY_MODEL must cover every supported model, explicitly.
+
+    `WATT_POWER_MODELS` is derived from it. When it was a hand-written list, a
+    model that simply wasn't in it silently became kW — a decision made by
+    omission, exactly like the `type_specific` branches that had no `else`.
+    Adding a model and forgetting its power unit would then mis-scale every
+    power reading and every setpoint written, with nothing failing.
+    """
+    declared = set(const.POWER_UNIT_BY_MODEL)
+    supported = set(const.SUPPORTED_MODELS)
+    assert supported <= declared, (
+        "these models have no declared power unit: "
+        f"{sorted(supported - declared)} — add them to POWER_UNIT_BY_MODEL "
+        "with the evidence, do not rely on the default"
+    )
+    assert declared <= supported, (
+        f"POWER_UNIT_BY_MODEL names unknown models: {sorted(declared - supported)}"
+    )
+    bad = {m: u for m, u in const.POWER_UNIT_BY_MODEL.items() if u not in ("W", "kW")}
+    assert not bad, f"power unit must be 'W' or 'kW', got {bad}"
+
+
+def test_watt_power_models_is_consistent_with_the_mapping():
+    """The derived tuple must agree with the mapping it comes from."""
+    expected = tuple(m for m, u in const.POWER_UNIT_BY_MODEL.items() if u == "W")
+    assert const.WATT_POWER_MODELS == expected
+
+
+def test_declaring_kilowatts_does_not_unsupport_a_model():
+    """Guards the misreading this mapping exists to prevent.
+
+    A reviewer seeing `INVERTER_MODEL_IVGM_TWENTY` absent from the old
+    watt-models list reasonably asked whether the 20K had been dropped as a
+    variant. It had not — the unit declaration and model membership are
+    different things, and this test says so in code.
+    """
+    for model, unit in const.POWER_UNIT_BY_MODEL.items():
+        if unit != "kW":
+            continue
+        assert model in const.SUPPORTED_MODELS, f"{model} lost support"
+        assert model in const.MODEL_REGISTRY, f"{model} lost its register map"
+        assert const.MODEL_REGISTRY[model]["registers"], f"{model} has an empty map"
