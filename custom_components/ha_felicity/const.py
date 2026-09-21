@@ -108,19 +108,23 @@ IVGM_MODELS = (
 #: was dropped.
 #:
 #: This split cuts ACROSS the control-path split above and is the easiest thing
-#: in the integration to get wrong.  The IVGM uses the TREX-25/50 *register
-#: layout* (the ECO block) while the 8K uses the TREX-5/10 *power unit*.  Get it
-#: wrong and every power the EMS reads — and every setpoint it writes — is out
-#: by 10x or 1000x.
+#: in the integration to get wrong: a model's register LAYOUT says nothing about
+#: its power UNIT.  Get the unit wrong and every power the EMS reads — and every
+#: setpoint it writes — is out by 10x or 1000x.
 #:
-#: Evidence per model (never inherited from a sibling — see CLAUDE.md,
+#: Evidence per model.  Never inherited from a sibling on the grounds that the
+#: two "look alike" — but a correction to a shared SOURCE does reach every model
+#: generated from it (see the IVGM note below, and CLAUDE.md
 #: "Power-register scaling"):
 #:   T-REX-5/10     W   long-standing, unchallenged
 #:   T-REX-25       kW  field-proven; FROZEN, do not harmonise with the 50
 #:   T-REX-50       kW  customer report, Sept 2026 — was 10x high as W-scaled
-#:   IVGM-8K        W   its own protocol document; unverified but uncontradicted
 #:   IVGM-20K       kW  customer report, Sept 2026 — bat1_power raw 156 = 1560 W,
 #:                      i.e. 0.01 kW per count, NOT the watts its document claims
+#:   IVGM-8K        kW  SAME DOCUMENT, same generated map, and no IVGM has ever
+#:                      been field-tested — so the 20K report is evidence the
+#:                      document's unit column is wrong, not that the 20K is
+#:                      special.  Split the family only when an 8K is measured.
 #:
 #: ⚠️ Listing a model as kW does NOT remove it from anything.  Model membership
 #: lives in SUPPORTED_MODELS / MODEL_REGISTRY / IVGM_MODELS; this mapping only
@@ -130,7 +134,7 @@ POWER_UNIT_BY_MODEL = {
     INVERTER_MODEL_TREX_TEN:         "W",
     INVERTER_MODEL_TREX_TWENTY_FIVE: "kW",
     INVERTER_MODEL_TREX_FIFTY:       "kW",
-    INVERTER_MODEL_IVGM_EIGHT:       "W",
+    INVERTER_MODEL_IVGM_EIGHT:       "kW",   # follows the 20K measurement
     INVERTER_MODEL_IVGM_TWENTY:      "kW",   # measured; still fully supported
 }
 

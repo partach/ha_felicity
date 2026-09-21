@@ -131,16 +131,44 @@ def test_ivgm_twenty_bat1_power_matches_the_hardware_report():
     )
 
 
-def test_ivgm_eight_stays_in_watts():
-    """The 8K keeps its documented W scale — nothing has contradicted it.
+def test_ivgm_eight_follows_the_family_correction():
+    """The 8K carries the 20K's correction, because the ERROR is in the source.
 
-    Only the 20K was measured.  Carrying the 20K's correction onto the 8K would
-    be the cross-model inference this project has repeatedly decided not to make.
+    This is deliberately NOT the T-REX-25/50 situation.  There, two models
+    legitimately diverge: the 25's firmware was altered and its scaling is
+    field-proven, so copying the 50's number would overwrite a measurement with
+    a guess.  Here no IVGM has ever been field-tested and both maps are
+    generated from ONE document — the same "W" column produced both entries.
+    The 20K report is therefore evidence about the DOCUMENT, and a wrong source
+    does not stop at whichever model was plugged in first.
+
+    Keep the two in step until an 8K is actually measured; if one is, split the
+    family in the same commit as the measurement.
     """
     info = _registers(const.INVERTER_MODEL_IVGM_EIGHT)["bat1_power"]
-    assert info.get("unit") == "W" and info.get("index") == 3, (
-        f"IVGM-8K bat1_power should stay raw watts, got "
-        f"unit={info.get('unit')} index={info.get('index')}"
+    assert _watts(156, info) == 1560.0, (
+        f"IVGM-8K should use the family's corrected scale, got {_watts(156, info)} W "
+        f"(unit={info.get('unit')}, index={info.get('index')}, "
+        f"precision={info.get('precision')})"
+    )
+
+
+def test_both_ivgm_models_share_one_power_convention():
+    """One document, one generated map, one scale — pinned across the family.
+
+    The two models differ by register SET (the 8K lacks phase C, PV3/PV4 and
+    battery 2), never by scale.  A future edit that corrects only the model in
+    front of it would reintroduce exactly the inconsistency this commit removed.
+    """
+    def convention(model):
+        regs = _registers(model)
+        return {(i.get("unit"), i.get("index"), i.get("precision"))
+                for i in regs.values() if i.get("device_class") == "power"}
+
+    eight = convention(const.INVERTER_MODEL_IVGM_EIGHT)
+    twenty = convention(const.INVERTER_MODEL_IVGM_TWENTY)
+    assert eight == twenty, (
+        f"IVGM models disagree on power scaling: 8K={eight} 20K={twenty}"
     )
 
 
@@ -156,14 +184,16 @@ def test_ivgm_power_registers_are_internally_consistent(model):
     )
 
 
-def test_ivgm_twenty_is_not_declared_watt_valued():
+def test_no_ivgm_is_declared_watt_valued():
     """WATT_POWER_MODELS drives the WRITE path as well as the read path.
 
-    With the 20K measured at 0.01 kW, writing watts into ECO1_Power would ask
-    for 1000x the intended power.  The 8K remains watt-valued.
+    With the family measured at 0.01 kW, writing watts into ECO1_Power would ask
+    the inverter for 1000x the intended power.  That asymmetry is why the 8K
+    follows the correction rather than waiting for its own measurement: being
+    wrong towards kW undercharges, being wrong towards W overdrives.
     """
-    assert const.INVERTER_MODEL_IVGM_TWENTY not in const.WATT_POWER_MODELS
-    assert const.INVERTER_MODEL_IVGM_EIGHT in const.WATT_POWER_MODELS
+    for model in const.IVGM_MODELS:
+        assert model not in const.WATT_POWER_MODELS, f"{model} would be written in watts"
 
 
 # --------------------------------------------------------------------------

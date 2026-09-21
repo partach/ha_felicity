@@ -213,14 +213,22 @@ prices. What *is* model-specific is how the plan reaches the hardware
 
 Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
 
-Power scaling is per model and **measured, never inherited** — the vendor
-documentation is wrong about it, and models sharing a document can still differ
-(the T-REX-25's firmware was altered). Small models report raw **W**
-(T-REX-5/10, IVGM-8K); large models report **0.01 kW** (T-REX-25/50, IVGM-20K).
-`const.WATT_POWER_MODELS` is the single source for that split, and it drives the
-WRITE path as well as the read path. Getting it wrong scales every power the EMS
-sees — and every setpoint it writes — by 10× or 1000×. See CLAUDE.md,
-"Power-register scaling", and `tests/test_power_scaling.py`.
+Power scaling is per model and **measured, never inherited from a sibling** — the
+vendor documentation is wrong about it, and models sharing a document can still
+differ (the T-REX-25's firmware was altered, so its field-proven scaling is
+frozen and must not be harmonised with the T-REX-50's). The T-REX-5/10 report raw
+**W**; the T-REX-25/50 and **both IVGM models** report **0.01 kW**.
+
+The IVGM pair is the one place a correction *does* cross models, and the
+distinction matters: both maps are generated from ONE document and **neither has
+been field-tested**, so the 20K's measurement showed the document's unit column
+is wrong rather than that the 20K is special — it is applied to the family map.
+
+`const.POWER_UNIT_BY_MODEL` is the single source for the split (a mapping, so no
+model's unit is decided by omission) and it drives the WRITE path as well as the
+read path. Getting it wrong scales every power the EMS sees — and every setpoint
+it writes — by 10× or 1000×. See CLAUDE.md, "Power-register scaling", and
+`tests/test_power_scaling.py`.
 
 The IVGM family (added Sept 2026, **provisional**) cannot use
 `econ_rule_N_sell_enable`, so **`to_grid` / `both` is unproven there**; see

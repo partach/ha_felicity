@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **350**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **354**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -567,12 +567,30 @@ pins it.  **The 3-phase map is INFERRED — the document never mentions a 20K.**
 |---|---|---|
 | TREX-5/10 | `operating_mode`(0x2103) + `econ_rule_1_enable`(0x2178) | **W** |
 | TREX-25/50 | `ECO_TimeOfUse`(0x2207) + `ECOn_GridChargeEnable`(0x2209…) | **kW** |
-| **IVGM** | **TREX-25/50 layout** (0x2103/0x2178 are absent entirely) | **W** |
+| **IVGM** | **TREX-25/50 layout** (0x2103/0x2178 are absent entirely) | **kW** (0.01 kW/count — the document says W and is **wrong**) |
 
 Inheriting the layout without the unit would request **1000× the intended charge
-power**.  `const.WATT_POWER_MODELS` is the single place that decides W vs kW;
-`type_specific` consults it in `determine_rule_power`, `determine_grid_power`
-(incl. the CT-phase fallback) and `_handle_econ_rule_1_power`.
+power**.  `const.POWER_UNIT_BY_MODEL` is the single place that decides W vs kW —
+a *mapping*, so every model declares its unit explicitly and none can acquire one
+by being left off a list (`test_every_model_declares_a_power_unit`).
+`WATT_POWER_MODELS` is derived from it; `type_specific` consults it in
+`determine_rule_power`, `determine_grid_power` (incl. the CT-phase fallback) and
+`_handle_econ_rule_1_power`.
+
+⚠️ **The IVGM power unit is a correction to the DOCUMENT, so it covers the whole
+family.**  A 20K read `bat1_power` raw **156** for a true **1560 W** — 0.01 kW per
+count, not the watts the protocol document claims.  `_as_centi_kilowatt_power` is
+therefore applied to `_REGISTERS_IVGM_FAMILY`, so **both** models get it.  That is
+not the cross-model inference the T-REX-25 freeze forbids — there the two models
+genuinely diverge (altered firmware, field-proven scaling, so copying the 50's
+number would overwrite a measurement with a guess).  Here **no IVGM has ever been
+field-tested** and both maps are generated from one document's one "W" column, so
+the measurement is evidence about the source, and a wrong source does not stop at
+whichever model was plugged in first.  The risk is also asymmetric: wrong towards
+kW undercharges, wrong towards W asks the inverter for **1000× too much**.  Split
+the family only when an 8K is measured — in the same commit as the measurement.
+Pinned by `test_ivgm_eight_follows_the_family_correction` and
+`test_both_ivgm_models_share_one_power_convention`.
 
 ⚠️ **Never write `econ_rule_N_sell_enable` on an IVGM.**  The TREX-25/50 discharge
 path writes 0x21FF; the IVGM document does not define 0x21FF–0x2204, and in the
@@ -2247,7 +2265,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**350 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**354 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
