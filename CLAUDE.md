@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **349**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **350**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -481,7 +481,7 @@ documentation is **wrong** about it, and two models that share a document do
 | Model | Telemetry power | Evidence |
 |---|---|---|
 | T-REX-5/10 | raw **W** | long-standing, unchallenged |
-| T-REX-25 | **/100 → kW**, precision 1 | correct per customer A; **its firmware was altered, so it may legitimately differ from the 50** |
+| T-REX-25 | **/100 → kW**, precision 1 | **FROZEN — do not touch.** Proven in the field; firmware was altered, so it legitimately differs from the 50 |
 | T-REX-50 | **/100 → kW**, precision 2 | customer B, fixed Sept 2026 — was /10, reporting **10× too high** |
 | IVGM-8K | raw **W** | its own document; unverified but uncontradicted |
 | IVGM-20K | **/100 → kW**, precision 2 | customer A, measured |
@@ -508,12 +508,24 @@ write scale is how you ask an inverter for ten times the power you meant.
 Pinned by `test_trex_fifty_setpoints_are_left_alone` so changing them is a
 deliberate act with evidence attached.
 
-⚠️ **Never assert that two models' maps agree.**  T-REX-25 and T-REX-50 share a
-protocol document, which makes cross-map equality look like a free consistency
-check — but the **T-REX-25's firmware was altered**, so divergence is legitimate
-and a cross-map test would encode a false premise.  `tests/test_power_scaling.py`
-pins each map independently, against what was measured on *that* hardware, with
-the evidence recorded in the test.  Same rule as the IVGM addresses rule.
+⚠️ **T-REX-25 is FROZEN — maintainer decision, Sept 2026.**  Its scaling is
+proven on real installations, and its firmware was **altered**, so it can
+legitimately differ from the T-REX-50 despite sharing a protocol document.  Do
+not "harmonise" the two — it is a tempting tidy-up (the maps sit side by side and
+differ by one digit) and an actively harmful one.
+
+Note the asymmetry is deliberate: T-REX-25 keeps **precision 1** where the
+T-REX-50 now uses 2.  If the altered firmware reports at 0.1 kW resolution then
+precision 1 is *correct* for it and 2 would invent a digit.  Nobody has measured
+it, so it stays as shipped.  `test_trex_twenty_five_scaling_is_frozen` enforces
+this; changing it means changing that test in the same commit with the
+measurement in the message.
+
+⚠️ **Never assert that two models' maps agree.**  Cross-map equality looks like a
+free consistency check but encodes a false premise — see above.
+`tests/test_power_scaling.py` pins each map *independently*, against what was
+measured on *that* hardware, with the evidence recorded in the test.  Same rule
+as the IVGM addresses rule.
 
 ### IVGM family (PROVISIONAL — Sept 2026)
 
@@ -2235,7 +2247,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**349 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**350 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2286,7 +2298,8 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - IVGM register provenance (every address AND name traced to the frozen protocol
   transcript — no address may be borrowed from a TREX map)
 - Power scaling per model (T-REX-50 telemetry is /100 not /10; setpoints stay
-  unverified; IVGM-20K raw 156 = 1560 W; IVGM-8K stays in W; no cross-map equality)
+  unverified; T-REX-25 frozen as field-proven; IVGM-20K raw 156 = 1560 W;
+  IVGM-8K stays in W; no cross-map equality)
 
 ### Test harness: never hand-type a copy of production code
 

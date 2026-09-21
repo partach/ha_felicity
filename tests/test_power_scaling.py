@@ -164,3 +164,43 @@ def test_ivgm_twenty_is_not_declared_watt_valued():
     """
     assert const.INVERTER_MODEL_IVGM_TWENTY not in const.WATT_POWER_MODELS
     assert const.INVERTER_MODEL_IVGM_EIGHT in const.WATT_POWER_MODELS
+
+
+# --------------------------------------------------------------------------
+# T-REX-25 — FROZEN by maintainer decision
+# --------------------------------------------------------------------------
+
+def test_trex_twenty_five_scaling_is_frozen():
+    """T-REX-25 power scaling must not drift. It is proven in the field.
+
+    This is a maintainer decision, not an inference: the 25's firmware was
+    **altered**, so it can legitimately differ from the 50 even though the two
+    share a protocol document — and its current values are known to work on real
+    installations. That makes "harmonise it with the 50" an actively harmful
+    kind of tidy-up, and a tempting one, because the two maps sit side by side
+    and differ by a single digit.
+
+    Note precision stays **1** here while the T-REX-50 uses 2. That asymmetry is
+    intentional: if the altered firmware reports at 0.1 kW resolution, precision
+    1 is correct for it and 2 would invent a digit. Nobody has measured it, so
+    it stays as shipped.
+
+    If a measurement ever justifies changing it, change this test in the same
+    commit and put the evidence in the message — that is the whole point of the
+    guard.
+    """
+    regs = const.MODEL_REGISTRY[const.INVERTER_MODEL_TREX_TWENTY_FIVE]["registers"]
+    power = {k: i for k, i in regs.items() if i.get("unit") in ("kW", "kVA")}
+
+    telemetry = {k: (i["index"], i["precision"]) for k, i in power.items() if i["index"] != 1}
+    setpoints = {k: (i["index"], i["precision"]) for k, i in power.items() if i["index"] == 1}
+
+    assert len(telemetry) == 30, f"expected 30 telemetry power registers, found {len(telemetry)}"
+    assert set(telemetry.values()) == {(9, 1)}, (
+        "T-REX-25 telemetry power must stay index 9 / precision 1 (field-proven); "
+        f"found {sorted(set(telemetry.values()))}"
+    )
+    assert len(setpoints) == 9, f"expected 9 setpoint power registers, found {len(setpoints)}"
+    assert set(setpoints.values()) == {(1, 1)}, (
+        f"T-REX-25 setpoints must stay index 1 / precision 1; found {sorted(set(setpoints.values()))}"
+    )
