@@ -108,8 +108,22 @@ WATT_POWER_MODELS = (
     INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_IVGM_EIGHT,
-    INVERTER_MODEL_IVGM_TWENTY,
+    # INVERTER_MODEL_IVGM_TWENTY is deliberately NOT here — see below.
 )
+
+# ⚠️ The 20K was removed from WATT_POWER_MODELS on hardware evidence (Sept 2026).
+# A customer's 20K read `bat1_power` (0x1131) as raw 156 where the true value was
+# 1560 W, i.e. 0.01 kW per count — so its power registers are NOT watts, despite
+# the 8K protocol document saying "W".  That matches Felicity's range-wide
+# pattern (small models in W, large in 0.01 kW: T-REX-5/10 vs T-REX-25/50).
+#
+# The measurement is of a TELEMETRY register; ECO1_Power (0x220F) is a SETTING
+# and was not measured.  Treating the 20K as kW is nonetheless the correct
+# default, because the two error directions are not symmetric:
+#   writing W into a kW register  -> asks for 1000x TOO MUCH power (dangerous)
+#   writing kW into a W register  -> asks for 1000x too little (undercharges)
+# So when the scaling is uncertain, kW is the side to be wrong on.  The 8K stays
+# in W: it is what its own document says and no measurement contradicts it.
 
 #: Registers the TREX-25/50 control path writes that the IVGM protocol document
 #: does NOT define.  Writing them on an IVGM would hit an undocumented address:

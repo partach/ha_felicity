@@ -78,22 +78,38 @@ owner did not ask for.
 register back. One pass over Work Mode's three positions and the ECO1 enable
 settles the whole table.
 
-## 1. `ECO1_Power` unit — DECIDED: watts (still worth confirming on a 20K)
+## 1. Power unit — ANSWERED for the 20K by hardware: 0.01 kW, not watts
 
-The document gives `ECO1_Power` (0x220F) and `Grid Peak Shaving Power` (0x2149)
-in **W**, and that is what the integration now assumes for **both** IVGM models
-(`const.WATT_POWER_MODELS`). Decision taken deliberately: the document is the
-only evidence available, and it says W.
+**RESOLVED for the 20K (customer report, Sept 2026).** A 20K read `bat1_power`
+(0x1131) as raw **156** where the true power was **1560 W** — 0.01 kW per count.
+The document's "W" is wrong for this model. The 20K's telemetry power registers
+are now `index 9` (signed, /100) + `kW` + precision 2, and the 20K has been
+**removed from `WATT_POWER_MODELS`**.
 
-The residual risk is the 20K specifically — TREX‑25/50 use **kW** at those
-addresses, so Felicity evidently switches unit as models grow, and this document
-only covers the 8K. **If a 20K is actually kW, writing W asks for 1000× the
-power.** That risk is bounded by `grid_mode` defaulting to **off**: nothing is
-written until the owner turns the EMS on.
+A second report corroborates it from another direction: an **IVGM-50K** driven by
+the T-REX-50 map read every power sensor 10× high, and `-2` (not the documented
+`-1`) was confirmed against nameplate capacity, the day-energy registers, and an
+external meter. So across the range: small models in W, large in 0.01 kW —
+T-REX-5/10 vs T-REX-25/50, and IVGM-8K vs IVGM-20K/50K.
+
+The **8K keeps W**: it is what its own document says, and nothing has
+contradicted it. Carrying the 20K's correction onto the 8K would be exactly the
+cross-model inference this project has decided not to make.
+
+**Still open: the SETTING register.** The measurement was of a *telemetry*
+register. `ECO1_Power` (0x220F) is *written*, and nobody has measured it. The 20K
+is treated as kW there too, because the two error directions are not symmetric:
+
+| If we write | and the register is | result |
+|---|---|---|
+| W | kW | **1000× too much power** — dangerous |
+| kW | W | 1000× too little — undercharges, harmless |
+
+So kW is the side to be wrong on. Bounded further by `grid_mode` defaulting to
+**off** — nothing is written until the owner opts in.
 
 **To confirm:** on a 20K, set a known charge power (say 3 kW) from the display
-and read 0x220F. `3000` ⇒ watts (as assumed), `3` ⇒ kW (change
-`WATT_POWER_MODELS`).
+and read 0x220F. `300` ⇒ 0.01 kW (as now assumed), `3000` ⇒ watts, `3` ⇒ whole kW.
 
 Enforced in code by `WATT_POWER_MODELS` and asserted by
 `test_power_unit_is_declared`.

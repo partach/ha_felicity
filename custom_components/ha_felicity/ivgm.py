@@ -421,9 +421,42 @@ _REGISTERS_IVGM_FAMILY = {
 # both models automatically, and can only be absent from the 8K by being listed
 # in _IVGM_EIGHT_UNSUPPORTED above.
 
-#: 3-phase family member (phase C + PV3/PV4 + battery 2).  INFERRED — see the
-#: module docstring and docs/IVGM_SUPPORT_GAPS.md before trusting on hardware.
-_REGISTERS_IVGM_TWENTY = dict(_REGISTERS_IVGM_FAMILY)
+def _as_centi_kilowatt_power(registers):
+    """Re-express the W-valued power registers as 0.01 kW (the large-model scale).
+
+    WHY (hardware report, Sept 2026 — the first real IVGM feedback):
+    on a 20K, `bat1_power` (0x1131) read **156** raw.  The true value was
+    **1560 W**, so each count is 10 W = 0.01 kW — the register is NOT in watts,
+    even though the 8K protocol document says "W" for it.
+
+    That fits Felicity's pattern across the whole range rather than being a
+    one-off: the small models report watts (T-REX-5/10) and the large ones
+    report 0.01 kW (T-REX-25/50).  The IVGM family evidently splits the same
+    way — 8K in W as documented, 20K in 0.01 kW.
+
+    The coordinator's scalers only ever DIVIDE (`_apply_scaling`: /10, /100,
+    /1000), so a raw 156 can never be shown as 1560 W.  The only faithful
+    representation is kW with index 9 (signed, /100) — exactly what the
+    T-REX-25/50 maps use at these addresses.
+
+    `precision` is 2, not the 1 the T-REX-25 map uses: precision is applied in
+    the COORDINATOR (`_async_update_data`), so it rounds the value the EMS
+    schedules on, not merely the display.  0.01 kW is the register's real
+    resolution — rounding 1.56 to 1.6 would hand the EMS 1600 W for a
+    1560 W reading.
+    """
+    converted = {}
+    for key, info in registers.items():
+        if info.get("unit") == "W" and info.get("device_class") == "power":
+            info = {**info, "unit": "kW", "index": 9, "precision": 2}
+        converted[key] = info
+    return converted
+
+
+#: 3-phase family member (phase C + PV3/PV4 + battery 2).  The register SET is
+#: inferred from the "(8K donot support)" annotations; the power SCALING is
+#: measured — see _as_centi_kilowatt_power and docs/IVGM_SUPPORT_GAPS.md.
+_REGISTERS_IVGM_TWENTY = _as_centi_kilowatt_power(_REGISTERS_IVGM_FAMILY)
 
 #: The 8K, exactly as documented.
 _REGISTERS_IVGM_EIGHT = {

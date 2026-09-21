@@ -213,10 +213,18 @@ prices. What *is* model-specific is how the plan reaches the hardware
 
 Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
 
-The IVGM family (added Sept 2026, **provisional**) uses the ECO layout but
-reports power in **W**, not kW — `const.WATT_POWER_MODELS` is the single source
-for that distinction. It also cannot use `econ_rule_N_sell_enable`, so
-**`to_grid` / `both` is unproven there**; see `docs/IVGM_SUPPORT_GAPS.md`.
+Power scaling is per model and **measured, never inherited** — the vendor
+documentation is wrong about it, and models sharing a document can still differ
+(the T-REX-25's firmware was altered). Small models report raw **W**
+(T-REX-5/10, IVGM-8K); large models report **0.01 kW** (T-REX-25/50, IVGM-20K).
+`const.WATT_POWER_MODELS` is the single source for that split, and it drives the
+WRITE path as well as the read path. Getting it wrong scales every power the EMS
+sees — and every setpoint it writes — by 10× or 1000×. See CLAUDE.md,
+"Power-register scaling", and `tests/test_power_scaling.py`.
+
+The IVGM family (added Sept 2026, **provisional**) cannot use
+`econ_rule_N_sell_enable`, so **`to_grid` / `both` is unproven there**; see
+`docs/IVGM_SUPPORT_GAPS.md`.
 
 ---
 
