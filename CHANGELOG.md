@@ -1,6 +1,6 @@
 ## Changelog
 
-### [1.3.8] - Power-register scaling fixes, provisional IVGM support
+### [1.3.9] - Power-register scaling fixes
 
 ⚠️ **T-REX-50 owners — read this.** Every telemetry power register was scaled
 ÷10 where the inverter actually uses ÷100, so all power readings were **10×
@@ -20,16 +20,29 @@ scale is how you ask an inverter for ten times the power you meant.
 **T-REX-25 is untouched** and stays exactly as shipped. Its firmware was altered
 and its scaling is proven in the field, so it legitimately differs from the 50.
 
-**New: provisional support for the IVGM family** (IVGM-8KLP1G1, IVGM-20KLP3G1),
-selectable at setup and labelled "(provisional)". Built entirely from the IVGM
-protocol document — no address borrowed from a T-REX map. **Nothing is
-hardware-validated yet**: see `docs/IVGM_SUPPORT_GAPS.md` before enabling
-`grid_mode`, and note that selling (`to_grid` / `both`) is unproven because the
-IVGM protocol does not define the register the discharge path needs.
-A customer measurement showed IVGM power registers are 0.01 kW per count, not
-the watts the document claims (raw 156 = 1560 W); both models now use that scale.
+**IVGM power registers are 0.01 kW per count**, not the watts the protocol
+document claims — a customer measured raw 156 for a true 1560 W. Both IVGM
+models now use that scale: they are generated from the same document, and
+neither has been field-tested, so the measurement says the document's unit
+column is wrong rather than that one model is special.
 
-**Fixes**
+**Internal**
+- Every model now declares its power unit explicitly instead of being absent
+  from a list, so adding a model can no longer pick one up by accident.
+- CI runs the test suite (354 tests) and the EMS scenario simulator, not just
+  the linter.
+
+### [1.3.8] - Provisional IVGM family support
+
+**New: IVGM-8KLP1G1 and IVGM-20KLP3G1**, selectable at setup and labelled
+"(provisional)". Built entirely from the IVGM protocol document — no address
+borrowed from a T-REX map, enforced by a frozen copy of the document's address
+list. **Nothing is hardware-validated**: read `docs/IVGM_SUPPORT_GAPS.md` before
+enabling `grid_mode`. Selling (`to_grid` / `both`) is unproven, because the IVGM
+protocol does not define the register the discharge path needs.
+
+### [1.3.7] - EMS and reliability fixes
+
 - Economic-mode self-heal was silently disabled on the default register set for
   T-REX-25/50 — the exact models where an inverter dropping to General mode
   leaves the battery inert. The watchdog registers are now always polled, and
@@ -43,17 +56,10 @@ the watts the document claims (raw 156 = 1560 W); both models now use that scale
   47 kWh of sun.
 - Equal-priced charge slots are now placed so they don't fill the battery right
   before a solar peak, which used to spill free PV.
-
-**MILP**
-- The engine now reports *why* it fell back to greedy (hover the engine chip in
-  the card, or run `tools/check_milp.py`), instead of one warning that scrolled
-  out of the log.
-- Pinned `pulp<4.0`: PuLP 4.0 removes the bundled CBC solver, which would have
-  broken MILP for every user the day it shipped.
-
-**Internal**
-- CI now runs the test suite (354 tests) and the EMS scenario simulator, not
-  just the linter.
+- MILP reports *why* it fell back to greedy (hover the engine chip in the card,
+  or run `tools/check_milp.py`) instead of one warning that scrolled out of the
+  log, and `pulp` is pinned below 4.0 — PuLP 4.0 removes the bundled CBC solver
+  and would have broken MILP for every user the day it shipped.
 
 ### [1.0.0] - EMS stable
 - Finally we arrived to a point we call it the 1.0 release!
