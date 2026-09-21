@@ -63,6 +63,11 @@ Let the install config of the integration guide you as it asks you for the neede
 ## Serial and TCP (Wired and Wireless)
 It supports modbus USB dongle and TCP [Modbus](https://www.se.com/us/en/faqs/FA168406/) connections.
 The 3 possible ways are explained in the picture below. At the moment the last part always requires a RS485 connection to the inverter.
+
+The inverter can be connected via a standard RJ45 cable to the COM port, wiring the RS485 (A/B) pair directly to RJ45 pins 3 and 4. The official user guide also lists pins 5–6 as an alternative RS485 pair.
+
+The RS485 connection can also be made directly to the Modbus terminals on the PCB, as shown in the second picture below.
+
 <p align="center">
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/HA-felicity-connect.png" width="600"/>
   <img src="https://github.com/partach/ha_felicity/blob/main/pictures/modbus_location_trex10k.png" width="400"/>
