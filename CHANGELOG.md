@@ -1,5 +1,60 @@
 ## Changelog
 
+### [1.3.8] - Power-register scaling fixes, provisional IVGM support
+
+⚠️ **T-REX-50 owners — read this.** Every telemetry power register was scaled
+÷10 where the inverter actually uses ÷100, so all power readings were **10×
+too high** (a 6.65 kWp PV string reporting ~50 kW). Confirmed against nameplate
+capacity, the day-energy registers and an external sub-meter. Root cause is
+Felicity's own protocol document: its "Multiple" column says -1 for every kW/kVA
+row and the device uses -2.
+**Consequence of the fix:** your recorded long-term statistics for these sensors
+were logged at the old scale, so history before this update reads 10× high and
+the graphs will show a step down at the upgrade. Energy (kWh) sensors were never
+affected. If you want clean graphs, clear the statistics for the affected power
+sensors in Developer Tools → Statistics.
+The nine *setpoint* registers (export limit, peak shaving, rule power) are
+deliberately left unchanged — nobody has measured them, and guessing a write
+scale is how you ask an inverter for ten times the power you meant.
+
+**T-REX-25 is untouched** and stays exactly as shipped. Its firmware was altered
+and its scaling is proven in the field, so it legitimately differs from the 50.
+
+**New: provisional support for the IVGM family** (IVGM-8KLP1G1, IVGM-20KLP3G1),
+selectable at setup and labelled "(provisional)". Built entirely from the IVGM
+protocol document — no address borrowed from a T-REX map. **Nothing is
+hardware-validated yet**: see `docs/IVGM_SUPPORT_GAPS.md` before enabling
+`grid_mode`, and note that selling (`to_grid` / `both`) is unproven because the
+IVGM protocol does not define the register the discharge path needs.
+A customer measurement showed IVGM power registers are 0.01 kW per count, not
+the watts the document claims (raw 156 = 1560 W); both models now use that scale.
+
+**Fixes**
+- Economic-mode self-heal was silently disabled on the default register set for
+  T-REX-25/50 — the exact models where an inverter dropping to General mode
+  leaves the battery inert. The watchdog registers are now always polled, and
+  the heal re-applies the full Rule 1 state, not just the operating mode.
+- `working_mode` (4353) is the inverter's running-status report, not a settable
+  mode. It was a writable select that always snapped back ("whatever I choose,
+  it switches back to Line"); it is now a read-only sensor. The old
+  `select.*_working_mode` entity shows as orphaned and can be deleted.
+- The EMS no longer tops the battery off with grid energy that tomorrow's
+  forecast already covers — buying at 0.30 €/kWh to reach 100% the day before
+  47 kWh of sun.
+- Equal-priced charge slots are now placed so they don't fill the battery right
+  before a solar peak, which used to spill free PV.
+
+**MILP**
+- The engine now reports *why* it fell back to greedy (hover the engine chip in
+  the card, or run `tools/check_milp.py`), instead of one warning that scrolled
+  out of the log.
+- Pinned `pulp<4.0`: PuLP 4.0 removes the bundled CBC solver, which would have
+  broken MILP for every user the day it shipped.
+
+**Internal**
+- CI now runs the test suite (354 tests) and the EMS scenario simulator, not
+  just the linter.
+
 ### [1.0.0] - EMS stable
 - Finally we arrived to a point we call it the 1.0 release!
 - EMS tested and stable
