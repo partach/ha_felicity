@@ -2215,7 +2215,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # inverter with "rule 1 = charge" but "mode = General", i.e. inert,
         # exactly the reported failure.  Abort and let the next cycle retry
         # the whole transition atomically.
-        mode_ok = await self.TypeSpecificHandler.write_type_specific_register("operating_mode", enable_value)
+        mode_val = enable_value
+        if self.inverter_model in OPERATING_MODE_MODELS and new_state != "idle":
+            mode_val = 2
+        mode_ok = await self.TypeSpecificHandler.write_type_specific_register("operating_mode", mode_val)
         if not mode_ok and new_state != "idle":
             _LOGGER.error(
                 "CRITICAL: Failed to set operating mode (Economic) for state %s — "
