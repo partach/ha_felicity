@@ -172,28 +172,149 @@ def test_both_ivgm_models_share_one_power_convention():
     )
 
 
+#: The 8xxx block is settable configuration, 4xxx is live telemetry — and on the
+#: IVGM the two blocks use DIFFERENT power units.
+_SETTING_BLOCK_START = 8192
+
+
 @pytest.mark.parametrize("model", list(const.IVGM_MODELS))
-def test_ivgm_power_registers_are_internally_consistent(model):
-    """Within one IVGM model every power register uses the same convention."""
+def test_ivgm_telemetry_and_setpoint_blocks_each_have_one_convention(model):
+    """Consistent WITHIN each block, and deliberately different BETWEEN them.
+
+    An earlier version of this test demanded a single convention across every
+    power register on the model. That premise was wrong, and it was wrong in the
+    dangerous direction: it passed while the setpoints were mis-scaled, because
+    they had been "made consistent" with the telemetry.
+
+    The 15K dump settles the split. Telemetry counts 0.01 kW (`bat1_power` 80
+    against 53.6 V x 15.1 A = 809 W). Setpoints are plain watts
+    (`grid_peak_shaving_power` 15000 = exactly that unit's 15 kW nameplate; as
+    0.01 kW it would read 150 kW).
+    """
     regs = _registers(model)
     power = {k: i for k, i in regs.items() if i.get("device_class") == "power"}
     assert power, f"{model}: no power registers at all"
-    conventions = {(i.get("unit"), i.get("index")) for i in power.values()}
-    assert len(conventions) == 1, (
-        f"{model}: power registers disagree with each other: {conventions}"
+
+    telemetry = {k: i for k, i in power.items() if i["address"] < _SETTING_BLOCK_START}
+    setpoints = {k: i for k, i in power.items() if i["address"] >= _SETTING_BLOCK_START}
+    assert telemetry and setpoints, f"{model}: expected power registers in both blocks"
+
+    tele_conv = {(i.get("unit"), i.get("index"), i.get("precision")) for i in telemetry.values()}
+    assert tele_conv == {("kW", 9, 2)}, (
+        f"{model}: telemetry power must be 0.01 kW (kW/index 9/precision 2), got {tele_conv}"
+    )
+
+    set_conv = {(i.get("unit"), i.get("index")) for i in setpoints.values()}
+    assert set_conv == {("W", 3)}, (
+        f"{model}: setpoint power must stay raw watts (W/index 3), got {set_conv}. "
+        "These registers are WRITTEN — mis-scaling them mis-commands the inverter."
     )
 
 
-def test_no_ivgm_is_declared_watt_valued():
-    """WATT_POWER_MODELS drives the WRITE path as well as the read path.
+def test_ivgm_setpoint_defaults_are_only_plausible_as_watts():
+    """The decisive evidence, kept as a test so it cannot be argued away.
 
-    With the family measured at 0.01 kW, writing watts into ECO1_Power would ask
-    the inverter for 1000x the intended power.  That asymmetry is why the 8K
-    follows the correction rather than waiting for its own measurement: being
-    wrong towards kW undercharges, being wrong towards W overdrives.
+    A factory default equal to the nameplate is the tell: the 15K reported
+    `grid_peak_shaving_power` = 15000. Read as watts that is 15.00 kW — its exact
+    rating. Read as 0.01 kW it is 150 kW, which no 15 kW inverter can mean.
+
+    Scoped to the 15K deliberately. These are the raw counts read from THAT unit;
+    an 8K has its own defaults, so asserting these numbers against the 8K's 8 kW
+    nameplate would be comparing one machine's settings to another's rating. That
+    the 8K uses the same *convention* is covered by the block-convention test.
+    """
+    model = const.INVERTER_MODEL_IVGM_FIFTEEN
+    regs = _registers(model)
+    rating = const.INVERTER_MAX_POWER_KW[model]
+    assert rating == 15
+
+    observed = {                      # raw counts read from the 15K
+        "grid_peak_shaving_power": 15000,
+        "econ_rule_1_power": 7500,
+        "gen_input_rate_power": 7500,
+        "max_pv_input_power": 4850,
+    }
+    for key, raw in observed.items():
+        kw = _watts(raw, regs[key]) / 1000.0
+        assert kw <= rating + 0.01, (
+            f"{key} raw {raw} decodes to {kw:.2f} kW, above the {rating} kW "
+            "nameplate — the scale must be wrong"
+        )
+    assert _watts(15000, regs["grid_peak_shaving_power"]) / 1000.0 == 15.0, (
+        "the peak-shaving default must decode to exactly the 15 kW nameplate"
+    )
+
+
+def test_ivgm_telemetry_is_kilowatt_but_setpoints_are_watt():
+    """The two model lists must disagree about the IVGM — that is the point.
+
+    `WATT_POWER_MODELS` gates the telemetry read path; `SETPOINT_WATT_MODELS`
+    gates the setpoint read AND write path. Reusing the telemetry list for writes
+    turned a 5 kW charge command into raw 500 where the register wants 5000.
     """
     for model in const.IVGM_MODELS:
-        assert model not in const.WATT_POWER_MODELS, f"{model} would be written in watts"
+        assert model not in const.WATT_POWER_MODELS, (
+            f"{model} telemetry is 0.01 kW, not watts"
+        )
+        assert model in const.SETPOINT_WATT_MODELS, (
+            f"{model} setpoints are watts — writing kW would under-command it 10x"
+        )
+
+
+def test_ivgm_temperatures_are_deci_celsius():
+    """Raw 410 is 41.0 C, not 410 C.
+
+    `lead_acid_tempe` in the same telemetry block was already index 8 and read
+    correctly, so the map contradicted itself; the customer had built
+    "Temperatur korrigiert" template sensors to divide by 10 by hand. Signed
+    (index 8, not 2) because ambient temperature can go below zero.
+    """
+    regs = _registers(const.INVERTER_MODEL_IVGM_TWENTY)
+    expected = {
+        "environment_temperature": (410, 41.0),
+        "boost_temperature": (329, 32.9),
+        "inverter_temperature": (349, 34.9),
+        "bms_maximum_cell_temperature": (210, 21.0),
+        "bms_minmum_cell_temperature": (200, 20.0),
+    }
+    for key, (raw, want) in expected.items():
+        info = regs[key]
+        got = round(_scale(raw, info["index"]), info["precision"])
+        assert got == want, f"{key}: raw {raw} should read {want} C, got {got}"
+        assert info["index"] == 8, f"{key} must stay signed (index 8), got {info['index']}"
+
+
+def test_ivgm_bms_total_voltage_is_centi_volt():
+    """Raw 5360 is 53.60 V, not 536.0 V — no 48 V pack sits at 536 V.
+
+    Cross-checked against `bat1_voltage` on the same pack, which read 53.6 V.
+    Note the neighbouring BMS charge/discharge voltage LIMITS (57.6 / 48.0 V)
+    are correct at index 1, so this is one register's scale, not the block's.
+    """
+    regs = _registers(const.INVERTER_MODEL_IVGM_TWENTY)
+    info = regs["bms_total_voltage"]
+    got = round(_scale(5360, info["index"]), info["precision"])
+    assert got == 53.6, f"BMS Total Voltage raw 5360 should read 53.6 V, got {got}"
+    for key, raw, want in (("bms_charge_voltage_limit", 576, 57.6),
+                           ("bms_discharge_voltage_limit", 480, 48.0)):
+        i = regs[key]
+        assert round(_scale(raw, i["index"]), i["precision"]) == want, (
+            f"{key} was already correct and must not be swept along"
+        )
+
+
+@pytest.mark.parametrize("model", list(const.IVGM_MODELS))
+def test_ivgm_register_names_do_not_leak_the_document_annotation(model):
+    """Two names carried "(8K donot 0.1KWh support)" into the HA entity name.
+
+    Only the NAME is fixed: the dict key becomes the entity's unique_id, so
+    renaming the key would orphan every existing entity.
+    """
+    for key, info in _registers(model).items():
+        assert "donot" not in info.get("name", ""), (
+            f"{model}: {key} leaks the protocol document's annotation into its "
+            f"display name: {info['name']!r}"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -263,10 +384,82 @@ def test_every_model_declares_a_power_unit():
     assert not bad, f"power unit must be 'W' or 'kW', got {bad}"
 
 
+def test_every_model_declares_a_setpoint_power_unit():
+    """SETPOINT_POWER_UNIT_BY_MODEL must cover every supported model too.
+
+    It is the second half of the same decision and carries the same hazard: a
+    model missing from it silently becomes kW on the WRITE path, which
+    under-commands charge power by 1000x (or 10x once the register's own index
+    partially compensates). Either way the battery quietly does almost nothing.
+    """
+    declared = set(const.SETPOINT_POWER_UNIT_BY_MODEL)
+    supported = set(const.SUPPORTED_MODELS)
+    assert supported <= declared, (
+        "these models have no declared SETPOINT power unit: "
+        f"{sorted(supported - declared)}"
+    )
+    assert declared <= supported, (
+        f"SETPOINT_POWER_UNIT_BY_MODEL names unknown models: {sorted(declared - supported)}"
+    )
+    bad = {m: u for m, u in const.SETPOINT_POWER_UNIT_BY_MODEL.items() if u not in ("W", "kW")}
+    assert not bad, f"setpoint power unit must be 'W' or 'kW', got {bad}"
+
+
 def test_watt_power_models_is_consistent_with_the_mapping():
-    """The derived tuple must agree with the mapping it comes from."""
-    expected = tuple(m for m, u in const.POWER_UNIT_BY_MODEL.items() if u == "W")
-    assert const.WATT_POWER_MODELS == expected
+    """Each derived tuple must agree with the mapping it comes from."""
+    assert const.WATT_POWER_MODELS == tuple(
+        m for m, u in const.POWER_UNIT_BY_MODEL.items() if u == "W"
+    )
+    assert const.SETPOINT_WATT_MODELS == tuple(
+        m for m, u in const.SETPOINT_POWER_UNIT_BY_MODEL.items() if u == "W"
+    )
+
+
+# --------------------------------------------------------------------------
+# Rating-only variants: same silicon, different nameplate
+# --------------------------------------------------------------------------
+
+#: (variant, sibling it is register-identical to)
+_RATING_ONLY_VARIANTS = [
+    (const.INVERTER_MODEL_TREX_SIX, const.INVERTER_MODEL_TREX_FIVE),
+    (const.INVERTER_MODEL_IVGM_FIFTEEN, const.INVERTER_MODEL_IVGM_TWENTY),
+]
+
+
+@pytest.mark.parametrize(("variant", "sibling"), _RATING_ONLY_VARIANTS)
+def test_rating_only_variant_shares_its_siblings_map(variant, sibling):
+    """Share the map BY REFERENCE, so the two cannot drift apart.
+
+    A copied dict literal drifts the moment one copy is edited and the other is
+    forgotten — the failure this project has had to undo more than once. `is`
+    rather than `==` is the assertion on purpose: equal-but-separate dicts would
+    satisfy equality today and diverge tomorrow.
+    """
+    a, b = const.MODEL_REGISTRY[variant], const.MODEL_REGISTRY[sibling]
+    assert a["registers"] is b["registers"], f"{variant} must share {sibling}'s register map"
+    assert a["register_sets"] is b["register_sets"]
+    assert a["combined"] is b["combined"]
+    assert a["default_first_reg"] == b["default_first_reg"]
+
+
+@pytest.mark.parametrize(("variant", "sibling"), _RATING_ONLY_VARIANTS)
+def test_rating_only_variant_differs_only_in_nameplate(variant, sibling):
+    """The rating is the whole reason the variant exists as a separate model.
+
+    `INVERTER_MAX_POWER_KW` caps the EMS's grid-charge planning and the Power
+    Level slider, so a 15K configured as a 20K gets plans assuming 5 kW it does
+    not have. If the two ratings were equal the variant would be pointless.
+    """
+    assert const.INVERTER_MAX_POWER_KW[variant] != const.INVERTER_MAX_POWER_KW[sibling]
+    for mapping in (const.POWER_UNIT_BY_MODEL, const.SETPOINT_POWER_UNIT_BY_MODEL):
+        assert mapping[variant] == mapping[sibling], (
+            f"{variant} shares {sibling}'s registers, so it must share its units"
+        )
+    # Same control path, or type_specific would treat them differently.
+    for group in (const.ECO_TIMEOFUSE_MODELS, const.OPERATING_MODE_MODELS, const.IVGM_MODELS):
+        assert (variant in group) == (sibling in group), (
+            f"{variant} and {sibling} must belong to the same model groups"
+        )
 
 
 def test_declaring_kilowatts_does_not_unsupport_a_model():

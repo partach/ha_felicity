@@ -208,27 +208,39 @@ prices. What *is* model-specific is how the plan reaches the hardware
 
 | Control path | Models | Enable sequence |
 |---|---|---|
-| `operating_mode` | T-REX-5 / 10 | `operating_mode=2` (Economic) then `econ_rule_1_enable` 0/1/2 |
-| `ECO_TimeOfUse` | T-REX-25 / 50, **IVGM-8K / 20K** | `system_mode` + `eco_timeofuse=1` then `econ_rule_1_grid_charge_enable` |
+| `operating_mode` | T-REX-5 / 6 / 10 | `operating_mode=2` (Economic) then `econ_rule_1_enable` 0/1/2 |
+| `ECO_TimeOfUse` | T-REX-25 / 50, **IVGM-8K / 15K / 20K** | `system_mode` + `eco_timeofuse=1` then `econ_rule_1_grid_charge_enable` |
 
 Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
 
 Power scaling is per model and **measured, never inherited from a sibling** — the
 vendor documentation is wrong about it, and models sharing a document can still
 differ (the T-REX-25's firmware was altered, so its field-proven scaling is
-frozen and must not be harmonised with the T-REX-50's). The T-REX-5/10 report raw
-**W**; the T-REX-25/50 and **both IVGM models** report **0.01 kW**.
+frozen and must not be harmonised with the T-REX-50's). The T-REX-5/6/10 report
+raw **W**; the T-REX-25/50 and **all IVGM models** report **0.01 kW**.
 
-The IVGM pair is the one place a correction *does* cross models, and the
-distinction matters: both maps are generated from ONE document and **neither has
-been field-tested**, so the 20K's measurement showed the document's unit column
-is wrong rather than that the 20K is special — it is applied to the family map.
+The IVGM family is the one place a correction *does* cross models, and the
+distinction matters: every map is generated from ONE document and **no 8K has
+been field-tested**, so the 3-phase measurements showed the document's unit column
+is wrong rather than that one model is special — the fix is applied to the family
+map.
 
-`const.POWER_UNIT_BY_MODEL` is the single source for the split (a mapping, so no
-model's unit is decided by omission) and it drives the WRITE path as well as the
-read path. Getting it wrong scales every power the EMS sees — and every setpoint
-it writes — by 10× or 1000×. See CLAUDE.md, "Power-register scaling", and
-`tests/test_power_scaling.py`.
+**Telemetry and setpoints are separate questions.** On the IVGM they have
+different answers: its 4xxx telemetry counts 0.01 kW while its 8xxx setpoints
+(`ECOn_Power`, peak-shaving power) are plain watts. So there are two mappings:
+`const.POWER_UNIT_BY_MODEL` drives the telemetry read path and
+`const.SETPOINT_POWER_UNIT_BY_MODEL` the setpoint read **and write** path. Both
+are mappings rather than lists, so no model's unit is decided by omission. Getting
+either wrong scales every power the EMS sees — or every setpoint it writes — by
+10× or 1000×; conflating the two turned a 5 kW charge command into a 0.5 kW one.
+See CLAUDE.md, "Power-register scaling", and `tests/test_power_scaling.py`.
+
+**Rating-only variants** (T-REX-6K, IVGM-15K) share their sibling's register map
+by reference and differ only in `INVERTER_MAX_POWER_KW`. That number is not
+cosmetic to the EMS: it caps the per-slot grid-charge energy
+(`min(safe_power_kw, inverter_max − pv_kw)`) and the Power Level slider, so
+configuring a 15K as a 20K makes the scheduler plan around 5 kW that does not
+exist.
 
 The IVGM family (added Sept 2026, **provisional**) cannot use
 `econ_rule_N_sell_enable`, so **`to_grid` / `both` is unproven there**; see

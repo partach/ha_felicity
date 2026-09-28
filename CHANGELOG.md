@@ -1,6 +1,18 @@
 ## Changelog
 
-### [1.3.9] - Power-register scaling fixes
+### [1.3.9] - Power-register scaling fixes, two new models
+
+**New models**
+- **T-REX-6KLP1G01** — electrically a T-REX-5 with a higher rating. Same
+  registers, same control path; only the 6 kW cap differs.
+- **IVGM-15KLP3G1** — register-identical to the IVGM-20K, capped at 15 kW.
+  Still labelled "(provisional)" like the rest of the IVGM family.
+
+  Pick the right one: the rating caps the EMS's charge planning and the Power
+  Level slider, so a 15K configured as a 20K plans around 5 kW it hasn't got. The
+  model is still chosen at setup only — to change it, remove and re-add the
+  integration.
+
 
 ⚠️ **T-REX-50 owners — read this.** Every telemetry power register was scaled
 ÷10 where the inverter actually uses ÷100, so all power readings were **10×
@@ -20,16 +32,36 @@ scale is how you ask an inverter for ten times the power you meant.
 **T-REX-25 is untouched** and stays exactly as shipped. Its firmware was altered
 and its scaling is proven in the field, so it legitimately differs from the 50.
 
-**IVGM power registers are 0.01 kW per count**, not the watts the protocol
-document claims — a customer measured raw 156 for a true 1560 W. Both IVGM
-models now use that scale: they are generated from the same document, and
-neither has been field-tested, so the measurement says the document's unit
-column is wrong rather than that one model is special.
+**IVGM — live power readings were 10× too low.** The telemetry power registers
+are 0.01 kW per count, not the watts the protocol document claims. Measured on a
+20K (raw 156 = 1560 W) and confirmed twice on a 15K from physics (battery power
+80 against 53.6 V × 15.1 A; PV1 146 against 361.8 V × 4.0 A). All IVGM models
+now use that scale — they are generated from the same document and no 8K has
+been field-tested, so the measurement says the document's unit column is wrong
+rather than that one model is special.
+
+The *settings* (rule power, peak-shaving power, max PV input) are genuinely in
+watts and are unchanged — a 15K's factory defaults confirm it, its peak-shaving
+power reading exactly its 15 kW nameplate.
+
+**IVGM — three more fixes from the same report**
+- Temperatures read 10× high: ambient showed **410 °C**, inverter 349, boost 329,
+  BMS cells 210/200. Now 41.0 / 34.9 / 32.9 / 21.0 / 20.0 °C.
+- BMS Total Voltage showed **536.0 V** on a 48 V pack; now 53.60 V.
+- Two sensors carried the protocol document's "(8K donot 0.1KWh support)" note in
+  their displayed name. Names cleaned up; entity IDs unchanged.
+
+**Confirmed on IVGM hardware for the first time** (previously assumed from the
+T-REX-25/50): the economic-rule time encoding and the weekday mask. A 15K's six
+rule windows decode to a clean 00:00→08:00→12:00→14:00→18:00→21:00→00:00 day.
+Selling is still unproven on the IVGM — see `docs/IVGM_SUPPORT_GAPS.md`.
 
 **Internal**
-- Every model now declares its power unit explicitly instead of being absent
-  from a list, so adding a model can no longer pick one up by accident.
-- CI runs the test suite (354 tests) and the EMS scenario simulator, not just
+- Every model declares its power unit explicitly instead of being absent from a
+  list, so adding a model can no longer pick one up by accident — and telemetry
+  and setpoint units are now separate declarations, because on the IVGM they
+  differ.
+- CI runs the test suite (380 tests) and the EMS scenario simulator, not just
   the linter.
 
 ### [1.3.8] - Provisional IVGM family support
