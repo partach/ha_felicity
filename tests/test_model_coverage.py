@@ -17,6 +17,8 @@ against hardware — see docs/IVGM_SUPPORT_GAPS.md.
 
 from __future__ import annotations
 
+import pathlib
+import re
 import sys
 
 import pytest
@@ -241,3 +243,30 @@ def test_ivgm_register_names_match_the_document():
             mismatched.append(f"{key} @0x{info['address']:04X}: "
                               f"map={info['name']!r} doc={doc_name!r}")
     assert not mismatched, "register name does not match the document:\n" + "\n".join(mismatched)
+
+
+def test_setup_dropdown_offers_exactly_the_supported_models():
+    """The model picker and SUPPORTED_MODELS must not drift apart.
+
+    Two failure modes, both silent until a user hits them:
+      * offered but not registered -> setup crashes on MODEL_REGISTRY[model];
+      * registered but not offered -> the model exists and nobody can pick it,
+        which is exactly what happened when IVGM support shipped without ever
+        reaching a release tag and a customer reported "I can't select it".
+
+    Parsed from the source rather than by importing config_flow, which needs the
+    Home Assistant selector machinery this harness deliberately does not have.
+    """
+    src = (pathlib.Path(__file__).parent.parent / "custom_components" /
+           "ha_felicity" / "config_flow.py").read_text()
+    offered_names = set(re.findall(
+        r"SelectOptionDict\(\s*value=(INVERTER_MODEL_\w+)", src))
+    assert offered_names, "no model options found — did the selector change shape?"
+
+    offered = {getattr(const, name) for name in offered_names}
+    supported = set(const.SUPPORTED_MODELS)
+    assert offered == supported, (
+        f"setup dropdown and SUPPORTED_MODELS disagree — "
+        f"offered but unsupported: {sorted(offered - supported)}; "
+        f"supported but unofferable: {sorted(supported - offered)}"
+    )

@@ -39,9 +39,11 @@ from .const import (
     DEFAULT_TCP_PORT,
     DOMAIN,
     INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_SIX,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_TWENTY_FIVE,
     MODEL_REGISTRY,
@@ -163,6 +165,8 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.SelectSelectorConfig(
                         options=[
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIVE, label=INVERTER_MODEL_TREX_FIVE),
+                            # Register-identical to the 5K; only the rating differs.
+                            selector.SelectOptionDict(value=INVERTER_MODEL_TREX_SIX, label=INVERTER_MODEL_TREX_SIX),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TEN, label=INVERTER_MODEL_TREX_TEN),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TWENTY_FIVE, label=INVERTER_MODEL_TREX_TWENTY_FIVE),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIFTY, label=INVERTER_MODEL_TREX_FIFTY),
@@ -173,6 +177,9 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             selector.SelectOptionDict(
                                 value=INVERTER_MODEL_IVGM_EIGHT,
                                 label=f"{INVERTER_MODEL_IVGM_EIGHT} (1-phase, provisional)"),
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVGM_FIFTEEN,
+                                label=f"{INVERTER_MODEL_IVGM_FIFTEEN} (3-phase, provisional)"),
                             selector.SelectOptionDict(
                                 value=INVERTER_MODEL_IVGM_TWENTY,
                                 label=f"{INVERTER_MODEL_IVGM_TWENTY} (3-phase, provisional)"),

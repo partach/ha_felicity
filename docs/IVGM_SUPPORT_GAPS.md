@@ -1,15 +1,22 @@
 # IVGM family — what is NOT yet known
 
-Status of `IVGM-8KLP1G1` and `IVGM-20KLP3G1`: **provisional**. The register maps
-in `custom_components/ha_felicity/ivgm.py` are derived from one document —
+Status of `IVGM-8KLP1G1`, `IVGM-15KLP3G1` and `IVGM-20KLP3G1`: **provisional**.
+The 15K and 20K are register-identical and share one map, differing only in
+`INVERTER_MAX_POWER_KW`. The maps in `custom_components/ha_felicity/ivgm.py` are
+derived from one document —
 
 > *Inverter Communication Protocol — Series RS485*, Guangzhou Felicity Solar
 > Technology Co., Ltd. (广州菲利斯太阳能科技有限公司), v01, 2025‑03‑13, author
 > "Moliting". PDF written 2025‑03‑28. Modbus RTU, 9600 8N1, slave 1.
 
-Nothing here has been checked against hardware. This file lists every open
-question, **dangerous ones first**, so the unknowns are visible instead of being
-discovered on a live inverter.
+Two customer dumps (Sept 2026, a 20K and a 15K) have now checked **part** of this
+against hardware: the power scale, the `HH<<8|MM` time packing and the weekday
+mask are confirmed, and three scaling bugs were found and fixed. Everything below
+that is still marked open is still open — in particular **nothing has been
+WRITTEN to an IVGM yet**, so every control assumption remains untested.
+
+This file lists every open question, **dangerous ones first**, so the unknowns are
+visible instead of being discovered on a live inverter.
 
 **Until items 0–4 are answered, treat both models as read-only**: select the
 model to get sensors, but leave `grid_mode = off` so the EMS never writes.
@@ -31,6 +38,15 @@ is a frozen transcript of every address the document defines, and
 carries a name — that isn't in it. All 365 addresses in the shipped map are
 document-sourced; zero are borrowed.
 
+The name check is the one that catches a mis-transcribed address, because a typo
+usually still lands on a *valid* address. It asserts **containment**: our name
+must appear within the document's text for that address, normalised. That lets us
+trim the document's noise while still failing if a name points at a different
+register — so when two names shipped with "(8K donot 0.1KWh support)" baked into
+the HA entity name and were cleaned up, the guard correctly stayed green. Only the
+`name` was changed; the dict **key** becomes the entity's `unique_id`, so renaming
+a key would orphan every existing entity.
+
 Key *names* are shared with the TREX maps on purpose (`eco_timeofuse`,
 `econ_rule_1_power`, …) because the handlers look registers up by key. The key
 is the interface; the **address is per-model data** and comes from that model's
@@ -48,9 +64,10 @@ and battery 2. Those registers exist precisely because a larger model uses them.
 | | Evidence |
 |---|---|
 | **8K map** | Documented directly. High confidence. |
-| **3‑phase map** | **Inferred.** The document never mentions a 20K. We enable the registers the 8K is told not to support. Reasonable, unverified. |
-| **Control path** | Documented: `ECO_TimeOfUse` (0x2207) + `ECOn_GridChargeEnable` (0x2209…), i.e. the **TREX‑25/50 shape**. |
-| **Power units** | Documented as **W** — unlike TREX‑25/50, which use kW at the same addresses. |
+| **3‑phase map** | **Inferred**, but now partly corroborated: two 3‑phase units (a 20K and a 15K) return sensible values across the map. The document still never mentions either model. |
+| **Control path** | Documented: `ECO_TimeOfUse` (0x2207) + `ECOn_GridChargeEnable` (0x2209…), i.e. the **TREX‑25/50 shape**. Never yet exercised — no IVGM has been written to. |
+| **Power units** | Documented as **W** throughout. **Half wrong**: the 4xxx telemetry is really 0.01 kW (measured), the 8xxx setpoints really are W (confirmed). See item 1. |
+| **Time / weekday packing** | ✅ **Confirmed on hardware** — see item 0. |
 
 ---
 
@@ -65,8 +82,8 @@ There is not a single value table in it. So for every register we actually
 | `system_mode` (0x2144, "Work Mode") | 0 Selling / 1 Zero Export To Load / 2 Zero Export To CT | ❌ |
 | `eco_timeofuse` (0x2207) | 1 = Economic mode on | ❌ |
 | `ECO1_GridChargeEnable` (0x2209) | 1 = charge from grid | ❌ |
-| `ECO1_StartTime`/`StopTime` (0x220B/C) | packed `HH<<8 \| MM` | ❌ |
-| `ECO_EffectiveWeek` (0x2208) | bit0=Sunday…bit6=Saturday, 0x7F = all | ❌ |
+| `ECO1_StartTime`/`StopTime` (0x220B/C) | packed `HH<<8 \| MM` | ✅ **CONFIRMED** (below) |
+| `ECO_EffectiveWeek` (0x2208) | bit0=Sunday…bit6=Saturday, 0x7F = all | ✅ **CONFIRMED** (below) |
 
 These are **cross-family assumptions of exactly the kind this project has
 decided not to make** (see "The addresses rule" below). They are unavoidable —
@@ -74,17 +91,58 @@ the integration has to write *something* — but they are assumptions, not facts
 and a wrong `system_mode` value could put the inverter into an export mode the
 owner did not ask for.
 
-**To resolve:** set each mode from the inverter's own display and read the
-register back. One pass over Work Mode's three positions and the ECO1 enable
-settles the whole table.
+**Two of them are now settled** by a 15K dump (Sept 2026). Its six ECO windows
+decode under `HH<<8 | MM` to a perfect contiguous day, which cannot be
+coincidence:
 
-## 1. Power unit — ANSWERED by hardware: 0.01 kW, not watts
+| Rule | Raw start → stop | Decoded |
+|---|---|---|
+| ECO1 | 0 → 2048 | 00:00 → 08:00 |
+| ECO2 | 2048 → 3072 | 08:00 → 12:00 |
+| ECO3 | 3072 → 3584 | 12:00 → 14:00 |
+| ECO4 | 3584 → 4608 | 14:00 → 18:00 |
+| ECO5 | 4608 → 5376 | 18:00 → 21:00 |
+| ECO6 | 5376 → 0 | 21:00 → 00:00 |
 
-**RESOLVED for the family (customer report, Sept 2026).** A 20K read `bat1_power`
-(0x1131) as raw **156** where the true power was **1560 W** — 0.01 kW per count.
-The document's "W" column is wrong. Both models' telemetry power registers are
-now `index 9` (signed, /100) + `kW` + precision 2, and **neither IVGM is in
+And `ECO_EffectiveWeek` read **127** = 0x7F = all seven days, as assumed.
+
+**Still open: `system_mode` and the enable values.** The same unit read
+`eco_timeofuse` = 1 with all six rules showing active and an operational mode of
+"Zero Export To Load", which is consistent with our assumed table but does not
+prove it — reading a value the owner set from the display is not the same as
+knowing what each value means.
+
+**To resolve the rest:** set each mode from the inverter's own display and read
+the register back. One pass over Work Mode's three positions and the ECO1 enable
+settles what remains.
+
+## 1. Power unit — ANSWERED by hardware, and it is DIFFERENT per block
+
+**RESOLVED (two customer reports, Sept 2026).** The document says "W" everywhere.
+It is right about the settings and wrong about the telemetry.
+
+**4xxx telemetry = 0.01 kW per count.** A 20K read `bat1_power` (0x1131) as raw
+**156** where the true power was **1560 W**. A 15K confirmed it twice from physics
+in a single dump: `bat1_power` 80 against 53.6 V × 15.1 A = 809 W, and `pv1_power`
+146 against 361.8 V × 4.0 A = 1447 W. Both ratios are 10. Telemetry power is now
+`index 9` (signed, /100) + `kW` + precision 2, and **no IVGM is in
 `WATT_POWER_MODELS`**.
+
+**8xxx setpoints = plain watts.** The same 15K dump settles this the other way,
+and a factory default equal to the nameplate is the tell:
+
+| Setpoint | Raw | As W | As 0.01 kW |
+|---|---|---|---|
+| `grid_peak_shaving_power` | 15000 | **15.00 kW = its exact rating** | 150 kW ✗ |
+| `ECO1…6_Power` | 7500 | 7.50 kW | 75 kW ✗ |
+| `gen_input_rate_power` | 7500 | 7.50 kW | 75 kW ✗ |
+| `max_pv_input_power` | 4850 | 4.85 kW | 48.5 kW ✗ |
+
+So the conversion is gated on the address (`_IVGM_SETTING_BLOCK_START = 8192`) and
+**every IVGM IS in `SETPOINT_WATT_MODELS`**. The first cut of this fix converted
+both blocks and made the setpoints 10× wrong in both directions — displaying
+75 kW, and writing a 5 kW charge command as raw 500 where the register wants 5000.
+Caught by the second dump before release.
 
 A second report corroborates it from another direction: an **IVGM-50K** driven by
 the T-REX-50 map read every power sensor 10× high, and `-2` (not the documented
@@ -108,22 +166,17 @@ and harmless — whereas leaving it in W when it is 0.01 kW asks the inverter fo
 1000× too much. If an 8K is ever measured and disagrees, split the family in the
 same commit as the measurement.
 
-**Still open: the SETTING register.** The measurement was of a *telemetry*
-register. `ECO1_Power` (0x220F) is *written*, and nobody has measured it. Both
-models are treated as kW there too, because the two error directions are not
-symmetric:
+**Still open: whether WRITING behaves like READING.** Every number above was
+*read*. `ECO1_Power` (0x220F) is the one we *write*, and no IVGM has ever been
+written to. The read value (7500 = 7.5 kW as watts) is strong evidence the write
+unit is watts too — a register almost always reads back in the unit it accepts —
+but "almost always" is not "always".
 
-| If we write | and the register is | result |
-|---|---|---|
-| W | kW | **1000× too much power** — dangerous |
-| kW | W | 1000× too little — undercharges, harmless |
+Bounded by `grid_mode` defaulting to **off**: nothing is written until the owner
+opts in.
 
-So kW is the side to be wrong on. Bounded further by `grid_mode` defaulting to
-**off** — nothing is written until the owner opts in.
-
-**To confirm:** on either model, set a known charge power (say 3 kW) from the
-display and read 0x220F. `300` ⇒ 0.01 kW (as now assumed), `3000` ⇒ watts,
-`3` ⇒ whole kW.
+**To confirm:** on any IVGM, set a known charge power (say 3 kW) from the display
+and read 0x220F. `3000` ⇒ watts (as now assumed), `300` ⇒ 0.01 kW, `3` ⇒ whole kW.
 
 Enforced in code by `const.POWER_UNIT_BY_MODEL` (every model declares its unit;
 `WATT_POWER_MODELS` is derived from it) and asserted by
@@ -176,10 +229,12 @@ second live conductor it must be included — as it currently is.
 **To resolve:** read 0x115A (`Outside CT B Current`) on a loaded 8K. Persistent
 0 ⇒ single phase.
 
-## 5. Unverified: does the 20K share this register map at all?
+## 5. Partly verified: does the 3‑phase map hold?
 
-The whole 3‑phase map rests on the inference in the table above. Specifically
-unverified for the 20K:
+Two 3‑phase units (a 20K and a 15K) now return sensible values right across the
+map — voltages, currents, frequencies, energies and the ECO block all read
+plausibly and cross-check against each other. That is real corroboration of the
+inference, but it is not proof of completeness. Still unverified:
 
 - extra registers the 20K may have that this 8K document omits — note
   TREX‑25/50 have **23** registers absent here (`econ_rule_N_sell_enable` ×6,
@@ -188,11 +243,38 @@ unverified for the 20K:
   TREX‑25/50 — proof the maps are *not* identical, so other one‑off shifts are
   possible;
 - battery count. `L` in `IVGM-20KLP3G1` is read here as low‑voltage battery, and
-  the family map has Bat1 + Bat2, but the 20K's actual count is unconfirmed.
+  the family map has Bat1 + Bat2, but the actual count is unconfirmed. The 15K
+  dump reported Bat2 voltage/SOC/power all 0.0, consistent with a single battery
+  installed — which does not tell us whether the model supports two.
 
 **To resolve:** read `Device TypeID` (0xF800) and `Device SubTypeID` (0xF801) on
-both models. The integration does not currently use them; they would be the
-cleanest way to *detect* the model rather than have the user pick it.
+each model. The integration does not currently use them; they would be the
+cleanest way to *detect* the model rather than have the user pick it. **First
+data point:** the 15K reports TypeID **84**, SubTypeID **1052**. Two more models'
+values would be enough to build a detection table.
+
+## 5b. RESOLVED: three more scaling bugs the 15K dump exposed
+
+Not gaps any more, recorded so the reasoning is not lost.
+
+- **Temperatures were raw, not /10.** `environment_temperature` read **410 °C**,
+  boost 329, inverter 349, BMS cells 210/200. Now `index 8` (signed /10) +
+  precision 1 → 41.0 / 32.9 / 34.9 / 21.0 / 20.0. The map contradicted itself:
+  `lead_acid_tempe` in the same block was already `index 8` and read correctly.
+  Signed, not unsigned — ambient temperature goes below zero. The owner had built
+  "Temperatur korrigiert" template sensors dividing by 10 by hand, which is the
+  only reason this surfaced.
+- **`bms_total_voltage` (0x120D / 4621) is 0.01 V per count**, not 0.1 — it read
+  **536.0 V** on a 48 V pack whose `bat1_voltage` read 53.6 V. Only this one
+  register: the neighbouring BMS charge/discharge voltage *limits* read 57.6 and
+  48.0 V correctly at `index 1` and must not be swept along with it.
+- **Two display names leaked the document's annotation** ("PV4 Day Gen
+  Energy(8K donot 0.1KWh support)"). Names fixed; keys left alone, since the key
+  is the `unique_id` and renaming it orphans existing entities.
+
+**Still unexplained, low stakes:** `ATS Start Signal` read **65535**, which looks
+like an unsigned read of −1 (`index 0` where `3` may be right). Nobody depends on
+it; noted rather than guessed at.
 
 ## 6. Telemetry block is offset by one vs TREX‑5/10
 
@@ -237,12 +319,18 @@ them yet:
 
 ## Checklist to promote IVGM from provisional to supported
 
-1. [ ] Confirm the control-register enum values from the display (item 0).
-2. [ ] Read 0xF800/0xF801 on both models; record the IDs here.
-2. [ ] Confirm `ECO1_Power` unit on the **20K** (item 1).
-3. [ ] Confirm 0x115A carries current on the 8K (item 4).
-4. [ ] Establish how the IVGM enables export, without touching 0x21FF (item 2).
-5. [ ] Confirm `ECO1_StartTime` packing.
+1. [ ] Confirm `system_mode` and the enable enum values from the display (item 0).
+2. [~] Read 0xF800/0xF801 on each model; record the IDs here. *(15K: TypeID 84,
+       SubTypeID 1052 — need the 8K and 20K.)*
+3. [ ] Confirm the `ECO1_Power` **write** unit by setting a known power from the
+       display and reading 0x220F back (item 1). Reads say watts; writes untested.
+4. [ ] Confirm 0x115A carries current on the 8K (item 4).
+5. [ ] Establish how the IVGM enables export, without touching 0x21FF (item 2).
+6. [x] ~~Confirm `ECO1_StartTime` packing.~~ **Done** — `HH<<8 | MM` confirmed on
+       a 15K (item 0).
+7. [ ] Measure an **8K**'s telemetry power scale. It currently inherits the
+       3-phase 0.01 kW correction on the reasoning that the document (not one
+       model) is what was wrong.
 6. [ ] Run on `basic` for a full day, read-only, and compare sensors to the
        inverter's display before enabling `grid_mode`.
 7. [ ] Add an IVGM scenario to `tools/scenarios.py` once the power unit is

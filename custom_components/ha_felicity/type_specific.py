@@ -6,6 +6,7 @@ from .const import (
     IVGM_MODELS,
     IVGM_UNSUPPORTED_WRITES,
     OPERATING_MODE_MODELS,
+    SETPOINT_WATT_MODELS,
     WATT_POWER_MODELS,
 )
 
@@ -85,9 +86,12 @@ class TypeSpecificHandler:
     def determine_rule_power(self, data: dict) -> int | None:
         power = data.get("econ_rule_1_power")
         if power is not None:
-            # Unit, not control path: the IVGM shares the ECO register layout
-            # with TREX-25/50 but reports this register in W like a TREX-10.
-            if self._inverter_model in WATT_POWER_MODELS:
+            # SETPOINT unit, not control path and NOT the telemetry unit: the
+            # IVGM shares the ECO register layout with TREX-25/50, yet reports
+            # this register in W like a TREX-10 — while its *telemetry* power is
+            # 0.01 kW.  That is why this asks SETPOINT_WATT_MODELS and
+            # determine_grid_power asks WATT_POWER_MODELS.
+            if self._inverter_model in SETPOINT_WATT_MODELS:
                 return round(power / 1000)   # register is Watts -> report kW
             elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
                 return round(power)          # register is already kW
@@ -409,10 +413,16 @@ class TypeSpecificHandler:
       
         elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             # `value` arrives in WATTS from the coordinator.  TREX-25/50 expect
-            # kW in this register; the IVGM expects W (its protocol document
-            # gives ECO1_Power and Grid Peak Shaving Power in W).  Writing the
-            # W number into a kW register would request 1000x the power.
-            scaled = value if self._inverter_model in WATT_POWER_MODELS else round(value / 1000.0)
+            # kW in this register; the IVGM expects W — its protocol document
+            # says so, and a 15K's factory defaults confirm it (Grid Peak Shaving
+            # Power reads 15000 = exactly its 15 kW nameplate).  Writing the W
+            # number into a kW register would request 1000x the power.
+            #
+            # SETPOINT_WATT_MODELS, never WATT_POWER_MODELS: the IVGM's telemetry
+            # unit is 0.01 kW while this setpoint is watts, so the two lists
+            # legitimately disagree about it.  Asking the telemetry list here
+            # made a 5 kW command write raw 500 instead of 5000.
+            scaled = value if self._inverter_model in SETPOINT_WATT_MODELS else round(value / 1000.0)
             await self.async_write_register("econ_rule_1_power", scaled)
             # in testing it seemed that this register also needs to be set to the same amount to enable charging at least. Not sure for selling...
             if self.peak_shaving_enabled: # only when in charging mode

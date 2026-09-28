@@ -43,6 +43,10 @@ CONF_INVERTER_MODEL = "inverter_model"
 
 # Supported inverter models
 INVERTER_MODEL_TREX_FIVE = "T-REX-5K-P1G01"
+#: Electrically a T-REX-5 with a higher rating: SAME register map, SAME
+#: control path, SAME units.  Only the nameplate differs, and the nameplate
+#: lives in INVERTER_MAX_POWER_KW — so this model adds no map of its own.
+INVERTER_MODEL_TREX_SIX = "T-REX-6KLP1G01"
 INVERTER_MODEL_TREX_TEN = "T-REX-10K-P3G01"
 INVERTER_MODEL_TREX_FIFTY = "T-REX-50KHP3G01"
 INVERTER_MODEL_TREX_TWENTY_FIVE = "T-REX-25KHP3G01"
@@ -51,23 +55,28 @@ INVERTER_MODEL_TREX_TWENTY_FIVE = "T-REX-25KHP3G01"
 # Support is PROVISIONAL: built from the 8K RS485 protocol document, not yet
 # validated against hardware.  The 3-phase map in particular is inferred.
 INVERTER_MODEL_IVGM_EIGHT = "IVGM-8KLP1G1"
+INVERTER_MODEL_IVGM_FIFTEEN = "IVGM-15KLP3G1"
 INVERTER_MODEL_IVGM_TWENTY = "IVGM-20KLP3G1"
 
 INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_TREX_FIVE: 5,
+    INVERTER_MODEL_TREX_SIX: 6,
     INVERTER_MODEL_TREX_TEN: 10,
     INVERTER_MODEL_TREX_TWENTY_FIVE: 25,
     INVERTER_MODEL_TREX_FIFTY: 50,
     INVERTER_MODEL_IVGM_EIGHT: 8,
+    INVERTER_MODEL_IVGM_FIFTEEN: 15,
     INVERTER_MODEL_IVGM_TWENTY: 20,
 }
 
 SUPPORTED_MODELS = [
     INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_SIX,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_TWENTY_FIVE,
     INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
     # add new ones here
 ]
@@ -81,12 +90,14 @@ ECO_TIMEOFUSE_MODELS = (
     INVERTER_MODEL_TREX_TWENTY_FIVE,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
 )
 
 #: Models using the TREX-5/10 operating_mode(8451) + econ_rule_1_enable path.
 OPERATING_MODE_MODELS = (
     INVERTER_MODEL_TREX_FIVE,
+    INVERTER_MODEL_TREX_SIX,
     INVERTER_MODEL_TREX_TEN,
 )
 
@@ -94,6 +105,7 @@ OPERATING_MODE_MODELS = (
 #: sell-enable registers — see IVGM_UNSUPPORTED_WRITES below.
 IVGM_MODELS = (
     INVERTER_MODEL_IVGM_EIGHT,
+    INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
 )
 
@@ -121,29 +133,71 @@ IVGM_MODELS = (
 #:   T-REX-50       kW  customer report, Sept 2026 — was 10x high as W-scaled
 #:   IVGM-20K       kW  customer report, Sept 2026 — bat1_power raw 156 = 1560 W,
 #:                      i.e. 0.01 kW per count, NOT the watts its document claims
-#:   IVGM-8K        kW  SAME DOCUMENT, same generated map, and no IVGM has ever
-#:                      been field-tested — so the 20K report is evidence the
-#:                      document's unit column is wrong, not that the 20K is
-#:                      special.  Split the family only when an 8K is measured.
+#:   IVGM-15K       kW  second dump, Sept 2026 — confirmed twice from physics:
+#:                      bat1_power 80 vs 53.6 V x 15.1 A = 809 W, and pv1_power
+#:                      146 vs 361.8 V x 4.0 A = 1447 W.  Both ratios are 10.
+#:   IVGM-8K        kW  SAME DOCUMENT, same generated map, and no 8K has ever
+#:                      been field-tested — so the 3-phase reports are evidence
+#:                      the document's unit column is wrong, not that one model
+#:                      is special.  Split the family only when an 8K is measured.
+#:
+#: ⚠️ This table is about TELEMETRY only.  The IVGM's settable power registers
+#: are a DIFFERENT unit — see SETPOINT_POWER_UNIT_BY_MODEL below.
 #:
 #: ⚠️ Listing a model as kW does NOT remove it from anything.  Model membership
 #: lives in SUPPORTED_MODELS / MODEL_REGISTRY / IVGM_MODELS; this mapping only
 #: answers "what unit are its power registers in".
 POWER_UNIT_BY_MODEL = {
     INVERTER_MODEL_TREX_FIVE:        "W",
+    INVERTER_MODEL_TREX_SIX:         "W",   # identical to the 5K
     INVERTER_MODEL_TREX_TEN:         "W",
     INVERTER_MODEL_TREX_TWENTY_FIVE: "kW",
     INVERTER_MODEL_TREX_FIFTY:       "kW",
-    INVERTER_MODEL_IVGM_EIGHT:       "kW",   # follows the 20K measurement
+    INVERTER_MODEL_IVGM_EIGHT:       "kW",   # follows the 3-phase measurement
+    INVERTER_MODEL_IVGM_FIFTEEN:     "kW",   # measured on this hardware
     INVERTER_MODEL_IVGM_TWENTY:      "kW",   # measured; still fully supported
 }
 
 #: Derived — kept so type_specific.py keeps reading a single, obvious name.
-#: Where a write scale is still unmeasured, kW is the safe side to be wrong on:
-#:   writing W into a kW register  -> asks for 1000x TOO MUCH power (dangerous)
-#:   writing kW into a W register  -> asks for 1000x too little (undercharges)
+#: Used ONLY on the telemetry read path (determine_grid_power).
 WATT_POWER_MODELS = tuple(
     model for model, unit in POWER_UNIT_BY_MODEL.items() if unit == "W"
+)
+
+#: The unit each model's **settable** power registers use — the 8xxx block:
+#: `ECOn_Power`, `Grid Peak Shaving Power`, `Max PV Input Power`, …
+#:
+#: ⚠️ This is a SEPARATE question from POWER_UNIT_BY_MODEL, and on the IVGM the
+#: two answers DIFFER: its telemetry counts 0.01 kW while its setpoints are plain
+#: watts.  One flag cannot serve both, and conflating them is not a theoretical
+#: risk — an earlier revision reused WATT_POWER_MODELS for the write path, which
+#: turned a 5 kW charge command into raw 500 where the register wants 5000: a
+#: tenth of the intended charge power, silently.
+#:
+#: Evidence for the IVGM row (15K dump, Sept 2026), all from ONE unit:
+#:   grid_peak_shaving_power = 15000  -> 15.00 kW = EXACTLY its nameplate
+#:   ECO1..6_Power           =  7500  ->  7.50 kW (as 0.01 kW: 75 kW, impossible)
+#:   gen_input_rate_power    =  7500  ->  7.50 kW
+#:   max_pv_input_power      =  4850  ->  4.85 kW (as 0.01 kW: 48.5 kW on 15 kW)
+#: A factory default equal to the nameplate is the tell; nothing else fits.
+#:
+#: The T-REX rows are unchanged behaviour, not new measurements: 5/6/10 have
+#: always written watts here and 25/50 kW, and those paths are field-proven.
+SETPOINT_POWER_UNIT_BY_MODEL = {
+    INVERTER_MODEL_TREX_FIVE:        "W",
+    INVERTER_MODEL_TREX_SIX:         "W",
+    INVERTER_MODEL_TREX_TEN:         "W",
+    INVERTER_MODEL_TREX_TWENTY_FIVE: "kW",
+    INVERTER_MODEL_TREX_FIFTY:       "kW",
+    INVERTER_MODEL_IVGM_EIGHT:       "W",    # its document says W, and the
+    INVERTER_MODEL_IVGM_FIFTEEN:     "W",    # 15K's defaults prove it for the
+    INVERTER_MODEL_IVGM_TWENTY:      "W",    # 3-phase members
+}
+
+#: Derived — used on the SETPOINT read/write path (determine_rule_power,
+#: _handle_econ_rule_1_power).
+SETPOINT_WATT_MODELS = tuple(
+    model for model, unit in SETPOINT_POWER_UNIT_BY_MODEL.items() if unit == "W"
 )
 
 #: Registers the TREX-25/50 control path writes that the IVGM protocol document
@@ -277,4 +331,21 @@ MODEL_REGISTRY = {
         "default_slave_id": 1,
     },
 }
+
+# --- Rating-only variants -----------------------------------------------------
+# A model that is electrically a sibling with a different nameplate shares the
+# sibling's ENTIRE registry entry BY REFERENCE — map, combined sensors, register
+# groups, register sets and first-register alike.  The only thing that differs is
+# INVERTER_MAX_POWER_KW above.
+#
+# Deliberately an alias and not a copied dict literal: two literals drift the
+# moment one is edited and the other is forgotten, which is the exact failure
+# this project has had to undo repeatedly (see CLAUDE.md, "never hand-type a copy
+# of production code").  An alias cannot drift from itself, and it also skips a
+# redundant build_groups() pass.
+#
+# ⚠️ If a variant ever turns out NOT to be register-identical, give it its own
+# entry here — do not "fix" the shared one.
+MODEL_REGISTRY[INVERTER_MODEL_TREX_SIX] = MODEL_REGISTRY[INVERTER_MODEL_TREX_FIVE]
+MODEL_REGISTRY[INVERTER_MODEL_IVGM_FIFTEEN] = MODEL_REGISTRY[INVERTER_MODEL_IVGM_TWENTY]
 

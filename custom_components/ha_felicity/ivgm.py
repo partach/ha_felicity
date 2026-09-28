@@ -95,9 +95,9 @@ _REGISTERS_IVGM_FAMILY = {
     "bat2_power":                                  {'address': 4403, 'name': 'Bat2 Power', 'precision': 0, 'index': 3, 'unit': 'W', 'device_class': 'power', 'state_class': 'measurement'},
     "bat1_soc":                                    {'address': 4408, 'name': 'Bat1 SOC', 'precision': 1, 'index': 1, 'unit': '%', 'device_class': 'battery', 'state_class': 'measurement'},
     "bat2_soc":                                    {'address': 4411, 'name': 'Bat2 SOC', 'precision': 1, 'index': 1, 'unit': '%', 'device_class': 'battery', 'state_class': 'measurement'},
-    "boost_temperature":                           {'address': 4420, 'name': 'Boost temperature', 'precision': 0, 'index': 3, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
-    "inverter_temperature":                        {'address': 4421, 'name': 'Inverter temperature', 'precision': 0, 'index': 3, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
-    "environment_temperature":                     {'address': 4422, 'name': 'Environment temperature', 'precision': 0, 'index': 3, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
+    "boost_temperature":                           {'address': 4420, 'name': 'Boost temperature', 'precision': 1, 'index': 8, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
+    "inverter_temperature":                        {'address': 4421, 'name': 'Inverter temperature', 'precision': 1, 'index': 8, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
+    "environment_temperature":                     {'address': 4422, 'name': 'Environment temperature', 'precision': 1, 'index': 8, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
     "lead_acid_tempe":                             {'address': 4423, 'name': 'Lead Acid Tempe', 'precision': 1, 'index': 8, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
     "generator_a_current":                         {'address': 4426, 'name': 'Generator A Current', 'precision': 1, 'index': 8, 'unit': 'A', 'device_class': 'current', 'state_class': 'measurement'},
     "generator_b_current":                         {'address': 4427, 'name': 'Generator B Current', 'precision': 1, 'index': 8, 'unit': 'A', 'device_class': 'current', 'state_class': 'measurement'},
@@ -162,7 +162,7 @@ _REGISTERS_IVGM_FAMILY = {
     "pv4_total_gen_energy":                        {'address': 4507, 'name': 'PV4TotalGenEnergy', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "battery_1_total_charge":                      {'address': 4509, 'name': 'Battery 1 Total Charge', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "battery_1_total_dis_charge":                  {'address': 4511, 'name': 'Battery 1 Total DisCharge', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
-    "battery_2_total_charge_high_8_k_donot_0_1_kwh_support": {'address': 4513, 'name': 'Battery 2 Total Charge High(8K donot 0.1KWh support)', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
+    "battery_2_total_charge_high_8_k_donot_0_1_kwh_support": {'address': 4513, 'name': 'Battery 2 Total Charge High', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "battery_2_total_charge_low":                  {'address': 4514, 'name': 'Battery 2 Total Charge Low', 'precision': 1, 'index': 1, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "battery_2_total_dis_charge":                  {'address': 4515, 'name': 'Battery 2 Total DisCharge', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "grid_total_cost_energy":                      {'address': 4517, 'name': 'Grid Total Cost Energy', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
@@ -180,7 +180,7 @@ _REGISTERS_IVGM_FAMILY = {
     "pv3_day_gen_energy":                          {'address': 4539, 'name': 'PV3 Day Gen Energy', 'precision': 1, 'index': 1, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "pv3_month_gen_energy":                        {'address': 4540, 'name': 'PV3 Month Gen Energy', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "pv3_year_gen_energy":                         {'address': 4542, 'name': 'PV3 Year Gen Energy', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
-    "pv4_day_gen_energy_8_k_donot_0_1_kwh_support": {'address': 4544, 'name': 'PV4 Day Gen Energy(8K donot 0.1KWh support)', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
+    "pv4_day_gen_energy_8_k_donot_0_1_kwh_support": {'address': 4544, 'name': 'PV4 Day Gen Energy', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "pv4_month_gen_energy":                        {'address': 4545, 'name': 'PV4 Month Gen Energy', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "pv4_year_gen_energy":                         {'address': 4547, 'name': 'PV4 Year Gen Energy', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
     "pv_total_gen_energy":                         {'address': 4549, 'name': 'PV Total Gen Energy', 'precision': 1, 'index': 1, 'size': 2, 'unit': 'kWh', 'device_class': 'energy', 'state_class': 'total_increasing'},
@@ -226,7 +226,7 @@ _REGISTERS_IVGM_FAMILY = {
     "fault_flag_low":                              {'address': 4615, 'name': 'Fault Flag Low', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "alarm_flag":                                  {'address': 4616, 'name': 'Alarm Flag', 'precision': 0, 'index': 0, 'size': 2, 'state_class': 'measurement'},
     "bms_total_current":                           {'address': 4620, 'name': 'BMS Total Current', 'precision': 1, 'index': 8, 'unit': 'A', 'device_class': 'current', 'state_class': 'measurement'},
-    "bms_total_voltage":                           {'address': 4621, 'name': 'BMS Total Voltage', 'precision': 1, 'index': 1, 'unit': 'V', 'device_class': 'voltage', 'state_class': 'measurement'},
+    "bms_total_voltage":                           {'address': 4621, 'name': 'BMS Total Voltage', 'precision': 2, 'index': 2, 'unit': 'V', 'device_class': 'voltage', 'state_class': 'measurement'},
     "bms_total_soc":                               {'address': 4624, 'name': 'BMS Total SOC', 'precision': 1, 'index': 1, 'unit': '%', 'device_class': 'battery', 'state_class': 'measurement'},
     "bms_parallel_number":                         {'address': 4628, 'name': 'BMS Parallel Number', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "bms_parallel_status":                         {'address': 4629, 'name': 'BMS Parallel Status', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
@@ -235,9 +235,9 @@ _REGISTERS_IVGM_FAMILY = {
     "bms_minimum_cell_voltage_no":                 {'address': 4634, 'name': 'BMS Minimum Cell Voltage No', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "bms_minimum_cell_voltage":                    {'address': 4635, 'name': 'BMS Minimum Cell Voltage', 'precision': 0, 'index': 0, 'unit': 'mV', 'state_class': 'measurement'},
     "bms_maximum_cell_temperature_no":             {'address': 4636, 'name': 'BMS Maximum Cell temperature No', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
-    "bms_maximum_cell_temperature":                {'address': 4637, 'name': 'BMS Maximum Cell temperature', 'precision': 0, 'index': 3, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
+    "bms_maximum_cell_temperature":                {'address': 4637, 'name': 'BMS Maximum Cell temperature', 'precision': 1, 'index': 8, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
     "bms_minimum_cell_temperature_no":             {'address': 4638, 'name': 'BMS Minimum Cell temperature No', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
-    "bms_minmum_cell_temperature":                 {'address': 4639, 'name': 'BMS Minmum Cell temperature', 'precision': 0, 'index': 3, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
+    "bms_minmum_cell_temperature":                 {'address': 4639, 'name': 'BMS Minmum Cell temperature', 'precision': 1, 'index': 8, 'unit': '°C', 'device_class': 'temperature', 'state_class': 'measurement'},
     "sn1":                                         {'address': 4640, 'name': 'SN1', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "sn2":                                         {'address': 4641, 'name': 'SN2', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "sn3":                                         {'address': 4642, 'name': 'SN3', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
@@ -421,13 +421,35 @@ _REGISTERS_IVGM_FAMILY = {
 # both models automatically, and can only be absent from the 8K by being listed
 # in _IVGM_EIGHT_UNSUPPORTED above.
 
-def _as_centi_kilowatt_power(registers):
-    """Re-express the W-valued power registers as 0.01 kW, for the WHOLE family.
+#: Start of the settable-configuration block.  Everything below it is live
+#: telemetry, everything at or above it is a setting the integration may WRITE.
+#: Same convention as the TREX maps (CLAUDE.md: "every settable config register
+#: is 8xxx").  The power SCALE differs between the two blocks on this family, so
+#: this boundary is load-bearing — see _as_centi_kilowatt_power.
+_IVGM_SETTING_BLOCK_START = 8192   # 0x2000
 
-    WHY (hardware report, Sept 2026 — the first real IVGM feedback):
+
+def _as_centi_kilowatt_power(registers):
+    """Re-express the TELEMETRY power registers as 0.01 kW, for the whole family.
+
+    WHY (hardware reports, Sept 2026 — the first real IVGM feedback):
     on a 20K, `bat1_power` (0x1131) read **156** raw.  The true value was
     **1560 W**, so each count is 10 W = 0.01 kW — the register is NOT in watts,
-    even though the protocol document says "W" for it.
+    even though the protocol document says "W" for it.  A second dump, from a
+    15K, confirms it twice over from physics: `bat1_power` 80 against
+    53.6 V x 15.1 A = 809 W, and `pv1_power` 146 against 361.8 V x 4.0 A =
+    1447 W.  Both ratios land on 10.
+
+    ⚠️ **SETTING registers are exempt — they really are plain watts.**  The same
+    15K dump settles it: `grid_peak_shaving_power` reads **15000**, which is
+    exactly that unit's 15 kW nameplate (as 0.01 kW it would be 150 kW), and
+    `ECOn_Power` reads 7500 = 7.5 kW (as 0.01 kW, 75 kW on a 15 kW inverter).
+    `max_pv_input_power` 4850 = 4.85 kW tells the same story.  An earlier
+    revision converted every power-classed register and so made the 8xxx block
+    10x wrong in BOTH directions — displaying 75 kW, and writing a 5 kW charge
+    command as raw 500 where the register wants 5000, i.e. a tenth of the
+    intended charge power.  Hence the address gate: this is the same
+    telemetry-vs-setpoint asymmetry the T-REX-50 map preserves deliberately.
 
     ⚠️ **Applied to the family map, so BOTH models get it.**  This looks like
     the cross-model inference this project refuses to make (see the T-REX-25
@@ -462,7 +484,9 @@ def _as_centi_kilowatt_power(registers):
     """
     converted = {}
     for key, info in registers.items():
-        if info.get("unit") == "W" and info.get("device_class") == "power":
+        if (info.get("unit") == "W"
+                and info.get("device_class") == "power"
+                and info["address"] < _IVGM_SETTING_BLOCK_START):
             info = {**info, "unit": "kW", "index": 9, "precision": 2}
         converted[key] = info
     return converted
@@ -472,10 +496,19 @@ def _as_centi_kilowatt_power(registers):
 #: models.  The register SET still differs per model; the SCALE does not.
 _REGISTERS_IVGM_SCALED = _as_centi_kilowatt_power(_REGISTERS_IVGM_FAMILY)
 
-#: 3-phase family member (phase C + PV3/PV4 + battery 2).  The register SET is
-#: inferred from the "(8K donot support)" annotations; the power SCALING is
-#: measured on this model — see _as_centi_kilowatt_power.
-_REGISTERS_IVGM_TWENTY = _REGISTERS_IVGM_SCALED
+#: The 3-phase family members (phase C + PV3/PV4 + battery 2).  The register SET
+#: is inferred from the "(8K donot support)" annotations; the power SCALING is
+#: measured on this hardware — see _as_centi_kilowatt_power.
+#:
+#: The 15K and 20K share ONE map by reference.  Nothing in the protocol document
+#: is model-specific — the two differ only in nameplate power, which lives in
+#: const.INVERTER_MAX_POWER_KW, not here.  Giving each a hand-copied map is the
+#: duplication this module exists to avoid.  (The 15K dump that produced the
+#: scaling evidence above came from a unit configured as a 20K, which is itself
+#: a reminder that the maps are interchangeable and only the nameplate is not.)
+_REGISTERS_IVGM_THREE_PHASE = _REGISTERS_IVGM_SCALED
+_REGISTERS_IVGM_TWENTY = _REGISTERS_IVGM_THREE_PHASE
+_REGISTERS_IVGM_FIFTEEN = _REGISTERS_IVGM_THREE_PHASE
 
 #: The 8K: the documented register set, on the family's corrected power scale.
 _REGISTERS_IVGM_EIGHT = {
@@ -545,7 +578,9 @@ def _combined(registers):
     return combined
 
 
-_COMBINED_REGISTERS_IVGM_TWENTY = _combined(_REGISTERS_IVGM_TWENTY)
+_COMBINED_REGISTERS_IVGM_THREE_PHASE = _combined(_REGISTERS_IVGM_THREE_PHASE)
+_COMBINED_REGISTERS_IVGM_TWENTY = _COMBINED_REGISTERS_IVGM_THREE_PHASE
+_COMBINED_REGISTERS_IVGM_FIFTEEN = _COMBINED_REGISTERS_IVGM_THREE_PHASE
 _COMBINED_REGISTERS_IVGM_EIGHT = _combined(_REGISTERS_IVGM_EIGHT)
 
 
@@ -582,5 +617,7 @@ def _register_sets(registers):
     }
 
 
-REGISTER_SETS_IVGM_TWENTY = _register_sets(_REGISTERS_IVGM_TWENTY)
+REGISTER_SETS_IVGM_THREE_PHASE = _register_sets(_REGISTERS_IVGM_THREE_PHASE)
+REGISTER_SETS_IVGM_TWENTY = REGISTER_SETS_IVGM_THREE_PHASE
+REGISTER_SETS_IVGM_FIFTEEN = REGISTER_SETS_IVGM_THREE_PHASE
 REGISTER_SETS_IVGM_EIGHT = _register_sets(_REGISTERS_IVGM_EIGHT)
