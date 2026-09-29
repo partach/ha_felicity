@@ -1,6 +1,13 @@
 ## Changelog
 
-### [1.3.9] - Power-register scaling fixes, two new models
+### [1.3.10] - IVGM setpoint scale, sensor fixes, two new models
+
+⚠️ **IVGM owners on 1.3.9 should update.** 1.3.9 corrected the IVGM's live power
+readings but applied the same correction to its *settings* registers, which are
+genuinely in watts. On 1.3.9 an IVGM therefore showed rule power as 75 kW instead
+of 7.5 kW, and — the part that matters — wrote charge-power commands at **a tenth
+of the intended value**. Fixed here. (Only relevant if you had turned `grid_mode`
+on; it ships off.)
 
 **New models**
 - **T-REX-6KLP1G01** — electrically a T-REX-5 with a higher rating. Same
@@ -13,6 +20,34 @@
   model is still chosen at setup only — to change it, remove and re-add the
   integration.
 
+**IVGM — three more sensor fixes from the same customer report**
+- Temperatures read 10× high: ambient showed **410 °C**, inverter 349, boost 329,
+  BMS cells 210/200. Now 41.0 / 34.9 / 32.9 / 21.0 / 20.0 °C.
+- BMS Total Voltage showed **536.0 V** on a 48 V pack; now 53.60 V.
+- Two sensors carried the protocol document's "(8K donot 0.1KWh support)" note in
+  their displayed name. Names cleaned up; entity IDs unchanged.
+
+**IVGM — the dashboard cards now work.** The IVGM registers are named from its own
+protocol document, but the energy-flow card finds sensors by name. On an IVGM it
+showed nothing for grid, load and generator power and no battery SOC — and, worse,
+it picked plausible-looking wrong entities for battery voltage (a 54 V SmartLoad
+*setpoint*) and battery current (a charge *limit* reading 0.0 A). The IVGM maps
+now publish the same aggregate sensors every other model has, and both cards
+resolve ambiguous names deterministically. The EMS card was never affected — it
+reads only EMS-computed entities.
+
+**Confirmed on IVGM hardware for the first time** (previously assumed from the
+T-REX-25/50): the economic-rule time encoding and the weekday mask. A 15K's six
+rule windows decode to a clean 00:00→08:00→12:00→14:00→18:00→21:00→00:00 day.
+Selling is still unproven on the IVGM — see `docs/IVGM_SUPPORT_GAPS.md`.
+
+**Internal**
+- Telemetry and setpoint power units are now separate per-model declarations,
+  because on the IVGM they genuinely differ. One list could not serve both.
+- CI runs the test suite (550 tests) and the EMS scenario simulator, not just
+  the linter.
+
+### [1.3.9] - Power-register scaling fixes
 
 ⚠️ **T-REX-50 owners — read this.** Every telemetry power register was scaled
 ÷10 where the inverter actually uses ÷100, so all power readings were **10×
@@ -34,45 +69,17 @@ and its scaling is proven in the field, so it legitimately differs from the 50.
 
 **IVGM — live power readings were 10× too low.** The telemetry power registers
 are 0.01 kW per count, not the watts the protocol document claims. Measured on a
-20K (raw 156 = 1560 W) and confirmed twice on a 15K from physics (battery power
-80 against 53.6 V × 15.1 A; PV1 146 against 361.8 V × 4.0 A). All IVGM models
-now use that scale — they are generated from the same document and no 8K has
+20K (raw 156 = 1560 W) and later confirmed twice on a 15K from physics. All IVGM
+models use that scale — they are generated from the same document and no 8K has
 been field-tested, so the measurement says the document's unit column is wrong
 rather than that one model is special.
 
-The *settings* (rule power, peak-shaving power, max PV input) are genuinely in
-watts and are unchanged — a 15K's factory defaults confirm it, its peak-shaving
-power reading exactly its 15 kW nameplate.
-
-**IVGM — the dashboard cards now work**
-The IVGM registers are named from its own protocol document, but the energy-flow
-card finds sensors by name. On an IVGM it showed nothing for grid, load and
-generator power and no battery SOC — and, worse, it picked plausible-looking
-wrong entities for battery voltage (a 54 V SmartLoad *setpoint*) and battery
-current (a charge *limit* reading 0.0 A). The IVGM maps now publish the same
-aggregate sensors every other model has, and both cards resolve ambiguous names
-deterministically. The EMS card was never affected — it reads only EMS-computed
-entities.
-
-**IVGM — three more fixes from the same report**
-- Temperatures read 10× high: ambient showed **410 °C**, inverter 349, boost 329,
-  BMS cells 210/200. Now 41.0 / 34.9 / 32.9 / 21.0 / 20.0 °C.
-- BMS Total Voltage showed **536.0 V** on a 48 V pack; now 53.60 V.
-- Two sensors carried the protocol document's "(8K donot 0.1KWh support)" note in
-  their displayed name. Names cleaned up; entity IDs unchanged.
-
-**Confirmed on IVGM hardware for the first time** (previously assumed from the
-T-REX-25/50): the economic-rule time encoding and the weekday mask. A 15K's six
-rule windows decode to a clean 00:00→08:00→12:00→14:00→18:00→21:00→00:00 day.
-Selling is still unproven on the IVGM — see `docs/IVGM_SUPPORT_GAPS.md`.
+*(This release also applied that correction to the IVGM's settings registers,
+which was wrong — see 1.3.10.)*
 
 **Internal**
 - Every model declares its power unit explicitly instead of being absent from a
-  list, so adding a model can no longer pick one up by accident — and telemetry
-  and setpoint units are now separate declarations, because on the IVGM they
-  differ.
-- CI runs the test suite (550 tests) and the EMS scenario simulator, not just
-  the linter.
+  list, so adding a model can no longer pick one up by accident.
 
 ### [1.3.8] - Provisional IVGM family support
 
