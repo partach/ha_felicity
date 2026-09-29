@@ -235,6 +235,16 @@ either wrong scales every power the EMS sees — or every setpoint it writes —
 10× or 1000×; conflating the two turned a 5 kW charge command into a 0.5 kW one.
 See CLAUDE.md, "Power-register scaling", and `tests/test_power_scaling.py`.
 
+**The cards resolve sensors by display NAME, not by map key** — `ha_felicity.js`
+matches the end of an entity_id, which HA derives from the name. A new model must
+therefore expose entities *named* for the card's keys (`total_pv_power`,
+`battery_capacity`, `total_ac_input_power`, …); its registers keep their own
+documented names and the **combined/aggregate layer** carries the shared ones.
+Where several entities share a suffix the cards take the shortest match. None of
+this affects the EMS itself — the EMS card reads only EMS-computed entities and
+is model-agnostic — but a mismatch makes the energy-flow card silently show 0 W
+or, worse, a same-suffixed setpoint. Pinned by `tests/test_card_contract.py`.
+
 **Rating-only variants** (T-REX-6K, IVGM-15K) share their sibling's register map
 by reference and differ only in `INVERTER_MAX_POWER_KW`. That number is not
 cosmetic to the EMS: it caps the per-slot grid-charge energy

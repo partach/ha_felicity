@@ -943,9 +943,19 @@ class FelicityInverterCard extends LitElement {
 
     if (!this._deviceEntities?.length) return null;
 
-    return this._deviceEntities.find(eid =>
-      eid.endsWith(`_${key}`)
-    );
+    // Several entities can end with the same suffix, so "first match wins" is
+    // not good enough -- it depends on whatever order HA happens to list them
+    // in. On an IVGM, `battery_voltage` also matches "SmartLoad Open Battery
+    // Voltage" (a 54 V setpoint) and `battery_current` matches "Grid Charge
+    // Battery Current" (a limit that reads 0.0 A), so the card could show a
+    // configuration value where the live measurement belongs -- plausible
+    // enough that nobody would question it.
+    //
+    // The shortest match is the one with the least extra wording in front of
+    // the suffix, i.e. the entity actually named for this quantity.
+    const matches = this._deviceEntities.filter(eid => eid.endsWith(`_${key}`));
+    if (!matches.length) return null;
+    return matches.reduce((best, eid) => (eid.length < best.length ? eid : best));
   }
 
   _getValue(key) {

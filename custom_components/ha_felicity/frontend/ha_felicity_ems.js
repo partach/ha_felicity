@@ -169,9 +169,15 @@ class FelicityEMSCard extends LitElement {
 
   _getEntityId(key) {
     if (!this._deviceEntities?.length) return null;
-    // Exact suffix match (most common)
-    const exact = this._deviceEntities.find((eid) => eid.endsWith(`_${key}`));
-    if (exact) return exact;
+    // Exact suffix match (most common).  Where several entities share the
+    // suffix, take the shortest: it is the one with the least extra wording in
+    // front of it, i.e. the entity actually named for this quantity rather than
+    // a setpoint that merely ends the same way.  See ha_felicity.js for the
+    // IVGM case that made this necessary.
+    const matches = this._deviceEntities.filter((eid) => eid.endsWith(`_${key}`));
+    if (matches.length) {
+      return matches.reduce((best, eid) => (eid.length < best.length ? eid : best));
+    }
     // Fallback: key parts appear in order in entity ID (handles name-based IDs
     // where extra words like "inquiry" are inserted, e.g. key "pv_generated_energy_day"
     // matches "sensor.xxx_pv_generated_energy_inquiry_day")
