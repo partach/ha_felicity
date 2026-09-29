@@ -44,6 +44,16 @@ The *settings* (rule power, peak-shaving power, max PV input) are genuinely in
 watts and are unchanged — a 15K's factory defaults confirm it, its peak-shaving
 power reading exactly its 15 kW nameplate.
 
+**IVGM — the dashboard cards now work**
+The IVGM registers are named from its own protocol document, but the energy-flow
+card finds sensors by name. On an IVGM it showed nothing for grid, load and
+generator power and no battery SOC — and, worse, it picked plausible-looking
+wrong entities for battery voltage (a 54 V SmartLoad *setpoint*) and battery
+current (a charge *limit* reading 0.0 A). The IVGM maps now publish the same
+aggregate sensors every other model has, and both cards resolve ambiguous names
+deterministically. The EMS card was never affected — it reads only EMS-computed
+entities.
+
 **IVGM — three more fixes from the same report**
 - Temperatures read 10× high: ambient showed **410 °C**, inverter 349, boost 329,
   BMS cells 210/200. Now 41.0 / 34.9 / 32.9 / 21.0 / 20.0 °C.
@@ -61,7 +71,7 @@ Selling is still unproven on the IVGM — see `docs/IVGM_SUPPORT_GAPS.md`.
   list, so adding a model can no longer pick one up by accident — and telemetry
   and setpoint units are now separate declarations, because on the IVGM they
   differ.
-- CI runs the test suite (380 tests) and the EMS scenario simulator, not just
+- CI runs the test suite (550 tests) and the EMS scenario simulator, not just
   the linter.
 
 ### [1.3.8] - Provisional IVGM family support

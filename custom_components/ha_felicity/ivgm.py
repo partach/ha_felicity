@@ -522,15 +522,55 @@ def _combined(registers):
 
     Only aggregates over registers the model actually has, so the 8K does not
     advertise a phase-C or battery-2 total it can never populate.
+
+    ⚠️ These names are a CONTRACT WITH THE CARDS.  `ha_felicity.js` resolves a
+    sensor by matching the end of its entity_id — which HA derives from the
+    display NAME — so `total_ac_input_power` here is what makes the card's grid
+    tile find anything at all.  The IVGM's own register names come from its
+    protocol document and deliberately differ (`Grid Total Power`,
+    `Load APhase Power`, `Bat1 SOC`), so without these aggregates the card
+    silently shows 0 W for grid, load and generator and no battery SOC.  The
+    aggregate layer is the right place to reconcile that: it keeps the register
+    names document-faithful (the provenance test requires it) while presenting
+    the same entity surface every other model has.
+
+    Mirrors the T-REX-25/50 aggregate set, computed from the IVGM's own keys.
+    `tests/test_card_contract.py` fails if the two drift apart.
     """
     have = registers.__contains__
 
-    def _sum(*keys):
+    def _sum_w(*keys):
+        """Sum power sources and report WATTS, whatever unit the sources use.
+
+        The per-source factor is read from the map instead of assumed.  This
+        helper used to be a plain sum labelled "W", which was correct while the
+        IVGM telemetry was raw watts and became silently wrong — 1000x low AND
+        mislabelled — the moment the measured 0.01 kW scale was applied.  The
+        T-REX maps do the same x1000 in their own `calc`; deriving the factor
+        here means the two cannot disagree again.
+        """
         present = [k for k in keys if have(k)]
+        factors = [1000.0 if registers[k].get("unit") == "kW" else 1.0
+                   for k in present]
         return {
             "sources": present,
-            "calc": lambda *vals: round(sum(v for v in vals if v is not None), 2),
+            "calc": lambda *vals: round(
+                sum((v or 0.0) * f for v, f in zip(vals, factors))),
         }
+
+    def _mean_positive(*keys):
+        """Average the sources that are actually reporting (> 0).
+
+        Same semantics as the T-REX maps: a second battery that is absent reads
+        0 and must not halve the pack's voltage or SOC.
+        """
+        present = [k for k in keys if have(k)]
+
+        def calc(*vals):
+            live = [v for v in vals if v is not None and v > 0]
+            return round(sum(live) / len(live), 1) if live else None
+
+        return {"sources": present, "calc": calc}
 
     combined = {
         "inverter_time": {
@@ -549,16 +589,69 @@ def _combined(registers):
             "name": "Inverter Time",
         },
     }
-    combined["total_pv_power"] = dict(
-        _sum("pv1_power", "pv2_power", "pv3_power", "pv4_power"),
-        name="Total PV Power", unit="W", device_class="power",
-        state_class="measurement", precision=0,
+    def _power(name, *keys):
+        return dict(_sum_w(*keys), name=name, unit="W", device_class="power",
+                    state_class="measurement", precision=0)
+
+    combined["total_pv_power"] = _power(
+        "Total PV Power", "pv1_power", "pv2_power", "pv3_power", "pv4_power")
+    combined["battery_power"] = _power(
+        "Battery Power", "bat1_power", "bat2_power")
+    # The grid/load/generator totals the cards look for.  The IVGM names these
+    # registers differently from the T-REX maps, so the aggregate carries the
+    # shared name and the per-phase registers keep their documented ones.
+    combined["total_ac_input_power"] = _power(
+        "Total AC Input Power",
+        "phase_a_ct_active_power", "phase_b_ct_active_power", "phase_c_ct_active_power")
+    combined["total_ac_output_active_power"] = _power(
+        "Total AC Output Active Power",
+        "load_aphase_power", "load_bphase_power", "load_cphase_p")
+    combined["total_generator_active_power"] = _power(
+        "Total Generator Active Power",
+        "generator_a_phase_power", "generator_b_phase_power", "gen_cphase_p")
+    combined["total_grid_active_power"] = _power(
+        "Total Grid Active Power",
+        "grid_a_phase_power", "grid_b_phase_power", "grid_cphase_p")
+
+    # Line-side load = what the CT clamps see minus what the grid port carries.
+    # Same definition (and legacy name) as the T-REX maps.
+    if have("total_grid_power"):
+        ct = [k for k in ("phase_a_ct_active_power", "phase_b_ct_active_power",
+                          "phase_c_ct_active_power") if have(k)]
+        _f = [1000.0 if registers[k].get("unit") == "kW" else 1.0
+              for k in (*ct, "total_grid_power")]
+        combined["loadpower_lineside"] = {
+            "sources": [*ct, "total_grid_power"],
+            "calc": lambda *v: round(
+                sum((x or 0.0) * f for x, f in zip(v[:-1], _f[:-1]))
+                - (v[-1] or 0.0) * _f[-1]),
+            "unit": "W", "device_class": "power",
+            "state_class": "measurement", "name": "loadpower_lineside",
+            "precision": 0,
+        }
+
+    combined["battery_voltage"] = dict(
+        _mean_positive("bat1_voltage", "bat2_voltage"),
+        name="Battery Voltage", unit="V", device_class="voltage",
+        state_class="measurement", precision=1,
     )
-    combined["battery_power"] = dict(
-        _sum("bat1_power", "bat2_power"),
-        name="Battery Power", unit="W", device_class="power",
-        state_class="measurement", precision=0,
+    combined["battery_current"] = dict(
+        _mean_positive("bat1_current", "bat2_current"),
+        name="Battery Current", unit="A", device_class="current",
+        state_class="measurement", precision=1,
     )
+    combined["battery_capacity"] = dict(
+        _mean_positive("bat1_soc", "bat2_soc"),
+        name="Battery Capacity", unit="%", device_class="battery",
+        state_class="measurement", precision=1,
+    )
+    if have("battery_low_alarm_soc"):
+        combined["battery_discharge_depth_on_grid_bms"] = {
+            "sources": ["battery_low_alarm_soc"],
+            "calc": lambda s: round(s) if s is not None else None,
+            "unit": "%", "device_class": "battery", "state_class": "measurement",
+            "name": "battery_discharge_depth_on_grid_bms", "precision": 1,
+        }
     # Economic rule summaries, mirroring the TREX maps so the EMS card renders
     # the same "rule N" rows on every model.
     for rule in range(1, 7):

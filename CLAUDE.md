@@ -74,7 +74,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **380**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **550**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -559,6 +559,59 @@ equal-but-separate copies fail.  The rating matters on its own: it caps the EMS'
 grid-charge planning and the Power Level slider, so a 15K configured as a 20K gets
 plans assuming 5 kW it does not have.  **If a variant ever proves not to be
 register-identical, give it its own entry — do not edit the shared one.**
+
+### ⚠️ The cards' contract with the register maps (Sept 2026)
+
+**The cards couple to the maps through a string neither file mentions.**
+`ha_felicity.js` resolves a sensor by matching the END OF ITS ENTITY_ID, and HA
+derives the entity_id from the **display NAME**.  So the card's `total_pv_power`
+finds whichever entity is *named* "Total PV Power" — the map's dict key is
+irrelevant (the T-REX-10 keys it `pv_total_power` and it resolves fine).  Nothing
+fails when the two stop agreeing: the tile renders 0 W, forever, silently.
+
+Adding the IVGM family demonstrated the whole failure class at once.  Its
+registers are named from its own protocol document ("Grid Total Power", "Load
+APhase Power", "Bat1 SOC"), every existing test passed, and on real hardware the
+energy-flow card showed:
+
+| Card tile | What actually happened |
+|---|---|
+| grid / load / generator power | nothing resolved → 0 W |
+| battery SOC (and the icon) | nothing resolved → blank |
+| battery voltage | **"SmartLoad Open Battery Voltage"** — a 54 V *setpoint* |
+| battery current | **"Grid Charge Battery Current"** — a limit reading 0.0 A |
+| PV / battery power | 1000× low (see below) |
+
+The wrong-entity cases are the dangerous ones: 54.0 V on a 48 V pack looks
+entirely believable, so nobody reports it.
+
+**Three rules came out of it:**
+
+1. **A new model must expose entities NAMED for the card's keys.**  Its registers
+   keep their own documented names (the provenance test requires that); the
+   **combined/aggregate layer** carries the shared names.  `ivgm._combined` now
+   mirrors the T-REX-25/50 aggregate set, built from the IVGM's own keys.
+2. **A combined power sensor must CONVERT its sources, not just add them.**  The
+   IVGM aggregates were a plain sum labelled `"W"` — correct while its telemetry
+   was raw watts, silently wrong the moment the measured 0.01 kW scale landed
+   (reporting 1.46 where the truth was 1460, still labelled W).  The T-REX maps
+   had always done the ×1000 inside their own `calc`, so nothing compared the
+   two.  `_sum_w` now reads each source's unit from the map and derives the
+   factor, so the two cannot disagree again.
+3. **Entity resolution prefers the SHORTEST suffix match.**  Several entities can
+   end with `_battery_voltage`; `.find()` returned whichever HA listed first.
+   The shortest match has the least extra wording in front, i.e. the entity
+   actually named for the quantity.  Applied in both cards.
+
+`tests/test_card_contract.py` pins all three (**170 tests**) — it fails on
+`main`-before-the-fix with 49 failures, all IVGM.  ⚠️ **The EMS card is
+deliberately model-agnostic**: it reads only EMS-computed entities
+(`schedule_status`, `energy_state`, prices, the config numbers/selects), which is
+why a new inverter family cannot break it.  `test_ems_card_uses_no_raw_register_sensors`
+keeps it that way.
+
+*(Known dead code, harmless: the inverter card's `pv_total_power` fallback
+matches no entity on any model — `total_pv_power` always resolves first.)*
 
 ### IVGM family (PROVISIONAL — Sept 2026)
 
@@ -2348,7 +2401,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**380 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**550 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2409,6 +2462,11 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
   they differ only in `INVERTER_MAX_POWER_KW`, and share every model group)
 - Setpoint power unit declared for every model (a model missing from
   `SETPOINT_POWER_UNIT_BY_MODEL` would silently under-command charge power)
+- Card contract (`test_card_contract.py`): every model exposes an entity NAMED
+  for each key the energy-flow card resolves, of the right device_class AND unit;
+  the shortest-match rule picks the intended entity (not a same-suffixed
+  setpoint); combined power sensors report the unit they declare; both cards
+  still disambiguate by shortest match; the EMS card reads no register sensors
 
 ### Test harness: never hand-type a copy of production code
 
