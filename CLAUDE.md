@@ -38,6 +38,17 @@ that encodes the intended outcome, run `python tools/ems_simulator.py`, and
 confirm it's green before claiming a fix works.  Reproduce customer reports as
 scenarios so they become permanent, readable regression tests.
 
+⚠️ **The harness only sees what it extracts.**  Until Sept 2026 the simulator
+collected `charge_slots` / `sell_slots` / `soc_trajectory` and nothing else, and
+**no scenario configured a flexible load** — so the whole flex-load overlay was
+invisible.  Two runs differing only in whether a 3.7 kW EV charger ran produced
+byte-identical result dicts and byte-identical charts.  A real customer bug lived
+there unseen (see "Flexible loads are invisible to the battery plan").  It now
+extracts `load_slots` / `tomorrow_load_slots` and draws them (cyan strip = load
+on; dashed cyan line = consumption + that load, against the yellow PV fill).
+**When you add a feature, ask what the chart would have to show for its bugs to
+be visible — and extract that too.**
+
 ### Engine default = GREEDY (decision, June 2026)
 
 `scheduler_engine` defaults to **greedy** (multi-month track record, no solver
@@ -1940,6 +1951,56 @@ Economic-mode self-heal deliberately re-asserts Economic there, so manual
 changes to 8451 revert BY DESIGN until the EMS is turned off.  After updating,
 the old `select.*_working_mode` entity shows as orphaned ("no longer
 provided") and can be removed; the new `sensor.*_working_mode` replaces it.
+
+### 10. Flexible loads are invisible to the battery plan — OPEN (Sept 2026)
+
+Customer card: sunny day, 72 kWh pack at **83%**, reserve met, `0 charge /
+0.0 kWh planned / "Battery reserve is met — no charging needed"` — yet a 3.7 kW
+EV charger was running at **16:00 on the evening ramp (0.295 €/kWh)**, and the
+owner asked why the EMS buys grid power only once the cheap window has passed.
+
+Reproduced as `self_suff_ev_sunny_reserve_met`.  **Not yet fixed** — the
+scenario and the chart were added first so any fix can be seen.  Four distinct
+problems, all in the flex-load overlay:
+
+1. **The PV-surplus test ignores the load's own power.**  `ems.py` (~2459):
+   `if pv_hr > cons_per_hour: pv_surplus_set.add(slot)`.  It asks only whether
+   the forecast hour beats the household average — never whether it beats the
+   3.7 kW about to be switched on.  On the customer's hour 16: PV 2.08 kWh/h,
+   house 2.13 kWh/h → **zero** real surplus, and the charger was switched on
+   anyway.  The scenario prints the gap: *3.7 kWh of its draw NOT covered by sun
+   (~1.09 at those prices)*.
+2. **It compares against the FLAT daily average**, `config.consumption_est_kwh /
+   24.0`, even when `consumption_hourly_kwh` exists — which the reserve and the
+   trajectory both use.  So on a daytime-heavy house it sees surplus during the
+   exact hours the house is busiest.
+3. **It uses the RAW forecast**, not the confidence-scaled PV that
+   `calculate_net_pv_surplus` uses, so a cloudy day overstates the surplus too.
+4. **When the battery buys nothing, the load goes price-blind.**
+   `flex_buy_threshold = max(charge_prices) if charge_prices else None`
+   (ems.py ~2468) and `is_cheap = price_threshold is not None and …` (~1319).
+   With zero charge slots the threshold is `None`, so `is_cheap` is False for
+   **every** slot and the entire "cheap slot" half of the `smart` strategy is
+   dead — the load can only ever run on the (broken) PV-surplus test.  Verified
+   the converse: on a dark day where the battery *does* buy, the charger
+   correctly follows it into the 0.05 €/kWh trough.  This only bites on a sunny
+   day with a comfortable battery.
+
+**And the plan doesn't know the load exists.**  The overlay is additive by
+design ("loads don't affect the battery schedule"), so `soc_trajectory` is
+byte-identical with and without a 3.7 kW charger.  The "reserve is met" verdict
+— and the SOC line on the card — therefore omit the house's largest load.  Each
+hour the charger runs costs ~3.3 kWh more than the plan assumed (4.6 pp of a
+72 kWh pack); after four hours the battery lands ~18 pp below the plotted line.
+The consumption-deviation correction (C7) then notices after 30 min and books
+the shortfall from *the cheapest slots still available* — which after 16:00 are
+the evening peak.  That is the customer's complaint, end to end.
+
+⚠️ `test_load_scheduled_during_pv_surplus` passes throughout, because it uses a
+**rectangular** 5.0 kWh/h PV plateau against a 2.0 kW boiler — surplus 4.6 kW vs
+a 2 kW load, so the load always fits.  It pins *that* surplus scheduling happens,
+never whether the load fits inside the surplus.  Use a real `pv_bell` shoulder
+when testing this.
 
 ---
 
