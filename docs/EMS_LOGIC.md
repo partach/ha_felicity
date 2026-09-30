@@ -816,6 +816,26 @@ Up to 3 controllable loads (EV charger, boiler, pool pump) can be managed by the
 - **PV surplus slots** (hourly solar > hourly consumption)
 - **Battery charge slots** (already identified as cheap)
 
+⚠️ **Two of those four gates do not behave as this description implies** (open,
+Sept 2026 — see CLAUDE.md §10 "Flexible loads are invisible to the battery plan",
+reproduced by the `self_suff_ev_sunny_reserve_met` scenario):
+
+- **"PV surplus" is `pv_hour > consumption_est/24`** — the forecast hour against
+  the household **flat daily average**. It does not consider the load's own
+  power, does not use the hourly consumption profile even when one exists, and
+  does not apply the PV confidence factor. A 3.7 kW charger is therefore
+  switched on for a surplus of a few hundred watts, and the rest is imported.
+- **"Price below threshold" is dead whenever the battery buys nothing.** The
+  threshold handed to the overlay is the max price among the battery's *charge*
+  slots, or `None` when there are none — and `None` makes every slot "not
+  cheap". On a sunny day with a comfortable battery the load cannot prefer the
+  cheap window at all; only the PV-surplus gate remains.
+
+**Loads are additive and never enter the battery plan.** `soc_trajectory` is
+identical with and without a running load, so "reserve is met / no charging
+needed" — and the SOC line the card draws — are computed as if the largest
+controllable load in the house does not exist.
+
 ### Actuation
 
 `_actuate_flex_loads()` runs every 10-second cycle. For each load, it compares `should_be_on` (load scheduled for current slot?) with the current state and calls `switch.turn_on` / `switch.turn_off` via HA services.

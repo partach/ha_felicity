@@ -136,6 +136,76 @@ def heavy_flat_profile(total=40.0):
     return {h: round(total / 24.0, 3) for h in range(24)}
 
 
+def _ems_module():
+    """The real ems module, whether or not the simulator already loaded it.
+
+    ems_simulator registers it in sys.modules as "ems" before importing this
+    file, but loading it here too keeps scenarios.py importable on its own.
+    """
+    import sys
+    if "ems" in sys.modules:
+        return sys.modules["ems"]
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "custom_components", "ha_felicity", "ems.py")
+    spec = importlib.util.spec_from_file_location("ems", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["ems"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def ev_charger(kw=3.7, amps=16, phases=1, volts=230, name="EV charger"):
+    """A controllable EV charger for the flexible-load overlay.
+
+    `current_entity` is what makes it an EV charger (ems.is_ev_charger is
+    bool(current_entity)); the amp steps only add variable-current control.
+    """
+    return _ems_module().FlexibleLoadConfig(
+        enabled=True, name=name, switch_entity=f"switch.{name.lower().replace(' ', '_')}",
+        rated_power_kw=kw, priority=3,
+        current_entity=f"number.{name.lower().replace(' ', '_')}_current",
+        current_steps=[6, 10, 13, amps], phases=phases, voltage=volts,
+        default_current=amps,
+    )
+
+
+#: Day-ahead curve traced off the customer card that prompted
+#: `self_suff_ev_sunny_reserve_met`: a deep solar-glut trough around 13:00 and a
+#: steep evening ramp to 0.46.  Slot 16 is 0.295 — the slot the card was sitting
+#: in when the charger was found running.
+def card_duck_curve():
+    return [0.26, 0.25, 0.24, 0.23, 0.24, 0.26, 0.29, 0.30,
+            0.27, 0.22, 0.17, 0.12, 0.08, 0.06, 0.09, 0.16,
+            0.295, 0.37, 0.43, 0.46, 0.42, 0.36, 0.31, 0.27]
+
+
+def _uncovered_kwh(result, scenario):
+    """kWh of a flexible load's draw that the sun does NOT cover, in its own slots.
+
+    ems.py decides a slot has "PV surplus" with `pv_hour > consumption_est/24`.
+    That asks only whether the forecast hour beats the HOUSEHOLD FLAT AVERAGE —
+    never whether it beats the load about to be switched on, and it ignores the
+    hourly consumption profile even when one is supplied.  This function is what
+    that gap costs, in kWh, and it is what the scenario prints on every run.
+    """
+    loads = scenario["config"].get("flexible_loads") or []
+    st, cfg = scenario["state"], scenario["config"]
+    pv = st.get("pv_hourly_kwh") or {}
+    profile = st.get("consumption_hourly_kwh") or {}
+    flat = (cfg.get("consumption_est_kwh") or 0.0) / 24.0
+    total = 0.0
+    for idx, slots in (result.get("load_slots") or {}).items():
+        if idx >= len(loads):
+            continue
+        kw = loads[idx].rated_power_kw or 0.0
+        for slot in slots:
+            surplus = max(0.0, pv.get(slot, 0.0) - profile.get(slot, flat))
+            total += max(0.0, kw - surplus)
+    return total
+
+
 # ── scenarios ────────────────────────────────────────────────────────────────
 
 SCENARIOS = [
@@ -764,6 +834,45 @@ SCENARIOS = [
             f"prices={r['charge_prices']})"),
         ),
     },
+
+    {
+        "name": "self_suff_ev_sunny_reserve_met",
+        "desc": "CUSTOMER CASE: sunny day, 72 kWh pack at 83%, reserve MET so the battery "
+                "buys nothing - yet the 3.7 kW EV charger is switched on at 16:00 on the "
+                "evening ramp (0.295/kWh). Watch the cyan strip and the dashed '+ flex "
+                "load' line: it sits far above the yellow PV fill, so the 'solar charging' "
+                "is mostly grid import at the second-dearest price of the day.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=72.2, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=38.5,
+                       flexible_loads=[ev_charger(kw=3.7, amps=16)],
+                       ev_charge_strategy="smart"),
+        "state": dict(battery_soc_pct=83.0,
+                      slot_prices_today=card_duck_curve(),
+                      pv_hourly_kwh=pv_bell(25.0),
+                      consumption_hourly_kwh=low_night_daytime_profile(38.5),
+                      pv_actual_today_kwh=18.9, pv_forecast_today=25.0,
+                      pv_forecast_remaining=4.3, pv_forecast_tomorrow=14.9,
+                      current_hour=16, current_minute=0),
+        # The BATTERY half is correct and must stay correct: at 83% with the
+        # reserve met there is nothing worth buying, and every remaining slot is
+        # dearer than the trough that has already passed.  Asserting THAT (rather
+        # than the load behaviour) keeps this scenario honest - it must never go
+        # green BECAUSE the flex-load overlay is wrong, which is the trap
+        # test_ivgm_power_registers_are_internally_consistent fell into.
+        # The message prints how much of the charger's draw the sun does not
+        # cover, so every run reports the number while the build stays green.
+        "expect": lambda r, s: (
+            len(r["charge_slots"]) == 0,
+            "battery correctly buys nothing (reserve met); EV charger scheduled at "
+            f"{sorted(r['load_slots'].get(0, {})) or 'no slots'}"
+            + (f" - {_uncovered_kwh(r, s):.1f} kWh of its draw NOT covered by sun"
+               if r["load_slots"] else ""),
+        ),
+    },
+
 ]
 
 

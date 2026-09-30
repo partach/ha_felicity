@@ -69,7 +69,7 @@ from scenarios import SCENARIOS
 def _result_dict(engine, prices, sched, traj, cur_slot, *,
                  planned_kwh=0.0, reserve_pct=0.0, overnight_need=0.0,
                  status=None, reason=None, threshold=None, tomorrow_sched=None,
-                 tomorrow_traj=None):
+                 tomorrow_traj=None, load_slots=None, tomorrow_load_slots=None):
     charge = sorted(i for i, a in (sched or {}).items() if a == "charge")
     sell = sorted(i for i, a in (sched or {}).items() if a == "discharge")
     tmr_charge = sorted(i for i, a in (tomorrow_sched or {}).items() if a == "charge")
@@ -92,6 +92,14 @@ def _result_dict(engine, prices, sched, traj, cur_slot, *,
         "tomorrow_trajectory": tomorrow_traj or [],
         "tomorrow_charge_slots": tmr_charge,
         "tomorrow_sell_slots": tmr_sell,
+        # Flexible loads are an OVERLAY: ems.py schedules them after both
+        # engines and they never alter scheduled_slots or the SOC trajectory.
+        # They were therefore invisible here — two results that differ only in
+        # whether a 3.7 kW EV charger runs produced byte-identical dicts, so no
+        # chart could ever show it.  {load_index: {slot: True}}.
+        "load_slots": {int(k): dict(v) for k, v in (load_slots or {}).items()},
+        "tomorrow_load_slots": {int(k): dict(v)
+                                for k, v in (tomorrow_load_slots or {}).items()},
     }
 
 
@@ -114,6 +122,8 @@ def run_one(scenario: dict, engine: str) -> dict:
         reason=result.schedule_reason, threshold=result.price_threshold,
         tomorrow_sched=result.tomorrow_scheduled_slots,
         tomorrow_traj=result.tomorrow_soc_trajectory,
+        load_slots=result.load_slots,
+        tomorrow_load_slots=result.tomorrow_load_slots,
     )
 
 
@@ -239,6 +249,30 @@ def report_one(scenario: dict, results: dict) -> bool:
               f"overnight_need={r['overnight_need_kwh']}kWh projected_low={r['projected_low_pct']}% "
               f"engine_used={r['engine']}")
         print(f"           reason: {r['reason']}")
+        if r.get("load_slots"):
+            loads = cfg.get("flexible_loads") or []
+            pv_slot = effective_pv_per_slot(st, n0)
+            cons_slot = effective_consumption_per_slot(cfg, st, n0)
+            for idx, slots in sorted(r["load_slots"].items()):
+                nm = getattr(loads[idx], "name", None) or f"load_{idx + 1}" \
+                    if idx < len(loads) else f"load_{idx + 1}"
+                kw = getattr(loads[idx], "rated_power_kw", 0.0) if idx < len(loads) else 0.0
+                # How much of the load's own draw the sun actually covers in the
+                # slots it was switched on for.  The PV-surplus test only asks
+                # whether PV beats the HOUSEHOLD average, never whether it beats
+                # the load — so this is where a "solar" run turns into an import.
+                imported = sum(
+                    max(0.0, kw - max(0.0, pv_slot[s] - cons_slot[s]))
+                    for s in slots if s < n0
+                )
+                cost = sum(
+                    max(0.0, kw - max(0.0, pv_slot[s] - cons_slot[s])) * prices[s]
+                    for s in slots if s < n0 and s < len(prices) and prices[s] is not None
+                )
+                print(f"           load '{nm}' ({kw}kW) on "
+                      f"{_fmt_slots(sorted(slots), prices)}")
+                print(f"                -> {imported:.1f}kWh NOT covered by sun "
+                      f"(~{cost:.2f} at those prices)")
 
     ok = True
     expect = scenario.get("expect")
@@ -276,6 +310,29 @@ def effective_pv_per_slot(state_kwargs: dict, n: int, tomorrow: bool = False):
         hour = int((i * mps) / 60) % 24
         val = hourly.get(hour, hourly.get(str(hour), 0.0)) if hourly else 0.0
         out.append(val * (mps / 60.0))
+    return out
+
+
+def flex_load_power_per_slot(config_kwargs: dict, load_slots: dict, n: int):
+    """Per-slot kWh drawn by the scheduled flexible loads.
+
+    The battery plan and the SOC trajectory are computed as if these loads did
+    not exist (the documented "overlay" design), so plotting them on the same
+    kWh/h axis as PV and household consumption is the only way to see whether a
+    load the EMS called "solar charging" is actually covered by the sun.
+    """
+    loads = config_kwargs.get("flexible_loads") or []
+    if n == 0 or not loads or not load_slots:
+        return [0.0] * n
+    mps = (24 * 60) / n
+    out = [0.0] * n
+    for idx, slots in load_slots.items():
+        if idx >= len(loads):
+            continue
+        kw = getattr(loads[idx], "rated_power_kw", 0.0) or 0.0
+        for slot in slots:
+            if 0 <= slot < n:
+                out[slot] += kw * (mps / 60.0)
     return out
 
 
@@ -362,9 +419,30 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
         ax.set_title(f"{scenario['name']} — {engine}{span} (charge=green sell=orange)  "
                      f"reason: {r['reason']}", fontsize=8)
 
+        # Flexible loads: the cyan strip the EMS card draws, plus the load's
+        # actual draw stacked on the kWh/h axis.  The strip says WHEN the EMS
+        # switched a load on; the stacked line says whether the sun was ever
+        # going to cover it.  Without the second one a load scheduled into a
+        # 0.4 kW "PV surplus" at 3.7 kW looks like solar charging.
+        flex = flex_load_power_per_slot(scenario["config"], r.get("load_slots"), n)
+        if has_tmr:
+            flex = flex + flex_load_power_per_slot(
+                scenario["config"], r.get("tomorrow_load_slots"), n_tmr)
+        else:
+            flex = flex + [0.0] * (total - len(flex))
+        if any(v > 0.001 for v in flex):
+            lo, hi = ax.get_ylim()
+            band = lo + (hi - lo) * 0.035
+            ax.fill_between([i + 0.5 for i in range(total)],
+                            [lo] * total, [band if v > 0.001 else lo for v in flex],
+                            color="#00bcd4", step="mid", alpha=0.95, lw=0,
+                            label="flex load on")
+            ax.set_ylim(lo, hi)
+
         # PV production (yellow hump) AND consumption (red line) on a shared
         # kWh/h axis — surplus (PV > load) charges the battery, deficit drains it.
-        kwh_max = max(max(pv, default=0), max(cons, default=0))
+        kwh_max = max(max(pv, default=0), max(cons, default=0),
+                      max([c + f for c, f in zip(cons, flex)], default=0))
         if kwh_max > 0.001:
             axpv = ax.twinx()
             axpv.spines["right"].set_position(("outward", 38))
@@ -372,6 +450,13 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
                               alpha=0.30, step="mid", label="PV kWh/h")
             axpv.plot([i + 0.5 for i in range(total)], cons, color="#e53935", lw=1.3,
                       ls="-", label="consumption kWh/h")
+            if any(v > 0.001 for v in flex):
+                # Total demand once the flexible load is added.  Wherever this
+                # rises above the yellow PV fill, the difference is imported.
+                axpv.plot([i + 0.5 for i in range(total)],
+                          [c + f for c, f in zip(cons, flex)],
+                          color="#00bcd4", lw=1.6, ls="--",
+                          label="+ flex load kWh/h")
             axpv.set_ylim(0, kwh_max * 1.4)
             axpv.set_ylabel("PV / load kWh/h", color="#b59500")
             axpv.tick_params(axis="y", labelcolor="#b59500")

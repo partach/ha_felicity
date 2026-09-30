@@ -71,7 +71,21 @@ python tools\ems_simulator.py
 Charts are written to `tools\sim_output\<scenario>.png` — one image per
 scenario with two stacked panels (greedy on top, MILP below): price bars
 coloured **green = charge / orange = sell / grey = idle**, with the projected
-**SOC %** line and the **reserve** line overlaid.
+**SOC %** line and the **reserve** line overlaid, plus the yellow **PV** fill
+and the red **consumption** line on a shared kWh/h axis.
+
+**Flexible loads** (EV charger, boiler, …) are drawn too, added Sept 2026:
+a **cyan strip** along the bottom marks the slots the EMS switched a load on,
+and a **dashed cyan line** adds that load's draw to the household consumption.
+Wherever the dashed line rises above the yellow PV fill, the difference is being
+imported — which is the only way to see whether a load the EMS scheduled as
+"PV surplus" is actually covered by the sun.
+
+⚠️ Until then the charts were **blind** to flexible loads.  `ems.py` schedules
+them as an overlay *after* both engines, and they never touch `scheduled_slots`
+or the SOC trajectory — so two runs differing only in whether a 3.7 kW EV
+charger ran produced byte-identical results and byte-identical charts.  No
+scenario configured a load either, so nothing exercised the path at all.
 
 ### Useful flags
 
@@ -113,6 +127,7 @@ specific knobs and asserts the intended outcome.  The current set covers:
 | `manual_both_sell_above_charge_below` | **price_mode=manual**, both | charge below / sell above the threshold, no overlap |
 | `duck_curve_save_money` | from_grid, **realistic duck-curve tariff** | charges the cheap midday solar trough, never the peaks |
 | `duck_curve_sell_evening_peak` | to_grid, **realistic duck-curve tariff** | sells into the evening peak, not a mid slot |
+| `self_suff_ev_sunny_reserve_met` | **flexible loads**, EV charger, self_consumption | **customer case**: battery correctly buys nothing, and the chart shows the 3.7 kW charger running on the evening ramp with the sun already gone |
 
 `cons_heavy_flat` additionally pins the greedy **re-shop after overflow** fix:
 on a 20 kWh battery under a 40 kWh/day load greedy re-allocates the charge slot
