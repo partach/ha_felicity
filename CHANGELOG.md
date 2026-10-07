@@ -1,5 +1,16 @@
 ## Changelog
 
+### [Unreleased] - Register dump in diagnostics
+
+- **Download diagnostics now contains a full register dump.** Settings → Devices
+  & services → Felicity → ⋮ → Download diagnostics reads every register of your
+  model (read-only) and saves raw + decoded values with sanity checks. Share that
+  file when reporting wrong sensor values — it is far more useful than
+  screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **IVGM:** removed a bogus register at address 0xAAAA (an artifact of reading
+  the protocol PDF) that was polled on the "full" register set and showed up as
+  a sensor with a very long name. That entity can be deleted.
+
 ### [1.3.10] - IVGM setpoint scale, sensor fixes, two new models
 
 ⚠️ **IVGM owners on 1.3.9 should update.** 1.3.9 corrected the IVGM's live power
