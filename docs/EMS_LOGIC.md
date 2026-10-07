@@ -768,6 +768,16 @@ The day-rollover block resets yesterday deficit, daily consumption, SOC history,
 
 If the last successful Modbus read was more than a configurable threshold ago, the scheduler refuses to re-plan — it keeps the last valid schedule rather than making decisions on stale data.
 
+### Unresponsive Inverter Backoff
+
+When **3 consecutive** register reads get no response at all (a timeout, not a Modbus exception reply), the poll cycle is abandoned:
+
+- **Nothing read this cycle** → the update fails (entities go unavailable, the EMS does not run, nothing is written) and polling pauses for 30 s, doubling per failed attempt up to 5 min. The Modbus socket is closed so the next attempt reconnects. During setup this makes HA retry the setup itself instead of hanging on it.
+- **Some groups answered earlier in the cycle** → the rest of that cycle is skipped and the partial data is used; no pause.
+- The first successful read clears the pause.
+
+An exception *reply* (e.g. illegal address) counts as a live link and resets the streak.
+
 ---
 
 ## 8. Rule 1 Window Conflict Detection
