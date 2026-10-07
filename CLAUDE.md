@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **550**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **563**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -126,6 +126,9 @@ custom_components/ha_felicity/
 ├── trex_twenty_five.py      # TREX-25 register map
 ├── trex_fifty.py            # TREX-50 register map
 ├── ivgm.py                  # IVGM family map (8K + 3-phase, derived from ONE table)
+├── ivgm_documented_registers.json # Frozen transcript of the IVGM protocol document
+├── register_dump.py         # HA-free read-only register dump (diagnostics + tools/ivgm_dump.py)
+├── diagnostics.py           # "Download diagnostics" → full register dump
 ├── date.py                  # Date entities
 ├── time.py                  # Time entities
 └── frontend/
@@ -137,7 +140,8 @@ tests/
 ├── test_ems.py              # 268 tests for the pure EMS algorithm
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
-└── test_harness_integrity.py # Guards the harness itself can't silently stop testing
+├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
+└── test_register_dump.py   # Dump decodes like the coordinator; reads only documented addresses
 
 pytest.ini                   # testpaths + asyncio mode
 requirements-test.txt        # pytest, pytest-asyncio, pulp (no Home Assistant)
@@ -624,6 +628,39 @@ keeps it that way.
 *(Known dead code, harmless: the inverter card's `pv_total_power` fallback
 matches no entity on any model — `total_pv_power` always resolves first.)*
 
+### Verifying a register map against hardware — the register dump (Oct 2026)
+
+**Ask for a dump, not screenshots.**  Every IVGM scaling bug so far was found
+from raw register values plus physics (P vs V×I, a setpoint equal to the
+nameplate).  A screenshot shows a decoded number, which hides exactly the thing
+being checked.
+
+- **In HA**: Settings → Devices & services → Felicity → ⋮ → **Download
+  diagnostics** (`diagnostics.py`).  Reads the model's FULL map (not the
+  selected register set) through the integration's own Modbus client — no
+  second client slot, HA keeps running.  On IVGM it also reads every address
+  the protocol document defines, so unmapped registers come along too.
+- **Without HA**: `tools/ivgm_dump.py --host <ip>` (pymodbus only; `--framer rtu`
+  for RTU-over-TCP gateways, `--serial` for USB-RS485).
+- Both are thin wrappers around `register_dump.py` (HA-free).  The output keeps
+  the **raw words** per address, the decoded values, `physics_checks`
+  (`SCALE SUSPECT` when P/(V×I) is outside 0.7–1.3) and the decoded ECO windows.
+
+⚠️ **Read-only, and only documented addresses.**  Function 3 only; `plan_reads`
+never spans a gap (an undefined address can fault a whole batch).  A failed
+batch is retried register-by-register, giving up after 3 consecutive failures
+so a dead link can't hang the diagnostics download.  The decoder mirrors
+`coordinator._apply_scaling`; `test_scaling_matches_the_coordinator` keeps the
+two from drifting.  Pair a dump with a photo of the inverter display taken at
+the same moment — that is how the enum values (gaps doc item 0) get confirmed.
+
+**Found by writing it:** the shipped IVGM map contained a register at **0xAAAA**
+— a PDF-extraction artifact (the document's prose example of a write frame) with
+a ~1,500-character name.  On the `full` register set the integration polled it
+every 10 s and created a junk entity.  Removed;
+`test_ivgm_map_is_covered_by_the_document` keeps it out (the provenance test
+couldn't, because the transcript itself contains the example).
+
 ### IVGM family (PROVISIONAL — Sept 2026)
 
 `IVGM-8KLP1G1`, `IVGM-15KLP3G1` and `IVGM-20KLP3G1` are a **different product
@@ -646,10 +683,12 @@ product lines and the layouts genuinely differ (`10minovptime` is 0x2205 on IVGM
 but 0x2206 on TREX-25/50; the telemetry block is offset by one vs TREX-5/10).  A
 borrowed address doesn't fail loudly — it reads or writes a *neighbouring*
 register and yields a plausible wrong number.  Enforced, not just intended:
-`tests/data/ivgm_documented_registers.json` freezes every address the document
+`custom_components/ha_felicity/ivgm_documented_registers.json` freezes every address the document
 defines (477 of them, each with the document's own text) and
 `test_model_coverage.py` fails on any IVGM register whose address — or name —
-isn't in it.  All 365 shipped addresses are document-sourced, zero borrowed.
+isn't in it.  All 364 shipped addresses are document-sourced, zero borrowed (a 365th, 0xAAAA,
+was a PDF-extraction artifact — the prose example of a write frame — and was
+removed Oct 2026).
 The name check is what actually catches a mis-transcribed address, since a typo
 usually still lands on a *valid* address and so slips past the address check.
 It asserts **containment**, not equality (`test_ivgm_register_names_match_the_document`):
@@ -2462,7 +2501,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**550 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**563 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

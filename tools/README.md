@@ -213,3 +213,26 @@ Append a dict to `SCENARIOS` in `tools/scenarios.py`:
 Reproduce a customer screenshot by transcribing its prices / SOC / time / knobs
 into a scenario — then the expected behaviour becomes a permanent, runnable
 regression test that anyone can read.
+
+---
+
+# Other tools
+
+## `ivgm_dump.py` — read-only register dump (no Home Assistant needed)
+
+Reads every register the IVGM protocol document defines and writes one JSON file
+(raw words, decoded values, P-vs-V×I sanity checks). **Inside HA you don't need
+it** — Settings → Devices & services → Felicity → ⋮ → *Download diagnostics*
+produces the same dump. Use this when HA isn't running.
+
+```bat
+python -m pip install "pymodbus>=3.10"
+python tools\ivgm_dump.py --host 192.168.1.50                # Modbus TCP gateway
+python tools\ivgm_dump.py --host 192.168.1.50 --framer rtu   # RTU tunnelled over TCP
+python tools\ivgm_dump.py --serial COM3                      # USB-RS485 adapter
+```
+
+Only function 3 (read) is used — it never writes. If your gateway accepts a
+single Modbus client, disable the integration while it runs.
+
+## `check_milp.py` — is a MILP solver available in this interpreter?

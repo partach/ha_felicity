@@ -160,14 +160,14 @@ def test_ivgm_never_writes_registers_its_protocol_does_not_define():
 # not fail loudly: it reads a neighbouring register and reports a plausible
 # wrong number, or writes one.
 #
-# tests/data/ivgm_documented_registers.json is a frozen transcript of every
+# custom_components/ha_felicity/ivgm_documented_registers.json is a frozen transcript of every
 # address the document defines, so this check is against the document itself
 # rather than against the code that was generated from it.
 
 import json
 import os
 
-_DOC_PATH = os.path.join(os.path.dirname(__file__), "data",
+_DOC_PATH = os.path.join(os.path.dirname(__file__), "..", "custom_components", "ha_felicity",
                          "ivgm_documented_registers.json")
 
 

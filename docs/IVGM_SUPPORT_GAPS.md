@@ -32,10 +32,10 @@ are different product lines and the layouts genuinely differ: `10minovptime` is
 versus TREX‑5/10. A borrowed address does not fail loudly; it reads (or writes)
 a neighbouring register and yields a plausible wrong number.
 
-This is enforced, not just intended: `tests/data/ivgm_documented_registers.json`
+This is enforced, not just intended: `custom_components/ha_felicity/ivgm_documented_registers.json`
 is a frozen transcript of every address the document defines, and
 `tests/test_model_coverage.py` fails if any IVGM register uses an address — or
-carries a name — that isn't in it. All 365 addresses in the shipped map are
+carries a name — that isn't in it. All 364 addresses in the shipped map are
 document-sourced; zero are borrowed.
 
 The name check is the one that catches a mis-transcribed address, because a typo
@@ -316,6 +316,15 @@ them yet:
 - **Model auto-detection.** Not attempted; the user selects the model at setup.
 
 ---
+
+## How to send evidence
+
+Settings → Devices & services → Felicity → ⋮ → **Download diagnostics** gives a
+JSON file with a fresh, read-only read of every documented address (raw words +
+decoded values + P-vs-V×I checks). Without HA: `python tools/ivgm_dump.py --host
+<ip>`. Take a photo of the inverter display at the same moment — the display is
+the only source for the enum values in item 0. Screenshots of HA alone are not
+enough: they show decoded numbers, which hide the scale being checked.
 
 ## Checklist to promote IVGM from provisional to supported
 
