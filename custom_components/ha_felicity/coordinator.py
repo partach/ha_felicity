@@ -49,6 +49,16 @@ def _milp_status_snapshot() -> dict | None:
             "tried": [],
         }
 
+# Unresponsive-inverter protection.  A read that gets NO response costs the
+# client's full timeout x retries (~20 s), so without a limit a silent inverter
+# turns one poll into 74 groups x 20 s = ~25 min — and the first refresh, which
+# HA waits on during setup, never finishes.  After this many consecutive
+# no-response reads the cycle is abandoned and polling pauses, doubling from
+# the initial pause up to the max, until the inverter answers again.
+MAX_CONSECUTIVE_READ_TIMEOUTS = 3
+READ_BACKOFF_INITIAL_S = 30
+READ_BACKOFF_MAX_S = 300
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -188,6 +198,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Modbus staleness tracking (#6).  Updated on each successful read.
         self._last_modbus_success_ts: float | None = None
         self._stale_data_threshold_sec: int = 120  # 2 min = ~12 ticks
+
+        # Unresponsive-inverter backoff (see MAX_CONSECUTIVE_READ_TIMEOUTS).
+        self._read_backoff_s: float = 0.0
+        self._read_backoff_until: float = 0.0
 
         # Schedule recalc cache (#8).  Skip recompute when inputs unchanged.
         self._last_schedule_input_hash: int | None = None
@@ -2433,13 +2447,42 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         
 
         
+    def _start_read_backoff(self, reason: str) -> None:
+        """Pause polling after the inverter stopped answering (doubling pause)."""
+        self._read_backoff_s = min(
+            READ_BACKOFF_MAX_S,
+            self._read_backoff_s * 2 if self._read_backoff_s else READ_BACKOFF_INITIAL_S,
+        )
+        self._read_backoff_until = time.time() + self._read_backoff_s
+        _LOGGER.warning(
+            "Felicity inverter not responding (%s) — pausing polling for %ds, "
+            "then retrying. Check the Modbus gateway/dongle and cabling.",
+            reason, self._read_backoff_s,
+        )
+        # Drop the socket: a gateway that stopped answering often recovers only
+        # on a fresh connection.  The next poll reconnects.
+        self.connected = False
+        try:
+            self.client.close()
+        except Exception as err:  # best effort
+            _LOGGER.debug("Closing Modbus client failed: %s", err)
+
     async def _async_update_data(self) -> dict:
         """Fetch latest data from inverter."""
+        remaining = self._read_backoff_until - time.time()
+        if remaining > 0:
+            # Fail fast without touching the bus: UpdateFailed marks entities
+            # unavailable, and during setup it becomes ConfigEntryNotReady so HA
+            # retries the setup itself instead of hanging on it.
+            raise UpdateFailed(
+                f"Inverter not responding — next attempt in {int(remaining)}s")
+
         if not await self._async_connect():
             raise UpdateFailed("Cannot connect to Felicity inverter")
 
         new_data = {}
         any_read_ok = False
+        consecutive_timeouts = 0
 
         try:
             for group in self._address_groups:
@@ -2453,12 +2496,31 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as err:
                     _LOGGER.error("Read error at address %d, count: %d error:%s", start_addr, count, err)
+                    consecutive_timeouts += 1
+                    if consecutive_timeouts >= MAX_CONSECUTIVE_READ_TIMEOUTS:
+                        if not any_read_ok:
+                            self._start_read_backoff(
+                                f"{consecutive_timeouts} consecutive reads without response")
+                            raise UpdateFailed(
+                                "Inverter not responding — polling paused")
+                        # The link answered earlier this cycle: keep what we
+                        # have rather than spend ~20 s on every remaining group.
+                        _LOGGER.warning(
+                            "%d consecutive reads without response — skipping the "
+                            "rest of this poll cycle", consecutive_timeouts)
+                        break
                     continue
 
+                # Any response — even a Modbus exception — proves the link is up.
+                consecutive_timeouts = 0
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
                     continue
 
+                if not any_read_ok and self._read_backoff_s:
+                    _LOGGER.info("Felicity inverter responding again — polling resumed")
+                    self._read_backoff_s = 0.0
+                    self._read_backoff_until = 0.0
                 any_read_ok = True
 
                 registers = result.registers
@@ -2828,9 +2890,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             return new_data
 
+        except UpdateFailed:
+            raise
         except ConnectionException as err:
             self.connected = False
-            await self.client.close()
+            self.client.close()  # synchronous in pymodbus 3.x
             raise UpdateFailed(f"Connection lost: {err}")
         except ModbusException as err:
             raise UpdateFailed(f"Modbus error: {err}")

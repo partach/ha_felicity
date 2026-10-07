@@ -1,6 +1,7 @@
 """Tests for coordinator resilience fixes."""
 
 import asyncio
+import contextlib
 import importlib.util as _ilu
 import os
 import sys
@@ -101,6 +102,8 @@ def _make_coordinator(**overrides):
     coord.TypeSpecificHandler = MagicMock()
     coord.data = {}
     coord.connected = False
+    coord._read_backoff_s = 0.0
+    coord._read_backoff_until = 0.0
     coord._last_register_set = None
     coord._consumption_store = None
     coord._consumption_store_loaded = False
@@ -372,3 +375,86 @@ class TestSlotOverridesPersistence:
 
         assert coord.scheduled_slots[0] == "discharge"    # discharge allowed
         assert 1 not in coord.scheduled_slots              # charge blocked
+
+
+# ---------------------------------------------------------------------------
+# Unresponsive inverter: stop hammering, back off, retry later
+# ---------------------------------------------------------------------------
+
+class TestUnresponsiveInverterBackoff:
+    """A silent inverter costs ~20 s per read (timeout x retries).  Without a
+    limit one poll of the 'full' set (74 groups) took ~25 min and the first
+    refresh — which HA setup waits on — never finished (real report, IVGM-20K).
+    """
+
+    @staticmethod
+    def _silent(n_groups=20):
+        coord = _make_coordinator(
+            register_map={f"r{i}": {"size": 1, "name": f"R{i}", "index": 0}
+                          for i in range(n_groups)},
+            groups=[{"start": 100 + i, "count": 1, "keys": [f"r{i}"]}
+                    for i in range(n_groups)],
+        )
+        coord.client.read_holding_registers = AsyncMock(
+            side_effect=Exception("No response received after 3 retries"))
+        coord.client.close = MagicMock()
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_consecutive_timeouts(self):
+        coord = self._silent()
+        with pytest.raises(Exception, match="not responding"):
+            await coord._async_update_data()
+        assert (coord.client.read_holding_registers.await_count
+                == coordinator_mod.MAX_CONSECUTIVE_READ_TIMEOUTS)
+        assert coord.connected is False          # fresh socket next time
+        coord.client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_paused_poll_does_not_touch_the_bus(self):
+        coord = self._silent()
+        with pytest.raises(Exception, match="not responding"):
+            await coord._async_update_data()
+        calls = coord.client.read_holding_registers.await_count
+        with pytest.raises(Exception, match="next attempt in"):
+            await coord._async_update_data()
+        assert coord.client.read_holding_registers.await_count == calls
+
+    @pytest.mark.asyncio
+    async def test_pause_doubles_up_to_the_cap(self):
+        coord = self._silent()
+        pauses = []
+        for _ in range(6):
+            coord._read_backoff_until = 0.0      # pause elapsed
+            with pytest.raises(Exception, match="not responding"):
+                await coord._async_update_data()
+            pauses.append(coord._read_backoff_s)
+        assert pauses[0] == coordinator_mod.READ_BACKOFF_INITIAL_S
+        assert pauses[1] == 2 * pauses[0]
+        assert pauses[-1] == coordinator_mod.READ_BACKOFF_MAX_S
+
+    @pytest.mark.asyncio
+    async def test_modbus_exception_responses_are_not_timeouts(self):
+        """An exception RESPONSE proves the link is alive — keep reading."""
+        coord = self._silent(n_groups=6)
+        err = MagicMock()
+        err.isError.return_value = True
+        coord.client.read_holding_registers = AsyncMock(return_value=err)
+        with contextlib.suppress(Exception):     # later stages are not under test
+            await coord._async_update_data()
+        assert coord.client.read_holding_registers.await_count == 6
+        assert coord._read_backoff_s == 0.0
+
+    @pytest.mark.asyncio
+    async def test_partial_cycle_keeps_data_without_pausing(self):
+        """The link answered, then went quiet: stop the cycle, but no pause."""
+        coord = self._silent(n_groups=10)
+        ok = MagicMock()
+        ok.isError.return_value = False
+        ok.registers = [7]
+        coord.client.read_holding_registers = AsyncMock(
+            side_effect=[ok] + [Exception("No response")] * 9)
+        with contextlib.suppress(Exception):
+            await coord._async_update_data()
+        assert coord.client.read_holding_registers.await_count == 1 + 3
+        assert coord._read_backoff_s == 0.0

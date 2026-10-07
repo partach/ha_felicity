@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **563**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **568**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -2031,6 +2031,28 @@ SOC history reset, slot overrides rotation) and falls through to the
 normal cycle, which re-determines the desired state and only writes a
 transition if the state actually changes.
 
+### 8b. A silent inverter hung HA setup — FIXED (Oct 2026)
+A read that gets **no response** costs the client's timeout × retries (5 s × 3 →
+~20 s).  The poll loop logged it and moved on to the next group, so a silent
+inverter on the `full` set (74 groups on IVGM) turned one poll into ~25 min —
+and `async_config_entry_first_refresh`, which `async_setup_entry` awaits, never
+returned.  Real report on an IVGM-20K: "Read error … No response received after
+3 retries" for 10 min, HA stuck in startup, and therefore no *Download
+diagnostics* entry either (the platform registers only once setup finishes).
+
+Now `_async_update_data` aborts after `MAX_CONSECUTIVE_READ_TIMEOUTS` (3)
+no-response reads.  With nothing read this cycle it raises `UpdateFailed` (→
+`ConfigEntryNotReady` during setup, so HA retries the setup itself), closes the
+socket, and pauses polling `READ_BACKOFF_INITIAL_S` (30 s) doubling to
+`READ_BACKOFF_MAX_S` (300 s); paused polls fail fast without touching the bus.
+If groups answered earlier in the cycle it just skips the rest of the cycle
+(partial data, no pause).  A Modbus **exception reply** resets the streak — the
+link is alive.  `except UpdateFailed: raise` sits first in the handler chain so
+the abort isn't re-wrapped as "Unexpected error".  Also fixed:
+`await self.client.close()` in the `ConnectionException` path — `close()` is
+synchronous in pymodbus 3.x, so that path raised `TypeError` instead of
+`UpdateFailed`.  Pinned by `TestUnresponsiveInverterBackoff`.
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -2593,7 +2615,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**563 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**568 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

@@ -7,6 +7,10 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **An unresponsive inverter no longer hangs Home Assistant's startup.** When
+  reads keep timing out, the integration now stops after 3, pauses polling (30 s,
+  growing to 5 min) and retries, instead of spending ~20 s on every register
+  group. Entities show unavailable meanwhile and recover by themselves.
 - **IVGM:** removed a bogus register at address 0xAAAA (an artifact of reading
   the protocol PDF) that was polled on the "full" register set and showed up as
   a sensor with a very long name. That entity can be deleted.
