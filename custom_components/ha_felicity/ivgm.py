@@ -244,7 +244,6 @@ _REGISTERS_IVGM_FAMILY = {
     "sn4":                                         {'address': 4643, 'name': 'SN4', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "sn5":                                         {'address': 4644, 'name': 'SN5', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "ats_start_signal":                            {'address': 4654, 'name': 'ATS Start Signal', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
-    "4_communication_frame_format_4_1_8_k_setting_quantity_information_data_address_byte_size_paramet_er_parameter_unit": {'address': 4655, 'name': '4. Communication frame format 4.1 8K Setting Quantity Information Data Address Byte Size Paramet er Parameter Unit', 'precision': 0, 'index': 0, 'state_class': 'measurement'},
     "max_pv_input_power":                          {'address': 8456, 'name': 'Max PV Input Power', 'precision': 0, 'index': 3, 'unit': 'W', 'device_class': 'power', 'state_class': 'measurement'},
     "bat1_max_charge_current_value":               {'address': 8471, 'name': 'Bat1 Max Charge Current Value', 'precision': 1, 'index': 8, 'unit': 'A', 'device_class': 'current', 'state_class': 'measurement'},
     "bat1_max_dis_charge_current_value":           {'address': 8472, 'name': 'Bat1 Max DisCharge Current Value', 'precision': 1, 'index': 8, 'unit': 'A', 'device_class': 'current', 'state_class': 'measurement'},

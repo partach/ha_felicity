@@ -2183,6 +2183,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def _transition_to_state(self, new_state: str) -> bool:
         """Apply state change via economic rule 1. Returns True if critical writes succeeded."""
         opts = self.config_entry.options
+        # grid_mode "off" means HANDS OFF the inverter.  The only write still
+        # allowed is undoing a charge/discharge THIS session started (the user
+        # switched the EMS off mid-action).  Without this guard every HA start
+        # wrote the "idle" state — _current_energy_state starts as None, and
+        # "idle" != None — which on TREX-5/10 forced operating_mode=0 (General)
+        # and on TREX-25/50/IVGM wrote system_mode, zero-export, peak-shaving
+        # and rule-1 power registers, on installs that had never enabled the EMS.
+        if (opts.get("grid_mode", "off") == "off"
+                and self._current_energy_state not in ("charging", "discharging")):
+            _LOGGER.debug("grid_mode is off — not writing state %s to the inverter", new_state)
+            return True
         now = datetime.now()
         date_16bit = (now.month << 8) | now.day
         voltage_level = int(
@@ -2272,6 +2283,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
 
         opts = self.config_entry.options
+        if opts.get("grid_mode", "off") == "off":
+            return  # EMS off → never write the inverter (see _transition_to_state)
 
         if opts.get("rule1_time_window", "manual") == "auto":
             target_start = 0                       # 00:00

@@ -299,7 +299,7 @@ These voltage settings are **not used by the scheduling algorithm** — they are
 
 | Setting | Range | Default | How It's Used |
 |---|---|---|---|
-| **grid_mode** | off/from_grid/to_grid/both | off | The master switch. Determines which algorithm runs. "off" = no grid interaction. |
+| **grid_mode** | off/from_grid/to_grid/both | off | The master switch. Determines which algorithm runs. "off" = no grid interaction **and no automatic Modbus writes**: no state transition, no rule-1 auto window/weekday. The one exception is stopping a charge/discharge this session started when the user switches the EMS off mid-action. (`safe_power_management = on` still writes the rule-1 power limit; that is its documented "always active" override.) |
 | **price_mode** | manual/auto | manual | "manual" uses a price threshold (level 1-10); "auto" uses the optimizer to pick slots. All algorithm logic described in this document runs in "auto" mode. |
 | **price_threshold_level** | 1-10 | 5 | Manual mode only: maps to a price point between min and max. Slots below this charge, above this sell. |
 | **arbitrage_price_delta** | 0-0.50 EUR/kWh | 0 | **Both mode only.** The minimum buy→sell spread required to trade. When > 0: charge-to-full activates only if the day's spread (max - min) clears the delta, and every sell slot must beat the buy reference by at least the delta — below the bar, **nothing is sold**. When 0 (default): automatic profitability check (trade whenever the peak covers round-trip losses on the cheapest buy). |

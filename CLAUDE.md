@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **568**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **574**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -712,9 +712,9 @@ register and yields a plausible wrong number.  Enforced, not just intended:
 `custom_components/ha_felicity/ivgm_documented_registers.json` freezes every address the document
 defines (477 of them, each with the document's own text) and
 `test_model_coverage.py` fails on any IVGM register whose address — or name —
-isn't in it.  All 364 shipped addresses are document-sourced, zero borrowed (a 365th, 0xAAAA,
-was a PDF-extraction artifact — the prose example of a write frame — and was
-removed Oct 2026).
+isn't in it.  All 363 shipped addresses are document-sourced, zero borrowed (two more, 0xAAAA
+and 0x122F, were PDF-extraction artifacts — a prose example and a section
+heading — and were removed Oct 2026).
 The name check is what actually catches a mis-transcribed address, since a typo
 usually still lands on a *valid* address and so slips past the address check.
 It asserts **containment**, not equality (`test_ivgm_register_names_match_the_document`):
@@ -2053,6 +2053,38 @@ the abort isn't re-wrapped as "Unexpected error".  Also fixed:
 synchronous in pymodbus 3.x, so that path raised `TypeError` instead of
 `UpdateFailed`.  Pinned by `TestUnresponsiveInverterBackoff`.
 
+### 8c. `grid_mode = off` still wrote the inverter on every start — FIXED (Oct 2026)
+`_current_energy_state` starts as `None`.  With the EMS off,
+`_determine_energy_state` returns `"idle"`, `"idle" != None`, so the first tick
+with price data called `_transition_to_state("idle")` — on **every HA start, on
+installs that had never enabled the EMS**.  TREX-5/10: `operating_mode=0`
+(General — silently undoing an Economic mode set in the Felicity app) and
+`econ_rule_1_enable=0`.  TREX-25/50/IVGM: `system_mode=2`,
+`zero_export_to_ct_sell_enable=0`, `grid_peak_shaving_enable=1`,
+`econ_rule_1_power=0`, `econ_rule_1_grid_charge_enable=0`,
+`grid_peak_shaving_power=0`.  On IVGM, `system_mode` is 0x2144 *Work Mode*
+whose values are undocumented (gaps doc item 0) — so the "read-only while
+provisional" advice was not actually read-only.  Surfaced by an IVGM-20K owner
+asking whether anything could have been written with `grid_mode` off.
+
+Fix (single guard, all callers): `_transition_to_state` refuses to write when
+`grid_mode == "off"` unless the current state is `charging`/`discharging` — i.e.
+it may only undo an action this session started.  `_apply_rule1_auto_settings`
+is gated on `grid_mode != "off"` too.  The remaining write paths with the EMS
+off are all explicit: user-edited register entities (number/select/time/date),
+the `ha_felicity.write_register` service, and `safe_power_management = on`.
+Pinned by `TestGridModeOffNeverWrites` (3 of its 6 cases fail on the old code).
+
+Also removed a second PDF-artifact register: **0x122F** "4. Communication frame
+format 4.1 8K Setting Quantity Information…" — the section heading after the
+last telemetry row, not a register.  `register_dump.NOT_REGISTERS` lists both
+artifacts, so `test_ivgm_map_is_covered_by_the_document` keeps them out.
+
+**Why the IVGM has no Controls:** every IVGM register is a sensor (no
+`type: select/number/time8bit`), unlike TREX-25/50 (42 selects, 19 numbers, 14
+times).  Deliberate for now: the document defines no enum values, so a select
+would be guessing what each option writes.
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -2615,7 +2647,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**568 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**574 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

@@ -27,9 +27,11 @@ DUMP_FORMAT_VERSION = 1
 IVGM_DOCUMENT_PATH = os.path.join(os.path.dirname(__file__),
                                   "ivgm_documented_registers.json")
 
-#: Addresses in the transcript that are worked examples in the document's
-#: prose, not registers.
-_NOT_REGISTERS = {0xAAAA}
+#: Addresses in the transcript that are PDF-extraction artifacts, not
+#: registers: 0xAAAA is the prose example of a write frame, 0x122F is the
+#: "4. Communication frame format" section heading that follows the last
+#: telemetry row.
+NOT_REGISTERS = {0xAAAA, 0x122F}
 
 #: Largest single read.  Well under the Modbus limit of 125 — some dongles
 #: struggle with large frames.
@@ -50,7 +52,7 @@ def load_ivgm_documented_addresses() -> dict[int, str]:
     with open(IVGM_DOCUMENT_PATH, encoding="utf-8") as fh:
         raw = json.load(fh)["addresses"]
     return {int(k, 16): text for k, text in raw.items()
-            if int(k, 16) not in _NOT_REGISTERS}
+            if int(k, 16) not in NOT_REGISTERS}
 
 
 def map_addresses(register_map: dict) -> set[int]:
