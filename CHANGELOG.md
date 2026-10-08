@@ -11,6 +11,14 @@
   reads keep timing out, the integration now stops after 3, pauses polling (30 s,
   growing to 5 min) and retries, instead of spending ~20 s on every register
   group. Entities show unavailable meanwhile and recover by themselves.
+- **With the EMS off (`grid_mode` = off) the integration no longer writes to
+  the inverter.** Previously every Home Assistant start wrote an "idle" state
+  once price data arrived — on T-REX-5/10 this switched the inverter to General
+  mode, on T-REX-25/50 and IVGM it changed work mode, zero-export, peak-shaving
+  and rule-1 settings. If you run with the EMS off, check those settings on the
+  inverter after updating.
+- **IVGM:** removed a second bogus register (0x122F, "4. Communication frame
+  format…").
 - **IVGM:** removed a bogus register at address 0xAAAA (an artifact of reading
   the protocol PDF) that was polled on the "full" register set and showed up as
   a sensor with a very long name. That entity can be deleted.

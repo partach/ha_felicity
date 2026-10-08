@@ -23,6 +23,16 @@ model to get sensors, but leave `grid_mode = off` so the EMS never writes.
 `grid_mode` defaults to `off`, so a fresh install is already in that state — the
 owner has to opt in before any register is written.
 
+⚠️ **Until Oct 2026 `grid_mode = off` did NOT fully prevent writes.** On every
+HA start the coordinator "transitioned" from its initial `None` state to idle and
+wrote it. On an IVGM that is: `system_mode` (0x2144 *Work Mode*) = 2,
+`zero_export_to_ct_sell_enable` (0x2146) = 0, `grid_peak_shaving_enable` (0x2148)
+= 1, `econ_rule_1_power` (0x220F) = 0, `econ_rule_1_grid_charge_enable` (0x2209)
+= 0, `grid_peak_shaving_power` (0x2149) = 0 — the Work Mode value 2 being an
+**unverified TREX-25/50 meaning** (item 0). It only ran once price data was
+available. Fixed; if an IVGM ran an earlier version, check those six settings on
+the display.
+
 ### The addresses rule
 
 **An IVGM register address must come from the IVGM document.** It is never
@@ -35,7 +45,7 @@ a neighbouring register and yields a plausible wrong number.
 This is enforced, not just intended: `custom_components/ha_felicity/ivgm_documented_registers.json`
 is a frozen transcript of every address the document defines, and
 `tests/test_model_coverage.py` fails if any IVGM register uses an address — or
-carries a name — that isn't in it. All 364 addresses in the shipped map are
+carries a name — that isn't in it. All 363 addresses in the shipped map are
 document-sourced; zero are borrowed.
 
 The name check is the one that catches a mis-transcribed address, because a typo

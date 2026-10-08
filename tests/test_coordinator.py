@@ -458,3 +458,61 @@ class TestUnresponsiveInverterBackoff:
             await coord._async_update_data()
         assert coord.client.read_holding_registers.await_count == 1 + 3
         assert coord._read_backoff_s == 0.0
+
+
+# ---------------------------------------------------------------------------
+# grid_mode "off" means hands off: no automatic Modbus writes
+# ---------------------------------------------------------------------------
+
+class TestGridModeOffNeverWrites:
+    """_current_energy_state starts as None, so the first tick's desired
+    "idle" differed from it and _transition_to_state wrote the idle state on
+    EVERY start — operating_mode=0 on TREX-5/10, system_mode/zero-export/
+    peak-shaving/rule-1 power on TREX-25/50/IVGM — with the EMS switched off
+    (IVGM-20K report: "could any write have happened without grid_mode on?").
+    """
+
+    @staticmethod
+    def _coord(grid_mode, state):
+        coord = _make_coordinator()
+        coord.config_entry.options = {"grid_mode": grid_mode}
+        coord._current_energy_state = state
+        coord._reserve_target_pct = 0.0
+        coord.safe_max_power = 5
+        coord.current_price = None
+        coord.price_threshold = None
+        coord.TypeSpecificHandler = MagicMock()
+        coord.TypeSpecificHandler.write_type_specific_register = AsyncMock(return_value=True)
+        coord.data = {"econ_rule_1_start_time": 5, "econ_rule_1_stop_time": 5,
+                      "econ_rule_1_effective_week": 1}
+        return coord
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", [None, "idle"])
+    async def test_startup_idle_with_ems_off_writes_nothing(self, state):
+        coord = self._coord("off", state)
+        assert await coord._transition_to_state("idle") is True
+        coord.TypeSpecificHandler.write_type_specific_register.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["charging", "discharging"])
+    async def test_switching_off_still_stops_our_own_action(self, state):
+        coord = self._coord("off", state)
+        assert await coord._transition_to_state("idle") is True
+        keys = [c.args[0] for c in
+                coord.TypeSpecificHandler.write_type_specific_register.await_args_list]
+        assert "econ_rule_1_enable" in keys
+
+    @pytest.mark.asyncio
+    async def test_ems_on_still_writes(self):
+        coord = self._coord("from_grid", None)
+        assert await coord._transition_to_state("idle") is True
+        coord.TypeSpecificHandler.write_type_specific_register.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rule1_auto_settings_do_not_write_with_ems_off(self):
+        coord = self._coord("off", None)
+        coord.config_entry.options = {"grid_mode": "off", "rule1_time_window": "auto",
+                                      "rule1_weekday": "auto"}
+        await coord._apply_rule1_auto_settings()
+        coord.TypeSpecificHandler.write_type_specific_register.assert_not_awaited()
