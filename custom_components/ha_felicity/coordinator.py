@@ -66,7 +66,8 @@ READ_BACKOFF_MAX_S = 300
 # multi-register group times out while other reads in the same poll succeed,
 # it is split in half for the next poll (bisecting to the culprit); a single
 # register that still times out in DEAD_REGISTER_STRIKES polls is dropped from
-# polling until the integration reloads.
+# polling until the integration reloads.  When BOTH halves stay silent the
+# whole block is dropped instead (the model lacks it) — see _adapt_read_groups.
 DEAD_REGISTER_STRIKES = 3
 # A poll slower than this many update intervals logs one warning (per hour)
 # with the statistics needed to diagnose it.
@@ -2507,6 +2508,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 "start": infos[0]["address"],
                 "count": sum(i.get("size", 1) for i in infos),
                 "keys": list(part),
+                "split_from": (group["start"], group["count"]),
             })
         return halves
 
@@ -2517,7 +2519,37 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         dead link (handled by the backoff) never splits or drops anything.
         """
         replace: dict[int, list[dict]] = {}
+
+        # Both halves of a split block silent in the same poll: the whole block
+        # is unsupported (e.g. the ECO-rule block on a T-REX-5 that may not have
+        # one), not one bad address.  Bisecting further would cost dozens of
+        # timeouts, so after DEAD_REGISTER_STRIKES polls in total (once whole,
+        # then twice as a silent pair) the block is dropped in one go.
+        by_parent: dict[tuple, list[dict]] = {}
         for group in timed_out:
+            if "split_from" in group:
+                by_parent.setdefault(group["split_from"], []).append(group)
+        silent_pairs = [pair for pair in by_parent.values() if len(pair) == 2]
+        for pair in silent_pairs:
+            parent = pair[0]["split_from"]
+            strikes = self._group_timeout_strikes.get(parent, 1) + 1
+            self._group_timeout_strikes[parent] = strikes
+            if strikes >= DEAD_REGISTER_STRIKES:
+                keys = pair[0]["keys"] + pair[1]["keys"]
+                for half in pair:
+                    replace[id(half)] = []
+                self.dead_register_keys.update(keys)
+                _LOGGER.warning(
+                    "Registers at %d–%d (%s … %s) never respond on this inverter/gateway "
+                    "— the model probably does not have them; no longer polled until "
+                    "the integration is reloaded",
+                    parent[0], parent[0] + parent[1] - 1, keys[0], keys[-1],
+                )
+        paired = {id(g) for pair in silent_pairs for g in pair}
+
+        for group in timed_out:
+            if id(group) in paired:
+                continue    # handled above: kept whole for now, or dropped
             if any(k not in self.register_map for k in group["keys"]):
                 continue
             if len(group["keys"]) > 1:

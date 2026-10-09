@@ -579,6 +579,20 @@ class TestNonRespondingGroupIsolation:
         assert coord.client.read_holding_registers.await_count > before
 
     @pytest.mark.asyncio
+    async def test_unsupported_block_is_dropped_whole_and_cheaply(self):
+        """The model may simply not have the block (T-REX-5 ECO rules?).
+        Bisecting to 36 single registers would cost >100 timeouts; instead the
+        block goes after 3 polls: once whole, then twice as a silent pair."""
+        coord = self._coord(lambda a, n: not (8568 <= a < 8604))
+        await self._polls(coord, 3)
+        assert coord.dead_register_keys == {f"r{a}" for a in self.BLOCK}
+        assert self._covered(coord) == {4400}
+        timeouts = coord.client.read_holding_registers.await_count - 3   # 3 SOC reads
+        assert timeouts == 1 + 2 + 2
+        await self._polls(coord, 1)
+        assert coord.poll_stats["groups_timed_out"] == []
+
+    @pytest.mark.asyncio
     async def test_frame_too_large_splits_once_and_drops_nothing(self):
         coord = self._coord(lambda a, n: n <= 20)
         await self._polls(coord, 3)

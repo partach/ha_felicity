@@ -780,7 +780,10 @@ An exception *reply* (e.g. illegal address) counts as a live link and resets the
 
 ### Non-Responding Read Groups
 
-When a read gets no response while other reads in the same poll succeed, the link is fine and that read is the problem (a silent address, or a frame too large for a slow gateway). It is split in half for the next poll; halves that answer stay split. A single register that still gets no response in 3 polls is no longer polled until the integration reloads (one warning). A dead link never triggers this: with nothing answered, the backoff above applies instead.
+The full register map is always polled in large contiguous chunks — deliberately, because on 2400-baud T-REX links the request count dominates poll time. The register-set option does not change this.
+
+
+When a read gets no response while other reads in the same poll succeed, the link is fine and that read is the problem (a silent address, or a frame too large for a slow gateway). It is split in half for the next poll; halves that answer stay split. A single register that still gets no response in 3 polls is no longer polled until the integration reloads (one warning). If both halves of a split block stay silent, the whole block is dropped after 3 polls (the model does not have it). A dead link never triggers this: with nothing answered, the backoff above applies instead.
 
 Each poll records its duration, reads answered / timed out and pymodbus's silent retries; a poll slower than twice the update interval logs one warning per hour. Both are in Download diagnostics.
 

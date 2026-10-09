@@ -331,12 +331,7 @@ class HA_FelicityNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Write the new value to the inverter register."""
         # in the write function we will determine if the register needs special care (index)
-        # Scaled registers (/10, /100, /1000) get the unrounded value — the
-        # write path multiplies before rounding.  int() here truncated
-        # 56.4 V to 56 V before the x10 ever happened.
-        if self._info.get("index") not in (1, 2, 4, 8, 9, 10):
-            value = round(value)
-        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, value)
+        await self.coordinator.TypeSpecificHandler.write_type_specific_register(self._key, int(value))
         await self.coordinator.async_request_refresh()
         self.async_write_ha_state()
 

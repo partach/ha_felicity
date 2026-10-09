@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **591**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **590**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -142,7 +142,7 @@ tests/
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
 ├── test_register_dump.py   # Dump decodes like the coordinator; reads only documented addresses
-└── test_ivgm_controls.py   # IVGM: only the ECO-rule settings are writable; number writes keep precision
+└── test_ivgm_controls.py   # IVGM: only the ECO-rule settings are writable, power capped, whole volts
 
 pytest.ini                   # testpaths + asyncio mode
 requirements-test.txt        # pytest, pytest-asyncio, pulp (no Home Assistant)
@@ -456,6 +456,8 @@ and `basic_plus`** on TREX-25/50 — i.e. TREX-25/50 users on the default set ha
 register set regardless of the chosen set — a handful of registers, negligible
 poll cost, and it can't drift when a future register set is added.  **If you
 add a register the control loop depends on, add it there too.**
+*(Today every set polls the full map anyway — see Known Issues 8d — so this
+force-include is belt-and-braces; keep it in case the sets ever take effect.)*
 
 **Minimum charge commitment (anti flip-flop)**: when SOC hovers near the
 reserve target, the schedule's marginal deficit can flip in/out of "charge"
@@ -2026,7 +2028,7 @@ artifacts, so `test_ivgm_map_is_covered_by_the_document` keeps them out.
 **IVGM controls (Oct 2026):** the IVGM map shipped all-sensor because the
 document defines no enum values.  `ivgm._with_eco_controls` now exposes only the
 ECO-rule settings whose encoding needs no enum table: the six rules' start/stop
-time (`time8bit`, `HH<<8|MM` hardware-confirmed), voltage (40–60 V, 0.1 V), SOC
+time (`time8bit`, `HH<<8|MM` hardware-confirmed), voltage (40–60 V, whole volts — see below), SOC
 (0–100 %), power (W, capped at the nameplate — 8000 on the 8K map, 20000 on the
 shared 15K/20K map) and the Grid/GenChargeEnable flags, plus `ECO_TimeOfUse`
 (0/1; read 1 with rules active on two units).  Still read-only on purpose:
@@ -2034,50 +2036,87 @@ shared 15K/20K map) and the Grid/GenChargeEnable flags, plus `ECO_TimeOfUse`
 so the bit order is unknown).  It copies entries, so `_REGISTERS_IVGM_SCALED`
 stays all-sensor.  Pinned by `tests/test_ivgm_controls.py`.
 
-**`HA_FelicityNumber` truncated scaled values (fixed with it):** it wrote
-`int(value)`, so a 0.1 V register set to 56.4 V wrote 56 V.  Scaled indices
-(1/2/4/8/9/10) now pass the unrounded value — the write path multiplies, then
-rounds.  Affects every model's voltage numbers.
+⚠️ **`HA_FelicityNumber` writes `int(value)` — keep it (maintainer decision,
+Oct 2026).**  Registers take whole numbers, and models differ in which values are
+pre-scaled (/10) and which are not, so the number entity deliberately hands the
+write path an int.  A session changed it to pass floats for scaled registers
+(so 56.4 V would not truncate to 56 V); it was **reverted** at the maintainer's
+request.  Consequence: give number controls a whole-number `step` — the IVGM ECO
+voltages use `step: 1` for exactly this reason
+(`test_voltage_controls_step_in_whole_volts`).  Do not "fix" the truncation
+without the maintainer.
 
-### 8d. Register sets never reduced polling; a silent block cost ~20 s per poll (Oct 2026)
+### 8d. Polling design, slow serial links, and the T-REX-5 ECO block (Oct 2026)
 
-Customer report: T-REX-5 behind a Waveshare RS485-to-Ethernet gateway (Modbus
-TCP→RTU, **2400 baud**), register set "Basic", 15 s interval — sensors updated
-every ~5 min and `Read error at address 8568, count: 36 … No response received
-after 3 retries` every poll.
+**Report — [partach/ha_felicity#209](https://github.com/partach/ha_felicity/issues/209):**
+T-REX-5KLP1G01 behind a Waveshare RS485-to-Ethernet gateway (FW V1.523,
+"Modbus TCP to RTU", **2400 baud**), register set "Basic", 15 s interval.  Every
+poll logs `Read error at address 8568, count: 36 … No response received after 3
+retries`, and a full poll takes **257–298 s** (debug "Finished fetching Felicity
+data in 297.7 s").  The 8568 read itself costs only ~10 s; the poll durations
+differ in **steps of ~5 s = the client timeout**.  ~35 reads per poll.  Some
+sensors flip to `unknown` between polls.  Gateway tweaks (instruction timeout
+0→1024 ms, conflict gap 20→100 ms, multi-host) changed nothing.
 
-⚠️ **OPEN — the register set has no effect on polling.**  `async_setup_entry`
-hands the coordinator `model_config["register_groups"]`, which `const` builds
-from the **full** map, and step 3 ("auto-include missing registers referenced by
-groups") then re-adds every register those groups mention to
-`selected_registers`.  So every install polls — and creates entities for — the
-full map whatever set is chosen (8568/36 exists only in the T-REX-5 *full*
-set).  Making sets effective is NOT a one-line fix: entities are built from
-`coordinator.register_map`, so users on the default `basic` would lose most
-entities, and the sets were never validated against what the EMS, the combined
-sensors and the cards need (e.g. the IVGM `basic` set lists combined keys like
-`total_pv_power` but not their pv1–pv4 sources).  Needs an audit of each set
-first — maintainer decision pending.
+**Polling design — DELIBERATE, do not "fix" (maintainer decision, Oct 2026).**
+The coordinator always polls the **full** register map in contiguous chunks
+(`const.build_groups` on the full map; `__init__` step 3 re-adds every key those
+groups reference), whatever register set is chosen — "basic"/"basic_plus" have
+no effect on polling or entities.  This is intended: the T-REX family runs at
+**2400 baud from the factory**, and on such a link the number of *requests*, not
+the number of registers, dominates poll time, so a few large chunks beat many
+small reads.  Do not make the register sets effective or split the chunks to
+"save traffic" without the maintainer.
 
-**Fixed — a group that never answers is isolated.**  8568/36 is by far the
-largest T-REX-5 read (next is 21); at 2400 baud its 77-byte reply takes ~0.32 s
-on the wire, so a gateway RTU timeout or one silent address can kill it.  Each
-miss costs timeout × (retries+1) ≈ 20 s.  `_adapt_read_groups` (called only when
-other reads in the same poll succeeded, so a dead link never triggers it)
-splits a timed-out multi-register group in half for the next poll — a frame-size
-problem is gone after one poll, a silent address is bisected down in ~5 polls —
-and drops a single register after `DEAD_REGISTER_STRIKES` (3) timed-out polls
-(`dead_register_keys`, one warning, until reload).  `self._address_groups` is now
-the coordinator's own copy, so the shared `MODEL_REGISTRY` lists are never
-mutated.  Pinned by `TestNonRespondingGroupIsolation`.
+**The likely cause of the minutes: pymodbus's silent retries.**  pymodbus retries
+a request (`retries=3`) without logging and only logs when every attempt failed.
+Each retry waits the full 5 s timeout, so a link that drops or delays some
+replies adds 5 s per retry invisibly — matching the 5 s steps.  Not yet proven:
+each poll now records `poll_stats` (duration, reads answered/timed out, silent
+retries from `response.retries`, dropped registers), a poll slower than
+`SLOW_POLL_FACTOR` (2) × the interval logs one warning per hour, and
+`poll_stats` + `read_groups` are in Download diagnostics.  Ask the reporter for
+that after updating.
 
-**Poll statistics.**  pymodbus retries silently and logs only a read that fails
-every attempt, so a link that drops some replies adds a full timeout per retry
-without a trace — the likely source of the remaining minutes.  Each poll now
-records `poll_stats` (duration, groups, answered, timed out, silent retries from
-`response.retries`, dead registers); a poll slower than `SLOW_POLL_FACTOR` (2)
-× the update interval logs one warning per hour.  `poll_stats` and the current
-`read_groups` are in Download diagnostics.
+**⚠️ OPEN — does the T-REX-5 even have the ECO-rule block at 8568?**  The
+`trex_five.py` map was **AI-generated, not taken from a Felicity document** —
+treat every address in it as unverified.  8568–8603 (0x2178–0x219B) is the start
+of the economic rules (`econ_rule_1..4_*`, 36 registers, the largest T-REX-5
+read; next is 21).  On T-REX-10 and T-REX-25 this chunk is read every poll
+without trouble; on the reporter's 5K it never answers.  Searched Oct 2026: no
+public 5K register document found; the 5K user guide lists General / Backup /
+ECO mode (so `operating_mode` @ 8451 with Economic=2 is plausible, and a T-REX-6K
+owner confirmed 8451 works in [#201](https://github.com/partach/ha_felicity/issues/201)),
+but nothing places the 5K's time-of-use rules at 0x2178.  Third-party
+suggestions are that the 5K series lacks T-REX-10/25-style ECO rules.
+
+**This matters beyond polling:** the T-REX-5/6 control path
+(`OPERATING_MODE_MODELS`) drives the inverter through `econ_rule_1_enable`
+**@ 8568**.  If the block is absent, the EMS cannot control a 5K/6K at all —
+writes there would also fail.  If confirmed: remove the ECO registers from
+`trex_five.py` (with the evidence in the commit) and decide what the 5K/6K
+control path should be (possibly none — monitoring only).
+
+**Mitigation in code — `_adapt_read_groups`** (runs only when other reads in
+the same poll succeeded, so a dead link never triggers it):
+- a multi-register group that gets no response is split in half for the next
+  poll — a frame-size problem clears after one poll, a silent address is
+  bisected down in ~5 polls;
+- a single register still silent after `DEAD_REGISTER_STRIKES` (3) polls is
+  dropped (`dead_register_keys`, one warning, until reload);
+- **if BOTH halves of a split stay silent, the whole block is dropped** after 3
+  polls in total (once whole, then twice as a silent pair) — the model lacks it.
+  Pure bisection of a fully absent 36-register block would cost >100 timeouts.
+  The warning names the range and first/last key, so the reporter's log will
+  show either "8568–8603 never respond" (block absent → fix the map) or a single
+  register (one bad address in the map).
+- `self._address_groups` is the coordinator's own copy; the shared
+  `MODEL_REGISTRY` lists are never mutated.
+Pinned by `TestNonRespondingGroupIsolation` (one silent address, whole block
+absent = 5 timeouts total, frame too large, dead link never splits).
+
+Diagnostics on a 5K also help: `register_dump.async_read_all` retries a failed
+batch register-by-register, so the dump shows which of 8568–8603 answer.
 
 ⚠️ **OPEN — T-REX-25/50 ECO1_Power entity writes 0.**  The entity is kW
 (index 1); `type_specific._handle_econ_rule_1_power` expects WATTS (the
@@ -2613,7 +2652,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**591 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**590 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

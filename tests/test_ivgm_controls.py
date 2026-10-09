@@ -7,10 +7,7 @@ flags — are now writable.  Everything whose meaning is still a guess must stay
 a sensor.
 """
 
-import asyncio
 import sys
-import types
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -65,32 +62,7 @@ def test_controls_do_not_leak_into_the_shared_family_map():
     assert ivgm._REGISTERS_IVGM_FIFTEEN is ivgm._REGISTERS_IVGM_TWENTY
 
 
-# ---------------------------------------------------------------------------
-# Number entity: scaled registers must not be truncated before scaling
-# ---------------------------------------------------------------------------
-
-def _load_number():
-    number_stub = sys.modules.setdefault("homeassistant.components.number", MagicMock())
-    number_stub.NumberEntity = type("NumberEntity", (), {})
-    duc = sys.modules["homeassistant.helpers.update_coordinator"]
-    if not isinstance(getattr(duc, "CoordinatorEntity", None), type):
-        duc.CoordinatorEntity = type("CoordinatorEntity", (), {})
-    sys.modules.setdefault("custom_components.ha_felicity.coordinator", MagicMock())
-    return load_component("number")
-
-
-@pytest.mark.parametrize("index,value,expected", [
-    (1, 56.4, 56.4),   # 0.1 V register: the write path does x10 then rounds
-    (0, 49.6, 50),     # unscaled register: round, don't truncate
-    (3, 7500.0, 7500), # IVGM rule power, raw watts
-])
-def test_number_write_keeps_precision_for_scaled_registers(index, value, expected):
-    number = _load_number()
-    coord = MagicMock()
-    coord.TypeSpecificHandler.write_type_specific_register = AsyncMock(return_value=True)
-    coord.async_request_refresh = AsyncMock()
-    fake = types.SimpleNamespace(_key="econ_rule_2_voltage", _info={"index": index},
-                                 coordinator=coord, async_write_ha_state=lambda: None)
-    asyncio.run(number.HA_FelicityNumber.async_set_native_value(fake, value))
-    written = coord.TypeSpecificHandler.write_type_specific_register.await_args.args[1]
-    assert written == expected
+def test_voltage_controls_step_in_whole_volts():
+    """HA_FelicityNumber writes int(value); a 0.1 step would be truncated."""
+    for n in range(1, 7):
+        assert ivgm._REGISTERS_IVGM_TWENTY[f"econ_rule_{n}_voltage"]["step"] == 1

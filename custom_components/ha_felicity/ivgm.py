@@ -510,7 +510,7 @@ def _with_eco_controls(registers, max_power_w):
     ONLY the settings whose encoding needs no enum table the document lacks:
       * start/stop time — `HH<<8 | MM`, confirmed on a 15K (six contiguous
         windows decoding to a perfect day);
-      * voltage (0.1 V), SOC (%), power (W — the 8xxx block is watts, see
+      * voltage (whole volts), SOC (%), power (W — the 8xxx block is watts, see
         _as_centi_kilowatt_power) — plain numbers;
       * GridChargeEnable / GenChargeEnable and ECO_TimeOfUse — 0/1 flags.
         ECO_TimeOfUse read 1 with all six rules active on two units.
@@ -535,7 +535,10 @@ def _with_eco_controls(registers, max_power_w):
             rule + "gen_charge_enable": flag,
             rule + "start_time": {"type": "time8bit"},
             rule + "stop_time": {"type": "time8bit"},
-            rule + "voltage": {"type": "number", "min": 40, "max": 60, "step": 0.1},
+            # Whole volts: HA_FelicityNumber writes int(value) (maintainer
+            # decision — registers take whole numbers), so a 0.1 step would
+            # offer decimals that are silently truncated.
+            rule + "voltage": {"type": "number", "min": 40, "max": 60, "step": 1},
             rule + "soc": {"type": "number", "min": 0, "max": 100, "step": 1},
             rule + "power": {"type": "number", "min": 0, "max": max_power_w, "step": 100},
         })
