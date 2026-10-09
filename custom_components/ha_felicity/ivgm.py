@@ -504,15 +504,56 @@ _REGISTERS_IVGM_SCALED = _as_centi_kilowatt_power(_REGISTERS_IVGM_FAMILY)
 #: duplication this module exists to avoid.  (The 15K dump that produced the
 #: scaling evidence above came from a unit configured as a 20K, which is itself
 #: a reminder that the maps are interchangeable and only the nameplate is not.)
-_REGISTERS_IVGM_THREE_PHASE = _REGISTERS_IVGM_SCALED
+def _with_eco_controls(registers, max_power_w):
+    """Expose the six economic (time-of-use) rules as writable controls.
+
+    ONLY the settings whose encoding needs no enum table the document lacks:
+      * start/stop time — `HH<<8 | MM`, confirmed on a 15K (six contiguous
+        windows decoding to a perfect day);
+      * voltage (0.1 V), SOC (%), power (W — the 8xxx block is watts, see
+        _as_centi_kilowatt_power) — plain numbers;
+      * GridChargeEnable / GenChargeEnable and ECO_TimeOfUse — 0/1 flags.
+        ECO_TimeOfUse read 1 with all six rules active on two units.
+
+    Deliberately NOT exposed: `system_mode` (0x2144 Work Mode — values
+    undocumented, gaps doc item 0) and `eco_effectiveweek`: only the all-days
+    value 127 has been observed, so which bit is which weekday is unknown.
+
+    These are user-initiated writes only; the EMS still writes rule 1 itself
+    when grid_mode is on (same as the T-REX-25/50 controls).
+
+    `max_power_w` caps the power controls at the model's nameplate.  The 15K
+    shares the 20K's map by reference, so its cap is 20 kW; the inverter's
+    own limit still applies.
+    """
+    flag = {"type": "select", "options": ["Disabled", "Enabled"]}
+    controls = {"eco_timeofuse": flag}
+    for n in range(1, 7):
+        rule = f"econ_rule_{n}_"
+        controls.update({
+            rule + "grid_charge_enable": flag,
+            rule + "gen_charge_enable": flag,
+            rule + "start_time": {"type": "time8bit"},
+            rule + "stop_time": {"type": "time8bit"},
+            rule + "voltage": {"type": "number", "min": 40, "max": 60, "step": 0.1},
+            rule + "soc": {"type": "number", "min": 0, "max": 100, "step": 1},
+            rule + "power": {"type": "number", "min": 0, "max": max_power_w, "step": 100},
+        })
+    return {
+        key: {**info, **controls[key]} if key in controls else info
+        for key, info in registers.items()
+    }
+
+
+_REGISTERS_IVGM_THREE_PHASE = _with_eco_controls(_REGISTERS_IVGM_SCALED, max_power_w=20000)
 _REGISTERS_IVGM_TWENTY = _REGISTERS_IVGM_THREE_PHASE
 _REGISTERS_IVGM_FIFTEEN = _REGISTERS_IVGM_THREE_PHASE
 
 #: The 8K: the documented register set, on the family's corrected power scale.
-_REGISTERS_IVGM_EIGHT = {
+_REGISTERS_IVGM_EIGHT = _with_eco_controls({
     key: info for key, info in _REGISTERS_IVGM_SCALED.items()
     if key not in _IVGM_EIGHT_UNSUPPORTED
-}
+}, max_power_w=8000)
 
 
 def _combined(registers):

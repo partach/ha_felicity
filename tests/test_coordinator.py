@@ -104,6 +104,10 @@ def _make_coordinator(**overrides):
     coord.connected = False
     coord._read_backoff_s = 0.0
     coord._read_backoff_until = 0.0
+    coord._group_timeout_strikes = {}
+    coord.dead_register_keys = set()
+    coord.poll_stats = {}
+    coord._last_slow_poll_warning = 0.0
     coord._last_register_set = None
     coord._consumption_store = None
     coord._consumption_store_loaded = False
@@ -516,3 +520,86 @@ class TestGridModeOffNeverWrites:
                                       "rule1_weekday": "auto"}
         await coord._apply_rule1_auto_settings()
         coord.TypeSpecificHandler.write_type_specific_register.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# A read group that never answers is bisected, and a dead register dropped
+# ---------------------------------------------------------------------------
+
+class TestNonRespondingGroupIsolation:
+    """T-REX-5 via a Waveshare TCP-to-RTU gateway at 2400 baud: the 36-register
+    read at 8568 never answered while every other read worked, costing ~20 s
+    (timeout x retries) on every poll."""
+
+    BLOCK = range(8568, 8604)          # 36 registers, like the report
+
+    def _coord(self, answers):
+        regs = {f"r{a}": {"address": a, "size": 1, "name": f"R{a}", "index": 0}
+                for a in self.BLOCK}
+        regs["soc"] = {"address": 4400, "size": 1, "name": "SOC", "index": 0}
+        coord = _make_coordinator(
+            register_map=regs,
+            groups=[{"start": 4400, "count": 1, "keys": ["soc"]},
+                    {"start": 8568, "count": 36, "keys": [f"r{a}" for a in self.BLOCK]}],
+        )
+        coord.client.close = MagicMock()
+
+        async def read(address, count, device_id):
+            if not answers(address, count):
+                raise OSError("No response received after 3 retries")
+            ok = MagicMock()
+            ok.isError.return_value = False
+            ok.registers = [1] * count
+            ok.retries = 0
+            return ok
+
+        coord.client.read_holding_registers = AsyncMock(side_effect=read)
+        return coord
+
+    @staticmethod
+    async def _polls(coord, n):
+        for _ in range(n):
+            coord._read_backoff_until = 0.0
+            with contextlib.suppress(Exception):   # later stages are not under test
+                await coord._async_update_data()
+
+    def _covered(self, coord):
+        return {a for g in coord._address_groups
+                for a in range(g["start"], g["start"] + g["count"])}
+
+    @pytest.mark.asyncio
+    async def test_one_silent_address_is_isolated_and_dropped(self):
+        coord = self._coord(lambda a, n: not (a <= 8590 < a + n))
+        await self._polls(coord, 12)
+        assert coord.dead_register_keys == {"r8590"}
+        assert self._covered(coord) == (set(self.BLOCK) - {8590}) | {4400}
+        before = coord.client.read_holding_registers.await_count
+        await self._polls(coord, 1)                  # steady state: no timeouts
+        assert coord.poll_stats["groups_timed_out"] == []
+        assert coord.client.read_holding_registers.await_count > before
+
+    @pytest.mark.asyncio
+    async def test_frame_too_large_splits_once_and_drops_nothing(self):
+        coord = self._coord(lambda a, n: n <= 20)
+        await self._polls(coord, 3)
+        assert coord.dead_register_keys == set()
+        assert self._covered(coord) == set(self.BLOCK) | {4400}
+        assert all(g["count"] <= 20 for g in coord._address_groups)
+
+    @pytest.mark.asyncio
+    async def test_dead_link_never_splits_or_drops(self):
+        coord = self._coord(lambda a, n: False)
+        groups = list(coord._address_groups)
+        await self._polls(coord, 5)
+        assert coord._address_groups == groups
+        assert coord.dead_register_keys == set()
+
+    @pytest.mark.asyncio
+    async def test_shared_model_groups_are_not_mutated(self):
+        shared = [{"start": 4400, "count": 1, "keys": ["soc"]},
+                  {"start": 8568, "count": 36, "keys": [f"r{a}" for a in self.BLOCK]}]
+        coord = self._coord(lambda a, n: n <= 20)
+        coord._address_groups = list(shared)
+        snapshot = [dict(g) for g in shared]
+        await self._polls(coord, 2)
+        assert shared == snapshot

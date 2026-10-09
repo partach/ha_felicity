@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **574**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **591**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -141,7 +141,8 @@ tests/
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
-└── test_register_dump.py   # Dump decodes like the coordinator; reads only documented addresses
+├── test_register_dump.py   # Dump decodes like the coordinator; reads only documented addresses
+└── test_ivgm_controls.py   # IVGM: only the ECO-rule settings are writable; number writes keep precision
 
 pytest.ini                   # testpaths + asyncio mode
 requirements-test.txt        # pytest, pytest-asyncio, pulp (no Home Assistant)
@@ -2022,10 +2023,67 @@ format 4.1 8K Setting Quantity Information…" — the section heading after the
 last telemetry row, not a register.  `register_dump.NOT_REGISTERS` lists both
 artifacts, so `test_ivgm_map_is_covered_by_the_document` keeps them out.
 
-**Why the IVGM has no Controls:** every IVGM register is a sensor (no
-`type: select/number/time8bit`), unlike TREX-25/50 (42 selects, 19 numbers, 14
-times).  Deliberate for now: the document defines no enum values, so a select
-would be guessing what each option writes.
+**IVGM controls (Oct 2026):** the IVGM map shipped all-sensor because the
+document defines no enum values.  `ivgm._with_eco_controls` now exposes only the
+ECO-rule settings whose encoding needs no enum table: the six rules' start/stop
+time (`time8bit`, `HH<<8|MM` hardware-confirmed), voltage (40–60 V, 0.1 V), SOC
+(0–100 %), power (W, capped at the nameplate — 8000 on the 8K map, 20000 on the
+shared 15K/20K map) and the Grid/GenChargeEnable flags, plus `ECO_TimeOfUse`
+(0/1; read 1 with rules active on two units).  Still read-only on purpose:
+`system_mode` (Work Mode values unknown) and `eco_effectiveweek` (only 127 seen,
+so the bit order is unknown).  It copies entries, so `_REGISTERS_IVGM_SCALED`
+stays all-sensor.  Pinned by `tests/test_ivgm_controls.py`.
+
+**`HA_FelicityNumber` truncated scaled values (fixed with it):** it wrote
+`int(value)`, so a 0.1 V register set to 56.4 V wrote 56 V.  Scaled indices
+(1/2/4/8/9/10) now pass the unrounded value — the write path multiplies, then
+rounds.  Affects every model's voltage numbers.
+
+### 8d. Register sets never reduced polling; a silent block cost ~20 s per poll (Oct 2026)
+
+Customer report: T-REX-5 behind a Waveshare RS485-to-Ethernet gateway (Modbus
+TCP→RTU, **2400 baud**), register set "Basic", 15 s interval — sensors updated
+every ~5 min and `Read error at address 8568, count: 36 … No response received
+after 3 retries` every poll.
+
+⚠️ **OPEN — the register set has no effect on polling.**  `async_setup_entry`
+hands the coordinator `model_config["register_groups"]`, which `const` builds
+from the **full** map, and step 3 ("auto-include missing registers referenced by
+groups") then re-adds every register those groups mention to
+`selected_registers`.  So every install polls — and creates entities for — the
+full map whatever set is chosen (8568/36 exists only in the T-REX-5 *full*
+set).  Making sets effective is NOT a one-line fix: entities are built from
+`coordinator.register_map`, so users on the default `basic` would lose most
+entities, and the sets were never validated against what the EMS, the combined
+sensors and the cards need (e.g. the IVGM `basic` set lists combined keys like
+`total_pv_power` but not their pv1–pv4 sources).  Needs an audit of each set
+first — maintainer decision pending.
+
+**Fixed — a group that never answers is isolated.**  8568/36 is by far the
+largest T-REX-5 read (next is 21); at 2400 baud its 77-byte reply takes ~0.32 s
+on the wire, so a gateway RTU timeout or one silent address can kill it.  Each
+miss costs timeout × (retries+1) ≈ 20 s.  `_adapt_read_groups` (called only when
+other reads in the same poll succeeded, so a dead link never triggers it)
+splits a timed-out multi-register group in half for the next poll — a frame-size
+problem is gone after one poll, a silent address is bisected down in ~5 polls —
+and drops a single register after `DEAD_REGISTER_STRIKES` (3) timed-out polls
+(`dead_register_keys`, one warning, until reload).  `self._address_groups` is now
+the coordinator's own copy, so the shared `MODEL_REGISTRY` lists are never
+mutated.  Pinned by `TestNonRespondingGroupIsolation`.
+
+**Poll statistics.**  pymodbus retries silently and logs only a read that fails
+every attempt, so a link that drops some replies adds a full timeout per retry
+without a trace — the likely source of the remaining minutes.  Each poll now
+records `poll_stats` (duration, groups, answered, timed out, silent retries from
+`response.retries`, dead registers); a poll slower than `SLOW_POLL_FACTOR` (2)
+× the update interval logs one warning per hour.  `poll_stats` and the current
+`read_groups` are in Download diagnostics.
+
+⚠️ **OPEN — T-REX-25/50 ECO1_Power entity writes 0.**  The entity is kW
+(index 1); `type_specific._handle_econ_rule_1_power` expects WATTS (the
+coordinator's unit) and divides by 1000 on kW models, so setting 5 kW from the
+entity writes `round(0.005)` = 0.  Rules 2–6 have no handler and are fine; the
+IVGM is fine (its entity is already watts).
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -2555,7 +2613,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**574 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**591 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

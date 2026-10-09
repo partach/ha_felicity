@@ -7,6 +7,15 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **IVGM: economic-rule settings are now controls.** For each of the six ECO
+  rules: start/stop time, voltage, SOC, power and grid/generator charge enable,
+  plus ECO_TimeOfUse. Work mode and the weekday mask stay read-only until their
+  values are confirmed.
+- **Number controls no longer truncate decimals** (setting 56.4 V wrote 56 V).
+- **A read that never gets an answer no longer slows every poll.** When one
+  block keeps timing out while the rest of the inverter answers, it is split up
+  automatically, and a single register that never answers is skipped. Slow polls
+  are now logged with the reason, and Download diagnostics shows poll timing.
 - **An unresponsive inverter no longer hangs Home Assistant's startup.** When
   reads keep timing out, the integration now stops after 3, pauses polling (30 s,
   growing to 5 min) and retries, instead of spending ~20 s on every register

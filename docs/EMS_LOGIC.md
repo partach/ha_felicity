@@ -778,6 +778,12 @@ When **3 consecutive** register reads get no response at all (a timeout, not a M
 
 An exception *reply* (e.g. illegal address) counts as a live link and resets the streak.
 
+### Non-Responding Read Groups
+
+When a read gets no response while other reads in the same poll succeed, the link is fine and that read is the problem (a silent address, or a frame too large for a slow gateway). It is split in half for the next poll; halves that answer stay split. A single register that still gets no response in 3 polls is no longer polled until the integration reloads (one warning). A dead link never triggers this: with nothing answered, the backoff above applies instead.
+
+Each poll records its duration, reads answered / timed out and pymodbus's silent retries; a poll slower than twice the update interval logs one warning per hour. Both are in Download diagnostics.
+
 ---
 
 ## 8. Rule 1 Window Conflict Detection

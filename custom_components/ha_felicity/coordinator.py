@@ -59,6 +59,19 @@ MAX_CONSECUTIVE_READ_TIMEOUTS = 3
 READ_BACKOFF_INITIAL_S = 30
 READ_BACKOFF_MAX_S = 300
 
+# Non-responding read groups.  Some firmware (or gateway) stays SILENT on part
+# of a block instead of returning a Modbus exception — e.g. a T-REX-5 behind a
+# Waveshare TCP-to-RTU gateway at 2400 baud never answered the 36-register read
+# at 8568 while every other read worked, costing ~20 s every poll.  When a
+# multi-register group times out while other reads in the same poll succeed,
+# it is split in half for the next poll (bisecting to the culprit); a single
+# register that still times out in DEAD_REGISTER_STRIKES polls is dropped from
+# polling until the integration reloads.
+DEAD_REGISTER_STRIKES = 3
+# A poll slower than this many update intervals logs one warning (per hour)
+# with the statistics needed to diagnose it.
+SLOW_POLL_FACTOR = 2
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -93,7 +106,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.client = client
         self.slave_id = slave_id
         self.register_map = register_map
-        self._address_groups = groups
+        self._address_groups = list(groups)   # own copy: adaptive splitting replaces entries
+        self._group_timeout_strikes: dict[tuple[int, int], int] = {}
+        self.dead_register_keys: set[str] = set()
+        self.poll_stats: dict = {}
+        self._last_slow_poll_warning: float = 0.0
         self.config_entry = config_entry
         self._last_register_set: str | None = None
         self.model_combined = model_combined
@@ -2480,6 +2497,82 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         except Exception as err:  # best effort
             _LOGGER.debug("Closing Modbus client failed: %s", err)
 
+    def _split_group(self, group: dict) -> list[dict]:
+        """Split a read group into two contiguous halves at a key boundary."""
+        keys = group["keys"]
+        halves = []
+        for part in (keys[:len(keys) // 2], keys[len(keys) // 2:]):
+            infos = [self.register_map[k] for k in part]
+            halves.append({
+                "start": infos[0]["address"],
+                "count": sum(i.get("size", 1) for i in infos),
+                "keys": list(part),
+            })
+        return halves
+
+    def _adapt_read_groups(self, timed_out: list[dict]) -> None:
+        """Isolate reads that time out while the rest of the poll succeeds.
+
+        Only called when at least one read in the same poll was answered, so a
+        dead link (handled by the backoff) never splits or drops anything.
+        """
+        replace: dict[int, list[dict]] = {}
+        for group in timed_out:
+            if any(k not in self.register_map for k in group["keys"]):
+                continue
+            if len(group["keys"]) > 1:
+                halves = self._split_group(group)
+                replace[id(group)] = halves
+                _LOGGER.warning(
+                    "Read at %d (count %d) got no response while other reads succeeded "
+                    "— splitting it into %s to isolate the cause",
+                    group["start"], group["count"],
+                    ", ".join(f"{h['start']}/{h['count']}" for h in halves),
+                )
+                continue
+            sig = (group["start"], group["count"])
+            strikes = self._group_timeout_strikes.get(sig, 0) + 1
+            self._group_timeout_strikes[sig] = strikes
+            if strikes >= DEAD_REGISTER_STRIKES:
+                replace[id(group)] = []
+                self.dead_register_keys.update(group["keys"])
+                _LOGGER.warning(
+                    "Register %s (address %d) never responds on this inverter/gateway "
+                    "— no longer polled until the integration is reloaded",
+                    group["keys"][0], group["start"],
+                )
+        if replace:
+            self._address_groups = [
+                g for group in self._address_groups
+                for g in replace.get(id(group), [group])
+            ]
+
+    def _record_poll_stats(self, started: float, groups_ok: int,
+                           timed_out: list[dict], silent_retries: int) -> None:
+        """Keep the last poll's timing; warn (hourly) when polling is slow."""
+        duration = time.monotonic() - started
+        self.poll_stats = {
+            "duration_s": round(duration, 1),
+            "groups": len(self._address_groups),
+            "groups_ok": groups_ok,
+            "groups_timed_out": [f"{g['start']}/{g['count']}" for g in timed_out],
+            "silent_retries": silent_retries,
+            "dead_registers": sorted(self.dead_register_keys),
+        }
+        update_interval = getattr(self, "update_interval", None)
+        interval = update_interval.total_seconds() if update_interval else 10
+        if (duration > SLOW_POLL_FACTOR * interval
+                and time.monotonic() - self._last_slow_poll_warning > 3600):
+            self._last_slow_poll_warning = time.monotonic()
+            _LOGGER.warning(
+                "Polling the inverter took %.0fs (update interval %.0fs): %d of %d "
+                "reads answered, %d without response, %d silent retries (each costs "
+                "a full timeout). On a slow serial link, check the gateway's RTU "
+                "timeout and raise the baud rate if the inverter allows.",
+                duration, interval, groups_ok, len(self._address_groups),
+                len(timed_out), silent_retries,
+            )
+
     async def _async_update_data(self) -> dict:
         """Fetch latest data from inverter."""
         remaining = self._read_backoff_until - time.time()
@@ -2496,6 +2589,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         new_data = {}
         any_read_ok = False
         consecutive_timeouts = 0
+        poll_started = time.monotonic()
+        timed_out_groups: list[dict] = []
+        silent_retries = 0
+        groups_ok = 0
 
         try:
             for group in self._address_groups:
@@ -2509,6 +2606,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as err:
                     _LOGGER.error("Read error at address %d, count: %d error:%s", start_addr, count, err)
+                    timed_out_groups.append(group)
                     consecutive_timeouts += 1
                     if consecutive_timeouts >= MAX_CONSECUTIVE_READ_TIMEOUTS:
                         if not any_read_ok:
@@ -2526,6 +2624,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                 # Any response — even a Modbus exception — proves the link is up.
                 consecutive_timeouts = 0
+                # pymodbus retries silently; each retry cost a full timeout.
+                retries = getattr(result, "retries", 0)
+                if isinstance(retries, int):
+                    silent_retries += retries
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
                     continue
@@ -2535,6 +2637,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     self._read_backoff_s = 0.0
                     self._read_backoff_until = 0.0
                 any_read_ok = True
+                groups_ok += 1
 
                 registers = result.registers
                 pos = 0
@@ -2579,6 +2682,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
 
                     new_data[key] = value
+            self._record_poll_stats(poll_started, groups_ok, timed_out_groups, silent_retries)
+            if any_read_ok and timed_out_groups:
+                self._adapt_read_groups(timed_out_groups)
+
             # dynamically check which system we have an appropriated settings.
             operational_mode = self.TypeSpecificHandler.determine_operational_mode(new_data)
             new_data["operational_mode"] = operational_mode
