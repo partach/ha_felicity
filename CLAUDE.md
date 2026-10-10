@@ -110,9 +110,12 @@ this rule exists to prevent — don't.
 
 ## Project Overview
 
-**ha_felicity** is a Home Assistant integration for Felicity solar inverters (TREX-5, TREX-10, TREX-25, TREX-50). It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
+**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50** and the **IVGM family (8K / 15K / 20K, provisional)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
 
-**Version**: 0.9.9.6
+**Version**: see `custom_components/ha_felicity/manifest.json` — the only copy
+that matters.  A number written here goes stale the first time someone bumps the
+manifest without reading this far; it said "0.9.9.6" while the integration
+shipped 1.3.x.
 **Communication**: Modbus TCP/RTU via pymodbus
 **Architecture**: Local polling (10-second update cycle)
 
@@ -152,10 +155,23 @@ tests/
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
-├── test_register_dump.py   # Dump decodes like the coordinator; reads only documented addresses
-├── test_ivgm_controls.py   # IVGM: only the ECO-rule settings are writable, power capped, whole volts
-├── day_replay.py           # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
-└── test_day_replay.py      # Night replays: what actually reaches the inverter registers
+├── test_register_dump.py    # Dump decodes like the coordinator; reads only documented addresses
+├── test_ivgm_controls.py    # IVGM: only the ECO-rule settings are writable, power capped, whole volts
+├── test_model_coverage.py   # Every model in exactly ONE control path; IVGM address +
+│                            #   name provenance against the frozen protocol transcript
+│                            #   (custom_components/ha_felicity/ivgm_documented_registers.json)
+├── test_power_scaling.py    # Per-model telemetry/setpoint scaling — measured, never inherited
+├── test_card_contract.py    # The cards' name-based coupling to the register maps
+├── day_replay.py            # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
+└── test_day_replay.py       # Replays: what actually reaches the inverter registers
+
+tools/
+├── ems_simulator.py         # Runs scenarios through BOTH engines, checks expectations,
+│                            #   renders a chart per scenario (CI-gated)
+├── scenarios.py             # The scenario library — customer cases live here
+├── check_milp.py            # Standalone solver probe for "why is MILP not loading?"
+├── ivgm_dump.py             # Read-only register dump without HA (same code as diagnostics)
+└── sim_output/              # Generated charts
 
 pytest.ini                   # testpaths + asyncio mode
 requirements-test.txt        # pytest, pytest-asyncio, pulp (no Home Assistant)
@@ -203,26 +219,36 @@ the whole remaining-today + tomorrow horizon as a single optimisation and
 lets a solver find the cost-optimal plan, so cross-slot/cross-day
 interactions can't fall through the cracks.
 
-**Engine selection**: `scheduler_engine` config option (**`milp` default** /
-`greedy`), exposed as a select entity ("Scheduler Engine") and in the EMS
+**Engine selection**: `scheduler_engine` config option (**`greedy` default** /
+`milp`), exposed as a select entity ("Scheduler Engine") and in the EMS
 card's Advanced settings ("Scheduler"). When `milp`,
 `calculate_schedule` calls `_run_milp_or_none()`, which tries the solver
 and **silently falls back to greedy** on any failure (pulp missing,
 infeasible, timeout, non-optimal). The greedy path stays the safety net —
 MILP failures never break the EMS.
 
-**Why MILP is the default (robustness)**: the greedy two-day reconstruction
+⚠️ **This section used to say MILP was the default and was wrong for months**
+(corrected Oct 2026).  `config_flow._get_default_options` sets `"greedy"`, and
+`__init__.py` ~274 migrates any existing `milp` install **back to greedy** —
+the exact opposite of the "one-time migration bumps auto-greedy installs to
+milp" this paragraph used to claim.  The decision is recorded at the top of
+this file ("Engine default = GREEDY, June 2026"); the MILP section simply never
+got updated when the flip was reverted, so the document contradicted itself and
+the stale half described a migration that runs the other way.  **If you are
+about to act on something in this section, check it against the code first.**
+
+**What MILP is actually for**: the greedy two-day reconstruction
 (`_compute_tomorrow_schedule`) is the fragile, non-deterministic part — on a
 real arbitrage it scheduled 1 charge slot where the MILP scheduled 10, and a
 1.4% reserve change flipped its tomorrow decisions on/off.  The MILP optimises
 the whole remaining-today + tomorrow horizon jointly, so cross-slot/cross-day
-and cross-mode behaviour is uniform and deterministic.  This is also why the
+and cross-mode behaviour is uniform and deterministic.  That is also why the
 night-aware reserve + boost-drop apply to ALL modes in the MILP but only to
 from_grid in greedy — the MILP stays robust with them everywhere; the greedy
-two-day path destabilised in both/to_grid.  Greedy remains the dependency-free
-fallback; MILP auto-disables to greedy when CBC/pulp is unavailable, so the
-default flip can't break any install.  A one-time migration bumps existing
-auto-`greedy` installs to `milp` (marker-guarded; see `__init__.py`).
+two-day path destabilised in both/to_grid.  So MILP is the better engine on
+cross-day arbitrage and is worth switching to deliberately; greedy is the
+default because it is dependency-free and field-proven, **not** because it is
+better at everything.
 
 **MILP feasibility guarantee** (fixed): a customer log showed ~24% of MILP
 runs returning `Infeasible` (158/672, clustered 16:00–18:00) → falling back to
@@ -1892,6 +1918,38 @@ _transition_to_state(new_state):
 
 ---
 
+### Releasing — HACS installs from TAGS, not from `main`
+
+`hacs.json` has `zip_release: false`, so HACS offers users the repository's
+**release tags**.  Merging to `main` ships nothing.  `manifest.json` version and
+the newest tag drift apart constantly — at the time of writing `main` is on
+**1.3.11** while the newest tag is **v1.3.9**, i.e. two versions of merged work
+that no user can install.  When someone says "the customer can't select the new
+model", check `git ls-remote --tags origin` before debugging any code; that is
+exactly what the "customer can't select IVGM" report turned out to be.
+
+**Never move a published tag.**  Two incidents in one session:
+
+- `v1.3.8` already existed, pointing at the commit *before* a scaling fix.
+  Re-tagging it would have changed what every existing installer had.  The fix
+  shipped as `1.3.9` instead.
+- `v1.3.9` was then tagged at a commit that predated the IVGM **setpoint** fix,
+  so the released 1.3.9 carries a known 10× setpoint error.  The CHANGELOG had
+  to be split afterwards, because its `[1.3.9]` section described work that
+  landed after the tag.
+
+So: **write the changelog entry for what a tag actually contains**, verified with
+`git log --oneline <prev-tag>..<tag>`, not for what was in flight when it was
+written.  An entry that over-claims is worse than none — it tells a user a fix is
+in a release that does not have it.
+
+Tagging and releasing is the **maintainer's** action, not an agent's: it is
+outward-facing and irreversible for anyone who has already installed it.  (This
+session also could not push tags at all — GitHub returned `HTTP 403` on tag refs
+while branch pushes to the same repo succeeded.)
+
+---
+
 ## Known Issues and Gotchas
 
 ### 1. Code Duplication Between coordinator.py and ems.py
@@ -2425,6 +2483,40 @@ the evening peak.  That is the customer's complaint, end to end.
 a 2 kW load, so the load always fits.  It pins *that* surplus scheduling happens,
 never whether the load fits inside the surplus.  Use a real `pv_bell` shoulder
 when testing this.
+
+### 11. `price_threshold` goes stale when a plan buys nothing — OPEN (Sept 2026)
+
+Found while diagnosing the report above; **not yet fixed**.
+
+`result.price_threshold` is only assigned when slots are actually selected
+(`ems.py` ~2060 / ~2764 / ~3215: `max(charge_prices)` or `min(sell_prices)`).
+When a plan buys and sells nothing it stays `None` — and the coordinator only
+overwrites on a non-`None`:
+
+```python
+# coordinator.py ~1175
+if result.price_threshold is not None:
+    self.price_threshold = result.price_threshold
+# coordinator.py ~2569 — auto mode only seeds it ONCE
+elif self.price_threshold is None:
+    self.price_threshold = manual_threshold
+```
+
+So once any plan has bought, a later plan that buys nothing can neither update
+nor clear the value: **the threshold sticks at the last buying plan's max charge
+price until HA restarts.**  Reproduced — the same customer inputs at a lower SOC
+give `charge slots=[16, 23], price_threshold=0.295`, which is exactly the
+0.295 the card displayed hours later next to a schedule that bought nothing.
+
+Consequences: the card's THRESHOLD figure and its yellow threshold line are
+historical, not live; `available_slots_at_threshold` / `cheap_slots_remaining` /
+`charge_likelihood` are computed against it; and in `both` mode the card's
+manual slot-override intent uses it to decide charge-vs-sell.  Harmless in
+`price_mode = manual`, which recomputes it every tick.
+
+Fixing it means deciding what the threshold *means* on a day with no purchase —
+probably "the cheapest remaining price", or explicitly `None` so the card can
+hide the line rather than draw a stale one.
 
 ---
 
@@ -3006,6 +3098,19 @@ were added Sept 2026 — CI previously ran lint only, which is why a dead test f
 went unnoticed.  The ruff pin is deliberate: it was unpinned, and ruff 0.16
 expanded its default rule set from 59 rules to 413, turning a green build into
 211 errors with no code change.
+
+⚠️ **Run the pinned ruff, not whatever is on `PATH`.**  These containers ship a
+`ruff` at `/root/.local/bin/ruff` that shadows the pin — it has been an *older*
+build (0.15.8), and it disagrees in both directions: it reports E402 on
+`tests/test_model_coverage.py` (deliberate mid-file imports, which 0.16.7
+accepts) while missing what 0.16 added.  Either version alone will tell you the
+build is broken when it is not, or green when CI will fail.  Use
+`python -m ruff check .` after `pip install ruff==0.16.7`, which is what CI runs.
+
+Also note a fresh container may have **no** test dependencies at all —
+`python -m pytest` fails with "No module named pytest" until you
+`pip install -r requirements-test.txt`.  That is a missing toolchain, not a
+broken harness; don't go looking for a code cause.
 
 ---
 
