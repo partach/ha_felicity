@@ -6827,3 +6827,35 @@ class TestManualOverridesWinValidation:
     def test_past_slots_are_left_alone(self):
         merged, dropped_ems = self._merge({2: "charge"}, {}, start=8)
         assert merged == {2: "charge"} and dropped_ems == []
+
+
+class TestValidationTieBreaksKeepTheEarliestSlot:
+    """Among EQUAL prices, SOC validation gives up the LATEST slot.
+
+    The plan is re-made every poll.  Dropping the earliest equal-priced slot
+    made the plan slide forward with the clock: an 18:00-21:00 sell peak sold
+    only in its last hour and dropped the executing slot mid-slot; a cheap
+    midday charge window kept drifting until tomorrow's prices arrived and took
+    the whole deficit (tests/test_day_replay.py, CLAUDE.md 8g)."""
+
+    N = 96
+
+    def _validate(self, remaining, charge, discharge, soc_kwh, cap=20.0, floor=8.0):
+        return _validate_schedule_soc(
+            remaining, set(charge), set(discharge), soc_kwh, 0.0, {}, 15, 1.0,
+            cap, floor, 1.25, 1.0, inverter_max_power_kw=10.0, safe_power_kw=5.0)
+
+    def test_underflow_gives_up_the_latest_equal_priced_sell(self):
+        remaining = [(i, 0.40 if 72 <= i < 84 else 0.20) for i in range(64, self.N)]
+        _, kept = self._validate(remaining, [], range(72, 84), soc_kwh=13.0)  # room for 4
+        assert kept == {72, 73, 74, 75}
+
+    def test_overflow_gives_up_the_latest_equal_priced_charge(self):
+        remaining = [(i, 0.08) for i in range(40, 64)]
+        kept, _ = self._validate(remaining, range(40, 52), [], soc_kwh=15.0)   # room for 4
+        assert kept == {40, 41, 42, 43}
+
+    def test_a_cheaper_slot_still_beats_an_earlier_one(self):
+        remaining = [(i, 0.10 if i < 44 else 0.08) for i in range(40, 64)]
+        kept, _ = self._validate(remaining, range(40, 48), [], soc_kwh=15.0)
+        assert kept == {44, 45, 46, 47}

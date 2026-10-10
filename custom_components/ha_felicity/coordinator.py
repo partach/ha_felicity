@@ -719,10 +719,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         wh_val = float(value)
                         if ts.date() == today_date:
                             hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + wh_val / 1000.0
+                            # TODAY's remaining only.  wh_hours spans several
+                            # days; summing every future hour counted all of
+                            # tomorrow's sun as still to come today (~2x), so
+                            # the EMS under-bought on a day the sun fell short
+                            # (found by the day-replay harness).
+                            if ts >= now:
+                                remaining_wh += wh_val
                         elif ts.date() == tomorrow_date:
                             hourly_kwh_tomorrow[ts.hour] = hourly_kwh_tomorrow.get(ts.hour, 0.0) + wh_val / 1000.0
-                        if ts >= now:
-                            remaining_wh += wh_val
                 remaining = remaining_wh / 1000.0
             except Exception as err:
                 _LOGGER.debug("Could not parse forecast hourly data: %s", err)
@@ -2961,47 +2966,58 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             desired_state = self._determine_energy_state(battery_soc)
 
                             # Anti-conflict guard: don't export while the house is
-                            # importing (e.g. EV charging pulls from grid while we'd
-                            # be selling battery — wasteful round-trip).  Uses
-                            # hysteresis to avoid flipping discharge → idle → discharge
-                            # on transient load spikes (kettle, microwave, EV start):
+                            # importing (e.g. an EV or oven pulls more than the
+                            # discharge power — the battery would be better spent
+                            # covering the house in self-use).  Filters spikes:
                             #   - small/moderate import (200-2000W) must persist for
                             #     ≥ANTICONFLICT_MIN_TICKS consecutive cycles
                             #   - large import (>2000W) suppresses immediately
-                            #   - once suppression ends, hold a cooldown window
-                            #     before allowing re-suppression
+                            #   - a suppression HOLDS discharge off for
+                            #     ANTICONFLICT_HOLD_S, then allows one retry.
+                            # The hold is what stops the flip-flop: once idle, the
+                            # battery covers the house in self-use, the import
+                            # disappears, and the guard used to let discharge
+                            # straight back in — the import returned, suppress
+                            # again, every minute for as long as the load ran (156
+                            # rule writes in two hours in the day-replay harness).
+                            # Its old 60 s "cooldown" only stopped RE-SUPPRESSION.
                             ANTICONFLICT_SOFT_THRESHOLD_W = 200
                             ANTICONFLICT_HARD_THRESHOLD_W = 2000
                             ANTICONFLICT_MIN_TICKS = 2
-                            ANTICONFLICT_COOLDOWN_S = 60
+                            ANTICONFLICT_HOLD_S = 300
                             grid_power = None
-                            if desired_state == "discharging":
+                            if desired_state == "discharging" and time.time() < self._anticonflict_suppress_until_ts:
+                                _LOGGER.debug(
+                                    "Anti-conflict: discharge held off for %.0fs more",
+                                    self._anticonflict_suppress_until_ts - time.time())
+                                desired_state = "idle"
+                            elif desired_state == "discharging":
                                 if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
                                     grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
                                 if grid_power is not None and grid_power > ANTICONFLICT_SOFT_THRESHOLD_W:
                                     self._anticonflict_import_ticks += 1
-                                    in_cooldown = time.time() < self._anticonflict_suppress_until_ts
                                     sustained = self._anticonflict_import_ticks >= ANTICONFLICT_MIN_TICKS
                                     large = grid_power > ANTICONFLICT_HARD_THRESHOLD_W
-                                    if (sustained or large) and not in_cooldown:
+                                    if sustained or large:
                                         _LOGGER.info(
-                                            "Anti-conflict: suppressing discharge — grid importing "
-                                            "%.0fW (sustained=%d ticks, large=%s) — would sell "
-                                            "battery while buying from grid",
-                                            grid_power, self._anticonflict_import_ticks, large,
+                                            "Anti-conflict: suppressing discharge for %ds — grid "
+                                            "importing %.0fW (sustained=%d ticks, large=%s) — "
+                                            "would sell battery while buying from grid",
+                                            ANTICONFLICT_HOLD_S, grid_power,
+                                            self._anticonflict_import_ticks, large,
                                         )
                                         desired_state = "idle"
+                                        self._anticonflict_import_ticks = 0
                                         self._anticonflict_suppress_until_ts = (
-                                            time.time() + ANTICONFLICT_COOLDOWN_S
+                                            time.time() + ANTICONFLICT_HOLD_S
                                         )
                                     else:
                                         _LOGGER.debug(
                                             "Anti-conflict: tolerating brief import %.0fW "
-                                            "(tick %d/%d, cooldown=%s) — keeping discharge",
+                                            "(tick %d/%d) — keeping discharge",
                                             grid_power,
                                             self._anticonflict_import_ticks,
                                             ANTICONFLICT_MIN_TICKS,
-                                            in_cooldown,
                                         )
                                 else:
                                     if self._anticonflict_import_ticks > 0:

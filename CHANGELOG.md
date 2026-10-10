@@ -7,6 +7,16 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **Selling starts when the peak starts.** With several evening slots at the
+  same top price, the plan kept sliding later and sold only in the last hour
+  (the rest at the night price), switching off and on mid-slot. A cheap midday
+  charging window could drift the same way until it was missed. Fixed.
+- **No more on/off every minute when a big load runs during a sale.** When the
+  house imports while selling, discharge now pauses for 5 minutes before
+  retrying, instead of toggling every poll.
+- **Remaining solar today no longer counts tomorrow's sun.** With a
+  Forecast.Solar entity the EMS thought about twice the real remaining PV was
+  still coming, and bought too little on a disappointing day.
 - **Manual overrides survive a restart.** Overrides set in the evening for the
   night were moved onto the wrong day by any Home Assistant restart before
   midnight (e.g. installing an update) and then cleared — so the night charge

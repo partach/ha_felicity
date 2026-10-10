@@ -580,7 +580,7 @@ Only positive-price slots are considered. When `block_export_on_negative_price =
 
 ### Step 3: SOC Validation
 
-Simulates forward with discharge actions. **Critically, the floor used here is `reserve_target`, not `discharge_min_pct`.** If any discharge would cause SOC to drop below reserve_target, the least profitable discharge slot is removed.
+Simulates forward with discharge actions. **Critically, the floor used here is `reserve_target`, not `discharge_min_pct`.** If any discharge would cause SOC to drop below reserve_target, the least profitable discharge slot is removed. **Among equal prices the latest is removed** (likewise, overflow pruning removes the latest of equally-dear charge slots): the plan is re-made every poll, and removing the earliest made an equal-priced peak or cheap window slide forward with the clock — selling only in the last hour of the peak, dropping the slot being executed.
 
 ### Result
 A set of slot indices marked "discharge".
@@ -764,9 +764,9 @@ Prevents discharge during grid import (e.g., EV charging pulls from grid while t
 |---|---|
 | Small/moderate import (200–2000W) | Must persist ≥ 2 consecutive cycles (~20s) before suppression |
 | Large import (> 2000W) | Suppresses immediately (genuine sustained draw) |
-| After suppression ends | 60-second cooldown blocks re-suppression |
+| After a suppression | Discharge is held off for 5 minutes, then retried once |
 
-This prevents the inverter from flipping between discharge → idle → discharge every ~16s on short load spikes (kettle, microwave, EV startup).
+This prevents the inverter from flipping between discharge → idle → discharge on short load spikes (kettle, microwave, EV startup) **and** under a sustained heavy load: once idle, the battery covers the house in self-use and the import disappears, so without the hold the guard would let discharge straight back in and suppress it again every poll for as long as the load runs.
 
 ### Midnight Rollover
 
@@ -1013,3 +1013,7 @@ Write Modbus registers if state changed
   ▼
 Check Rule 1 window conflict → surface warning if needed
 ```
+
+### PV Forecast: Remaining Energy
+
+`pv_forecast_remaining` is the sum of TODAY's forecast hours from now on. Forecast.Solar's `wh_hours` spans several days; tomorrow's hours belong in `pv_hourly_kwh_tomorrow`, never in today's remaining energy.

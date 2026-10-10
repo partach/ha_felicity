@@ -38,6 +38,17 @@ that encodes the intended outcome, run `python tools/ems_simulator.py`, and
 confirm it's green before claiming a fix works.  Reproduce customer reports as
 scenarios so they become permanent, readable regression tests.
 
+**The simulator plans; the day-replay harness EXECUTES.**  The simulator calls
+`calculate_schedule` once at a fixed moment and charts the plan.  It cannot see
+what happens when that plan is re-made every poll for hours and executed through
+the coordinator and the registers — and that is where the October 2026 bugs
+were (plans sliding forward with the clock, toggling, restart and midnight
+handling).  `tests/day_replay.py` replays hours through the real coordinator
+against a fake inverter (Known Issues 8f/8g); `REPLAY_PLOT_DIR=<dir> python -m
+pytest tests/test_day_replay.py` charts every replay (needs matplotlib).  Use
+the simulator for "is this the right plan?", the replay for "does the inverter
+actually do it?".
+
 ⚠️ **The harness only sees what it extracts.**  Until Sept 2026 the simulator
 collected `charge_slots` / `sell_slots` / `soc_trajectory` and nothing else, and
 **no scenario configured a flexible load** — so the whole flex-load overlay was
@@ -85,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **655**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **669**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1923,8 +1934,11 @@ Now uses thresholded hysteresis:
   cycles (≈ 32s) before suppression triggers.
 - Large import (> 2000W) suppresses immediately (genuine sustained
   draw like EV charging or oven preheat).
-- After suppression ends, a 60-second cooldown blocks re-suppression
-  so the inverter stabilises before the next decision.
+- A suppression **holds discharge off for 5 minutes** (`ANTICONFLICT_HOLD_S`),
+  then allows one retry.  (Until Oct 2026 it was a 60 s cooldown that only
+  blocked *re-suppression* — so once idle, the battery covered the house in
+  self-use, the import vanished, discharge went straight back on, the import
+  returned: on/off every minute for as long as the load ran.  See 8g.)
 - Each cycle now logs the grid_power + state decision at DEBUG level
   so the flipper pattern is easy to spot in retrospect:
   `State decision: desired=X, current=Y, soc=%, price=, threshold=, grid_power=W`
@@ -1944,6 +1958,8 @@ Felicity firmware bug).  Three-tier fallback in `pv_actual_today_kwh`:
    charging) on generator-port installations.
 
 ### 7. Forecast.Solar `wh_hours` date handling
+*(Oct 2026: the same filter was missing from `pv_forecast_remaining` — it
+summed every future hour, tomorrow included — see 8g item 4.)*
 `_retrieve_pv_forecast` now filters `wh_hours` entries by today's date before
 bucketing them into `pv_hourly_kwh[hour]`. Without that filter, a multi-day
 forecast would sum today's + tomorrow's + day-after's values into the same
@@ -2268,6 +2284,63 @@ off at its end.  The house is made frugal (2 kWh/day, estimate and actual) so
 the EMS's own plan buys nothing and every charge is the override's.  The test
 id names the scenario, and the seed reproduces it exactly.  13 of its 20
 restart cases fail on the pre-8f code.
+
+### 8g. Discharge and PV-day replays (Oct 2026)
+
+The harness gained discharge and PV: the fake inverter now models energy flows
+(PV serves the house, then the battery, then export; rule-1 discharge exports),
+publishes grid power / PV power / PV energy today back into its registers (so
+the anti-conflict guard and PV confidence see realistic values), and serves a
+Forecast.Solar-shaped forecast entity.  It also tracks import/export kWh and
+money, and `DayReplay.plot()` charts a replay.  Scenarios: sell override,
+Trader evening peak (both models), heavy load during a sale, one-poll spike,
+sunny day, cloudy day under a sunny forecast, charge override at sunny noon,
+negative midday with charge-to-full, sunny Trader day.  Findings:
+
+1. **An equal-priced sell peak slid forward with the clock.**  When the
+   projection dips below the reserve, `_validate_schedule_soc` gives up the
+   cheapest discharge — `min(…, key=price)`, which among equal prices is the
+   EARLIEST.  Re-planned every poll, the plan moved one slot later each time:
+   with 18:00–21:00 all at 0.40 and a full battery, selling began at 20:00,
+   the executing slot was dropped at :12 and re-sold at :15, and the rest went
+   at the 0.20 night price.  Fix: among equal prices give up the LATEST.  Now
+   one continuous sale from 18:00.
+2. **The same on the charge side.**  Overflow pruning gives up the dearest
+   charge — among equal prices the earliest — so a cheap midday window slid
+   forward (11:00 → 12:45 → 13:45) until 13:00, when tomorrow's prices
+   arrived and took the whole deficit (item 5).  Fix: same tie-break.  On the
+   cloudy-day replay the battery now charges 10:00–13:00 at 0.08 to 94 %
+   instead of stopping at 50 % and riding into the 0.40 evening peak.
+   `_reduce_charge_spill` still moves a charge past a PV peak when that
+   genuinely buys less grid.  Simulator: trader_arbitrage and
+   pv_cloudy_low_confidence now pick an earlier equal-priced slot (greedy now
+   matches MILP on the latter); all expectations still pass.  Pinned by
+   `TestValidationTieBreaksKeepTheEarliestSlot`.
+3. **Anti-conflict guard toggled every minute under a heavy load.**  See
+   Known Issues 5: 156 rule writes in two hours for an 8 kW load during a
+   5 kW sale.  Now one retry per 5 minutes (57 writes, less import).
+4. **`pv_forecast_remaining` counted tomorrow's sun.**  `_retrieve_pv_forecast`
+   date-filtered the hourly buckets (Known Issues 7) but the remaining total
+   summed every future `wh_hours` entry — on a two-day Forecast.Solar entity
+   ~2× the real remaining PV (71 kWh "remaining" on a 36 kWh day at 09:00), so
+   the EMS under-bought exactly when the sun fell short.  Fix: today only.
+5. **OPEN — needs a maintainer decision: the no-safety-swap rule ignores
+   tonight's grid price.**  When tomorrow's prices publish (13:00) and
+   tomorrow's cheapest slot is even marginally cheaper than today's, the
+   two-day selector moves today's whole deficit to tomorrow (`today_slots=0`).
+   The rule's rationale ("Two-Day" section, `test_safety_swap`): skipping
+   today's charge costs nothing because the house runs on grid passthrough.
+   But that passthrough is paid at tonight's prices — on the replay 0.40 at the
+   evening peak and 0.20 overnight, against 0.08 now (≈0.10 after round-trip
+   loss).  Economically a today slot should keep the deficit when
+   `p_today / eff² < the price the house would otherwise pay tonight`.
+   The tie-break fix above hides it on that replay (the battery fills before
+   13:00), but it remains whenever today's cheap window lies after 13:00.
+   Not changed: it reverses a documented, test-pinned decision.
+
+**CI note:** `.github/workflows/ci.yml` runs only on pushes to `main`, PRs into
+`main`, weekly and manually — pushes to a feature branch run nothing until a PR
+is opened.
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -2794,7 +2867,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**655 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**669 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2902,10 +2975,11 @@ of `coordinator.py`) would otherwise fail on an unstubbed import.
 Known Issues 8f): the real coordinator + real `TypeSpecificHandler` against a
 fake inverter, asserting register writes and the resulting SOC across midnight,
 restarts, overrides, manual mode and a dropped Economic mode — on T-REX-10 and
-T-REX-25.  **Still not covered**: `_check_safe_power` with real grid current
-(the fake inverter reports 0 A), `_actuate_flex_loads`, discharge/selling
-scenarios, PV days, and the IVGM/T-REX-5 control paths.  Extend the harness
-rather than writing another stub-level test.
+T-REX-25 — and (8g) selling, the anti-conflict guard, PV days, forecast vs
+reality, negative prices.  **Still not covered**: `_check_safe_power` with real
+grid current (the fake inverter reports 0 A), `_actuate_flex_loads`, inverter
+power limits, the consumption-deviation correction, and the IVGM/T-REX-5
+control paths.  Extend the harness rather than writing another stub-level test.
 
 ### Lint & CI
 

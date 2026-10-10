@@ -184,7 +184,12 @@ class FakeInverter:
             if "address" in info:
                 self._by_address.setdefault(info["address"], key)
         self.grid_import_kwh = 0.0
-        self.grid_cost = 0.0
+        self.grid_export_kwh = 0.0
+        self.grid_cost = 0.0                  # paid for import
+        self.grid_revenue = 0.0               # earned for export (same price)
+        self.pv_today_kwh = 0.0
+        self._pv_day = clock.now.date()
+        self.last_grid_kw = 0.0               # signed: + import, - export
         # Factory-ish defaults: rule 1 all day, every weekday, General mode.
         self.set("econ_rule_1_start_time", 0)
         self.set("econ_rule_1_stop_time", 0)
@@ -272,7 +277,10 @@ class FakeInverter:
                 return "self_use"
             if self.get("econ_rule_1_grid_charge_enable") == 1:
                 return "charge" if self.soc_pct < self.get("econ_rule_1_soc") else "hold"
-            if self.get("system_mode") == 0 and self.get("zero_export_to_ct_sell_enable") == 1:
+            selling = (self.get("system_mode") == 0
+                       and self.get("zero_export_to_ct_sell_enable") == 1
+                       and self.get("econ_rule_1_sell_enable") in (None, 1))
+            if selling:
                 return "discharge" if self.soc_pct > self.get("econ_rule_1_soc") else "hold"
             return "self_use"
         if self.get("operating_mode") != 2 or not self._rule_in_window():
@@ -290,40 +298,77 @@ class FakeInverter:
         return power / 1000.0 if unit_w else float(power)
 
     def advance(self, seconds: float, load_kw: float, pv_kw: float, price: float) -> str:
+        """Move energy for `seconds` according to the registers.
+
+        PV serves the house first.  A PV surplus charges the battery (up to
+        full) and the rest is exported — except while rule 1 discharges, when
+        the surplus is exported alongside.  Rule-1 charge adds grid energy up
+        to the rule SOC; rule-1 discharge delivers its power to the house and
+        exports the rest, down to the rule SOC.  Self-use covers the house
+        from the battery down to `self_use_floor_pct`.  Inverter power limits
+        are not modelled.
+        """
         hours = seconds / 3600.0
         act = self.action()
-        battery_kwh = self.soc_pct / 100.0 * self.capacity_kwh
-        grid_kw = 0.0
+        cap = self.capacity_kwh
+        bat = self.soc_pct / 100.0 * cap
+        net = (load_kw - pv_kw) * hours              # > 0: house short, < 0: PV surplus
+        imp = exp = 0.0
+
+        def absorb_surplus(bat):
+            """PV surplus into the battery, rest exported."""
+            if net >= 0:
+                return bat, 0.0
+            stored = min(-net * self.efficiency, max(0.0, cap - bat))
+            return bat + stored, -net - stored / self.efficiency
+
         if act == "charge":
-            power = self.rule_power_kw()
-            limit_kwh = self.get("econ_rule_1_soc") / 100.0 * self.capacity_kwh
-            stored = min(power * hours * self.efficiency, max(0.0, limit_kwh - battery_kwh))
-            battery_kwh += stored
-            grid_kw = load_kw - pv_kw + stored / self.efficiency / hours
+            limit = self.get("econ_rule_1_soc") / 100.0 * cap
+            stored = min(self.rule_power_kw() * hours * self.efficiency, max(0.0, limit - bat))
+            bat += stored
+            imp += stored / self.efficiency + max(0.0, net)
+            bat, exp = absorb_surplus(bat)
         elif act == "discharge":
-            power = self.rule_power_kw()
-            floor_kwh = self.get("econ_rule_1_soc") / 100.0 * self.capacity_kwh
-            drawn = min(power * hours, max(0.0, battery_kwh - floor_kwh))
-            battery_kwh -= drawn
-            grid_kw = load_kw - pv_kw - drawn * self.efficiency / hours
+            floor = self.get("econ_rule_1_soc") / 100.0 * cap
+            drawn = min(self.rule_power_kw() * hours, max(0.0, bat - floor))
+            bat -= drawn
+            balance = drawn * self.efficiency - net     # what is left after the house
+            exp, imp = max(0.0, balance), max(0.0, -balance)
         elif act == "hold":
-            grid_kw = max(0.0, load_kw - pv_kw)
-        else:
-            net_kwh = (load_kw - pv_kw) * hours
-            if net_kwh > 0:
-                floor_kwh = self.self_use_floor_pct / 100.0 * self.capacity_kwh
-                drawn = min(net_kwh, max(0.0, battery_kwh - floor_kwh))
-                battery_kwh -= drawn
-                grid_kw = (net_kwh - drawn) / hours
-            else:
-                room = self.capacity_kwh - battery_kwh
-                battery_kwh += min(-net_kwh * self.efficiency, room)
-        if grid_kw > 0:
-            self.grid_import_kwh += grid_kw * hours
-            self.grid_cost += grid_kw * hours * price
-        self.soc_pct = max(0.0, min(100.0, battery_kwh / self.capacity_kwh * 100.0))
+            imp += max(0.0, net)
+            bat, exp = absorb_surplus(bat)
+        elif net > 0:                                   # self-use, house short
+            floor = self.self_use_floor_pct / 100.0 * cap
+            drawn = min(net, max(0.0, bat - floor))
+            bat -= drawn
+            imp += net - drawn
+        else:                                           # self-use, PV surplus
+            bat, exp = absorb_surplus(bat)
+
+        self.grid_import_kwh += imp
+        self.grid_export_kwh += exp
+        self.grid_cost += imp * price
+        self.grid_revenue += exp * price
+        self.last_grid_kw = (imp - exp) / hours if hours else 0.0
+        if self.clock.now.date() != self._pv_day:
+            self._pv_day, self.pv_today_kwh = self.clock.now.date(), 0.0
+        self.pv_today_kwh += pv_kw * hours
+        self.soc_pct = max(0.0, min(100.0, bat / cap * 100.0))
         self._sync_soc()
+        self._publish_telemetry(pv_kw)
         return act
+
+    def _publish_telemetry(self, pv_kw: float) -> None:
+        """What the coordinator reads back: grid power (anti-conflict guard),
+        PV power and PV energy today (PV confidence)."""
+        if self.eco_path:
+            self.set("total_grid_power", round(self.last_grid_kw, 2))       # kW, signed
+            self.set("pv1_power", round(pv_kw, 2))                          # kW
+            self.set("pv1_day_energy", round(self.pv_today_kwh, 1))         # kWh
+        else:
+            self.set("total_ac_input_power", round(self.last_grid_kw * 1000))   # W, signed
+            self.set("pv_power_conversion", round(pv_kw * 1000))                # W
+            self.set("pv_generated_energy_day", round(self.pv_today_kwh * 1000))  # Wh
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +391,14 @@ class FakeConfigEntry:
 
 class FakeHass:
     PRICE_ENTITY = "sensor.nordpool_replay"
+    FORECAST_ENTITY = "sensor.pv_forecast_today_replay"
+    FORECAST_TOMORROW_ENTITY = "sensor.pv_forecast_tomorrow_replay"
     PRICES_PUBLISHED_HOUR = 13
 
-    def __init__(self, clock: FakeClock, prices_for: callable):
+    def __init__(self, clock: FakeClock, prices_for: callable, forecast_kw: callable | None = None):
         self.clock = clock
         self.prices_for = prices_for
+        self.forecast_kw = forecast_kw          # datetime -> kW, or None: no forecast
         self.extra_states: dict[str, _State] = {}
         self.services = MagicMock()
         self.config_entries = MagicMock()
@@ -370,7 +418,28 @@ class FakeHass:
     def _get_state(self, entity_id):
         if entity_id == self.PRICE_ENTITY:
             return self._price_state()
+        if self.forecast_kw and entity_id == self.FORECAST_ENTITY:
+            return self._forecast_state(self.clock.now.date(), with_hours=True)
+        if self.forecast_kw and entity_id == self.FORECAST_TOMORROW_ENTITY:
+            return self._forecast_state(self.clock.now.date() + timedelta(days=1))
         return self.extra_states.get(entity_id)
+
+    def _forecast_hours(self, d: date) -> dict[datetime, float]:
+        """Hourly forecast (kWh in each hour), integrated over 5-minute steps."""
+        out = {}
+        for h in range(24):
+            t0 = datetime(d.year, d.month, d.day, h)  # noqa: DTZ001 - naive local, as the coordinator
+            out[t0] = sum(self.forecast_kw(t0 + timedelta(minutes=m)) for m in range(0, 60, 5)) / 12
+        return out
+
+    def _forecast_state(self, d: date, with_hours: bool = False) -> _State:
+        """Forecast.Solar shape: state = the day's kWh, `wh_hours` per hour."""
+        hours = self._forecast_hours(d)
+        attrs = {}
+        if with_hours:
+            both = {**hours, **self._forecast_hours(d + timedelta(days=1))}
+            attrs["wh_hours"] = {t.isoformat(): round(kwh * 1000) for t, kwh in both.items() if kwh}
+        return _State(str(round(sum(hours.values()), 2)), attrs)
 
     def _price_state(self) -> _State:
         now = self.clock.now
@@ -407,6 +476,9 @@ class Tick:
     state: str | None
     planned: str | None
     inverter: str
+    price: float = 0.0
+    pv_kw: float = 0.0
+    grid_kw: float = 0.0                  # + import, - export
 
 
 @dataclass
@@ -420,7 +492,8 @@ class DayReplay:
     capacity_kwh: float = 20.0
     soc_pct: float = 50.0
     load_kw: callable = lambda t: 0.6        # house load, kW, as a function of time
-    pv_kw: callable = lambda t: 0.0
+    pv_kw: callable = lambda t: 0.0          # what the panels actually produce
+    forecast_kw: callable | None = None      # what the forecast entity says (None: no entity)
     honour_rule_dates: bool = True
     ticks: list[Tick] = field(default_factory=list)
 
@@ -429,7 +502,9 @@ class DayReplay:
         self.clock.install(coordinator)
         options = {"battery_capacity_kwh": self.capacity_kwh, **self.options}
         self.entry = FakeConfigEntry(self.model, options)
-        self.hass = FakeHass(self.clock, self.prices_for)
+        self.hass = FakeHass(self.clock, self.prices_for, self.forecast_kw)
+        if self.forecast_kw:
+            self.entry.options["forecast_entity_tomorrow"] = FakeHass.FORECAST_TOMORROW_ENTITY
         self.inverter = FakeInverter(self.model, self.clock, capacity_kwh=self.capacity_kwh,
                                      soc_pct=self.soc_pct,
                                      honour_rule_dates=self.honour_rule_dates)
@@ -441,6 +516,7 @@ class DayReplay:
             model_combined=model_config["combined"],
             inverter_model=self.model, config_entry=self.entry,
             nordpool_entity=FakeHass.PRICE_ENTITY,
+            forecast_entity=FakeHass.FORECAST_ENTITY if self.forecast_kw else None,
         )
 
     # -- what the card's set_slot_overrides service does --------------------
@@ -479,9 +555,11 @@ class DayReplay:
             planned = self.coordinator.scheduled_slots.get(slot) if slot is not None else None
             today = self.prices_for(now.date())
             price = today[int((now.hour * 60 + now.minute) / (1440 / len(today)))]
-            act = self.inverter.advance(step_s, self.load_kw(now), self.pv_kw(now), price)
+            pv = self.pv_kw(now)
+            act = self.inverter.advance(step_s, self.load_kw(now), pv, price)
             self.ticks.append(Tick(now, round(self.inverter.soc_pct, 2),
-                                   self.coordinator._current_energy_state, planned, act))
+                                   self.coordinator._current_energy_state, planned, act,
+                                   price, pv, round(self.inverter.last_grid_kw, 3)))
             self.clock.now = now + timedelta(seconds=step_s)
 
     # -- reading the result --------------------------------------------------
@@ -504,6 +582,42 @@ class DayReplay:
     def soc_at(self, when: datetime) -> float:
         return next(t.soc for t in self.ticks if t.at >= when)
 
+    def plot(self, path: str, title: str = "") -> None:
+        """Chart the replay like tools/ems_simulator.py charts a plan: price
+        bars coloured by what the INVERTER did (green charge, orange discharge,
+        blue hold, grey self-use), the measured SOC, PV and grid power.
+        Needs matplotlib (not a test dependency)."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        colours = {"charge": "#4caf50", "discharge": "#ff9800", "hold": "#64b5f6",
+                   "self_use": "#bdbdbd"}
+        t = [k.at for k in self.ticks]
+        width = (t[1] - t[0]) if len(t) > 1 else timedelta(minutes=1)
+        fig, (ax, axg) = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
+                                      gridspec_kw={"height_ratios": [3, 1]})
+        ax.bar(t, [k.price for k in self.ticks], width=width, align="edge",
+               color=[colours[k.inverter] for k in self.ticks], linewidth=0)
+        ax.set_ylabel("price")
+        ax2 = ax.twinx()
+        ax2.plot(t, [k.soc for k in self.ticks], color="#0097a7", lw=2, label="SOC (measured)")
+        ax2.set_ylim(0, 105)
+        ax2.set_ylabel("SOC %")
+        ax2.legend(loc="upper right")
+        axg.fill_between(t, [k.pv_kw for k in self.ticks], color="#fff59d", label="PV kW")
+        axg.plot(t, [k.grid_kw for k in self.ticks], color="#e53935", lw=1,
+                 label="grid kW (+import / -export)")
+        axg.axhline(0, color="grey", lw=0.5)
+        axg.legend(loc="upper right", fontsize=8)
+        inv = self.inverter
+        ax.set_title(f"{title or self.model}  ·  import {inv.grid_import_kwh:.1f} kWh "
+                     f"(€{inv.grid_cost:.2f})  export {inv.grid_export_kwh:.1f} kWh "
+                     f"(€{inv.grid_revenue:.2f})", fontsize=10)
+        fig.tight_layout()
+        fig.savefig(path, dpi=80)
+        plt.close(fig)
+
     def timeline(self, every_min: int = 15) -> str:
         """Human-readable trace for assertion messages."""
         rows = [f"{t.at:%d %H:%M}  soc {t.soc:5.1f}%  state {t.state!s:<11} "
@@ -520,3 +634,15 @@ def slot(hour: int, minute: int = 0, slots_per_day: int = 96) -> str:
 def day(d: date, hour: int = 0, minute: int = 0) -> datetime:
     # Naive on purpose: the coordinator works in naive local time.
     return datetime(d.year, d.month, d.day, hour, minute)  # noqa: DTZ001
+
+
+def pv_bell(peak_kw: float, sunrise: int = 7, sunset: int = 19):
+    """A clear-sky day: sin² curve between sunrise and sunset, every day."""
+    import math
+
+    def pv(t: datetime) -> float:
+        hour = t.hour + t.minute / 60.0
+        if not sunrise < hour < sunset:
+            return 0.0
+        return peak_kw * math.sin(math.pi * (hour - sunrise) / (sunset - sunrise)) ** 2
+    return pv

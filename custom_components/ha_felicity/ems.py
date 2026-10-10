@@ -1018,8 +1018,13 @@ def _validate_schedule_soc(
                 candidates = list(discharge_slots)
             if not candidates:
                 break
-            # Remove the one with lowest price (least profitable to sell)
-            drop = min(candidates, key=lambda s: price_of.get(s, 0.0))
+            # Remove the one with lowest price (least profitable to sell).
+            # Equal prices: give up the LATEST.  The plan is re-made every poll,
+            # so dropping the earliest made an equal-priced peak slide forward
+            # with the clock — selling began only in the peak's last hour and
+            # the slot being executed was dropped mid-slot as SOC fell (found
+            # replaying an evening through the real coordinator).
+            drop = min(candidates, key=lambda s: (price_of.get(s, 0.0), -s))
             discharge_slots.discard(drop)
             _LOGGER.debug(
                 "SOC validation: dropped discharge slot %d (price=%.3f) "
@@ -1073,8 +1078,13 @@ def _validate_schedule_soc(
                 candidates = list(charge_slots)
             if not candidates:
                 break
-            # Remove the most expensive charge slot
-            drop = max(candidates, key=lambda s: price_of.get(s, 0.0))
+            # Remove the most expensive charge slot.  Equal prices: give up
+            # the LATEST, mirroring the discharge rule above — dropping the
+            # earliest let an equal-priced cheap window slide forward with
+            # the clock and drop the slot being executed (day-replay harness).
+            # _reduce_charge_spill still moves a charge past a PV peak when
+            # that genuinely buys less grid.
+            drop = max(candidates, key=lambda s: (price_of.get(s, 0.0), s))
             charge_slots.discard(drop)
             _LOGGER.debug(
                 "SOC validation: dropped charge slot %d (price=%.3f) "
