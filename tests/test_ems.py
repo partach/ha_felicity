@@ -6859,3 +6859,52 @@ class TestValidationTieBreaksKeepTheEarliestSlot:
         remaining = [(i, 0.10 if i < 44 else 0.08) for i in range(40, 64)]
         kept, _ = self._validate(remaining, range(40, 48), [], soc_kwh=15.0)
         assert kept == {44, 45, 46, 47}
+
+
+class TestKeepTodaysChargeWhenTonightsGridIsDearer:
+    """Today's deficit stays on today's slots when charging now (after
+    round-trip losses) is cheaper than the grid the house would otherwise pay
+    tonight — even if a tomorrow slot is marginally cheaper.  Maintainer
+    decision, Oct 2026; replaces the unconditional "no safety swap"."""
+
+    # 96 slots, now 13:30 (slot 54).  Today: 0.08 until 16:00, 0.40 18-21,
+    # 0.20 otherwise.  Tomorrow: the same day half a cent cheaper.
+    @staticmethod
+    def _duck(shift=0.0):
+        def price(h):
+            return 0.40 if 18 <= h < 21 else 0.08 if 10 <= h < 16 else 0.20
+        return [round(price(i / 4) - shift, 3) for i in range(96)]
+
+    def _select(self, today_prices, tomorrow_prices, priority="cost"):
+        """20 kWh battery at 30 %, 1 kW house, plenty of sun tomorrow: the
+        tomorrow deficit is small, so tomorrow's cheap slots could take all of
+        today's deficit too — the case the old selector got wrong."""
+        remaining = [(i, today_prices[i]) for i in range(54, 96)]
+        return select_unified_charge_slots(
+            remaining_today=remaining, energy_deficit=8.0, effective_per_slot=1.125,
+            battery_capacity=20.0, discharge_min_pct=20.0, consumption_est=24.0,
+            efficiency=0.90, energy_per_slot=1.25, current_kwh=6.0, net_pv=0.0,
+            slot_prices_tomorrow=tomorrow_prices, pv_forecast_tomorrow=40.0,
+            current_hour=13, optimization_priority=priority, minutes_per_slot=15)
+
+    def test_cheap_today_beats_tonights_grid(self):
+        today, tomorrow, _ = self._select(self._duck(), self._duck(0.005))
+        energy = len(today) * 1.125
+        assert energy >= 8.0 - 1e-6, today
+        assert len(tomorrow) * 1.125 < 8.0, tomorrow        # not bought twice
+        assert all(p == 0.08 for _i, p in today)
+        assert min(i for i, _p in today) == 54              # starts now: fill asap
+
+    def test_expensive_today_still_defers_to_a_cheap_night(self):
+        """test_safety_swap's economics: an 0.30 evening slot costs 0.37 after
+        losses — dearer than tonight's 0.30 grid — so tomorrow's 0.05 wins."""
+        today = [0.30] * 96
+        tomorrow = [0.05] * 96
+        kept, _, _ = self._select(today, tomorrow)
+        assert kept == []
+
+    def test_only_slots_that_beat_tonight_are_kept(self):
+        """0.17 / 0.81 = 0.21 is NOT below a 0.20 night: such a slot defers."""
+        today_prices = [0.17 if 54 <= i < 64 else 0.20 for i in range(96)]
+        kept, _, _ = self._select(today_prices, [0.165] * 96)
+        assert kept == []

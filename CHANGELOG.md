@@ -7,6 +7,13 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **Cheap charging today is no longer postponed to a barely cheaper
+  tomorrow.** Once tomorrow's prices were published, today's charging moved to
+  tomorrow as soon as tomorrow was even a fraction of a cent cheaper — and the
+  house then bought the evening peak and the night from the grid instead.
+  Today's slot is now kept when it is cheaper (after battery losses) than what
+  the house would pay from the grid tonight, earliest first, so the battery
+  fills as soon as possible.
 - **Selling starts when the peak starts.** With several evening slots at the
   same top price, the plan kept sliding later and sold only in the last hour
   (the rest at the night price), switching off and on mid-slot. A cheap midday

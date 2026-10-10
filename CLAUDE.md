@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **669**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **673**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -990,12 +990,25 @@ min_sell_price = max_buy_price / (efficiency × efficiency)
 
 When tomorrow's prices are available, merges today+tomorrow slots, picks cheapest from combined pool. The tomorrow-side reserve target honours `reserve_target_pct` and the `self_consumption` 1.25× boost, same as today's.
 
-**Intentionally no today↔tomorrow safety swap**: the inverter switches the
-house to grid passthrough once SOC hits `min_kwh`, so the battery can't
-drain below the floor from consumption.  Forcing expensive today slots to
-"bridge" the night would cost more than consuming from grid (round-trip
-losses on the same prices); charging defers to tomorrow's cheaper slots.
-`test_safety_swap` pins this.
+**Today vs tomorrow: keep today's charge when it beats tonight's grid
+(maintainer decision, Oct 2026 — replaces the unconditional "no safety
+swap").**  The inverter switches the house to grid passthrough once SOC hits
+`min_kwh`, so deferring today's charge to a cheaper tomorrow is never unsafe —
+but it is not free either: the house then buys from the grid at TONIGHT's
+prices.  `select_unified_charge_slots` therefore projects the battery without
+today's charging up to tomorrow's first planned charge, collects the grid kWh
+the house would draw at the floor, and keeps a today slot when
+`price / eff²` is below the average price of the grid kWh it would displace
+(the earliest ones after it — later kept slots displace the next ones).
+Earliest first among equal prices, so the battery fills as soon as possible.
+An equal amount of tomorrow's dearest planned charging is dropped.  Still
+defers when today is dear: `test_safety_swap` (0.30 evening = 0.37 after
+losses vs a 0.30 night) passes unchanged.  Real replay: 13:30, today's midday
+0.08 vs tomorrow 0.075, evening 0.40 / night 0.20 — the old rule charged
+nothing today and cost €3.44 to noon the next day, now €1.38 (MILP, which
+already modelled this through its horizon, €1.42).  Pinned by
+`TestKeepTodaysChargeWhenTonightsGridIsDearer` and
+`test_cheap_today_is_not_deferred_to_a_marginally_cheaper_tomorrow`.
 
 **Exception — `self_consumption` priority**: the self-sufficiency strategy
 overrides the no-swap rule.  `select_unified_charge_slots` forces today's
@@ -2324,7 +2337,9 @@ negative midday with charge-to-full, sunny Trader day.  Findings:
    summed every future `wh_hours` entry — on a two-day Forecast.Solar entity
    ~2× the real remaining PV (71 kWh "remaining" on a 36 kWh day at 09:00), so
    the EMS under-bought exactly when the sun fell short.  Fix: today only.
-5. **OPEN — needs a maintainer decision: the no-safety-swap rule ignores
+5. **RESOLVED (maintainer: "keep today's charge when cheaper than tonight's
+   grid; favour the battery filled asap") — see the "Today vs tomorrow"
+   paragraph in Unified Two-Day Optimization.**  Original finding: **the no-safety-swap rule ignored
    tonight's grid price.**  When tomorrow's prices publish (13:00) and
    tomorrow's cheapest slot is even marginally cheaper than today's, the
    two-day selector moves today's whole deficit to tomorrow (`today_slots=0`).
@@ -2336,7 +2351,8 @@ negative midday with charge-to-full, sunny Trader day.  Findings:
    `p_today / eff² < the price the house would otherwise pay tonight`.
    The tie-break fix above hides it on that replay (the battery fills before
    13:00), but it remains whenever today's cheap window lies after 13:00.
-   Not changed: it reverses a documented, test-pinned decision.
+   Replays at 35 / 45 / 55 % SOC from 13:30: old €3.95 / €3.44 / €2.90,
+   new €1.50 / €1.38 / €1.17.
 
 **CI note:** `.github/workflows/ci.yml` runs only on pushes to `main`, PRs into
 `main`, weekly and manually — pushes to a feature branch run nothing until a PR
@@ -2867,7 +2883,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**669 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**673 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

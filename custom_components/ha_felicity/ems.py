@@ -1697,6 +1697,98 @@ def select_unified_charge_slots(
                 energy_deficit - shortfall, energy_deficit,
             )
 
+    # --- Keep today's deficit today when that beats tonight's grid ---
+    # The unified pool hands today's deficit to tomorrow whenever a tomorrow
+    # slot is even marginally cheaper (tomorrow's prices publish ~13:00).  The
+    # old "no safety swap" reasoning was that skipping today's charge is free:
+    # the battery stops at min SOC and the house runs on grid passthrough.  But
+    # that passthrough is paid at TONIGHT's prices.  Real replay: 0.08 midday
+    # today vs 0.075 tomorrow → the whole deficit went to tomorrow, and the
+    # house paid 0.40 at the evening peak and 0.20 overnight instead.
+    #
+    # So: project the battery WITHOUT today's charging up to tomorrow's first
+    # planned charge; where it sits at min SOC the house buys from the grid
+    # instead.  Energy charged at a today slot displaces the EARLIEST of those
+    # grid kWh after it, so a today slot keeps the deficit when its price after
+    # round-trip losses is below the average price of the grid kWh it would
+    # displace.  No grid draw ahead → deferring really is free → tomorrow
+    # keeps it (test_safety_swap: an 0.30 evening slot = 0.37 after losses,
+    # against a 0.30-0.33 night → still deferred).
+    # Earliest first among equal prices: fill the battery as soon as possible
+    # (maintainer decision, Oct 2026).  An equal amount of tomorrow's dearest
+    # charging is dropped so nothing is bought twice.
+    if optimization_priority != "self_consumption" and energy_deficit > 0 and tomorrow_selected:
+        shortfall = energy_deficit - sum(_slot_charge_energy(s) for s in today_selected)
+        if shortfall > 1e-3:
+            round_trip = efficiency * efficiency if efficiency > 0 else 1.0
+            mps = minutes_per_slot or (24 * 60 / max(1, len(slot_prices_tomorrow)))
+            slot_h = mps / 60.0
+            floor_kwh = (discharge_min_pct / 100.0) * battery_capacity
+            first_tmr = min(s[2] for s in tomorrow_selected)
+
+            def _cons(hour):
+                if consumption_hourly_kwh and hour in consumption_hourly_kwh:
+                    return consumption_hourly_kwh[hour] * slot_h
+                return consumption_est / 24.0 * slot_h
+
+            # (day, index, price, kWh) the house would draw from the grid
+            grid_draw: list[tuple[int, int, float, float]] = []
+            soc = current_kwh
+            for price, d, i in sorted(today_pool, key=lambda x: x[2]) + sorted(
+                    (s for s in tomorrow_pool if s[2] < first_tmr), key=lambda x: x[2]):
+                hour = int(i * mps / 60)
+                pv = (pv_hourly_kwh if d == 0 else pv_hourly_kwh_tomorrow) or {}
+                conf = pv_confidence if d == 0 else 1.0
+                soc = min(battery_capacity, soc + pv.get(hour, 0.0) * conf * slot_h - _cons(hour))
+                if soc < floor_kwh:
+                    grid_draw.append((d, i, price, floor_kwh - soc))
+                    soc = floor_kwh
+
+            def _displaced_price(after: int, kwh: float, skip: float) -> float | None:
+                """Average price of grid kWh `skip`..`skip+kwh` after slot
+                `after` — the first `skip` are already displaced by today
+                slots kept before this one."""
+                cost = got = 0.0
+                for d, i, price, draw in grid_draw:
+                    if d == 0 and i <= after:
+                        continue
+                    if skip > 1e-9:
+                        used = min(draw, skip)
+                        skip -= used
+                        draw -= used
+                        if draw <= 1e-9:
+                            continue
+                    take = min(draw, kwh - got)
+                    cost += take * price
+                    got += take
+                    if got >= kwh - 1e-9:
+                        break
+                return cost / got if got > 1e-6 else None
+
+            chosen = {s[2] for s in today_selected}
+            moved = 0.0
+            for s in sorted((s for s in today_pool if s[0] >= 0 and s[2] not in chosen),
+                            key=lambda x: (x[0], x[2])):
+                if shortfall <= 1e-3:
+                    break
+                slot_energy = _slot_charge_energy(s)
+                if slot_energy <= 1e-9:
+                    continue
+                displaced = _displaced_price(s[2], min(slot_energy, shortfall), moved)
+                if displaced is None or s[0] / round_trip >= displaced:
+                    continue
+                today_selected.append(s)
+                shortfall -= slot_energy
+                moved += slot_energy
+            if moved > 0:
+                tomorrow_selected.sort(key=lambda x: (-x[0], -x[2]))
+                freed = moved
+                while tomorrow_selected and freed > 1e-3 and tomorrow_selected[0][0] >= 0:
+                    freed -= _slot_charge_energy(tomorrow_selected.pop(0))
+                _LOGGER.info(
+                    "Kept %.1f kWh of today's %.1f kWh deficit on today's slots: "
+                    "cheaper after losses than tonight's grid", moved, energy_deficit)
+
     # --- Battery headroom constraint ---
     # Subtract net PV surplus: that energy will also fill the battery,
     # so real headroom for grid charging is smaller than raw capacity gap.

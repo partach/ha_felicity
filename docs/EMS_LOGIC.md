@@ -516,7 +516,7 @@ max_today_slots = floor(headroom / effective_per_slot)
 ```
 Excess today slots are replaced with tomorrow slots when possible. Negative-price slots pass through the headroom cap (they are profitable to consume).
 
-**Bridge to tomorrow — intentionally no swap**: When tomorrow slots are selected and the overnight projection would dip toward the floor, the algorithm does NOT swap them for expensive today slots. The inverter switches the house to grid passthrough once SOC reaches `discharge_min_kwh`, so the battery cannot drain below the floor from consumption. Forcing today-charging to "bridge" the night would cost more than simply consuming from grid overnight (round-trip losses on top of the same prices) — charging stays deferred to tomorrow's cheaper slots.
+**Today vs tomorrow — keep today's charge when it beats tonight's grid**: When the unified pool hands today's deficit to cheaper tomorrow slots, each unused today slot is re-checked against what deferring really costs. Deferring is safe (the inverter switches the house to grid passthrough at `discharge_min_kwh`) but not free: the house buys from the grid at tonight's prices. The algorithm projects the battery without today's charging up to tomorrow's first planned charge and collects the grid kWh drawn at the floor. A today slot keeps the deficit when `price / efficiency²` is below the average price of the grid kWh it would displace (the earliest ones after it). Earliest slot first among equal prices — fill the battery as soon as possible. The same amount of tomorrow's dearest charging is then dropped. When today is dear (e.g. a 0.30 evening slot, 0.37 after losses, against a 0.30 night) charging still defers to tomorrow. `self_consumption` keeps its stronger rule: today's whole deficit is always charged today.
 
 **Self-consumption top-off** (`optimization_priority = self_consumption` only): after the deficit is covered, the battery is filled toward max SOC from slots cheap enough to beat round-trip losses (`price <= efficiency² × mean remaining price`). It is bounded by **two** caps, and takes the smaller:
 
@@ -731,8 +731,6 @@ Users can manually override slot actions via the EMS card (click a slot to force
 When the current slot is a scheduled charge slot (or a charge override) the coordinator charges — there is no "defer for a cheaper later slot" check (removed June 2026; the optimiser already schedules only the cheapest slots it needs, see CLAUDE.md C3).
 
 **A full battery stays in charging for the rest of the slot.** Rule 1's SOC register (= max SOC) stops the inverter there and the house runs on grid, as the slot intended. Switching to idle instead would put the house back on the battery, drop it to 99.9 %, and re-arm the charge on the next poll — a full rule rewrite every poll. The same holds in manual price mode once charging. Entering charging still requires SOC below max.
-
-**Stall prevention**: Never defers when SOC is at or below `reserve_target` (battery needs charging now, regardless of price). Negative-price slots are exempt from deferral.
 
 ### State Transitions (What Gets Written to the Inverter)
 
@@ -993,7 +991,7 @@ Schedule flexible loads (overlay on cheap/negative/PV-surplus slots)
   ▼
 Current slot in schedule?
   │
-  ├── charge slot → defer if cheaper slot later? → CHARGING or IDLE
+  ├── charge slot (SOC < max, or already charging) → CHARGING
   │     inverter SOC register = charge_max
   │
   ├── discharge slot & SOC > reserve_target → anti-conflict check → DISCHARGING or IDLE

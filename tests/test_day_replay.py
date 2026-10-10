@@ -447,8 +447,11 @@ async def test_a_cloudy_day_under_a_sunny_forecast_buys_at_the_cheap_midday():
     await r.run_until(day(D, 23))
     _chart(r, "cloudy_under_sunny_forecast")
 
-    bought_at = {t.price for t in r.ticks if t.inverter == "charge"}
-    assert bought_at == {0.08}, r.timeline(60)
+    bought = [t.price for t in r.ticks if t.inverter == "charge"]
+    assert max(bought) < 0.40, r.timeline(60)                # never at the peak
+    assert bought.count(0.08) / len(bought) > 0.8            # the bulk at the trough
+    peak = [t.grid_kw for t in r.ticks if day(D, 18) <= t.at < day(D, 21)]
+    assert max(peak) <= 0.0, r.timeline(60)                  # house never on peak grid
     assert r.coordinator._last_pv_confidence < 0.5
 
 
@@ -493,3 +496,25 @@ async def test_a_sunny_trader_day_sells_the_solar_at_the_evening_peak():
     assert {t.price for t in r.ticks if t.inverter == "discharge"} == {0.40}
     assert r.inverter_actions(day(D, 18), day(D, 18, 15)) == {"discharge"}, r.timeline()
     assert r.inverter.grid_import_kwh == 0.0
+
+
+@pytest.mark.asyncio
+async def test_cheap_today_is_not_deferred_to_a_marginally_cheaper_tomorrow():
+    """13:30, tomorrow's prices are out and its midday is half a cent cheaper.
+    The old two-day rule moved today's whole deficit to tomorrow ("skipping
+    today is free: the house runs on grid") — and the house then bought the
+    evening at 0.40 and the night at 0.20: €3.44 vs €1.38 on this replay.
+    Now a today slot keeps the deficit when it beats tonight's grid after
+    losses, earliest first (maintainer decision, Oct 2026)."""
+    sunny_tomorrow = lambda t: SUN(t) if t.date() > D else 0.0
+    r = _replay(options={**AUTO, "daily_consumption_estimate": 24.0}, soc=45.0,
+                start=day(D, 13, 30), prices_for=DUCK, load_kw=lambda _t: 1.0,
+                pv_kw=sunny_tomorrow, forecast_kw=sunny_tomorrow)
+    await r.run_until(day(NEXT, 12))
+    _chart(r, "cheap_today_not_deferred")
+
+    assert r.inverter_actions(day(D, 13, 30), day(D, 15)) == {"charge"}, r.timeline(60)
+    assert max(t.price for t in r.ticks if t.inverter == "charge") < 0.40
+    peak = [t.grid_kw for t in r.ticks if day(D, 18) <= t.at < day(D, 21)]
+    assert max(peak) <= 0.0, r.timeline(60)
+    assert r.inverter.grid_cost < 2.0
