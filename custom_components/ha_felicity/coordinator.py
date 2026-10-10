@@ -260,6 +260,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # Flexible load state tracking
         self._flex_load_states: dict[int, bool] = {}  # {load_idx: on/off}
+        # Loads switched off by safe power stay off until this epoch ts, even
+        # when the schedule wants them on (see _safe_power_shed_loads).
+        self._flex_load_shed_until: dict[int, float] = {}
+        self._last_max_grid_current: float | None = None
         self._flex_load_current_step: int | None = None
         self._flex_load_scheduled: dict[int, dict[int, bool]] = {}  # from ScheduleResult.load_slots
         self._flex_load_scheduled_tomorrow: dict[int, dict[int, bool]] = {}
@@ -1517,6 +1521,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
             try:
                 should_be_on = slot_idx in self._flex_load_scheduled.get(load_idx, {})
+                if should_be_on and not self._shed_load_may_return(load_idx, load):
+                    should_be_on = False      # shed by safe power — held off
                 currently_on = self._flex_load_states.get(load_idx, False)
 
                 if should_be_on != currently_on:
@@ -1526,6 +1532,42 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     await self._set_ev_charger_current(load, load.default_current)
             except Exception as err:
                 _LOGGER.error("Flex load '%s' actuation failed: %s", load.name, err)
+
+    def _shed_load_waiting_to_fit(self, current: float, max_amps: float) -> bool:
+        """Is a load that safe power shed waiting, and would it fit right now?"""
+        if not self._flex_load_shed_until:
+            return False
+        loads = self._build_flex_load_configs()
+        for idx in self._flex_load_shed_until:
+            if idx < len(loads):
+                ld = loads[idx]
+                amps = ld.rated_power_kw * 1000.0 / (max(1, ld.voltage) * max(1, ld.phases))
+                if current + amps <= 0.95 * max_amps:
+                    return True
+        return False
+
+    def _shed_load_may_return(self, load_idx: int, load) -> bool:
+        """May a load that safe power shed be switched on again?
+
+        Not during its hold, and afterwards only when the grid current leaves
+        room for it: switching a 16 A charger back on next to a 13 A phase just
+        to shed it again one poll later is a 29 A spike every hold period.
+        """
+        until = self._flex_load_shed_until.get(load_idx)
+        if until is None:
+            return True
+        if time.time() < until:
+            return False
+        max_amps = self.config_entry.options.get("max_amperage_per_phase", 16)
+        load_amps = load.rated_power_kw * 1000.0 / (max(1, load.voltage) * max(1, load.phases))
+        current = self._last_max_grid_current or 0.0
+        if current + load_amps > 0.95 * max_amps:
+            self._flex_load_shed_until[load_idx] = time.time() + 60   # look again in a minute
+            return False
+        del self._flex_load_shed_until[load_idx]
+        _LOGGER.info("Safe power: '%s' may run again (grid %.1fA + %.1fA < %.0fA)",
+                     load.name, current, load_amps, max_amps)
+        return True
 
     async def _set_flex_load(self, load_idx: int, turn_on: bool,
                              load: "ems_module.FlexibleLoadConfig | None" = None) -> None:
@@ -1632,7 +1674,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def _safe_power_shed_loads(self, current_amps: float, max_amps: float) -> bool:
         """Shed flexible loads to reduce grid current.
 
-        Priority chain (one action per tick to let current settle):
+        Only called once the battery power limit cannot help any more (it is
+        at its 1 kW minimum, or the battery is idle) — the battery always goes
+        first (maintainer decision, Oct 2026).  Then, one action per tick to
+        let the current settle:
         1. EV charger: step down current
         2. Binary loads: shed by priority (highest number = shed first)
         Returns True if any action was taken.
@@ -1642,6 +1687,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                   if self._flex_load_states.get(i, False)]
         if not active:
             return False
+        SHED_HOLD_S = 300
 
         # Step 1: EV current step-down
         for idx, ld in active:
@@ -1671,6 +1717,12 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 ld.name, ld.priority, current_amps, max_amps,
             )
             await self._set_flex_load(idx, False, ld)
+            # Keep it off: _actuate_flex_loads runs later in the SAME poll and
+            # used to switch it straight back on because the schedule still
+            # wanted it — so every poll "shed" the load, skipped the battery
+            # reduction, and the load came back.  The current never fell
+            # (field report: 23 A, then 28 A, on an 18 A limit).
+            self._flex_load_shed_until[idx] = time.time() + SHED_HOLD_S
             return True
 
         return False
@@ -2178,6 +2230,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         max_current = self.TypeSpecificHandler.determine_max_amperage(new_data)
         if max_current is not None:
             new_data["highest_grid_current_now"] = max_current
+        self._last_max_grid_current = max_current
         # This is the key: use the freshly read register value from new_data!
         applied_kwatts = self.TypeSpecificHandler.determine_rule_power(new_data) # works in kW
         if applied_kwatts is not None:
@@ -2199,22 +2252,37 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 _LOGGER.info("No grid current — recovering to user level %d (was %d)", user_level, base_level)
             else:
                 _LOGGER.debug("No grid current — keeping current level %d", base_level)
-        elif max_current > max_amperage * 0.95:
-            # Try shedding flexible loads first before reducing battery power
-            try:
-                load_shed = await self._safe_power_shed_loads(max_current, max_amperage)
-            except Exception as err:
-                _LOGGER.error("Load shedding failed (non-fatal): %s", err)
-                load_shed = False
-            if not load_shed:
-                safe_level = max(1, base_level - 2)
-                _LOGGER.warning("High current %.1fA — reducing to level %d", max_current, safe_level)
         elif max_current > max_amperage * 0.8:
-            safe_level = max(1, base_level - 1)
-            _LOGGER.info("Moderate current %.1fA — reducing to level %d", max_current, safe_level)
+            # ORDER (maintainer decision, Oct 2026): the battery power limit
+            # first — it is what tells the inverter how hard to charge — and
+            # flexible loads only when that is not enough: the battery is
+            # already at its 1 kW minimum (or idle, when the rule-1 power
+            # limit has no effect) and the current is still above 95 %.
+            battery_active = self._current_energy_state in ("charging", "discharging")
+            if battery_active and base_level > 1:
+                step = 2 if max_current > max_amperage * 0.95 else 1
+                safe_level = max(1, base_level - step)
+                _LOGGER.warning("High current %.1fA (max %.0fA) — reducing battery power to level %d",
+                                max_current, max_amperage, safe_level)
+            elif max_current > max_amperage * 0.95:
+                try:
+                    load_shed = await self._safe_power_shed_loads(max_current, max_amperage)
+                except Exception as err:
+                    _LOGGER.error("Load shedding failed (non-fatal): %s", err)
+                    load_shed = False
+                if not load_shed:
+                    _LOGGER.warning(
+                        "High current %.1fA (max %.0fA) — battery power at its minimum "
+                        "and no flexible load left to shed", max_current, max_amperage)
         elif max_current < max_amperage * 0.7:
+            # Recovery in reverse order: a shed load that fits again comes back
+            # (in _actuate_flex_loads) BEFORE the battery power is raised, so the
+            # battery does not take the room the load is waiting for.
             new_level = min(user_level, base_level + 1)
-            if new_level > base_level:
+            if self._shed_load_waiting_to_fit(max_current, max_amperage):
+                _LOGGER.debug("Low current %.1fA — a shed load returns first; "
+                              "battery stays at level %d", max_current, base_level)
+            elif new_level > base_level:
                 safe_level = new_level
                 _LOGGER.info("Low current %.1fA — recovering to level %d", max_current, safe_level)
             else:
