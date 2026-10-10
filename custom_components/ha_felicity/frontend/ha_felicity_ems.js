@@ -2487,7 +2487,7 @@ class FelicityEMSCard extends LitElement {
         <div class="loads-panel-head">
           <span class="loads-title">
             <ha-icon icon="mdi:power-plug"></ha-icon> Flexible Loads
-            <span class="loads-shed-note">· shed before battery power is reduced</span>
+            <span class="loads-shed-note">· shed only when lowering battery power is not enough</span>
           </span>
           <span class="loads-total ${anyOn ? 'on' : ''}">${this._fmt(totalActive, 1)} kW now</span>
         </div>

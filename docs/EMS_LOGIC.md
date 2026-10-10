@@ -813,25 +813,24 @@ Any mismatch produces a `rule1_window_warning` attribute on `schedule_status`, r
 
 ## 9. Safe Power Management
 
-Monitors grid current per phase and adjusts inverter power to prevent overcurrent. The priority chain has been extended with flexible load shedding:
+Monitors grid current per phase and adjusts inverter power to prevent overcurrent. **The battery power limit goes first** (maintainer decision, Oct 2026) — it is what tells the inverter how hard to charge; flexible loads are only touched when that is not enough:
 
 | Priority | Action | Detail |
 |---|---|---|
-| **1st** | EV charger current step-down | Reduce one current step at a time (e.g., 25A → 20A → 16A). One step per 10-second cycle to avoid oscillation. |
-| **2nd** | Binary load shedding | Turn off active flexible loads in shed-priority order — highest number sheds first (3 before 2 before 1). One load per cycle. |
-| **3rd** | Battery power reduction | Reduce charge/discharge power by 1-2 kW. Last resort. |
+| **1st** | Battery power reduction | Lower the rule-1 power limit by 2 kW (> 95 % of the limit) or 1 kW (> 80 %) per cycle, while the battery is charging/discharging, down to 1 kW. |
+| **2nd** | EV charger current step-down | Only when the battery is at its 1 kW minimum (or idle) and the current is still above 95 %. One step per 10-second cycle. |
+| **3rd** | Binary load shedding | Turn off active flexible loads in shed-priority order — highest number sheds first (3 before 2 before 1). One load per cycle. |
 
 | Grid Condition | Response |
 |---|---|
-| > 100% of max amperage | Over the limit — sheds/steps a load AND reduces the battery by 2 kW in the same cycle |
-| > 95% of max amperage | Emergency — sheds/steps a load first; reduces the battery by 2 kW only when there is no load to act on |
-| > 80% of max amperage | Caution — reduces by 1 kW |
+| > 95% of max amperage | Reduce the battery by 2 kW; at its minimum (or idle): step the EV down / shed a load |
+| > 80% of max amperage | Caution — reduces the battery by 1 kW (no load action) |
 | < 70% of max amperage | Recovery — restores by 1 kW (up to Power Level) |
 | Current = 0 | Jumps to full Power Level |
 
 **A shed load stays off.** A load switched off by safe power is held off for at least 5 minutes, and after that it is switched back on only when the measured grid current plus the load's own current (`rated kW / (voltage × phases)`) stays under 95 % of the limit; otherwise it is re-checked every minute. The schedule cannot override the hold. (Before Oct 2026 the flex-load actuation, later in the same cycle, switched a shed load straight back on, so the shed never took effect and the battery reduction it replaced never happened: 18 A limit, 23–28 A measured.)
 
-Battery power is increased back toward the user's Power Level when the current is below 70 % of the limit.
+Recovery runs in reverse: below 70 % of the limit, a shed load that fits comes back first, and only then is the battery power raised back toward the user's Power Level (1 kW per cycle).
 
 ---
 

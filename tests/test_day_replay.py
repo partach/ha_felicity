@@ -589,3 +589,25 @@ async def test_grid_current_limit_holds_with_a_current_controlled_ev():
 
     settled = [t.max_amps for t in r.ticks if day(D, 12, 2) <= t.at < day(D, 13)]
     assert max(settled) <= 18.0, f"peak {max(settled)} A\n{r.timeline(5)}"
+
+
+@pytest.mark.asyncio
+async def test_battery_power_is_cut_before_any_load_is_shed():
+    """Maintainer order: lower the battery power limit first; shed flexible
+    loads only when the battery is at its minimum and the current is still
+    too high.  With a 25 A limit, cutting the battery alone is enough here —
+    the EV must keep charging the whole time."""
+    r = _replay(options={**AUTO, **EV_OPTIONS, "max_amperage_per_phase": 25}, soc=40.0,
+                start=day(D, 11, 55), prices_for=DUCK, load_kw=lambda _t: 2.0,
+                switched_loads={EV: 3.7})
+    r.coordinator.set_slot_overrides({"today": {slot(12, m): "charge" for m in (0, 15, 30, 45)},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 13), step_s=10)
+    _chart(r, "battery_cut_before_load_shed")
+
+    assert r.hass.switch_on.get(EV) is True
+    assert not r.coordinator._flex_load_shed_until               # never shed
+    settled = [t.max_amps for t in r.ticks if day(D, 12, 2) <= t.at < day(D, 13)]
+    assert max(settled) <= 25.0, f"peak {max(settled)} A\n{r.timeline(5)}"
+    assert r.coordinator.safe_max_power < 8                     # the battery paid
+    assert "charge" in r.inverter_actions(day(D, 12), day(D, 13))

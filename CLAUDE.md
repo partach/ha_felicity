@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **677**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **678**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1293,10 +1293,15 @@ Monitors grid current per phase and adjusts inverter power:
 
 | Condition | Action |
 |---|---|
-| Current > 95% of max_amperage | Reduce by 2 kW (emergency) |
-| Current > 80% of max_amperage | Reduce by 1 kW (caution) |
-| Current < 70% of max_amperage | Recover by 1 kW (up to user limit) |
+| Current > 95% of max_amperage | Reduce battery power by 2 kW; at the 1 kW minimum (or battery idle): step EV current down / shed loads |
+| Current > 80% of max_amperage | Reduce battery power by 1 kW (no load action in this band) |
+| Current < 70% of max_amperage | A shed load that fits returns first; otherwise recover battery by 1 kW (up to user limit) |
 | Current = 0 | Jump to user's Power Level |
+
+**Order — battery power FIRST, flexible loads second (maintainer decision,
+Oct 2026).**  The rule-1 power limit is what tells the inverter how hard to
+charge, so it is always the first lever; loads are only touched once the
+battery is at its minimum and the current is still above 95 %.
 
 Also detects external changes (user adjusting via inverter app).
 
@@ -1496,16 +1501,20 @@ Without this, a charger entity going offline would cause `UpdateFailed`,
 making all entities unavailable and taking the inverter out of eco mode.
 `_safe_power_shed_loads` has the same isolation.
 
-**Safe power priority chain** (in `_check_safe_power`):
-1. EV charger current step-down (one step per tick)
-2. Binary load shed (3=least important, shed first; 1=most important, shed last)
-3. Battery power reduction (existing behavior, last resort)
+**Safe power priority chain** (in `_check_safe_power`) — **maintainer decision,
+Oct 2026: battery first**:
+1. Battery power reduction (2 kW per poll above 95 %, 1 kW above 80 %) — while
+   the battery is charging/discharging and above its 1 kW minimum
+2. EV charger current step-down (one step per tick) — only once (1) cannot help
+3. Binary load shed (3=least important, shed first; 1=most important, shed last)
 
-**Above the limit itself (> 100 %) the battery is reduced in the SAME poll as
-the load action**, not only once the loads are exhausted; between 95 % and
-100 % loads go first.  **A shed load is held off** (`_flex_load_shed_until`,
-5 min) and comes back only when `measured current + its own amps < 95 %` of
-the limit (`_shed_load_may_return`) — see Known Issues 8h for why both matter.
+Recovery runs in reverse: a shed load that fits (`current + its amps ≤ 95 %`)
+comes back before the battery power is raised (`_shed_load_waiting_to_fit`).
+**A shed load is held off** (`_flex_load_shed_until`, 5 min) and returns only
+with room for it (`_shed_load_may_return`) — see Known Issues 8h.  (The
+previous order — loads first, battery last — was reversed at the maintainer's
+request: the power limit is the inverter's own lever, the loads are the
+user's.)
 
 ### Configuration (per load)
 
@@ -1566,7 +1575,8 @@ through `EMSConfig.ev_charge_strategy` → `_schedule_flexible_loads`.
   (`active_power_kw / max_power_kw`), the EV charger's active current
   detail (`A · φ · V`), a `BOOST` chip during EV boost, and a colour-coded
   shed-priority badge ("Sheds 1st/2nd/last").  Header shows total live kW.
-  Footer reminds that loads are shed before the battery power is reduced.
+  Footer reminds that loads are shed only when lowering the battery power
+  is not enough (battery first — see "Safe power priority chain").
 - `flex_load_schedule`, `flex_load_states`, `flex_load_configs` in
   `schedule_status` attributes.  `flex_load_configs` entries carry
   `on`, `active_power_kw`, `max_power_kw`, `priority`, and (EV only)
@@ -2439,20 +2449,26 @@ scheduled on.  Not a recent regression — present since load shedding was added
 it only shows on an install with a flexible load, a high charge power and a low
 current limit.
 
-Fixes (both in the coordinator; no scheduling logic involved):
+Fixes (all in the coordinator; no scheduling logic involved):
 1. **A shed load is held off** — `_flex_load_shed_until[idx]` = now + 5 min;
    `_actuate_flex_loads` cannot switch it on during the hold.  After the hold,
    `_shed_load_may_return` lets it back only when the measured current plus the
    load's own current (`rated kW / (V × phases)`) stays under 95 % of the limit,
    otherwise it re-checks every minute — no 29 A spike every 5 minutes.
-2. **Over the limit itself, the battery is cut in the same poll** as the load
-   action.  A load action takes a poll to show in the current, and the battery
-   is often the bigger draw (8 kW charge vs a 3.7 kW EV).  Between 95 % and
-   100 % the documented order (loads first) is kept.
+2. **Battery first, loads second (maintainer decision).**  The old chain shed
+   loads BEFORE touching the battery.  Now the battery power limit is cut
+   first (2 kW/poll above 95 %, 1 kW above 80 %); EV step-down and load
+   shedding start only when the battery is at its 1 kW minimum (or idle) and
+   the current is still above 95 %.  Recovery is the reverse: a shed load that
+   fits returns before the battery is raised.  On the replay at 18 A the
+   battery steps 8→6→4→2→1 kW in 40 s, then the EV is shed (20.4 A → 4 A); at
+   22 A / 25 A the battery cut alone suffices and the EV keeps charging
+   (`test_battery_power_is_cut_before_any_load_is_shed`).
 
 Replay (`test_grid_current_limit_holds_*`, both models, binary and
-current-stepped EV): old code holds **30.6 A** for the whole hour; now the first
-poll is the only one above 18 A (13 A after).  The harness now publishes
+current-stepped EV): old code holds **30.6 A** for the whole hour; now the
+current is inside the limit within ~40 s (four 2 kW battery steps, then the
+shed), and stays there.  The harness now publishes
 per-phase grid current (inverter power over three phases + a 1-phase load on
 L2) and switches loads through a fake `switch`/`number` service, so safe power
 and flex-load actuation are exercised for real.
@@ -3020,7 +3036,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**677 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**678 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
