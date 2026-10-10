@@ -738,28 +738,39 @@ def merge_slot_overrides(
     grid_mode: str,
     prices: dict[int, float],
     validate,
-) -> tuple[dict[int, str], list[tuple[int, str]], list[tuple[int, str]]]:
+) -> tuple[dict[int, str], list[tuple[int, str]]]:
     """Merge the card's manual slot overrides into a schedule and validate it.
 
     A manual override is the user's explicit intent, so it outranks the EMS's
-    own choices.  ``validate(charge_set, discharge_set) -> (kept_charge,
-    kept_discharge)`` is the SOC check (``_validate_schedule_soc`` bound to the
-    current battery state).  When the merged schedule violates the battery
-    bounds, the EMS's own slots are given up first — dearest charge / cheapest
-    discharge — and an override is dropped only when overrides alone still
-    violate them (e.g. the user picked more charge than the battery can hold).
+    own choices and is NEVER pruned.  ``validate(charge_set, discharge_set) ->
+    (kept_charge, kept_discharge)`` is the SOC check (``_validate_schedule_soc``
+    bound to the current battery state); it decides only which of the EMS's own
+    slots survive next to the overrides.  When the merged schedule violates the
+    battery bounds the EMS gives up its dearest charge / cheapest discharge
+    slots, one at a time.
 
-    Before this, the merged set was validated as one, and overflow pruning
-    drops the MOST EXPENSIVE charge first.  Overrides are usually placed above
-    the price threshold, so they were always the dearest: an EMS plan with
-    cheap midday charging plus a sunny day projected an overflow, and every
-    override was silently discarded (report: overrides 02:00–05:00 never
-    charged).
+    Why overrides are not bounded by the projection: the inverter's rule-1 SOC
+    register already stops a charge at max SOC and a discharge at the floor, so
+    an override the battery "cannot fully take" just ends early — nothing to
+    protect.  Pruning them was actively harmful (both found replaying a night
+    through the real coordinator, tests/test_day_replay.py):
+
+    * a battery at 80 % with three hours of override charge kept only the LAST
+      hour — it is the charge that ends full that "overflows", so the user's
+      02:00 start silently became 04:00;
+    * the check re-runs every tick and assumes a whole slot of energy is still
+      to come, so it dropped the slot that was executing a few minutes in —
+      charging switched off at :13 and on again at :15, every slot, with a
+      warning in the log every tick.
+
+    The first version validated the merged set as one and pruned the DEAREST
+    charge first, which is always an override (they sit above the threshold) —
+    report: overrides 02:00–05:00 never charged.
 
     ``grid_mode`` filters overrides the mode cannot execute (from_grid: charge
     only, to_grid: discharge only).  ``prices`` maps each REMAINING slot to its
     price; slots outside it (already past) are left untouched.  Returns
-    (schedule, dropped_overrides, dropped_ems_slots).
+    (schedule, dropped_ems_slots).
     """
     allowed = {"from_grid": {"charge"}, "to_grid": {"discharge"},
                "both": {"charge", "discharge"}}.get(grid_mode, set())
@@ -772,34 +783,40 @@ def merge_slot_overrides(
         return ({i for i, a in sched.items() if a == "charge"},
                 {i for i, a in sched.items() if a == "discharge"})
 
+    def _price(i):
+        return prices.get(i, 0.0)
+
     while True:
         charge, discharge = _sets(merged)
         kept_c, kept_d = validate(charge, discharge)
-        lost_user = [(i, a) for i, a in user.items()
-                     if i in prices and merged.get(i) == a
-                     and i not in (kept_c if a == "charge" else kept_d)]
-        if not lost_user:
+        rejected = [(i, a) for i, a in merged.items()
+                    if i in prices and i not in (kept_c if a == "charge" else kept_d)]
+        if not rejected:
             break
-        # Give up one EMS slot of the kind that is costing the user theirs.
-        kind = lost_user[0][1]
+        rejected_user = [(i, a) for i, a in rejected if user.get(i) == a]
+        if not rejected_user:
+            # Only EMS slots are out of bounds: validation's own choice stands.
+            for i, a in rejected:
+                del merged[i]
+                dropped_ems.append((i, a))
+            break
+        # An override is projected out of bounds: give up one EMS slot of the
+        # kind that is crowding it out, and look again.
+        kind = rejected_user[0][1]
         ems_slots = [i for i, a in merged.items()
                      if a == kind and i not in user and i in prices]
         if not ems_slots:
-            break    # overrides alone violate the bounds — let validation decide
-        price = lambda i: prices.get(i, 0.0)
-        victim = max(ems_slots, key=price) if kind == "charge" else min(ems_slots, key=price)
+            # Overrides alone exceed the bounds.  They stay — the inverter's
+            # rule SOC ends them — but no EMS slot may add to the excess.
+            for i, a in rejected:
+                if user.get(i) != a:
+                    del merged[i]
+                    dropped_ems.append((i, a))
+            break
+        victim = max(ems_slots, key=_price) if kind == "charge" else min(ems_slots, key=_price)
         del merged[victim]
         dropped_ems.append((victim, kind))
-
-    dropped_user = []
-    for i, a in list(merged.items()):
-        if i in prices and i not in (kept_c if a == "charge" else kept_d):
-            del merged[i]
-            if user.get(i) == a:
-                dropped_user.append((i, a))
-            else:
-                dropped_ems.append((i, a))
-    return merged, dropped_user, dropped_ems
+    return merged, dropped_ems
 
 
 def _validate_schedule_soc(

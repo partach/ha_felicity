@@ -7,6 +7,21 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **Manual overrides survive a restart.** Overrides set in the evening for the
+  night were moved onto the wrong day by any Home Assistant restart before
+  midnight (e.g. installing an update) and then cleared — so the night charge
+  never happened. Overrides now remember the day they were set on.
+- **Overrides run from their first slot, even when the battery can't take all
+  of it.** They were trimmed to the last slots, and the running slot was
+  switched off and on every few minutes. The inverter's own SOC limit ends the
+  charge when the battery is full.
+- **No more register writes every poll with a full battery.** In a charge slot
+  the inverter now simply holds at max SOC instead of being switched between
+  idle and charging every poll.
+- **No false "Self-heal: inverter dropped out of Economic mode" warning** after
+  every charge/discharge start.
+- **T-REX-5/6/10: a charge or discharge running at midnight keeps going.** The
+  rule's date is now moved to the new day; it used to stay on yesterday's.
 - **Manual slot overrides are executed again.** Overrides could be silently
   discarded when the plan projected a full battery later in the day (they were
   always the first slots dropped); now the EMS's own slots give way instead.

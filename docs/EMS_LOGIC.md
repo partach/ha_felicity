@@ -722,12 +722,15 @@ Users can manually override slot actions via the EMS card (click a slot to force
 
 - Overrides the grid mode cannot execute are ignored (from_grid: charge only; to_grid: discharge only).
 - The merged schedule is validated against the battery bounds (`_validate_schedule_soc`). If an override would be rejected, the EMS gives up its own slots first — its dearest charge (or cheapest discharge) slot, one at a time — and re-validates.
-- An override is dropped only when overrides alone still violate the bounds (e.g. more charge than the battery can hold). That is logged as a warning; EMS slots given up for an override are logged at info.
+- **An override is never pruned**, even when overrides alone exceed what the battery can take. The inverter's rule-1 SOC register ends a charge at max SOC (and a discharge at the floor), so an override the battery cannot fully use simply ends early. EMS slots may never add to such an excess. (Pruning kept the *last* override slots and re-pruned the executing slot every poll — see CLAUDE.md 8f.)
+- Overrides carry the **date** they were set on. At a day change, tomorrow's overrides become today's only when that date is yesterday; a restart on the same day leaves them where they are; older ones are cleared (HA was off for a day). Before this, every HA restart rotated tomorrow's overrides onto the current day.
 - **Manual price mode executes overrides too**: an override on the current slot wins over the price threshold (charge needs from_grid/both and SOC below max; discharge needs to_grid/both and SOC above min), and the displayed manual schedule includes them.
 
-### Charge Deferral (Cheapest-First Execution)
+### Charge Execution
 
-When the current slot is a scheduled charge slot, the EMS checks whether a later scheduled charge slot has a cheaper price (by at least 1¢/kWh). If so, and the battery SOC is above the reserve target, the current slot is deferred (state = idle). The next 10-second cycle re-evaluates, so charging naturally shifts to the cheapest scheduled slot. This compensates for the deficit shrinking as PV confidence recovers mid-day — without it, early expensive slots would execute while later cheaper slots get dropped from a re-plan.
+When the current slot is a scheduled charge slot (or a charge override) the coordinator charges — there is no "defer for a cheaper later slot" check (removed June 2026; the optimiser already schedules only the cheapest slots it needs, see CLAUDE.md C3).
+
+**A full battery stays in charging for the rest of the slot.** Rule 1's SOC register (= max SOC) stops the inverter there and the house runs on grid, as the slot intended. Switching to idle instead would put the house back on the battery, drop it to 99.9 %, and re-arm the charge on the next poll — a full rule rewrite every poll. The same holds in manual price mode once charging. Entering charging still requires SOC below max.
 
 **Stall prevention**: Never defers when SOC is at or below `reserve_target` (battery needs charging now, regardless of price). Negative-price slots are exempt from deferral.
 
@@ -767,7 +770,11 @@ This prevents the inverter from flipping between discharge → idle → discharg
 
 ### Midnight Rollover
 
-The day-rollover block resets yesterday deficit, daily consumption, SOC history, and rotates slot overrides — but does NOT force the inverter to idle. The normal cycle re-determines the desired state, so valid charge/discharge actions continue across midnight (e.g., a customer selling overnight to clear the battery before negative-midday PV).
+The day-rollover block resets yesterday deficit, daily consumption, SOC history, and rotates slot overrides (by their date stamp, see Slot Override Validation) — but does NOT force the inverter to idle. The normal cycle re-determines the desired state, so valid charge/discharge actions continue across midnight (e.g., a customer selling overnight to clear the battery before negative-midday PV).
+
+When an action is running at midnight, rule 1's start/stop **date** (T-REX-5/6/10) is rewritten to the new date — otherwise the rule would still carry yesterday's date and the inverter would stop obeying it while the EMS believes it is still active. The rollover bookkeeping also runs on the first poll after every start, but that first poll neither rotates same-day overrides nor rewrites the rule date.
+
+The Economic-mode watchdog judges the inverter by the current poll's read, so it fires only on a real drop (the Felicity app, a power blip) and never right after the EMS's own transition.
 
 ### Modbus Staleness Guard
 

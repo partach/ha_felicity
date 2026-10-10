@@ -476,6 +476,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         charge_max = opts.get("battery_charge_max_level", 100)
         discharge_min = opts.get("battery_discharge_min_level", 20)
         price_mode = opts.get("price_mode", "manual")
+        # Full battery during a charge slot: STAY charging.  Rule 1's SOC
+        # register (= charge_max) already stops the inverter there and the
+        # house runs on grid, as the slot intended.  Dropping to idle instead
+        # put the house back on the battery, SOC fell to 99.9 %, the next tick
+        # re-armed the charge — a full rule rewrite every poll for the rest of
+        # the slot (found by the day-replay harness).
+        room_or_charging = (battery_soc < charge_max
+                            or self._current_energy_state == "charging")
 
         if price_mode == "auto":
             # Auto mode: schedule-based decision
@@ -483,7 +491,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 slot_idx = self._current_slot_index()
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
                     slot_action = self.scheduled_slots[slot_idx]
-                    if slot_action == "charge" and battery_soc < charge_max:
+                    if slot_action == "charge" and room_or_charging:
                         # Execute every scheduled charge slot.  No per-slot
                         # "defer for a cheaper later slot" logic — it was
                         # removed because it could only ever HARM:
@@ -533,7 +541,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         override = (self.slot_overrides.get("today", {}) or {}).get(
             str(slot_idx)) if slot_idx is not None else None
         if (override == "charge" and grid_mode in ("from_grid", "both")
-                and battery_soc < charge_max):
+                and room_or_charging):
             return "charging"
         if (override == "discharge" and grid_mode in ("to_grid", "both")
                 and battery_soc > discharge_min):
@@ -551,8 +559,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # If already in a state, favor staying (use raw threshold, no margin)
         if self._current_energy_state == "charging":
-            if grid_mode in ("from_grid", "both") and self.current_price < self.price_threshold and battery_soc < charge_max:
-                return "charging"
+            if grid_mode in ("from_grid", "both") and self.current_price < self.price_threshold:
+                return "charging"   # full is fine: rule 1's SOC holds it (see above)
         elif self._current_energy_state == "discharging":
             if grid_mode in ("to_grid", "both") and self.current_price > self.price_threshold and battery_soc > discharge_min:
                 return "discharging"
@@ -565,28 +573,63 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         return "idle"
 
-    async def _rotate_slot_overrides(self) -> None:
-        """Move tomorrow's slot overrides to today and clear tomorrow.
+    def set_slot_overrides(self, overrides: dict) -> None:
+        """Store the card's overrides, stamped with the day they were set on.
 
-        Called at midnight so that user-added slots for 'tomorrow' become
-        the active 'today' overrides when the new day starts.
+        The card sends only {"today": …, "tomorrow": …}.  Without a date the
+        coordinator cannot tell, after a restart, whether "tomorrow" still
+        means tomorrow — see _rotate_slot_overrides.
         """
+        self.slot_overrides = {
+            "today": dict(overrides.get("today") or {}),
+            "tomorrow": dict(overrides.get("tomorrow") or {}),
+            "date": datetime.now().date().isoformat(),
+        }
+        self._persist_slot_overrides()
+
+    def _persist_slot_overrides(self) -> None:
+        entry = self.config_entry
+        if entry:
+            new_options = {**entry.options, "slot_overrides": self.slot_overrides}
+            self.hass.config_entries.async_update_entry(entry, options=new_options)
+
+    async def _rotate_slot_overrides(self, first_boot: bool = False) -> None:
+        """Bring the overrides up to date: tomorrow's become today's at midnight.
+
+        Driven by the date stamped on the overrides, not by "a new day was
+        detected".  The day-change check also fires on the FIRST tick after
+        every HA start, and rotating then moved tomorrow's overrides onto
+        today — on the wrong day — after which the real midnight cleared them.
+        Overrides set in the evening for the night, followed by any restart
+        (installing an update) before midnight, therefore never ran.
+
+        Unstamped overrides (saved by an older version) are assumed to be
+        today's on a restart, and rotated at a real midnight as before.
+        """
+        today = datetime.now().date()
+        stamped = self.slot_overrides.get("date")
+        if stamped == today.isoformat() or (stamped is None and first_boot):
+            if stamped is None and self.slot_overrides:
+                self.slot_overrides = {**self.slot_overrides, "date": today.isoformat()}
+                self._persist_slot_overrides()
+            return
+
         tomorrow = self.slot_overrides.get("tomorrow", {})
-        if tomorrow:
+        yesterday = (today - timedelta(days=1)).isoformat()
+        if tomorrow and stamped in (yesterday, None):
             self.slot_overrides = {"today": tomorrow, "tomorrow": {}}
             _LOGGER.info(
                 "Rotated %d tomorrow slot overrides to today", len(tomorrow)
             )
         else:
-            # No tomorrow overrides — just clear today's stale overrides
+            # No tomorrow overrides, or they are older than yesterday's
+            # tomorrow (HA was off for a day) — today starts clean.
             self.slot_overrides = {"today": {}, "tomorrow": {}}
             _LOGGER.debug("Cleared slot overrides for new day (no tomorrow overrides)")
+        self.slot_overrides["date"] = today.isoformat()
 
         # Persist to config entry so it survives restarts
-        entry = self.config_entry
-        if entry:
-            new_options = {**entry.options, "slot_overrides": self.slot_overrides}
-            self.hass.config_entries.async_update_entry(entry, options=new_options)
+        self._persist_slot_overrides()
 
     def _current_slot_index(self) -> int | None:
         """Get the current time slot index based on price array granularity.
@@ -1077,9 +1120,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # Merge manual slot overrides from the card and re-validate (#9).
         # ems.merge_slot_overrides owns the rule: overrides are the user's
-        # explicit intent, so on a projected bound violation the EMS's own
-        # slots are given up first and an override is dropped only when the
-        # overrides alone violate the bounds.
+        # explicit intent and are never pruned (the inverter's rule-1 SOC ends
+        # a charge at max SOC); on a projected bound violation only the EMS's
+        # own slots give way.
         today_overrides = self.slot_overrides.get("today", {})
         if today_overrides and self.slot_prices_today and battery_soc is not None:
             num_slots_t = len(self.slot_prices_today)
@@ -1117,21 +1160,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     keep_all_negative_charges=config.charge_to_full_on_negative_price,
                 )
 
-            self.scheduled_slots, dropped_user, dropped_ems = ems_module.merge_slot_overrides(
+            self.scheduled_slots, dropped_ems = ems_module.merge_slot_overrides(
                 self.scheduled_slots, today_overrides, grid_mode,
                 dict(remaining_t), _validate,
             )
             if dropped_ems:
-                _LOGGER.info(
-                    "Manual overrides: gave up %d EMS slot(s) to keep the overrides "
+                # Re-evaluated on every recalc (SOC moves 0.1 % → new hash), so debug.
+                _LOGGER.debug(
+                    "Manual overrides: gave up %d EMS slot(s) to keep the plan "
                     "within battery bounds: %s", len(dropped_ems), dropped_ems)
-            if dropped_user:
-                _LOGGER.warning(
-                    "Manual overrides: dropped %d override slot(s) the battery cannot "
-                    "take even without the EMS's own slots: %s  (soc=%.1f kWh, "
-                    "cap=%.1f, floor=%.1f)",
-                    len(dropped_user), dropped_user, current_kwh_t,
-                    effective_capacity, floor_t)
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
         self.self_consumption_reserve = result.self_consumption_reserve
@@ -2288,7 +2325,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     _LOGGER.warning("Failed to write %s=%s during %s transition", reg, val, new_state)
         return True
 
-    async def _apply_rule1_auto_settings(self) -> None:
+    async def _restamp_rule1_date(self) -> None:
+        """Carry an action that is running at midnight into the new day.
+
+        T-REX-5/6/10 rule 1 has a start/stop DATE, which _transition_to_state
+        sets to today's date.  A charge or discharge that runs across midnight
+        has no transition at 00:00, so the rule still carried yesterday's date
+        and the inverter stopped obeying it while the coordinator believed it
+        was still active — and the Economic-mode watchdog cannot see that.
+        Found by the day-replay harness.  (No-op on models without the date
+        registers: type_specific ignores them there.)
+        """
+        if self._current_energy_state not in ("charging", "discharging"):
+            return
+        now = datetime.now()
+        date_16bit = (now.month << 8) | now.day
+        for reg in ("econ_rule_1_start_day", "econ_rule_1_stop_day"):
+            if not await self.TypeSpecificHandler.write_type_specific_register(reg, date_16bit):
+                _LOGGER.warning("Failed to carry %s into the new day", reg)
+
+    async def _apply_rule1_auto_settings(self, data: dict | None = None) -> None:
         """If rule 1 auto settings are enabled, ensure the inverter's
         time-window and weekday-mask match the auto defaults.
 
@@ -2297,7 +2353,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         Felicity's 24-hour convention is start=00:00, stop=23:59 (the
         firmware doesn't accept stop=00:00 or stop=24:00).
         """
-        if not self.data:
+        # This poll's fresh read.  self.data is the PREVIOUS poll, taken before
+        # last tick's write, so checking it re-wrote every target once more.
+        data = self.data if data is None else data
+        if not data:
             return
 
         opts = self.config_entry.options
@@ -2307,14 +2366,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if opts.get("rule1_time_window", "manual") == "auto":
             target_start = 0                       # 00:00
             target_stop = (23 << 8) | 59           # 23:59 (Felicity 24h)
-            current_start = self.data.get("econ_rule_1_start_time")
-            current_stop = self.data.get("econ_rule_1_stop_time")
+            current_start = data.get("econ_rule_1_start_time")
+            current_stop = data.get("econ_rule_1_stop_time")
             if current_start != target_start:
                 ok = await self.TypeSpecificHandler.write_type_specific_register(
                     "econ_rule_1_start_time", target_start
                 )
                 if ok:
-                    self.data["econ_rule_1_start_time"] = target_start
+                    data["econ_rule_1_start_time"] = target_start
                     _LOGGER.info(
                         "Rule 1 auto: wrote start_time=00:00 (was %s)",
                         current_start,
@@ -2324,7 +2383,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     "econ_rule_1_stop_time", target_stop
                 )
                 if ok:
-                    self.data["econ_rule_1_stop_time"] = target_stop
+                    data["econ_rule_1_stop_time"] = target_stop
                     _LOGGER.info(
                         "Rule 1 auto: wrote stop_time=23:59 (was %s)",
                         current_stop,
@@ -2332,19 +2391,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         if opts.get("rule1_weekday", "manual") == "auto":
             target_week = 0x7F  # all 7 days enabled (bit0=Sun..bit6=Sat)
-            current_week = self.data.get("econ_rule_1_effective_week")
+            current_week = data.get("econ_rule_1_effective_week")
             if current_week != target_week:
                 ok = await self.TypeSpecificHandler.write_type_specific_register(
                     "econ_rule_1_effective_week", target_week
                 )
                 if ok:
-                    self.data["econ_rule_1_effective_week"] = target_week
+                    data["econ_rule_1_effective_week"] = target_week
                     _LOGGER.info(
                         "Rule 1 auto: wrote effective_week=all days (was 0x%02X)",
                         current_week if isinstance(current_week, int) else 0,
                     )
 
-    async def _ensure_economic_mode_when_active(self) -> None:
+    async def _ensure_economic_mode_when_active(self, data: dict | None = None) -> None:
         """Self-heal: re-assert Economic mode if the inverter silently dropped it.
 
         The coordinator only calls _transition_to_state when the *desired*
@@ -2369,7 +2428,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         """
         if self._current_energy_state not in ("charging", "discharging"):
             return
-        if not self.data:
+        # Judge the register by THIS poll's read.  self.data is the previous
+        # poll — read before the transition that switched Economic mode on —
+        # so every transition into charging/discharging was followed, one tick
+        # later, by a false "dropped out of Economic mode" warning and a full
+        # re-write of the rule (found by the day-replay harness).
+        data = self.data if data is None else data
+        if not data:
             return
 
         enable_value = {"charging": 1, "discharging": 2}[self._current_energy_state]
@@ -2377,21 +2442,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if self.inverter_model in (
             INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
         ):
-            eco = self.data.get("eco_timeofuse")
+            eco = data.get("eco_timeofuse")
             if eco is None or int(eco) == 1:
                 return  # register not read, or Economic mode already active
             register_val = eco
         elif self.inverter_model in (
             INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN
         ):
-            mode = self.data.get("operating_mode")
+            mode = data.get("operating_mode")
             if mode is None or int(mode) == 2:
                 return  # register not read, or Economic mode already active
             register_val = mode
         else:
             return
 
-        rule_enable = self.data.get("econ_rule_1_enable")
+        rule_enable = data.get("econ_rule_1_enable")
         _LOGGER.warning(
             "Self-heal: inverter dropped out of Economic mode (register=%s, "
             "rule_1_enable=%s) while state=%s — re-applying the full Rule 1 "
@@ -2422,10 +2487,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if self.inverter_model in (
                 INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
             ):
-                self.data["eco_timeofuse"] = 1
+                data["eco_timeofuse"] = 1
             else:
-                self.data["operating_mode"] = 2
-            self.data["econ_rule_1_enable"] = enable_value
+                data["operating_mode"] = 2
+            data["econ_rule_1_enable"] = enable_value
         else:
             _LOGGER.error(
                 "Self-heal: failed to re-assert Economic mode for state %s",
@@ -2822,7 +2887,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 self._current_day = now.day
 
                                 # Propagate tomorrow's slot overrides → today
-                                await self._rotate_slot_overrides()
+                                await self._rotate_slot_overrides(first_boot=first_boot)
+                                if not first_boot:
+                                    await self._restamp_rule1_date()
                                 # Do NOT force-idle the inverter here.  A discharge
                                 # that's valid at 23:59 is usually still valid at
                                 # 00:01 (e.g., high evening price extending into
@@ -2870,7 +2937,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Apply rule 1 time-window / weekday auto settings
                             # if enabled.  Writes are idempotent — only happens
                             # when the register doesn't already match the target.
-                            await self._apply_rule1_auto_settings()
+                            await self._apply_rule1_auto_settings(new_data)
 
                             # Warn if the planned schedule falls outside the
                             # inverter's Economic Rule 1 time/weekday window
@@ -3015,7 +3082,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 # No state change this cycle, but verify the
                                 # inverter hasn't silently dropped out of
                                 # Economic mode while we believe we're active.
-                                await self._ensure_economic_mode_when_active()
+                                await self._ensure_economic_mode_when_active(new_data)
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",

@@ -6758,7 +6758,8 @@ class TestManualOverridesWinValidation:
     The merged schedule was validated as one; with the EMS also charging cheap
     midday slots on a sunny day it projected an overflow, and overflow pruning
     drops the DEAREST charge first — always the user's overrides, which sit
-    above the threshold.  Overrides are explicit intent: the EMS gives way."""
+    above the threshold.  Overrides are explicit intent: the EMS gives way, and
+    an override is never pruned (the inverter's rule-1 SOC ends the charge)."""
 
     CAP = 91.0
     N = 96
@@ -6793,28 +6794,36 @@ class TestManualOverridesWinValidation:
         assert not kept & set(range(8, 20))
 
     def test_overrides_survive_and_ems_slots_give_way(self):
-        merged, dropped_user, dropped_ems = self._merge(self.EMS_MIDDAY, dict(self.OVERRIDES))
+        merged, dropped_ems = self._merge(self.EMS_MIDDAY, dict(self.OVERRIDES))
         assert all(merged.get(i) == "charge" for i in range(8, 20))
-        assert dropped_user == []
         assert dropped_ems                                   # the EMS paid instead
         assert all(i in self.EMS_MIDDAY for i, _ in dropped_ems)
 
     def test_ems_gives_up_its_dearest_slots_first(self):
         ems_plan = {**self.EMS_MIDDAY, 30: "charge", 31: "charge"}   # 0.12 > 0.02
-        _, _, dropped_ems = self._merge(ems_plan, dict(self.OVERRIDES))
+        _, dropped_ems = self._merge(ems_plan, dict(self.OVERRIDES))
         assert {30, 31} <= {i for i, _ in dropped_ems}
 
-    def test_overrides_alone_too_much_are_still_bounded(self):
-        """More override charge than the battery can hold: physics wins."""
+    def test_overrides_beyond_capacity_are_kept(self):
+        """More override charge than the battery can hold: every slot stays.
+
+        The inverter stops at the rule-1 SOC, so nothing needs protecting —
+        and pruning kept the LAST slots (the ones that end full), turning a
+        02:00 start into 04:00, and re-pruned the executing slot each tick."""
         too_many = {str(i): "charge" for i in range(8, 40)}   # 8 h at 5 kW from 90%
-        merged, dropped_user, _ = self._merge({}, too_many, soc_pct=90.0)
-        assert dropped_user
-        assert sum(1 for a in merged.values() if a == "charge") < 32
+        merged, _ = self._merge({}, too_many, soc_pct=90.0)
+        assert all(merged.get(i) == "charge" for i in range(8, 40))
+
+    def test_ems_slots_never_add_to_an_override_excess(self):
+        too_many = {str(i): "charge" for i in range(8, 40)}
+        merged, dropped_ems = self._merge(self.EMS_MIDDAY, too_many, soc_pct=90.0)
+        assert not any(merged.get(i) for i in self.EMS_MIDDAY)
+        assert {i for i, _ in dropped_ems} == set(self.EMS_MIDDAY)
 
     def test_grid_mode_filters_what_cannot_execute(self):
-        merged, _, _ = self._merge({}, {"30": "discharge", "31": "charge"})
+        merged, _ = self._merge({}, {"30": "discharge", "31": "charge"})
         assert 30 not in merged and merged[31] == "charge"
 
     def test_past_slots_are_left_alone(self):
-        merged, dropped_user, _ = self._merge({2: "charge"}, {}, start=8)
-        assert merged == {2: "charge"} and dropped_user == []
+        merged, dropped_ems = self._merge({2: "charge"}, {}, start=8)
+        assert merged == {2: "charge"} and dropped_ems == []

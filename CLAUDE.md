@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **600**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **615**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -142,7 +142,9 @@ tests/
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
 ├── test_register_dump.py   # Dump decodes like the coordinator; reads only documented addresses
-└── test_ivgm_controls.py   # IVGM: only the ECO-rule settings are writable, power capped, whole volts
+├── test_ivgm_controls.py   # IVGM: only the ECO-rule settings are writable, power capped, whole volts
+├── day_replay.py           # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
+└── test_day_replay.py      # Night replays: what actually reaches the inverter registers
 
 pytest.ini                   # testpaths + asyncio mode
 requirements-test.txt        # pytest, pytest-asyncio, pulp (no Home Assistant)
@@ -2144,8 +2146,9 @@ test suite barely covered:
    dropped …`.  **Fix:** `ems.merge_slot_overrides` (the merge now lives in
    ems.py, the single source of truth; the coordinator passes a bound validator
    closure).  On a violation the EMS gives up its own dearest charge /
-   cheapest discharge slot, one at a time, and re-validates; an override is
-   dropped only when overrides alone violate the bounds.  Pinned by
+   cheapest discharge slot, one at a time, and re-validates.  (First version
+   still dropped an override when overrides alone violated the bounds — that
+   was wrong too, see 8f; overrides are now never pruned.)  Pinned by
    `TestManualOverridesWinValidation`.
 2. **Manual price mode ignored overrides entirely.**  `_determine_energy_state`
    compared price vs threshold only; overrides were merged solely inside
@@ -2166,9 +2169,92 @@ the count is fine (600) but the coverage is lopsided — almost all of it pins
 override merge, `_determine_energy_state`, `_transition_to_state`, the
 day rollover, the card's rendering — has only resilience tests (see "Still not
 covered" under Testing).  Every report this month landed there.  The missing
-piece is a **coordinator day-replay harness**: fake clock + fake register
-memory + the real coordinator, stepped through a night with overrides,
-asserting what was written to `econ_rule_1_*`.  Not built yet.
+piece was a **coordinator day-replay harness** — built the same week, see 8f.
+Its first run found the likely real root cause of this report (8f item 1),
+which none of the three fixes above touched.
+
+### 8f. What the day-replay harness found on its first run (Oct 2026)
+
+`tests/day_replay.py` replays real wall-clock hours through the **real**
+coordinator and the **real** `TypeSpecificHandler`: a fake clock drives
+`datetime.now()`/`time.time()` inside the coordinator, a fake inverter is a
+Modbus register memory whose battery moves **only when the registers say so**
+(Economic mode, rule 1 enabled, inside its time window/weekday/**date range**,
+below/above the rule SOC — else self-use, or `hold` when full under an active
+charge rule), and a fake HA serves a Nordpool-shaped price entity (tomorrow's
+prices appear at 13:00), persists options and runs executor jobs inline.  The
+coordinator is loaded as a **private copy** with its own HA stubs, so
+test_coordinator.py's module-level MagicMock of type_specific cannot leak in.
+`tests/test_day_replay.py` holds the scenarios; 11 of its 13 original tests
+fail on the code before these fixes.  Five defects, all invisible to the
+planning tests:
+
+1. **Every HA restart moved tomorrow's overrides onto the wrong day.**  The
+   first tick after a start runs the "new day" bookkeeping (`_current_day` is
+   `None`), and that called `_rotate_slot_overrides()` — so tomorrow's
+   overrides became *today's* (already past) and the real midnight then cleared
+   them.  Set overrides in the evening, install an update before midnight →
+   02:00–05:00 never charges.  **Most likely the actual cause of the 8e
+   report.**  Fix: the overrides carry the date they were set on
+   (`coordinator.set_slot_overrides`, called by the `set_slot_overrides`
+   service, stamps `"date"`); `_rotate_slot_overrides(first_boot=…)` keeps
+   them on a same-day restart, rotates them when the stamp is yesterday, and
+   clears them when older (HA off for a day).  Unstamped (legacy) overrides are
+   kept on a restart and rotated at a real midnight, as before.  The card only
+   ever sends `today`/`tomorrow` and ignores the extra key.
+2. **Overrides were still pruned when "overrides alone" exceeded the
+   battery.**  At 82 % with three hours of override charge, the projection says
+   the battery fills after ~45 min; validation then dropped the overflowing
+   slots — keeping the **last** ones (04:00–05:00), because it is the charge
+   that ends full that overflows.  Worse, the check re-runs on every recalc
+   (SOC moves 0.1 % → new input hash) assuming a whole slot of energy is still
+   to come, so it dropped the **executing** slot a few minutes in: charge off at
+   :13, on at :15, every slot, with a WARNING every poll.  Fix:
+   `ems.merge_slot_overrides` never prunes an override — the inverter's rule-1
+   SOC register already ends a charge at max SOC (and a discharge at the
+   floor), so there is nothing to protect.  EMS slots still give way, and may
+   never add to an override excess.  It now returns `(schedule, dropped_ems)`.
+3. **A full battery in a charge slot toggled the rule every poll.**
+   `_determine_energy_state` required `soc < charge_max` to keep charging; at
+   100 % it went idle, the house drained the battery to 99.9 %, the next tick
+   re-armed the charge — a full rule rewrite (7 registers) every poll for the
+   rest of the slot.  Fix: once charging, stay charging while the slot is a
+   charge slot (auto plan, manual override, or manual price below threshold);
+   rule 1's SOC holds the battery full and the house runs on grid, which is
+   what the slot intended.
+4. **Every transition was followed by a false self-heal.**
+   `_ensure_economic_mode_when_active` read `self.data` — the PREVIOUS poll,
+   taken before the transition that switched Economic mode on — so one tick
+   after every switch into charging/discharging it logged "Self-heal: inverter
+   dropped out of Economic mode" and rewrote the whole rule.  Fix: it (and
+   `_apply_rule1_auto_settings`, same staleness → one duplicate write) now gets
+   this poll's `new_data`.  A genuine drop is now healed one poll sooner.
+5. **A charge spanning midnight went inert on T-REX-5/6/10.**  Rule 1 there has
+   a start/stop DATE, written as today's date on each transition.  An action
+   running at 23:59 has no transition at 00:00, so the rule kept yesterday's
+   date and (assuming the firmware honours the range — which is why we write
+   it) the inverter stopped obeying it while the coordinator still believed it
+   was active; the watchdog can't see it (mode still Economic).  Fix:
+   `_restamp_rule1_date()` in the rollover rewrites both dates when an action
+   is in progress.  Unconfirmed on hardware whether the firmware enforces the
+   date range; the rewrite is harmless either way.
+
+**Also seen, NOT fixed here (EMS planning, queued separately):** with
+tomorrow's prices equal to or a cent above today's, the greedy two-day
+selector books the current slot for tomorrow's need — ignoring round-trip loss
+— and re-books it at every slot boundary ("Charging 1 slot … to cover 0.0 kWh
+deficit").  The replay scenarios use a price that falls a cent per day to stay
+clear of it.
+
+**Using the harness:** `DayReplay(model, start, options, prices_for, soc_pct,
+capacity_kwh, load_kw=…, pv_kw=…)`, then `set_overrides(...)` /
+`coordinator.set_slot_overrides(...)`, `await run_until(datetime)` (one poll
+per simulated minute), and assert on `writes_after(key, t)`,
+`inverter_actions(t0, t1)`, `rule_driven(t0, t1)`, `soc_at(t)`;
+`timeline()` makes a readable assertion message.  Mutate the fake inverter
+between polls (`r.inverter.set("operating_mode", 0)`) to simulate the app or a
+power blip.  **When a customer reports "the inverter didn't do what the card
+showed", reproduce it here first.**
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -2509,9 +2595,9 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
   tomorrow's sunrise.  `TestSelfConsumptionFillsBattery` (incl.
   `test_self_consumption_never_charges_expensive`) pins all of this.
 
-**Override SOC validation (#9)** — superseded Oct 2026, see Known Issues 8e:
+**Override SOC validation (#9)** — superseded Oct 2026, see Known Issues 8e/8f:
 overrides now go through `ems.merge_slot_overrides`, where they outrank the
-EMS's own slots instead of being pruned first.
+EMS's own slots and are never pruned.
 
 **Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC to 0.1%,
 today's + tomorrow's prices, today's + **tomorrow's** PV forecast, PV
@@ -2695,7 +2781,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**600 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**615 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2799,11 +2885,14 @@ though no test reaches it today — `__init__.py` and `config_flow.py` already
 import from it, so any test that loads one of those (or a module later split out
 of `coordinator.py`) would otherwise fail on an unstubbed import.
 
-**Still not covered**: `_transition_to_state` Modbus writes, `_check_safe_power`
-current monitoring and `_actuate_flex_loads` — `test_coordinator.py` covers
-resilience paths (stale data, fault isolation, register grouping) rather than
-the full control loop.  Since the coordinator delegates scheduling to
-`ems.calculate_schedule()`, algorithm drift is structurally prevented regardless.
+**The control loop is covered by the day-replay harness** (`tests/day_replay.py`,
+Known Issues 8f): the real coordinator + real `TypeSpecificHandler` against a
+fake inverter, asserting register writes and the resulting SOC across midnight,
+restarts, overrides, manual mode and a dropped Economic mode — on T-REX-10 and
+T-REX-25.  **Still not covered**: `_check_safe_power` with real grid current
+(the fake inverter reports 0 A), `_actuate_flex_loads`, discharge/selling
+scenarios, PV days, and the IVGM/T-REX-5 control paths.  Extend the harness
+rather than writing another stub-level test.
 
 ### Lint & CI
 
