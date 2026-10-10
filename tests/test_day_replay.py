@@ -8,7 +8,8 @@ The first run of this harness found five defects in the plan → inverter path
 that ~600 planning tests had not (CLAUDE.md, Known Issues 8f).
 """
 
-from datetime import date, timedelta
+import random
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -27,6 +28,8 @@ def PRICES(d):
     (with tomorrow equal or dearer, the greedy planner pre-buys tomorrow's
     need now — a separate planning issue these tests stay clear of)."""
     return [round(0.30 - 0.01 * (d - D).days, 2)] * 96
+
+
 NIGHT_CHARGE = {slot(h, m): "charge" for h in (2, 3, 4) for m in (0, 15, 30, 45)}  # 02:00-05:00
 
 
@@ -204,3 +207,95 @@ async def test_watchdog_without_fresh_data_falls_back_to_the_last_poll():
     r.coordinator.data["operating_mode"] = 0
     await r.coordinator._ensure_economic_mode_when_active()
     assert r.writes_after("operating_mode", day(NEXT, 2, 4))[-1][1] == 2
+
+
+# ---------------------------------------------------------------------------
+# Randomised: an override is an override, whatever its time, length or day
+# ---------------------------------------------------------------------------
+# Overrides are manual: any slot, any length, today or tomorrow, set at any
+# time, with or without a restart in between.  The fixed-window tests above
+# can hide a bug that only shows for some windows (one that crosses midnight,
+# starts on the hour the user set it, or is a single slot), so these draw the
+# scenario at random.  Seeded, so a failure reproduces exactly; the test id
+# names the scenario.
+
+STEP_S = 300                          # one poll per 5 simulated minutes
+
+
+def _quarter(dt: datetime) -> datetime:
+    return dt.replace(minute=dt.minute - dt.minute % 15, second=0, microsecond=0)
+
+
+def _random_override_case(seed: int) -> dict:
+    rng = random.Random(seed)
+    set_at = day(D, rng.randrange(24), rng.choice((0, 15, 30, 45)))
+    # Window starts at least one slot after it is set, up to the end of tomorrow.
+    first = _quarter(set_at) + timedelta(minutes=15)
+    last_start = day(NEXT, 23, 45)
+    length = rng.choice((1, 2, 3, rng.randrange(4, 33)))     # 15 min .. 8 h
+    if length > 1 and rng.random() < 0.25:
+        # Straddle midnight: a uniform draw almost never lands there, and it is
+        # where the day rollover, the override rotation and the rule date meet.
+        start = day(NEXT) - timedelta(minutes=15 * rng.randrange(1, length))
+        set_at = min(set_at, start - timedelta(minutes=15))
+    else:
+        start = first + timedelta(minutes=15 * rng.randrange(
+            int((last_start - first).total_seconds() // 900) + 1))
+    end = min(start + timedelta(minutes=15 * length), day(NEXT + timedelta(days=1)))
+    restart_at = None
+    if rng.random() < 0.5:                                  # HA restarts in between
+        restart_at = set_at + (start - set_at) * rng.random()
+        restart_at = _quarter(restart_at)
+    return {"seed": seed, "model": rng.choice((TREX_10, TREX_25)),
+            "price_mode": rng.choice(("auto", "manual")),
+            "soc": rng.randrange(45, 86), "set_at": set_at, "start": start,
+            "end": end, "restart_at": restart_at}
+
+
+def _case_id(c: dict) -> str:
+    restart = f"-restart{c['restart_at']:%d%H%M}" if c["restart_at"] else ""
+    return (f"s{c['seed']}-{c['model'][:9]}-{c['price_mode']}-set{c['set_at']:%d%H%M}-"
+            f"{c['start']:%d%H%M}to{c['end']:%d%H%M}{restart}")
+
+
+def _split_by_day(start: datetime, end: datetime, set_on: date):
+    """The card's {"today", "tomorrow"} dicts, as seen on the day it was set."""
+    today, tomorrow = {}, {}
+    t = start
+    while t < end:
+        (today if t.date() == set_on else tomorrow)[slot(t.hour, t.minute)] = "charge"
+        t += timedelta(minutes=15)
+    return today, tomorrow
+
+
+RANDOM_CASES = [_random_override_case(seed) for seed in range(40)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", RANDOM_CASES, ids=_case_id)
+async def test_random_override_runs_exactly_when_set(case):
+    today, tomorrow = _split_by_day(case["start"], case["end"], D)
+    begin = case["restart_at"] or case["set_at"]
+    # A frugal house (2 kWh/day, estimated and actual) leaves the EMS's own
+    # plan nothing to buy, so every charge in the replay is the override's.
+    options = {"grid_mode": "from_grid", "price_mode": case["price_mode"],
+               "price_threshold_level": 1, "daily_consumption_estimate": 2.0}
+    r = _replay(case["model"], options=options, soc=case["soc"], capacity_kwh=40.0,
+                start=begin, load_kw=lambda _t: 2.0 / 24)
+    if case["restart_at"]:
+        r.restore_overrides(today=today, tomorrow=tomorrow, set_on=D)
+    else:
+        await r.tick()                                      # running before the click
+        r.coordinator.set_slot_overrides({"today": today, "tomorrow": tomorrow})
+    await r.run_until(case["end"] + timedelta(minutes=30), step_s=STEP_S)
+
+    key = _enable_key(case["model"])
+    msg = f"{_case_id(case)}\n{r.timeline(15)}"
+    # Charging (or holding full) for the whole window, from its first slot...
+    assert r.rule_driven(case["start"], case["end"]), msg
+    # ...switched on exactly at the window start, never earlier...
+    ons = [t for t, v in r.writes_after(key, begin) if v == 1]
+    assert ons and ons[0] == case["start"], msg
+    # ...and off again at the window end.
+    assert (case["end"], 0) in r.writes_after(key, case["start"]), msg
+    assert "charge" not in r.inverter_actions(case["end"], case["end"] + timedelta(minutes=30)), msg

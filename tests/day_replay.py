@@ -450,6 +450,15 @@ class DayReplay:
         self.hass.config_entries.async_update_entry(
             self.entry, options={**self.entry.options, "slot_overrides": overrides})
 
+    def restore_overrides(self, *, today: dict, tomorrow: dict, set_on: date):
+        """Overrides the card set on `set_on`, as found in entry.options when
+        HA (re)starts — i.e. persisted earlier, then a restart."""
+        overrides = {"today": dict(today), "tomorrow": dict(tomorrow),
+                     "date": set_on.isoformat()}
+        self.hass.config_entries.async_update_entry(
+            self.entry, options={**self.entry.options, "slot_overrides": overrides})
+        self.coordinator.slot_overrides = self.entry.options["slot_overrides"]
+
     def set_option(self, key, value):
         self.hass.config_entries.async_update_entry(
             self.entry, options={**self.entry.options, key: value})

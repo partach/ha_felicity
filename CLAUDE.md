@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **615**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **655**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -2256,6 +2256,19 @@ between polls (`r.inverter.set("operating_mode", 0)`) to simulate the app or a
 power blip.  **When a customer reports "the inverter didn't do what the card
 showed", reproduce it here first.**
 
+**Overrides are arbitrary — test them that way.**  An override is manual: any
+slot, any length, today or tomorrow, set at any time, with or without a restart
+before it runs.  The fixed 02:00–05:00 window in the first scenarios is only how
+the October report's screenshot read; nothing in the code is tied to it.
+`test_random_override_runs_exactly_when_set` draws 40 seeded scenarios
+(set time, start, 15 min–8 h length, today/tomorrow, ~25 % straddling
+midnight, restart or not, T-REX-10/25, auto/manual price mode) and asserts the
+rule is driven for the whole window, switched on exactly at its first slot and
+off at its end.  The house is made frugal (2 kWh/day, estimate and actual) so
+the EMS's own plan buys nothing and every charge is the override's.  The test
+id names the scenario, and the seed reproduces it exactly.  13 of its 20
+restart cases fail on the pre-8f code.
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -2781,7 +2794,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**615 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**655 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
