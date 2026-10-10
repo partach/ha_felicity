@@ -69,6 +69,21 @@ INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_IVGM_TWENTY: 20,
 }
 
+# Phases the inverter spreads its AC power over (the P1/P3 in the model id).
+# Safe power uses it to cut the battery in ONE step: on a 3-phase unit a
+# 1 kW cut lowers each phase by ~1.45 A (1000 / (3 x 230 V)); on a 1-phase
+# unit the whole 4.35 A comes off its one phase.
+INVERTER_PHASES = {
+    INVERTER_MODEL_TREX_FIVE: 1,
+    INVERTER_MODEL_TREX_SIX: 1,
+    INVERTER_MODEL_TREX_TEN: 3,
+    INVERTER_MODEL_TREX_TWENTY_FIVE: 3,
+    INVERTER_MODEL_TREX_FIFTY: 3,
+    INVERTER_MODEL_IVGM_EIGHT: 1,
+    INVERTER_MODEL_IVGM_FIFTEEN: 3,
+    INVERTER_MODEL_IVGM_TWENTY: 3,
+}
+
 SUPPORTED_MODELS = [
     INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_SIX,

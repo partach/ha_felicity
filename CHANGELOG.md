@@ -18,6 +18,10 @@
   is already at its minimum and the current is still too high. When the
   current drops, a switched-off load comes back before the battery power is
   raised again.
+- **The battery power is cut in one step.** When the grid current exceeds the
+  limit, the battery power now drops straight to the level that brings the
+  current back under it, instead of 2 kW every 10 seconds. It is raised back
+  1 kW at a time once the current has dropped.
 - **Cheap charging today is no longer postponed to a barely cheaper
   tomorrow.** Once tomorrow's prices were published, today's charging moved to
   tomorrow as soon as tomorrow was even a fraction of a cent cheaper — and the

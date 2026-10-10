@@ -24,6 +24,7 @@ from .const import (
     INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_TWENTY_FIVE,
+    INVERTER_PHASES,
 )
 from .type_specific import TypeSpecificHandler
 
@@ -2260,10 +2261,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # limit has no effect) and the current is still above 95 %.
             battery_active = self._current_energy_state in ("charging", "discharging")
             if battery_active and base_level > 1:
-                step = 2 if max_current > max_amperage * 0.95 else 1
-                safe_level = max(1, base_level - step)
-                _LOGGER.warning("High current %.1fA (max %.0fA) — reducing battery power to level %d",
-                                max_current, max_amperage, safe_level)
+                # ONE step (maintainer decision, Oct 2026): cut the battery by
+                # the power the excess current represents, aiming at 80 % of the
+                # limit — the band where nothing more happens — instead of 2 kW
+                # per poll (30 A on an 18 A limit took ~40 s to come down).
+                # A 3-phase inverter's cut is shared over its phases.
+                phases = INVERTER_PHASES.get(self.inverter_model, 3)
+                excess_a = max_current - max_amperage * 0.8
+                cut_kw = max(1, math.ceil(excess_a * 0.230 * phases))
+                safe_level = max(1, base_level - cut_kw)
+                _LOGGER.warning("High current %.1fA (max %.0fA) — cutting battery power "
+                                "%d kW to level %d", max_current, max_amperage,
+                                base_level - safe_level, safe_level)
             elif max_current > max_amperage * 0.95:
                 try:
                     load_shed = await self._safe_power_shed_loads(max_current, max_amperage)

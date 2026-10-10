@@ -611,3 +611,26 @@ async def test_battery_power_is_cut_before_any_load_is_shed():
     assert max(settled) <= 25.0, f"peak {max(settled)} A\n{r.timeline(5)}"
     assert r.coordinator.safe_max_power < 8                     # the battery paid
     assert "charge" in r.inverter_actions(day(D, 12), day(D, 13))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [TREX_10, TREX_25])
+async def test_battery_power_is_cut_in_one_step(model):
+    """Maintainer: cut the battery to the level the current needs in ONE write,
+    not 2 kW per poll.  30.6 A on L2 against a 25 A limit: the excess over 80 %
+    (10.6 A) times 230 V times three phases is 7.3 kW, so 8 kW drops straight
+    to the 1 kW minimum on the next poll — no 6/4/2 kW staircase in between."""
+    r = _replay(model, options={**AUTO, **EV_OPTIONS, "max_amperage_per_phase": 25}, soc=40.0,
+                start=day(D, 11, 55), prices_for=DUCK, load_kw=lambda _t: 2.0,
+                switched_loads={EV: 3.7})
+    await r.run_until(day(D, 12, 10), step_s=10)
+
+    first = r.writes("econ_rule_1_power")[0]
+    cuts = [w for w in r.writes("econ_rule_1_power")
+            if w.at > first.at and w.values[0] != first.values[0]]
+    assert len(cuts) == 1, cuts
+    assert cuts[0].values[0] * 8 == first.values[0]            # 8 kW → 1 kW, unit-agnostic
+    assert (cuts[0].at - first.at).total_seconds() <= 10
+    settled = [t.max_amps for t in r.ticks if t.at > cuts[0].at]
+    assert max(settled) <= 25.0, f"peak {max(settled)} A\n{r.timeline(5)}"
+    assert r.hass.switch_on.get(EV) is True

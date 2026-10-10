@@ -270,3 +270,14 @@ def test_setup_dropdown_offers_exactly_the_supported_models():
         f"offered but unsupported: {sorted(offered - supported)}; "
         f"supported but unofferable: {sorted(supported - offered)}"
     )
+
+
+
+@pytest.mark.parametrize("model", const.SUPPORTED_MODELS)
+def test_every_model_declares_its_phases(model):
+    """Safe power sizes its one-step battery cut from the phase count; a
+    missing model would silently fall back to 3 phases.  The model id carries
+    it (…P1… / …P3…), so the two must agree."""
+    phases = const.INVERTER_PHASES[model]
+    assert phases in (1, 3)
+    assert f"P{phases}" in model.replace("-", "")

@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **678**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **688**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1293,8 +1293,8 @@ Monitors grid current per phase and adjusts inverter power:
 
 | Condition | Action |
 |---|---|
-| Current > 95% of max_amperage | Reduce battery power by 2 kW; at the 1 kW minimum (or battery idle): step EV current down / shed loads |
-| Current > 80% of max_amperage | Reduce battery power by 1 kW (no load action in this band) |
+| Current > 80% of max_amperage | Cut battery power in ONE step to what brings the current back to 80 % (`ceil(excess A × 0.230 × phases)` kW, min 1 kW) |
+| Current > 95% of max_amperage, battery at 1 kW minimum (or idle) | Step EV current down / shed loads |
 | Current < 70% of max_amperage | A shed load that fits returns first; otherwise recover battery by 1 kW (up to user limit) |
 | Current = 0 | Jump to user's Power Level |
 
@@ -1305,9 +1305,20 @@ battery is at its minimum and the current is still above 95 %.
 
 Also detects external changes (user adjusting via inverter app).
 
-With flexible loads configured, loads are shed/stepped before the battery is
-reduced — see "Safe power priority chain" under Flexible Load Control and
-Known Issues 8h (the protection was defeated whenever a flexible load ran).
+With flexible loads configured, loads are stepped/shed only after the battery
+is at its minimum — see "Safe power priority chain" under Flexible Load Control
+and Known Issues 8h (the protection was defeated whenever a flexible load ran).
+
+**One-step cut (maintainer decision, Oct 2026).**  The battery cut used to be
+2 kW per poll above 95 % and 1 kW above 80 %, so 8 kW took four polls (~40 s)
+to come down.  It now jumps straight to the level that brings the measured
+phase current back to 80 % of the limit: `cut = ceil((I − 0.8·Imax) × 0.230 kV
+× phases)` kW, never below 1 kW.  The battery's power is spread over the
+inverter's phases, so a kW cut lowers each phase by `1000 / (230 × phases)` A;
+`const.INVERTER_PHASES` declares the phase count per model (1 for T-REX-5/6 and
+IVGM-8K, 3 for the rest — `test_every_model_declares_its_phases` checks it
+against the model id).  Recovery stays at +1 kW per poll below 70 %, so the
+level climbs back gently; between 70 and 80 % nothing changes (hysteresis).
 
 ---
 
@@ -1503,8 +1514,8 @@ making all entities unavailable and taking the inverter out of eco mode.
 
 **Safe power priority chain** (in `_check_safe_power`) — **maintainer decision,
 Oct 2026: battery first**:
-1. Battery power reduction (2 kW per poll above 95 %, 1 kW above 80 %) — while
-   the battery is charging/discharging and above its 1 kW minimum
+1. Battery power reduction — one step, straight to the level the current needs
+   (above 80 %), while the battery is charging/discharging and above its 1 kW minimum
 2. EV charger current step-down (one step per tick) — only once (1) cannot help
 3. Binary load shed (3=least important, shed first; 1=most important, shed last)
 
@@ -2457,18 +2468,22 @@ Fixes (all in the coordinator; no scheduling logic involved):
    otherwise it re-checks every minute — no 29 A spike every 5 minutes.
 2. **Battery first, loads second (maintainer decision).**  The old chain shed
    loads BEFORE touching the battery.  Now the battery power limit is cut
-   first (2 kW/poll above 95 %, 1 kW above 80 %); EV step-down and load
+   first, in one step (see item 3); EV step-down and load
    shedding start only when the battery is at its 1 kW minimum (or idle) and
    the current is still above 95 %.  Recovery is the reverse: a shed load that
    fits returns before the battery is raised.  On the replay at 18 A the
-   battery steps 8→6→4→2→1 kW in 40 s, then the EV is shed (20.4 A → 4 A); at
+   battery drops 8→1 kW in one write, then the EV is shed (20.4 A → back under the limit); at
    22 A / 25 A the battery cut alone suffices and the EV keeps charging
    (`test_battery_power_is_cut_before_any_load_is_shed`).
 
 Replay (`test_grid_current_limit_holds_*`, both models, binary and
 current-stepped EV): old code holds **30.6 A** for the whole hour; now the
-current is inside the limit within ~40 s (four 2 kW battery steps, then the
-shed), and stays there.  The harness now publishes
+current is inside the limit within two polls (one battery cut, then the shed),
+and stays there.
+3. **One-step cut.**  The battery goes straight to the needed level instead of
+   2 kW per poll — see "One-step cut" under Safe Power Management.  Pinned by
+   `test_battery_power_is_cut_in_one_step` (one power write, 8 → 1 kW, on both
+   models; fails on the stepped code).  The harness now publishes
 per-phase grid current (inverter power over three phases + a 1-phase load on
 L2) and switches loads through a fake `switch`/`number` service, so safe power
 and flex-load actuation are exercised for real.
@@ -3036,7 +3051,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**678 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**688 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
