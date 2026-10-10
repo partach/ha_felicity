@@ -38,6 +38,17 @@ that encodes the intended outcome, run `python tools/ems_simulator.py`, and
 confirm it's green before claiming a fix works.  Reproduce customer reports as
 scenarios so they become permanent, readable regression tests.
 
+**The simulator plans; the day-replay harness EXECUTES.**  The simulator calls
+`calculate_schedule` once at a fixed moment and charts the plan.  It cannot see
+what happens when that plan is re-made every poll for hours and executed through
+the coordinator and the registers — and that is where the October 2026 bugs
+were (plans sliding forward with the clock, toggling, restart and midnight
+handling).  `tests/day_replay.py` replays hours through the real coordinator
+against a fake inverter (Known Issues 8f/8g); `REPLAY_PLOT_DIR=<dir> python -m
+pytest tests/test_day_replay.py` charts every replay (needs matplotlib).  Use
+the simulator for "is this the right plan?", the replay for "does the inverter
+actually do it?".
+
 ⚠️ **The harness only sees what it extracts.**  Until Sept 2026 the simulator
 collected `charge_slots` / `sell_slots` / `soc_trajectory` and nothing else, and
 **no scenario configured a flexible load** — so the whole flex-load overlay was
@@ -85,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **574**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **673**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -145,18 +156,21 @@ tests/
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
 ├── test_register_dump.py    # Dump decodes like the coordinator; reads only documented addresses
+├── test_ivgm_controls.py    # IVGM: only the ECO-rule settings are writable, power capped, whole volts
 ├── test_model_coverage.py   # Every model in exactly ONE control path; IVGM address +
 │                            #   name provenance against the frozen protocol transcript
+│                            #   (custom_components/ha_felicity/ivgm_documented_registers.json)
 ├── test_power_scaling.py    # Per-model telemetry/setpoint scaling — measured, never inherited
 ├── test_card_contract.py    # The cards' name-based coupling to the register maps
-└── data/
-    └── ivgm_documented_registers.json   # Frozen transcript of the IVGM protocol doc
+├── day_replay.py            # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
+└── test_day_replay.py       # Replays: what actually reaches the inverter registers
 
 tools/
 ├── ems_simulator.py         # Runs scenarios through BOTH engines, checks expectations,
 │                            #   renders a chart per scenario (CI-gated)
 ├── scenarios.py             # The scenario library — customer cases live here
 ├── check_milp.py            # Standalone solver probe for "why is MILP not loading?"
+├── ivgm_dump.py             # Read-only register dump without HA (same code as diagnostics)
 └── sim_output/              # Generated charts
 
 pytest.ini                   # testpaths + asyncio mode
@@ -481,6 +495,8 @@ and `basic_plus`** on TREX-25/50 — i.e. TREX-25/50 users on the default set ha
 register set regardless of the chosen set — a handful of registers, negligible
 poll cost, and it can't drift when a future register set is added.  **If you
 add a register the control loop depends on, add it there too.**
+*(Today every set polls the full map anyway — see Known Issues 8d — so this
+force-include is belt-and-braces; keep it in case the sets ever take effect.)*
 
 **Minimum charge commitment (anti flip-flop)**: when SOC hovers near the
 reserve target, the schedule's marginal deficit can flip in/out of "charge"
@@ -1000,12 +1016,25 @@ min_sell_price = max_buy_price / (efficiency × efficiency)
 
 When tomorrow's prices are available, merges today+tomorrow slots, picks cheapest from combined pool. The tomorrow-side reserve target honours `reserve_target_pct` and the `self_consumption` 1.25× boost, same as today's.
 
-**Intentionally no today↔tomorrow safety swap**: the inverter switches the
-house to grid passthrough once SOC hits `min_kwh`, so the battery can't
-drain below the floor from consumption.  Forcing expensive today slots to
-"bridge" the night would cost more than consuming from grid (round-trip
-losses on the same prices); charging defers to tomorrow's cheaper slots.
-`test_safety_swap` pins this.
+**Today vs tomorrow: keep today's charge when it beats tonight's grid
+(maintainer decision, Oct 2026 — replaces the unconditional "no safety
+swap").**  The inverter switches the house to grid passthrough once SOC hits
+`min_kwh`, so deferring today's charge to a cheaper tomorrow is never unsafe —
+but it is not free either: the house then buys from the grid at TONIGHT's
+prices.  `select_unified_charge_slots` therefore projects the battery without
+today's charging up to tomorrow's first planned charge, collects the grid kWh
+the house would draw at the floor, and keeps a today slot when
+`price / eff²` is below the average price of the grid kWh it would displace
+(the earliest ones after it — later kept slots displace the next ones).
+Earliest first among equal prices, so the battery fills as soon as possible.
+An equal amount of tomorrow's dearest planned charging is dropped.  Still
+defers when today is dear: `test_safety_swap` (0.30 evening = 0.37 after
+losses vs a 0.30 night) passes unchanged.  Real replay: 13:30, today's midday
+0.08 vs tomorrow 0.075, evening 0.40 / night 0.20 — the old rule charged
+nothing today and cost €3.44 to noon the next day, now €1.38 (MILP, which
+already modelled this through its horizon, €1.42).  Pinned by
+`TestKeepTodaysChargeWhenTonightsGridIsDearer` and
+`test_cheap_today_is_not_deferred_to_a_marginally_cheaper_tomorrow`.
 
 **Exception — `self_consumption` priority**: the self-sufficiency strategy
 overrides the no-swap rule.  `select_unified_charge_slots` forces today's
@@ -1976,8 +2005,11 @@ Now uses thresholded hysteresis:
   cycles (≈ 32s) before suppression triggers.
 - Large import (> 2000W) suppresses immediately (genuine sustained
   draw like EV charging or oven preheat).
-- After suppression ends, a 60-second cooldown blocks re-suppression
-  so the inverter stabilises before the next decision.
+- A suppression **holds discharge off for 5 minutes** (`ANTICONFLICT_HOLD_S`),
+  then allows one retry.  (Until Oct 2026 it was a 60 s cooldown that only
+  blocked *re-suppression* — so once idle, the battery covered the house in
+  self-use, the import vanished, discharge went straight back on, the import
+  returned: on/off every minute for as long as the load ran.  See 8g.)
 - Each cycle now logs the grid_power + state decision at DEBUG level
   so the flipper pattern is easy to spot in retrospect:
   `State decision: desired=X, current=Y, soc=%, price=, threshold=, grid_power=W`
@@ -1997,6 +2029,8 @@ Felicity firmware bug).  Three-tier fallback in `pv_actual_today_kwh`:
    charging) on generator-port installations.
 
 ### 7. Forecast.Solar `wh_hours` date handling
+*(Oct 2026: the same filter was missing from `pv_forecast_remaining` — it
+summed every future hour, tomorrow included — see 8g item 4.)*
 `_retrieve_pv_forecast` now filters `wh_hours` entries by today's date before
 bucketing them into `pv_hourly_kwh[hour]`. Without that filter, a multi-day
 forecast would sum today's + tomorrow's + day-after's values into the same
@@ -2080,10 +2114,307 @@ format 4.1 8K Setting Quantity Information…" — the section heading after the
 last telemetry row, not a register.  `register_dump.NOT_REGISTERS` lists both
 artifacts, so `test_ivgm_map_is_covered_by_the_document` keeps them out.
 
-**Why the IVGM has no Controls:** every IVGM register is a sensor (no
-`type: select/number/time8bit`), unlike TREX-25/50 (42 selects, 19 numbers, 14
-times).  Deliberate for now: the document defines no enum values, so a select
-would be guessing what each option writes.
+**IVGM controls (Oct 2026):** the IVGM map shipped all-sensor because the
+document defines no enum values.  `ivgm._with_eco_controls` now exposes only the
+ECO-rule settings whose encoding needs no enum table: the six rules' start/stop
+time (`time8bit`, `HH<<8|MM` hardware-confirmed), voltage (40–60 V, whole volts — see below), SOC
+(0–100 %), power (W, capped at the nameplate — 8000 on the 8K map, 20000 on the
+shared 15K/20K map) and the Grid/GenChargeEnable flags, plus `ECO_TimeOfUse`
+(0/1; read 1 with rules active on two units).  Still read-only on purpose:
+`system_mode` (Work Mode values unknown) and `eco_effectiveweek` (only 127 seen,
+so the bit order is unknown).  It copies entries, so `_REGISTERS_IVGM_SCALED`
+stays all-sensor.  Pinned by `tests/test_ivgm_controls.py`.
+
+⚠️ **`HA_FelicityNumber` writes `int(value)` — keep it (maintainer decision,
+Oct 2026).**  Registers take whole numbers, and models differ in which values are
+pre-scaled (/10) and which are not, so the number entity deliberately hands the
+write path an int.  A session changed it to pass floats for scaled registers
+(so 56.4 V would not truncate to 56 V); it was **reverted** at the maintainer's
+request.  Consequence: give number controls a whole-number `step` — the IVGM ECO
+voltages use `step: 1` for exactly this reason
+(`test_voltage_controls_step_in_whole_volts`).  Do not "fix" the truncation
+without the maintainer.
+
+### 8d. Polling design, slow serial links, and the T-REX-5 ECO block (Oct 2026)
+
+**Report — [partach/ha_felicity#209](https://github.com/partach/ha_felicity/issues/209):**
+T-REX-5KLP1G01 behind a Waveshare RS485-to-Ethernet gateway (FW V1.523,
+"Modbus TCP to RTU", **2400 baud**), register set "Basic", 15 s interval.  Every
+poll logs `Read error at address 8568, count: 36 … No response received after 3
+retries`, and a full poll takes **257–298 s** (debug "Finished fetching Felicity
+data in 297.7 s").  The 8568 read itself costs only ~10 s; the poll durations
+differ in **steps of ~5 s = the client timeout**.  ~35 reads per poll.  Some
+sensors flip to `unknown` between polls.  Gateway tweaks (instruction timeout
+0→1024 ms, conflict gap 20→100 ms, multi-host) changed nothing.
+
+**Polling design — DELIBERATE, do not "fix" (maintainer decision, Oct 2026).**
+The coordinator always polls the **full** register map in contiguous chunks
+(`const.build_groups` on the full map; `__init__` step 3 re-adds every key those
+groups reference), whatever register set is chosen — "basic"/"basic_plus" have
+no effect on polling or entities.  This is intended: the T-REX family runs at
+**2400 baud from the factory**, and on such a link the number of *requests*, not
+the number of registers, dominates poll time, so a few large chunks beat many
+small reads.  Do not make the register sets effective or split the chunks to
+"save traffic" without the maintainer.
+
+**The likely cause of the minutes: pymodbus's silent retries.**  pymodbus retries
+a request (`retries=3`) without logging and only logs when every attempt failed.
+Each retry waits the full 5 s timeout, so a link that drops or delays some
+replies adds 5 s per retry invisibly — matching the 5 s steps.  Not yet proven:
+each poll now records `poll_stats` (duration, reads answered/timed out, silent
+retries from `response.retries`, dropped registers), a poll slower than
+`SLOW_POLL_FACTOR` (2) × the interval logs one warning per hour, and
+`poll_stats` + `read_groups` are in Download diagnostics.  Ask the reporter for
+that after updating.
+
+**⚠️ OPEN — does the T-REX-5 even have the ECO-rule block at 8568?**  The
+`trex_five.py` map was **AI-generated, not taken from a Felicity document** —
+treat every address in it as unverified.  8568–8603 (0x2178–0x219B) is the start
+of the economic rules (`econ_rule_1..4_*`, 36 registers, the largest T-REX-5
+read; next is 21).  On T-REX-10 and T-REX-25 this chunk is read every poll
+without trouble; on the reporter's 5K it never answers.  Searched Oct 2026: no
+public 5K register document found; the 5K user guide lists General / Backup /
+ECO mode (so `operating_mode` @ 8451 with Economic=2 is plausible, and a T-REX-6K
+owner confirmed 8451 works in [#201](https://github.com/partach/ha_felicity/issues/201)),
+but nothing places the 5K's time-of-use rules at 0x2178.  Third-party
+suggestions are that the 5K series lacks T-REX-10/25-style ECO rules.
+
+**This matters beyond polling:** the T-REX-5/6 control path
+(`OPERATING_MODE_MODELS`) drives the inverter through `econ_rule_1_enable`
+**@ 8568**.  If the block is absent, the EMS cannot control a 5K/6K at all —
+writes there would also fail.  If confirmed: remove the ECO registers from
+`trex_five.py` (with the evidence in the commit) and decide what the 5K/6K
+control path should be (possibly none — monitoring only).
+
+**Mitigation in code — `_adapt_read_groups`** (runs only when other reads in
+the same poll succeeded, so a dead link never triggers it):
+- a multi-register group that gets no response is split in half for the next
+  poll — a frame-size problem clears after one poll, a silent address is
+  bisected down in ~5 polls;
+- a single register still silent after `DEAD_REGISTER_STRIKES` (3) polls is
+  dropped (`dead_register_keys`, one warning, until reload);
+- **if BOTH halves of a split stay silent, the whole block is dropped** after 3
+  polls in total (once whole, then twice as a silent pair) — the model lacks it.
+  Pure bisection of a fully absent 36-register block would cost >100 timeouts.
+  The warning names the range and first/last key, so the reporter's log will
+  show either "8568–8603 never respond" (block absent → fix the map) or a single
+  register (one bad address in the map).
+- `self._address_groups` is the coordinator's own copy; the shared
+  `MODEL_REGISTRY` lists are never mutated.
+Pinned by `TestNonRespondingGroupIsolation` (one silent address, whole block
+absent = 5 timeouts total, frame too large, dead link never splits).
+
+Diagnostics on a 5K also help: `register_dump.async_read_all` retries a failed
+batch register-by-register, so the dump shows which of 8568–8603 answer.
+
+⚠️ **OPEN — T-REX-25/50 ECO1_Power entity writes 0.**  The entity is kW
+(index 1); `type_specific._handle_econ_rule_1_power` expects WATTS (the
+coordinator's unit) and divides by 1000 on kW models, so setting 5 kW from the
+entity writes `round(0.005)` = 0.  Rules 2–6 have no handler and are fine; the
+IVGM is fine (its entity is already watts).
+
+### 8e. Manual slot overrides silently not executed — FIXED (Oct 2026)
+
+Report: charge overrides set the evening before for 02:00–05:00 (rotated to
+"today" at midnight) — next morning the battery sat at 66 %, the card still
+showed the override hatching and "IDLE · NO ACTION NEEDED".  Three separate
+defects, all on the coordinator/card side of the plan → inverter path that the
+test suite barely covered:
+
+1. **Overrides were pruned first on any projected overflow.**  The coordinator
+   merged overrides into the EMS schedule and validated the merged set once.
+   `_validate_schedule_soc` resolves an overflow by dropping the **dearest**
+   charge first — and overrides are usually placed above the threshold, so
+   they are the dearest.  With the EMS also planning cheap midday charging on a
+   sunny day, the projection overflowed and **every** override was dropped
+   (reproduced: 91 kWh, 45 % at 02:00, 12 override slots + 24 cheap midday EMS
+   slots → zero overrides kept; `test_old_single_pass_validation_dropped_every_override`
+   documents it).  The only trace was a WARNING `Override SOC validation:
+   dropped …`.  **Fix:** `ems.merge_slot_overrides` (the merge now lives in
+   ems.py, the single source of truth; the coordinator passes a bound validator
+   closure).  On a violation the EMS gives up its own dearest charge /
+   cheapest discharge slot, one at a time, and re-validates.  (First version
+   still dropped an override when overrides alone violated the bounds — that
+   was wrong too, see 8f; overrides are now never pruned.)  Pinned by
+   `TestManualOverridesWinValidation`.
+2. **Manual price mode ignored overrides entirely.**  `_determine_energy_state`
+   compared price vs threshold only; overrides were merged solely inside
+   `_calculate_schedule`, which runs only in auto mode.  The card accepted the
+   click and drew it.  Now an override on the current slot wins over the
+   threshold (grid-mode and SOC limits respected) and `_build_manual_schedule`
+   shows them.  Pinned by `TestManualModeExecutesOverrides`.
+3. **The card's "actual" SOC line drew the plan.**  The solid past line used
+   `soc_history[i]` but fell back to `socTrajectory[i]` (the PLAN) where history
+   was missing — and `soc_history` is in-memory, so after any HA restart most
+   of the morning was plan.  A planned override charge therefore looked like it
+   had happened (45 % → 100 % → 66 % in the report, physically implausible).
+   Gaps now stay gaps; only the current slot uses the live SOC.
+
+**Why these kept slipping through (answer to "do we have too few tests?"):**
+the count is fine (600) but the coverage is lopsided — almost all of it pins
+`ems.py`'s pure planning.  The path that turns a plan into inverter writes —
+override merge, `_determine_energy_state`, `_transition_to_state`, the
+day rollover, the card's rendering — has only resilience tests (see "Still not
+covered" under Testing).  Every report this month landed there.  The missing
+piece was a **coordinator day-replay harness** — built the same week, see 8f.
+Its first run found the likely real root cause of this report (8f item 1),
+which none of the three fixes above touched.
+
+### 8f. What the day-replay harness found on its first run (Oct 2026)
+
+`tests/day_replay.py` replays real wall-clock hours through the **real**
+coordinator and the **real** `TypeSpecificHandler`: a fake clock drives
+`datetime.now()`/`time.time()` inside the coordinator, a fake inverter is a
+Modbus register memory whose battery moves **only when the registers say so**
+(Economic mode, rule 1 enabled, inside its time window/weekday/**date range**,
+below/above the rule SOC — else self-use, or `hold` when full under an active
+charge rule), and a fake HA serves a Nordpool-shaped price entity (tomorrow's
+prices appear at 13:00), persists options and runs executor jobs inline.  The
+coordinator is loaded as a **private copy** with its own HA stubs, so
+test_coordinator.py's module-level MagicMock of type_specific cannot leak in.
+`tests/test_day_replay.py` holds the scenarios; 11 of its 13 original tests
+fail on the code before these fixes.  Five defects, all invisible to the
+planning tests:
+
+1. **Every HA restart moved tomorrow's overrides onto the wrong day.**  The
+   first tick after a start runs the "new day" bookkeeping (`_current_day` is
+   `None`), and that called `_rotate_slot_overrides()` — so tomorrow's
+   overrides became *today's* (already past) and the real midnight then cleared
+   them.  Set overrides in the evening, install an update before midnight →
+   02:00–05:00 never charges.  **Most likely the actual cause of the 8e
+   report.**  Fix: the overrides carry the date they were set on
+   (`coordinator.set_slot_overrides`, called by the `set_slot_overrides`
+   service, stamps `"date"`); `_rotate_slot_overrides(first_boot=…)` keeps
+   them on a same-day restart, rotates them when the stamp is yesterday, and
+   clears them when older (HA off for a day).  Unstamped (legacy) overrides are
+   kept on a restart and rotated at a real midnight, as before.  The card only
+   ever sends `today`/`tomorrow` and ignores the extra key.
+2. **Overrides were still pruned when "overrides alone" exceeded the
+   battery.**  At 82 % with three hours of override charge, the projection says
+   the battery fills after ~45 min; validation then dropped the overflowing
+   slots — keeping the **last** ones (04:00–05:00), because it is the charge
+   that ends full that overflows.  Worse, the check re-runs on every recalc
+   (SOC moves 0.1 % → new input hash) assuming a whole slot of energy is still
+   to come, so it dropped the **executing** slot a few minutes in: charge off at
+   :13, on at :15, every slot, with a WARNING every poll.  Fix:
+   `ems.merge_slot_overrides` never prunes an override — the inverter's rule-1
+   SOC register already ends a charge at max SOC (and a discharge at the
+   floor), so there is nothing to protect.  EMS slots still give way, and may
+   never add to an override excess.  It now returns `(schedule, dropped_ems)`.
+3. **A full battery in a charge slot toggled the rule every poll.**
+   `_determine_energy_state` required `soc < charge_max` to keep charging; at
+   100 % it went idle, the house drained the battery to 99.9 %, the next tick
+   re-armed the charge — a full rule rewrite (7 registers) every poll for the
+   rest of the slot.  Fix: once charging, stay charging while the slot is a
+   charge slot (auto plan, manual override, or manual price below threshold);
+   rule 1's SOC holds the battery full and the house runs on grid, which is
+   what the slot intended.
+4. **Every transition was followed by a false self-heal.**
+   `_ensure_economic_mode_when_active` read `self.data` — the PREVIOUS poll,
+   taken before the transition that switched Economic mode on — so one tick
+   after every switch into charging/discharging it logged "Self-heal: inverter
+   dropped out of Economic mode" and rewrote the whole rule.  Fix: it (and
+   `_apply_rule1_auto_settings`, same staleness → one duplicate write) now gets
+   this poll's `new_data`.  A genuine drop is now healed one poll sooner.
+5. **A charge spanning midnight went inert on T-REX-5/6/10.**  Rule 1 there has
+   a start/stop DATE, written as today's date on each transition.  An action
+   running at 23:59 has no transition at 00:00, so the rule kept yesterday's
+   date and (assuming the firmware honours the range — which is why we write
+   it) the inverter stopped obeying it while the coordinator still believed it
+   was active; the watchdog can't see it (mode still Economic).  Fix:
+   `_restamp_rule1_date()` in the rollover rewrites both dates when an action
+   is in progress.  Unconfirmed on hardware whether the firmware enforces the
+   date range; the rewrite is harmless either way.
+
+**Also seen, NOT fixed here (EMS planning, queued separately):** with
+tomorrow's prices equal to or a cent above today's, the greedy two-day
+selector books the current slot for tomorrow's need — ignoring round-trip loss
+— and re-books it at every slot boundary ("Charging 1 slot … to cover 0.0 kWh
+deficit").  The replay scenarios use a price that falls a cent per day to stay
+clear of it.
+
+**Using the harness:** `DayReplay(model, start, options, prices_for, soc_pct,
+capacity_kwh, load_kw=…, pv_kw=…)`, then `set_overrides(...)` /
+`coordinator.set_slot_overrides(...)`, `await run_until(datetime)` (one poll
+per simulated minute), and assert on `writes_after(key, t)`,
+`inverter_actions(t0, t1)`, `rule_driven(t0, t1)`, `soc_at(t)`;
+`timeline()` makes a readable assertion message.  Mutate the fake inverter
+between polls (`r.inverter.set("operating_mode", 0)`) to simulate the app or a
+power blip.  **When a customer reports "the inverter didn't do what the card
+showed", reproduce it here first.**
+
+**Overrides are arbitrary — test them that way.**  An override is manual: any
+slot, any length, today or tomorrow, set at any time, with or without a restart
+before it runs.  The fixed 02:00–05:00 window in the first scenarios is only how
+the October report's screenshot read; nothing in the code is tied to it.
+`test_random_override_runs_exactly_when_set` draws 40 seeded scenarios
+(set time, start, 15 min–8 h length, today/tomorrow, ~25 % straddling
+midnight, restart or not, T-REX-10/25, auto/manual price mode) and asserts the
+rule is driven for the whole window, switched on exactly at its first slot and
+off at its end.  The house is made frugal (2 kWh/day, estimate and actual) so
+the EMS's own plan buys nothing and every charge is the override's.  The test
+id names the scenario, and the seed reproduces it exactly.  13 of its 20
+restart cases fail on the pre-8f code.
+
+### 8g. Discharge and PV-day replays (Oct 2026)
+
+The harness gained discharge and PV: the fake inverter now models energy flows
+(PV serves the house, then the battery, then export; rule-1 discharge exports),
+publishes grid power / PV power / PV energy today back into its registers (so
+the anti-conflict guard and PV confidence see realistic values), and serves a
+Forecast.Solar-shaped forecast entity.  It also tracks import/export kWh and
+money, and `DayReplay.plot()` charts a replay.  Scenarios: sell override,
+Trader evening peak (both models), heavy load during a sale, one-poll spike,
+sunny day, cloudy day under a sunny forecast, charge override at sunny noon,
+negative midday with charge-to-full, sunny Trader day.  Findings:
+
+1. **An equal-priced sell peak slid forward with the clock.**  When the
+   projection dips below the reserve, `_validate_schedule_soc` gives up the
+   cheapest discharge — `min(…, key=price)`, which among equal prices is the
+   EARLIEST.  Re-planned every poll, the plan moved one slot later each time:
+   with 18:00–21:00 all at 0.40 and a full battery, selling began at 20:00,
+   the executing slot was dropped at :12 and re-sold at :15, and the rest went
+   at the 0.20 night price.  Fix: among equal prices give up the LATEST.  Now
+   one continuous sale from 18:00.
+2. **The same on the charge side.**  Overflow pruning gives up the dearest
+   charge — among equal prices the earliest — so a cheap midday window slid
+   forward (11:00 → 12:45 → 13:45) until 13:00, when tomorrow's prices
+   arrived and took the whole deficit (item 5).  Fix: same tie-break.  On the
+   cloudy-day replay the battery now charges 10:00–13:00 at 0.08 to 94 %
+   instead of stopping at 50 % and riding into the 0.40 evening peak.
+   `_reduce_charge_spill` still moves a charge past a PV peak when that
+   genuinely buys less grid.  Simulator: trader_arbitrage and
+   pv_cloudy_low_confidence now pick an earlier equal-priced slot (greedy now
+   matches MILP on the latter); all expectations still pass.  Pinned by
+   `TestValidationTieBreaksKeepTheEarliestSlot`.
+3. **Anti-conflict guard toggled every minute under a heavy load.**  See
+   Known Issues 5: 156 rule writes in two hours for an 8 kW load during a
+   5 kW sale.  Now one retry per 5 minutes (57 writes, less import).
+4. **`pv_forecast_remaining` counted tomorrow's sun.**  `_retrieve_pv_forecast`
+   date-filtered the hourly buckets (Known Issues 7) but the remaining total
+   summed every future `wh_hours` entry — on a two-day Forecast.Solar entity
+   ~2× the real remaining PV (71 kWh "remaining" on a 36 kWh day at 09:00), so
+   the EMS under-bought exactly when the sun fell short.  Fix: today only.
+5. **RESOLVED (maintainer: "keep today's charge when cheaper than tonight's
+   grid; favour the battery filled asap") — see the "Today vs tomorrow"
+   paragraph in Unified Two-Day Optimization.**  Original finding: **the no-safety-swap rule ignored
+   tonight's grid price.**  When tomorrow's prices publish (13:00) and
+   tomorrow's cheapest slot is even marginally cheaper than today's, the
+   two-day selector moves today's whole deficit to tomorrow (`today_slots=0`).
+   The rule's rationale ("Two-Day" section, `test_safety_swap`): skipping
+   today's charge costs nothing because the house runs on grid passthrough.
+   But that passthrough is paid at tonight's prices — on the replay 0.40 at the
+   evening peak and 0.20 overnight, against 0.08 now (≈0.10 after round-trip
+   loss).  Economically a today slot should keep the deficit when
+   `p_today / eff² < the price the house would otherwise pay tonight`.
+   The tie-break fix above hides it on that replay (the battery fills before
+   13:00), but it remains whenever today's cheap window lies after 13:00.
+   Replays at 35 / 45 / 55 % SOC from 13:30: old €3.95 / €3.44 / €2.90,
+   new €1.50 / €1.38 / €1.17.
+
+**CI note:** `.github/workflows/ci.yml` runs only on pushes to `main`, PRs into
+`main`, weekly and manually — pushes to a feature branch run nothing until a PR
+is opened.
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -2458,12 +2789,9 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
   tomorrow's sunrise.  `TestSelfConsumptionFillsBattery` (incl.
   `test_self_consumption_never_charges_expensive`) pins all of this.
 
-**Override SOC validation (#9)**: after merging `slot_overrides` into
-`scheduled_slots`, the coordinator re-runs `_validate_schedule_soc`.
-Manually-added charge slots that would overflow the battery, or
-discharge slots that would drain below the reserve, are dropped
-(with a log entry).  Previously a user click could set up an
-infeasible schedule.
+**Override SOC validation (#9)** — superseded Oct 2026, see Known Issues 8e/8f:
+overrides now go through `ems.merge_slot_overrides`, where they outrank the
+EMS's own slots and are never pruned.
 
 **Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC to 0.1%,
 today's + tomorrow's prices, today's + **tomorrow's** PV forecast, PV
@@ -2647,7 +2975,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**574 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**673 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -2751,11 +3079,15 @@ though no test reaches it today — `__init__.py` and `config_flow.py` already
 import from it, so any test that loads one of those (or a module later split out
 of `coordinator.py`) would otherwise fail on an unstubbed import.
 
-**Still not covered**: `_transition_to_state` Modbus writes, `_check_safe_power`
-current monitoring and `_actuate_flex_loads` — `test_coordinator.py` covers
-resilience paths (stale data, fault isolation, register grouping) rather than
-the full control loop.  Since the coordinator delegates scheduling to
-`ems.calculate_schedule()`, algorithm drift is structurally prevented regardless.
+**The control loop is covered by the day-replay harness** (`tests/day_replay.py`,
+Known Issues 8f): the real coordinator + real `TypeSpecificHandler` against a
+fake inverter, asserting register writes and the resulting SOC across midnight,
+restarts, overrides, manual mode and a dropped Economic mode — on T-REX-10 and
+T-REX-25 — and (8g) selling, the anti-conflict guard, PV days, forecast vs
+reality, negative prices.  **Still not covered**: `_check_safe_power` with real
+grid current (the fake inverter reports 0 A), `_actuate_flex_loads`, inverter
+power limits, the consumption-deviation correction, and the IVGM/T-REX-5
+control paths.  Extend the harness rather than writing another stub-level test.
 
 ### Lint & CI
 

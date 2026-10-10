@@ -516,7 +516,7 @@ max_today_slots = floor(headroom / effective_per_slot)
 ```
 Excess today slots are replaced with tomorrow slots when possible. Negative-price slots pass through the headroom cap (they are profitable to consume).
 
-**Bridge to tomorrow — intentionally no swap**: When tomorrow slots are selected and the overnight projection would dip toward the floor, the algorithm does NOT swap them for expensive today slots. The inverter switches the house to grid passthrough once SOC reaches `discharge_min_kwh`, so the battery cannot drain below the floor from consumption. Forcing today-charging to "bridge" the night would cost more than simply consuming from grid overnight (round-trip losses on top of the same prices) — charging stays deferred to tomorrow's cheaper slots.
+**Today vs tomorrow — keep today's charge when it beats tonight's grid**: When the unified pool hands today's deficit to cheaper tomorrow slots, each unused today slot is re-checked against what deferring really costs. Deferring is safe (the inverter switches the house to grid passthrough at `discharge_min_kwh`) but not free: the house buys from the grid at tonight's prices. The algorithm projects the battery without today's charging up to tomorrow's first planned charge and collects the grid kWh drawn at the floor. A today slot keeps the deficit when `price / efficiency²` is below the average price of the grid kWh it would displace (the earliest ones after it). Earliest slot first among equal prices — fill the battery as soon as possible. The same amount of tomorrow's dearest charging is then dropped. When today is dear (e.g. a 0.30 evening slot, 0.37 after losses, against a 0.30 night) charging still defers to tomorrow. `self_consumption` keeps its stronger rule: today's whole deficit is always charged today.
 
 **Self-consumption top-off** (`optimization_priority = self_consumption` only): after the deficit is covered, the battery is filled toward max SOC from slots cheap enough to beat round-trip losses (`price <= efficiency² × mean remaining price`). It is bounded by **two** caps, and takes the smaller:
 
@@ -580,7 +580,7 @@ Only positive-price slots are considered. When `block_export_on_negative_price =
 
 ### Step 3: SOC Validation
 
-Simulates forward with discharge actions. **Critically, the floor used here is `reserve_target`, not `discharge_min_pct`.** If any discharge would cause SOC to drop below reserve_target, the least profitable discharge slot is removed.
+Simulates forward with discharge actions. **Critically, the floor used here is `reserve_target`, not `discharge_min_pct`.** If any discharge would cause SOC to drop below reserve_target, the least profitable discharge slot is removed. **Among equal prices the latest is removed** (likewise, overflow pruning removes the latest of equally-dear charge slots): the plan is re-made every poll, and removing the earliest made an equal-priced peak or cheap window slide forward with the clock — selling only in the last hour of the peak, dropping the slot being executed.
 
 ### Result
 A set of slot indices marked "discharge".
@@ -718,13 +718,19 @@ Sustained-load detection is separate and deliberately slower: the coordinator on
 
 ### Slot Override Validation
 
-Users can manually override slot actions via the EMS card (click a slot to force charge/discharge/idle). After merging overrides into the schedule, the full merged schedule is re-validated through `_validate_schedule_soc`. Manually-added charge slots that would overflow the battery, or discharge slots that would drain below reserve, are dropped with a log entry — this prevents users from setting up infeasible schedules.
+Users can manually override slot actions via the EMS card (click a slot to force charge/discharge). Overrides are the user's explicit intent and **outrank the EMS's own slots** (`ems.merge_slot_overrides`):
 
-### Charge Deferral (Cheapest-First Execution)
+- Overrides the grid mode cannot execute are ignored (from_grid: charge only; to_grid: discharge only).
+- The merged schedule is validated against the battery bounds (`_validate_schedule_soc`). If an override would be rejected, the EMS gives up its own slots first — its dearest charge (or cheapest discharge) slot, one at a time — and re-validates.
+- **An override is never pruned**, even when overrides alone exceed what the battery can take. The inverter's rule-1 SOC register ends a charge at max SOC (and a discharge at the floor), so an override the battery cannot fully use simply ends early. EMS slots may never add to such an excess. (Pruning kept the *last* override slots and re-pruned the executing slot every poll — see CLAUDE.md 8f.)
+- Overrides carry the **date** they were set on. At a day change, tomorrow's overrides become today's only when that date is yesterday; a restart on the same day leaves them where they are; older ones are cleared (HA was off for a day). Before this, every HA restart rotated tomorrow's overrides onto the current day.
+- **Manual price mode executes overrides too**: an override on the current slot wins over the price threshold (charge needs from_grid/both and SOC below max; discharge needs to_grid/both and SOC above min), and the displayed manual schedule includes them.
 
-When the current slot is a scheduled charge slot, the EMS checks whether a later scheduled charge slot has a cheaper price (by at least 1¢/kWh). If so, and the battery SOC is above the reserve target, the current slot is deferred (state = idle). The next 10-second cycle re-evaluates, so charging naturally shifts to the cheapest scheduled slot. This compensates for the deficit shrinking as PV confidence recovers mid-day — without it, early expensive slots would execute while later cheaper slots get dropped from a re-plan.
+### Charge Execution
 
-**Stall prevention**: Never defers when SOC is at or below `reserve_target` (battery needs charging now, regardless of price). Negative-price slots are exempt from deferral.
+When the current slot is a scheduled charge slot (or a charge override) the coordinator charges — there is no "defer for a cheaper later slot" check (removed June 2026; the optimiser already schedules only the cheapest slots it needs, see CLAUDE.md C3).
+
+**A full battery stays in charging for the rest of the slot.** Rule 1's SOC register (= max SOC) stops the inverter there and the house runs on grid, as the slot intended. Switching to idle instead would put the house back on the battery, drop it to 99.9 %, and re-arm the charge on the next poll — a full rule rewrite every poll. The same holds in manual price mode once charging. Entering charging still requires SOC below max.
 
 ### State Transitions (What Gets Written to the Inverter)
 
@@ -756,13 +762,17 @@ Prevents discharge during grid import (e.g., EV charging pulls from grid while t
 |---|---|
 | Small/moderate import (200–2000W) | Must persist ≥ 2 consecutive cycles (~20s) before suppression |
 | Large import (> 2000W) | Suppresses immediately (genuine sustained draw) |
-| After suppression ends | 60-second cooldown blocks re-suppression |
+| After a suppression | Discharge is held off for 5 minutes, then retried once |
 
-This prevents the inverter from flipping between discharge → idle → discharge every ~16s on short load spikes (kettle, microwave, EV startup).
+This prevents the inverter from flipping between discharge → idle → discharge on short load spikes (kettle, microwave, EV startup) **and** under a sustained heavy load: once idle, the battery covers the house in self-use and the import disappears, so without the hold the guard would let discharge straight back in and suppress it again every poll for as long as the load runs.
 
 ### Midnight Rollover
 
-The day-rollover block resets yesterday deficit, daily consumption, SOC history, and rotates slot overrides — but does NOT force the inverter to idle. The normal cycle re-determines the desired state, so valid charge/discharge actions continue across midnight (e.g., a customer selling overnight to clear the battery before negative-midday PV).
+The day-rollover block resets yesterday deficit, daily consumption, SOC history, and rotates slot overrides (by their date stamp, see Slot Override Validation) — but does NOT force the inverter to idle. The normal cycle re-determines the desired state, so valid charge/discharge actions continue across midnight (e.g., a customer selling overnight to clear the battery before negative-midday PV).
+
+When an action is running at midnight, rule 1's start/stop **date** (T-REX-5/6/10) is rewritten to the new date — otherwise the rule would still carry yesterday's date and the inverter would stop obeying it while the EMS believes it is still active. The rollover bookkeeping also runs on the first poll after every start, but that first poll neither rotates same-day overrides nor rewrites the rule date.
+
+The Economic-mode watchdog judges the inverter by the current poll's read, so it fires only on a real drop (the Felicity app, a power blip) and never right after the EMS's own transition.
 
 ### Modbus Staleness Guard
 
@@ -777,6 +787,15 @@ When **3 consecutive** register reads get no response at all (a timeout, not a M
 - The first successful read clears the pause.
 
 An exception *reply* (e.g. illegal address) counts as a live link and resets the streak.
+
+### Non-Responding Read Groups
+
+The full register map is always polled in large contiguous chunks — deliberately, because on 2400-baud T-REX links the request count dominates poll time. The register-set option does not change this.
+
+
+When a read gets no response while other reads in the same poll succeed, the link is fine and that read is the problem (a silent address, or a frame too large for a slow gateway). It is split in half for the next poll; halves that answer stay split. A single register that still gets no response in 3 polls is no longer polled until the integration reloads (one warning). If both halves of a split block stay silent, the whole block is dropped after 3 polls (the model does not have it). A dead link never triggers this: with nothing answered, the backoff above applies instead.
+
+Each poll records its duration, reads answered / timed out and pymodbus's silent retries; a poll slower than twice the update interval logs one warning per hour. Both are in Download diagnostics.
 
 ---
 
@@ -972,7 +991,7 @@ Schedule flexible loads (overlay on cheap/negative/PV-surplus slots)
   ▼
 Current slot in schedule?
   │
-  ├── charge slot → defer if cheaper slot later? → CHARGING or IDLE
+  ├── charge slot (SOC < max, or already charging) → CHARGING
   │     inverter SOC register = charge_max
   │
   ├── discharge slot & SOC > reserve_target → anti-conflict check → DISCHARGING or IDLE
@@ -992,3 +1011,7 @@ Write Modbus registers if state changed
   ▼
 Check Rule 1 window conflict → surface warning if needed
 ```
+
+### PV Forecast: Remaining Energy
+
+`pv_forecast_remaining` is the sum of TODAY's forecast hours from now on. Forecast.Solar's `wh_hours` spans several days; tomorrow's hours belong in `pv_hourly_kwh_tomorrow`, never in today's remaining energy.

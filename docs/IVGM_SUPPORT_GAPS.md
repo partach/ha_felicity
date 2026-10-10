@@ -33,6 +33,11 @@ wrote it. On an IVGM that is: `system_mode` (0x2144 *Work Mode*) = 2,
 available. Fixed; if an IVGM ran an earlier version, check those six settings on
 the display.
 
+**Writable since Oct 2026 — ECO rule settings only:** the six rules' start/stop
+time, voltage, SOC, power (W) and Grid/GenChargeEnable, plus ECO_TimeOfUse. They
+are written only when you change them. Still read-only: Work Mode (0x2144) and
+ECO_EffectiveWeek (bit order unknown).
+
 ### The addresses rule
 
 **An IVGM register address must come from the IVGM document.** It is never

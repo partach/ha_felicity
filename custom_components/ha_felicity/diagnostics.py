@@ -46,6 +46,9 @@ async def async_get_config_entry_diagnostics(
 
     result["last_poll"] = dict(coordinator.data or {})
     result["milp_status"] = getattr(coordinator, "milp_status", None)
+    result["poll_stats"] = getattr(coordinator, "poll_stats", None)
+    result["read_groups"] = [
+        f"{g['start']}/{g['count']}" for g in getattr(coordinator, "_address_groups", [])]
     result["register_dump"] = await _async_dump(hass, coordinator, model)
     return result
 

@@ -434,14 +434,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 _LOGGER.error("No Felicity config entry for entity %s", entity_id)
                 continue
             coordinator = hass.data[DOMAIN][ent.config_entry_id]
-            coordinator.slot_overrides = overrides
+            # Stamps the date and persists to entry.options (survives restarts).
+            coordinator.set_slot_overrides(overrides)
             _LOGGER.info("Set slot overrides for %s: %s", entity_id, overrides)
-
-            # Persist to entry.options so overrides survive HA restarts
-            entry = hass.config_entries.async_get_entry(ent.config_entry_id)
-            if entry:
-                new_options = {**entry.options, "slot_overrides": overrides}
-                hass.config_entries.async_update_entry(entry, options=new_options)
 
             await coordinator.async_request_refresh()
 

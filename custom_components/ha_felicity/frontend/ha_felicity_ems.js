@@ -1148,14 +1148,21 @@ class FelicityEMSCard extends LitElement {
         ctx.strokeStyle = "#08b2c9";
         ctx.lineWidth = 2.5;
         ctx.setLineDash([]);
+        // ONLY measured points.  soc_history lives in memory, so after an HA
+        // restart the early slots have none — those used to be filled in from
+        // the PLAN (socTrajectory), drawing a planned charge as if it had
+        // happened.  Gaps now stay gaps; only the current slot may use the
+        // trajectory's first point, which is the live SOC.
         ctx.beginPath();
-        let started = false;
+        let penDown = false;
         for (let i = 0; i <= currentSlotIdx && i <= numSlots; i++) {
           const histSoc = socHistory[i] ?? socHistory[String(i)];
-          const soc = histSoc != null ? histSoc : (socTrajectory[i] ?? socTrajectory[socTrajectory.length - 1]);
+          const soc = histSoc != null ? histSoc
+            : (i === currentSlotIdx ? socTrajectory[i] : null);
+          if (soc == null) { penDown = false; continue; }
           const x = marginLeft + i * barW;
           const y = toY(soc);
-          if (!started) { ctx.moveTo(x, y); started = true; }
+          if (!penDown) { ctx.moveTo(x, y); penDown = true; }
           else ctx.lineTo(x, y);
         }
         ctx.stroke();

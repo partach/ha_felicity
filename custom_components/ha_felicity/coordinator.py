@@ -59,6 +59,20 @@ MAX_CONSECUTIVE_READ_TIMEOUTS = 3
 READ_BACKOFF_INITIAL_S = 30
 READ_BACKOFF_MAX_S = 300
 
+# Non-responding read groups.  Some firmware (or gateway) stays SILENT on part
+# of a block instead of returning a Modbus exception — e.g. a T-REX-5 behind a
+# Waveshare TCP-to-RTU gateway at 2400 baud never answered the 36-register read
+# at 8568 while every other read worked, costing ~20 s every poll.  When a
+# multi-register group times out while other reads in the same poll succeed,
+# it is split in half for the next poll (bisecting to the culprit); a single
+# register that still times out in DEAD_REGISTER_STRIKES polls is dropped from
+# polling until the integration reloads.  When BOTH halves stay silent the
+# whole block is dropped instead (the model lacks it) — see _adapt_read_groups.
+DEAD_REGISTER_STRIKES = 3
+# A poll slower than this many update intervals logs one warning (per hour)
+# with the statistics needed to diagnose it.
+SLOW_POLL_FACTOR = 2
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -93,7 +107,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.client = client
         self.slave_id = slave_id
         self.register_map = register_map
-        self._address_groups = groups
+        self._address_groups = list(groups)   # own copy: adaptive splitting replaces entries
+        self._group_timeout_strikes: dict[tuple[int, int], int] = {}
+        self.dead_register_keys: set[str] = set()
+        self.poll_stats: dict = {}
+        self._last_slow_poll_warning: float = 0.0
         self.config_entry = config_entry
         self._last_register_set: str | None = None
         self.model_combined = model_combined
@@ -458,6 +476,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         charge_max = opts.get("battery_charge_max_level", 100)
         discharge_min = opts.get("battery_discharge_min_level", 20)
         price_mode = opts.get("price_mode", "manual")
+        # Full battery during a charge slot: STAY charging.  Rule 1's SOC
+        # register (= charge_max) already stops the inverter there and the
+        # house runs on grid, as the slot intended.  Dropping to idle instead
+        # put the house back on the battery, SOC fell to 99.9 %, the next tick
+        # re-armed the charge — a full rule rewrite every poll for the rest of
+        # the slot (found by the day-replay harness).
+        room_or_charging = (battery_soc < charge_max
+                            or self._current_energy_state == "charging")
 
         if price_mode == "auto":
             # Auto mode: schedule-based decision
@@ -465,7 +491,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 slot_idx = self._current_slot_index()
                 if slot_idx is not None and slot_idx in self.scheduled_slots:
                     slot_action = self.scheduled_slots[slot_idx]
-                    if slot_action == "charge" and battery_soc < charge_max:
+                    if slot_action == "charge" and room_or_charging:
                         # Execute every scheduled charge slot.  No per-slot
                         # "defer for a cheaper later slot" logic — it was
                         # removed because it could only ever HARM:
@@ -508,6 +534,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Auto mode: no slot data available, returning idle")
             return "idle"
 
+        # Manual slot overrides from the card are explicit user intent and win
+        # over the price threshold.  Manual mode used to ignore them entirely:
+        # the card accepted the click and drew the slot, but nothing executed.
+        slot_idx = self._current_slot_index()
+        override = (self.slot_overrides.get("today", {}) or {}).get(
+            str(slot_idx)) if slot_idx is not None else None
+        if (override == "charge" and grid_mode in ("from_grid", "both")
+                and room_or_charging):
+            return "charging"
+        if (override == "discharge" and grid_mode in ("to_grid", "both")
+                and battery_soc > discharge_min):
+            return "discharging"
+
         # Manual mode: price threshold comparison with hysteresis band
         if self.current_price is None or self.price_threshold is None:
             _LOGGER.info("current price or price threshold is unknown, returning idle")
@@ -520,8 +559,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # If already in a state, favor staying (use raw threshold, no margin)
         if self._current_energy_state == "charging":
-            if grid_mode in ("from_grid", "both") and self.current_price < self.price_threshold and battery_soc < charge_max:
-                return "charging"
+            if grid_mode in ("from_grid", "both") and self.current_price < self.price_threshold:
+                return "charging"   # full is fine: rule 1's SOC holds it (see above)
         elif self._current_energy_state == "discharging":
             if grid_mode in ("to_grid", "both") and self.current_price > self.price_threshold and battery_soc > discharge_min:
                 return "discharging"
@@ -534,28 +573,63 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         return "idle"
 
-    async def _rotate_slot_overrides(self) -> None:
-        """Move tomorrow's slot overrides to today and clear tomorrow.
+    def set_slot_overrides(self, overrides: dict) -> None:
+        """Store the card's overrides, stamped with the day they were set on.
 
-        Called at midnight so that user-added slots for 'tomorrow' become
-        the active 'today' overrides when the new day starts.
+        The card sends only {"today": …, "tomorrow": …}.  Without a date the
+        coordinator cannot tell, after a restart, whether "tomorrow" still
+        means tomorrow — see _rotate_slot_overrides.
         """
+        self.slot_overrides = {
+            "today": dict(overrides.get("today") or {}),
+            "tomorrow": dict(overrides.get("tomorrow") or {}),
+            "date": datetime.now().date().isoformat(),
+        }
+        self._persist_slot_overrides()
+
+    def _persist_slot_overrides(self) -> None:
+        entry = self.config_entry
+        if entry:
+            new_options = {**entry.options, "slot_overrides": self.slot_overrides}
+            self.hass.config_entries.async_update_entry(entry, options=new_options)
+
+    async def _rotate_slot_overrides(self, first_boot: bool = False) -> None:
+        """Bring the overrides up to date: tomorrow's become today's at midnight.
+
+        Driven by the date stamped on the overrides, not by "a new day was
+        detected".  The day-change check also fires on the FIRST tick after
+        every HA start, and rotating then moved tomorrow's overrides onto
+        today — on the wrong day — after which the real midnight cleared them.
+        Overrides set in the evening for the night, followed by any restart
+        (installing an update) before midnight, therefore never ran.
+
+        Unstamped overrides (saved by an older version) are assumed to be
+        today's on a restart, and rotated at a real midnight as before.
+        """
+        today = datetime.now().date()
+        stamped = self.slot_overrides.get("date")
+        if stamped == today.isoformat() or (stamped is None and first_boot):
+            if stamped is None and self.slot_overrides:
+                self.slot_overrides = {**self.slot_overrides, "date": today.isoformat()}
+                self._persist_slot_overrides()
+            return
+
         tomorrow = self.slot_overrides.get("tomorrow", {})
-        if tomorrow:
+        yesterday = (today - timedelta(days=1)).isoformat()
+        if tomorrow and stamped in (yesterday, None):
             self.slot_overrides = {"today": tomorrow, "tomorrow": {}}
             _LOGGER.info(
                 "Rotated %d tomorrow slot overrides to today", len(tomorrow)
             )
         else:
-            # No tomorrow overrides — just clear today's stale overrides
+            # No tomorrow overrides, or they are older than yesterday's
+            # tomorrow (HA was off for a day) — today starts clean.
             self.slot_overrides = {"today": {}, "tomorrow": {}}
             _LOGGER.debug("Cleared slot overrides for new day (no tomorrow overrides)")
+        self.slot_overrides["date"] = today.isoformat()
 
         # Persist to config entry so it survives restarts
-        entry = self.config_entry
-        if entry:
-            new_options = {**entry.options, "slot_overrides": self.slot_overrides}
-            self.hass.config_entries.async_update_entry(entry, options=new_options)
+        self._persist_slot_overrides()
 
     def _current_slot_index(self) -> int | None:
         """Get the current time slot index based on price array granularity.
@@ -645,10 +719,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         wh_val = float(value)
                         if ts.date() == today_date:
                             hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + wh_val / 1000.0
+                            # TODAY's remaining only.  wh_hours spans several
+                            # days; summing every future hour counted all of
+                            # tomorrow's sun as still to come today (~2x), so
+                            # the EMS under-bought on a day the sun fell short
+                            # (found by the day-replay harness).
+                            if ts >= now:
+                                remaining_wh += wh_val
                         elif ts.date() == tomorrow_date:
                             hourly_kwh_tomorrow[ts.hour] = hourly_kwh_tomorrow.get(ts.hour, 0.0) + wh_val / 1000.0
-                        if ts >= now:
-                            remaining_wh += wh_val
                 remaining = remaining_wh / 1000.0
             except Exception as err:
                 _LOGGER.debug("Could not parse forecast hourly data: %s", err)
@@ -802,6 +881,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         sched: dict[int, str] = {}
         for i in range(current_slot, num):
             soc = _step(i, soc, sched, prices, pv_hourly, slot_h, mps, False)
+        # Show the card's manual overrides too — _determine_energy_state
+        # executes them in manual mode, so the displayed plan must include them.
+        for idx_str, action in (self.slot_overrides.get("today", {}) or {}).items():
+            idx = int(idx_str)
+            if idx >= current_slot and (
+                    (action == "charge" and allow_charge)
+                    or (action == "discharge" and allow_sell)):
+                sched[idx] = action
 
         self.scheduled_slots = sched
         # Tomorrow: continue the forward sim across midnight (same threshold rule).
@@ -1036,84 +1123,57 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Unpack ScheduleResult into coordinator attributes
         self.scheduled_slots = result.scheduled_slots
 
-        # Merge manual slot overrides from the card, then re-validate (#9).
-        # Without validation, a manual override could push SOC above
-        # capacity (overflow) or below the floor (deep discharge).
+        # Merge manual slot overrides from the card and re-validate (#9).
+        # ems.merge_slot_overrides owns the rule: overrides are the user's
+        # explicit intent and are never pruned (the inverter's rule-1 SOC ends
+        # a charge at max SOC); on a projected bound violation only the EMS's
+        # own slots give way.
         today_overrides = self.slot_overrides.get("today", {})
-        if today_overrides:
-            for idx_str, action in today_overrides.items():
-                idx = int(idx_str)
-                # Respect grid_mode: from_grid only allows charge, to_grid only discharge
-                if grid_mode == "from_grid" and action != "charge":
-                    continue
-                if grid_mode == "to_grid" and action != "discharge":
-                    continue
-                self.scheduled_slots[idx] = action
+        if today_overrides and self.slot_prices_today and battery_soc is not None:
+            num_slots_t = len(self.slot_prices_today)
+            minutes_per_slot_t = (24 * 60) / num_slots_t
+            current_slot_t = min(
+                int((now.hour * 60 + now.minute) / minutes_per_slot_t), num_slots_t - 1)
+            remaining_t = [
+                (i, self.slot_prices_today[i])
+                for i in range(current_slot_t, num_slots_t)
+                if self.slot_prices_today[i] is not None
+            ]
+            current_kwh_t = (battery_soc / 100.0) * effective_capacity
+            min_kwh_t = (config.battery_discharge_min_pct / 100.0) * effective_capacity
+            # Match the main pass: discharges validate against the reserve
+            # target, not the bare hardware floor — except in make-room mode,
+            # where dips below reserve are intentional (negative-window PV
+            # refills the battery).
+            if config.discharge_to_make_room_for_negative_price:
+                floor_t = min_kwh_t
+            else:
+                reserve_kwh_t = (result.reserve_target_pct / 100.0) * effective_capacity
+                floor_t = max(min_kwh_t, reserve_kwh_t)
 
-            # Re-run SOC validation on the merged schedule.  Drops any
-            # manually-added slot that would violate battery bounds.
-            if self.slot_prices_today and battery_soc is not None:
-                num_slots_t = len(self.slot_prices_today)
-                minutes_per_slot_t = (24 * 60) / num_slots_t
-                current_slot_t = int(
-                    (now.hour * 60 + now.minute) / minutes_per_slot_t
-                )
-                current_slot_t = min(current_slot_t, num_slots_t - 1)
-                remaining_t = [
-                    (i, self.slot_prices_today[i])
-                    for i in range(current_slot_t, num_slots_t)
-                    if self.slot_prices_today[i] is not None
-                ]
-                charge_set = {
-                    i for i, a in self.scheduled_slots.items() if a == "charge"
-                }
-                discharge_set = {
-                    i for i, a in self.scheduled_slots.items() if a == "discharge"
-                }
-                current_kwh_t = (battery_soc / 100.0) * effective_capacity
-                min_kwh_t = (config.battery_discharge_min_pct / 100.0) * effective_capacity
-                # Match the main pass: discharges validate against the
-                # reserve target, not the bare hardware floor — except in
-                # make-room mode, where dips below reserve are intentional
-                # (negative-window PV refills the battery).
-                if config.discharge_to_make_room_for_negative_price:
-                    floor_t = min_kwh_t
-                else:
-                    reserve_kwh_t = (result.reserve_target_pct / 100.0) * effective_capacity
-                    floor_t = max(min_kwh_t, reserve_kwh_t)
-                consumption_per_slot_t = config.consumption_est_kwh / num_slots_t
-                energy_per_slot_t = config.safe_power_kw * (minutes_per_slot_t / 60.0)
-                validated_charge, validated_discharge = ems_module._validate_schedule_soc(
+            def _validate(charge_set, discharge_set):
+                return ems_module._validate_schedule_soc(
                     remaining_t, charge_set, discharge_set,
-                    current_kwh_t, consumption_per_slot_t,
+                    current_kwh_t, config.consumption_est_kwh / num_slots_t,
                     self.pv_hourly_kwh or {}, minutes_per_slot_t,
                     smoothed_pv_confidence,
                     effective_capacity, floor_t,
-                    energy_per_slot_t, config.efficiency,
+                    config.safe_power_kw * (minutes_per_slot_t / 60.0), config.efficiency,
                     consumption_hourly_kwh=self._hourly_consumption_profile or None,
                     inverter_max_power_kw=config.inverter_max_power_kw,
                     safe_power_kw=config.safe_power_kw,
                     keep_all_negative_charges=config.charge_to_full_on_negative_price,
                 )
-                # Drop any slot rejected by validation, including overrides
-                dropped: list[tuple[int, str]] = []
-                for idx in list(self.scheduled_slots.keys()):
-                    action = self.scheduled_slots[idx]
-                    if action == "charge" and idx not in validated_charge:
-                        del self.scheduled_slots[idx]
-                        dropped.append((idx, action))
-                    elif action == "discharge" and idx not in validated_discharge:
-                        del self.scheduled_slots[idx]
-                        dropped.append((idx, action))
-                if dropped:
-                    _LOGGER.warning(
-                        "Override SOC validation: dropped %d slot(s) that would "
-                        "violate battery bounds: %s  (soc=%.1f kWh, cap=%.1f, "
-                        "floor=%.1f, charge_count=%d, discharge_count=%d)",
-                        len(dropped), [(s, a) for s, a in dropped],
-                        current_kwh_t, effective_capacity, floor_t,
-                        len(validated_charge), len(validated_discharge),
-                    )
+
+            self.scheduled_slots, dropped_ems = ems_module.merge_slot_overrides(
+                self.scheduled_slots, today_overrides, grid_mode,
+                dict(remaining_t), _validate,
+            )
+            if dropped_ems:
+                # Re-evaluated on every recalc (SOC moves 0.1 % → new hash), so debug.
+                _LOGGER.debug(
+                    "Manual overrides: gave up %d EMS slot(s) to keep the plan "
+                    "within battery bounds: %s", len(dropped_ems), dropped_ems)
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
         self.self_consumption_reserve = result.self_consumption_reserve
@@ -2270,7 +2330,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     _LOGGER.warning("Failed to write %s=%s during %s transition", reg, val, new_state)
         return True
 
-    async def _apply_rule1_auto_settings(self) -> None:
+    async def _restamp_rule1_date(self) -> None:
+        """Carry an action that is running at midnight into the new day.
+
+        T-REX-5/6/10 rule 1 has a start/stop DATE, which _transition_to_state
+        sets to today's date.  A charge or discharge that runs across midnight
+        has no transition at 00:00, so the rule still carried yesterday's date
+        and the inverter stopped obeying it while the coordinator believed it
+        was still active — and the Economic-mode watchdog cannot see that.
+        Found by the day-replay harness.  (No-op on models without the date
+        registers: type_specific ignores them there.)
+        """
+        if self._current_energy_state not in ("charging", "discharging"):
+            return
+        now = datetime.now()
+        date_16bit = (now.month << 8) | now.day
+        for reg in ("econ_rule_1_start_day", "econ_rule_1_stop_day"):
+            if not await self.TypeSpecificHandler.write_type_specific_register(reg, date_16bit):
+                _LOGGER.warning("Failed to carry %s into the new day", reg)
+
+    async def _apply_rule1_auto_settings(self, data: dict | None = None) -> None:
         """If rule 1 auto settings are enabled, ensure the inverter's
         time-window and weekday-mask match the auto defaults.
 
@@ -2279,7 +2358,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         Felicity's 24-hour convention is start=00:00, stop=23:59 (the
         firmware doesn't accept stop=00:00 or stop=24:00).
         """
-        if not self.data:
+        # This poll's fresh read.  self.data is the PREVIOUS poll, taken before
+        # last tick's write, so checking it re-wrote every target once more.
+        data = self.data if data is None else data
+        if not data:
             return
 
         opts = self.config_entry.options
@@ -2289,14 +2371,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if opts.get("rule1_time_window", "manual") == "auto":
             target_start = 0                       # 00:00
             target_stop = (23 << 8) | 59           # 23:59 (Felicity 24h)
-            current_start = self.data.get("econ_rule_1_start_time")
-            current_stop = self.data.get("econ_rule_1_stop_time")
+            current_start = data.get("econ_rule_1_start_time")
+            current_stop = data.get("econ_rule_1_stop_time")
             if current_start != target_start:
                 ok = await self.TypeSpecificHandler.write_type_specific_register(
                     "econ_rule_1_start_time", target_start
                 )
                 if ok:
-                    self.data["econ_rule_1_start_time"] = target_start
+                    data["econ_rule_1_start_time"] = target_start
                     _LOGGER.info(
                         "Rule 1 auto: wrote start_time=00:00 (was %s)",
                         current_start,
@@ -2306,7 +2388,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     "econ_rule_1_stop_time", target_stop
                 )
                 if ok:
-                    self.data["econ_rule_1_stop_time"] = target_stop
+                    data["econ_rule_1_stop_time"] = target_stop
                     _LOGGER.info(
                         "Rule 1 auto: wrote stop_time=23:59 (was %s)",
                         current_stop,
@@ -2314,19 +2396,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         if opts.get("rule1_weekday", "manual") == "auto":
             target_week = 0x7F  # all 7 days enabled (bit0=Sun..bit6=Sat)
-            current_week = self.data.get("econ_rule_1_effective_week")
+            current_week = data.get("econ_rule_1_effective_week")
             if current_week != target_week:
                 ok = await self.TypeSpecificHandler.write_type_specific_register(
                     "econ_rule_1_effective_week", target_week
                 )
                 if ok:
-                    self.data["econ_rule_1_effective_week"] = target_week
+                    data["econ_rule_1_effective_week"] = target_week
                     _LOGGER.info(
                         "Rule 1 auto: wrote effective_week=all days (was 0x%02X)",
                         current_week if isinstance(current_week, int) else 0,
                     )
 
-    async def _ensure_economic_mode_when_active(self) -> None:
+    async def _ensure_economic_mode_when_active(self, data: dict | None = None) -> None:
         """Self-heal: re-assert Economic mode if the inverter silently dropped it.
 
         The coordinator only calls _transition_to_state when the *desired*
@@ -2351,7 +2433,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         """
         if self._current_energy_state not in ("charging", "discharging"):
             return
-        if not self.data:
+        # Judge the register by THIS poll's read.  self.data is the previous
+        # poll — read before the transition that switched Economic mode on —
+        # so every transition into charging/discharging was followed, one tick
+        # later, by a false "dropped out of Economic mode" warning and a full
+        # re-write of the rule (found by the day-replay harness).
+        data = self.data if data is None else data
+        if not data:
             return
 
         enable_value = {"charging": 1, "discharging": 2}[self._current_energy_state]
@@ -2359,21 +2447,21 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if self.inverter_model in (
             INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
         ):
-            eco = self.data.get("eco_timeofuse")
+            eco = data.get("eco_timeofuse")
             if eco is None or int(eco) == 1:
                 return  # register not read, or Economic mode already active
             register_val = eco
         elif self.inverter_model in (
             INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN
         ):
-            mode = self.data.get("operating_mode")
+            mode = data.get("operating_mode")
             if mode is None or int(mode) == 2:
                 return  # register not read, or Economic mode already active
             register_val = mode
         else:
             return
 
-        rule_enable = self.data.get("econ_rule_1_enable")
+        rule_enable = data.get("econ_rule_1_enable")
         _LOGGER.warning(
             "Self-heal: inverter dropped out of Economic mode (register=%s, "
             "rule_1_enable=%s) while state=%s — re-applying the full Rule 1 "
@@ -2404,10 +2492,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if self.inverter_model in (
                 INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
             ):
-                self.data["eco_timeofuse"] = 1
+                data["eco_timeofuse"] = 1
             else:
-                self.data["operating_mode"] = 2
-            self.data["econ_rule_1_enable"] = enable_value
+                data["operating_mode"] = 2
+            data["econ_rule_1_enable"] = enable_value
         else:
             _LOGGER.error(
                 "Self-heal: failed to re-assert Economic mode for state %s",
@@ -2480,6 +2568,113 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         except Exception as err:  # best effort
             _LOGGER.debug("Closing Modbus client failed: %s", err)
 
+    def _split_group(self, group: dict) -> list[dict]:
+        """Split a read group into two contiguous halves at a key boundary."""
+        keys = group["keys"]
+        halves = []
+        for part in (keys[:len(keys) // 2], keys[len(keys) // 2:]):
+            infos = [self.register_map[k] for k in part]
+            halves.append({
+                "start": infos[0]["address"],
+                "count": sum(i.get("size", 1) for i in infos),
+                "keys": list(part),
+                "split_from": (group["start"], group["count"]),
+            })
+        return halves
+
+    def _adapt_read_groups(self, timed_out: list[dict]) -> None:
+        """Isolate reads that time out while the rest of the poll succeeds.
+
+        Only called when at least one read in the same poll was answered, so a
+        dead link (handled by the backoff) never splits or drops anything.
+        """
+        replace: dict[int, list[dict]] = {}
+
+        # Both halves of a split block silent in the same poll: the whole block
+        # is unsupported (e.g. the ECO-rule block on a T-REX-5 that may not have
+        # one), not one bad address.  Bisecting further would cost dozens of
+        # timeouts, so after DEAD_REGISTER_STRIKES polls in total (once whole,
+        # then twice as a silent pair) the block is dropped in one go.
+        by_parent: dict[tuple, list[dict]] = {}
+        for group in timed_out:
+            if "split_from" in group:
+                by_parent.setdefault(group["split_from"], []).append(group)
+        silent_pairs = [pair for pair in by_parent.values() if len(pair) == 2]
+        for pair in silent_pairs:
+            parent = pair[0]["split_from"]
+            strikes = self._group_timeout_strikes.get(parent, 1) + 1
+            self._group_timeout_strikes[parent] = strikes
+            if strikes >= DEAD_REGISTER_STRIKES:
+                keys = pair[0]["keys"] + pair[1]["keys"]
+                for half in pair:
+                    replace[id(half)] = []
+                self.dead_register_keys.update(keys)
+                _LOGGER.warning(
+                    "Registers at %d–%d (%s … %s) never respond on this inverter/gateway "
+                    "— the model probably does not have them; no longer polled until "
+                    "the integration is reloaded",
+                    parent[0], parent[0] + parent[1] - 1, keys[0], keys[-1],
+                )
+        paired = {id(g) for pair in silent_pairs for g in pair}
+
+        for group in timed_out:
+            if id(group) in paired:
+                continue    # handled above: kept whole for now, or dropped
+            if any(k not in self.register_map for k in group["keys"]):
+                continue
+            if len(group["keys"]) > 1:
+                halves = self._split_group(group)
+                replace[id(group)] = halves
+                _LOGGER.warning(
+                    "Read at %d (count %d) got no response while other reads succeeded "
+                    "— splitting it into %s to isolate the cause",
+                    group["start"], group["count"],
+                    ", ".join(f"{h['start']}/{h['count']}" for h in halves),
+                )
+                continue
+            sig = (group["start"], group["count"])
+            strikes = self._group_timeout_strikes.get(sig, 0) + 1
+            self._group_timeout_strikes[sig] = strikes
+            if strikes >= DEAD_REGISTER_STRIKES:
+                replace[id(group)] = []
+                self.dead_register_keys.update(group["keys"])
+                _LOGGER.warning(
+                    "Register %s (address %d) never responds on this inverter/gateway "
+                    "— no longer polled until the integration is reloaded",
+                    group["keys"][0], group["start"],
+                )
+        if replace:
+            self._address_groups = [
+                g for group in self._address_groups
+                for g in replace.get(id(group), [group])
+            ]
+
+    def _record_poll_stats(self, started: float, groups_ok: int,
+                           timed_out: list[dict], silent_retries: int) -> None:
+        """Keep the last poll's timing; warn (hourly) when polling is slow."""
+        duration = time.monotonic() - started
+        self.poll_stats = {
+            "duration_s": round(duration, 1),
+            "groups": len(self._address_groups),
+            "groups_ok": groups_ok,
+            "groups_timed_out": [f"{g['start']}/{g['count']}" for g in timed_out],
+            "silent_retries": silent_retries,
+            "dead_registers": sorted(self.dead_register_keys),
+        }
+        update_interval = getattr(self, "update_interval", None)
+        interval = update_interval.total_seconds() if update_interval else 10
+        if (duration > SLOW_POLL_FACTOR * interval
+                and time.monotonic() - self._last_slow_poll_warning > 3600):
+            self._last_slow_poll_warning = time.monotonic()
+            _LOGGER.warning(
+                "Polling the inverter took %.0fs (update interval %.0fs): %d of %d "
+                "reads answered, %d without response, %d silent retries (each costs "
+                "a full timeout). On a slow serial link, check the gateway's RTU "
+                "timeout and raise the baud rate if the inverter allows.",
+                duration, interval, groups_ok, len(self._address_groups),
+                len(timed_out), silent_retries,
+            )
+
     async def _async_update_data(self) -> dict:
         """Fetch latest data from inverter."""
         remaining = self._read_backoff_until - time.time()
@@ -2496,6 +2691,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         new_data = {}
         any_read_ok = False
         consecutive_timeouts = 0
+        poll_started = time.monotonic()
+        timed_out_groups: list[dict] = []
+        silent_retries = 0
+        groups_ok = 0
 
         try:
             for group in self._address_groups:
@@ -2509,6 +2708,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     )
                 except Exception as err:
                     _LOGGER.error("Read error at address %d, count: %d error:%s", start_addr, count, err)
+                    timed_out_groups.append(group)
                     consecutive_timeouts += 1
                     if consecutive_timeouts >= MAX_CONSECUTIVE_READ_TIMEOUTS:
                         if not any_read_ok:
@@ -2526,6 +2726,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                 # Any response — even a Modbus exception — proves the link is up.
                 consecutive_timeouts = 0
+                # pymodbus retries silently; each retry cost a full timeout.
+                retries = getattr(result, "retries", 0)
+                if isinstance(retries, int):
+                    silent_retries += retries
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
                     continue
@@ -2535,6 +2739,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     self._read_backoff_s = 0.0
                     self._read_backoff_until = 0.0
                 any_read_ok = True
+                groups_ok += 1
 
                 registers = result.registers
                 pos = 0
@@ -2579,6 +2784,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
 
                     new_data[key] = value
+            self._record_poll_stats(poll_started, groups_ok, timed_out_groups, silent_retries)
+            if any_read_ok and timed_out_groups:
+                self._adapt_read_groups(timed_out_groups)
+
             # dynamically check which system we have an appropriated settings.
             operational_mode = self.TypeSpecificHandler.determine_operational_mode(new_data)
             new_data["operational_mode"] = operational_mode
@@ -2683,7 +2892,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 self._current_day = now.day
 
                                 # Propagate tomorrow's slot overrides → today
-                                await self._rotate_slot_overrides()
+                                await self._rotate_slot_overrides(first_boot=first_boot)
+                                if not first_boot:
+                                    await self._restamp_rule1_date()
                                 # Do NOT force-idle the inverter here.  A discharge
                                 # that's valid at 23:59 is usually still valid at
                                 # 00:01 (e.g., high evening price extending into
@@ -2731,7 +2942,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Apply rule 1 time-window / weekday auto settings
                             # if enabled.  Writes are idempotent — only happens
                             # when the register doesn't already match the target.
-                            await self._apply_rule1_auto_settings()
+                            await self._apply_rule1_auto_settings(new_data)
 
                             # Warn if the planned schedule falls outside the
                             # inverter's Economic Rule 1 time/weekday window
@@ -2755,47 +2966,58 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             desired_state = self._determine_energy_state(battery_soc)
 
                             # Anti-conflict guard: don't export while the house is
-                            # importing (e.g. EV charging pulls from grid while we'd
-                            # be selling battery — wasteful round-trip).  Uses
-                            # hysteresis to avoid flipping discharge → idle → discharge
-                            # on transient load spikes (kettle, microwave, EV start):
+                            # importing (e.g. an EV or oven pulls more than the
+                            # discharge power — the battery would be better spent
+                            # covering the house in self-use).  Filters spikes:
                             #   - small/moderate import (200-2000W) must persist for
                             #     ≥ANTICONFLICT_MIN_TICKS consecutive cycles
                             #   - large import (>2000W) suppresses immediately
-                            #   - once suppression ends, hold a cooldown window
-                            #     before allowing re-suppression
+                            #   - a suppression HOLDS discharge off for
+                            #     ANTICONFLICT_HOLD_S, then allows one retry.
+                            # The hold is what stops the flip-flop: once idle, the
+                            # battery covers the house in self-use, the import
+                            # disappears, and the guard used to let discharge
+                            # straight back in — the import returned, suppress
+                            # again, every minute for as long as the load ran (156
+                            # rule writes in two hours in the day-replay harness).
+                            # Its old 60 s "cooldown" only stopped RE-SUPPRESSION.
                             ANTICONFLICT_SOFT_THRESHOLD_W = 200
                             ANTICONFLICT_HARD_THRESHOLD_W = 2000
                             ANTICONFLICT_MIN_TICKS = 2
-                            ANTICONFLICT_COOLDOWN_S = 60
+                            ANTICONFLICT_HOLD_S = 300
                             grid_power = None
-                            if desired_state == "discharging":
+                            if desired_state == "discharging" and time.time() < self._anticonflict_suppress_until_ts:
+                                _LOGGER.debug(
+                                    "Anti-conflict: discharge held off for %.0fs more",
+                                    self._anticonflict_suppress_until_ts - time.time())
+                                desired_state = "idle"
+                            elif desired_state == "discharging":
                                 if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
                                     grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
                                 if grid_power is not None and grid_power > ANTICONFLICT_SOFT_THRESHOLD_W:
                                     self._anticonflict_import_ticks += 1
-                                    in_cooldown = time.time() < self._anticonflict_suppress_until_ts
                                     sustained = self._anticonflict_import_ticks >= ANTICONFLICT_MIN_TICKS
                                     large = grid_power > ANTICONFLICT_HARD_THRESHOLD_W
-                                    if (sustained or large) and not in_cooldown:
+                                    if sustained or large:
                                         _LOGGER.info(
-                                            "Anti-conflict: suppressing discharge — grid importing "
-                                            "%.0fW (sustained=%d ticks, large=%s) — would sell "
-                                            "battery while buying from grid",
-                                            grid_power, self._anticonflict_import_ticks, large,
+                                            "Anti-conflict: suppressing discharge for %ds — grid "
+                                            "importing %.0fW (sustained=%d ticks, large=%s) — "
+                                            "would sell battery while buying from grid",
+                                            ANTICONFLICT_HOLD_S, grid_power,
+                                            self._anticonflict_import_ticks, large,
                                         )
                                         desired_state = "idle"
+                                        self._anticonflict_import_ticks = 0
                                         self._anticonflict_suppress_until_ts = (
-                                            time.time() + ANTICONFLICT_COOLDOWN_S
+                                            time.time() + ANTICONFLICT_HOLD_S
                                         )
                                     else:
                                         _LOGGER.debug(
                                             "Anti-conflict: tolerating brief import %.0fW "
-                                            "(tick %d/%d, cooldown=%s) — keeping discharge",
+                                            "(tick %d/%d) — keeping discharge",
                                             grid_power,
                                             self._anticonflict_import_ticks,
                                             ANTICONFLICT_MIN_TICKS,
-                                            in_cooldown,
                                         )
                                 else:
                                     if self._anticonflict_import_ticks > 0:
@@ -2876,7 +3098,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 # No state change this cycle, but verify the
                                 # inverter hasn't silently dropped out of
                                 # Economic mode while we believe we're active.
-                                await self._ensure_economic_mode_when_active()
+                                await self._ensure_economic_mode_when_active(new_data)
                         else:
                             _LOGGER.debug(
                                 "Cannot calculate price threshold: missing data (min=%s, avg=%s, max=%s)",

@@ -7,6 +7,53 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **Cheap charging today is no longer postponed to a barely cheaper
+  tomorrow.** Once tomorrow's prices were published, today's charging moved to
+  tomorrow as soon as tomorrow was even a fraction of a cent cheaper — and the
+  house then bought the evening peak and the night from the grid instead.
+  Today's slot is now kept when it is cheaper (after battery losses) than what
+  the house would pay from the grid tonight, earliest first, so the battery
+  fills as soon as possible.
+- **Selling starts when the peak starts.** With several evening slots at the
+  same top price, the plan kept sliding later and sold only in the last hour
+  (the rest at the night price), switching off and on mid-slot. A cheap midday
+  charging window could drift the same way until it was missed. Fixed.
+- **No more on/off every minute when a big load runs during a sale.** When the
+  house imports while selling, discharge now pauses for 5 minutes before
+  retrying, instead of toggling every poll.
+- **Remaining solar today no longer counts tomorrow's sun.** With a
+  Forecast.Solar entity the EMS thought about twice the real remaining PV was
+  still coming, and bought too little on a disappointing day.
+- **Manual overrides survive a restart.** Overrides set in the evening for the
+  night were moved onto the wrong day by any Home Assistant restart before
+  midnight (e.g. installing an update) and then cleared — so the night charge
+  never happened. Overrides now remember the day they were set on.
+- **Overrides run from their first slot, even when the battery can't take all
+  of it.** They were trimmed to the last slots, and the running slot was
+  switched off and on every few minutes. The inverter's own SOC limit ends the
+  charge when the battery is full.
+- **No more register writes every poll with a full battery.** In a charge slot
+  the inverter now simply holds at max SOC instead of being switched between
+  idle and charging every poll.
+- **No false "Self-heal: inverter dropped out of Economic mode" warning** after
+  every charge/discharge start.
+- **T-REX-5/6/10: a charge or discharge running at midnight keeps going.** The
+  rule's date is now moved to the new day; it used to stay on yesterday's.
+- **Manual slot overrides are executed again.** Overrides could be silently
+  discarded when the plan projected a full battery later in the day (they were
+  always the first slots dropped); now the EMS's own slots give way instead.
+  Overrides also work in manual price mode, where they were ignored.
+- **The card's solid SOC line only shows measured SOC.** After a restart it used
+  to fill missing history with the plan, so a planned charge looked done.
+- **IVGM: economic-rule settings are now controls.** For each of the six ECO
+  rules: start/stop time, voltage, SOC, power and grid/generator charge enable,
+  plus ECO_TimeOfUse. Work mode and the weekday mask stay read-only until their
+  values are confirmed.
+- **A read that never gets an answer no longer slows every poll.** When one
+  block keeps timing out while the rest of the inverter answers, it is split up
+  automatically; a single register that never answers is skipped, and a whole
+  block the inverter doesn't have is skipped after three polls. Slow polls
+  are now logged with the reason, and Download diagnostics shows poll timing.
 - **An unresponsive inverter no longer hangs Home Assistant's startup.** When
   reads keep timing out, the integration now stops after 3, pauses polling (30 s,
   growing to 5 min) and retries, instead of spending ~20 s on every register

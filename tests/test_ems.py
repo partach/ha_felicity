@@ -22,6 +22,7 @@ import importlib.util
 import math
 import os
 import sys
+import types
 
 import pytest
 
@@ -6746,3 +6747,164 @@ class TestSpillReduction:
         assert bought_opt < bought_naive - 0.3, (
             f"expected less grid bought: opt={bought_opt:.2f} naive={bought_naive:.2f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Manual slot overrides outrank the EMS's own slots
+# ---------------------------------------------------------------------------
+
+class TestManualOverridesWinValidation:
+    """Report (Oct 2026): charge overrides set for 02:00-05:00 never charged.
+    The merged schedule was validated as one; with the EMS also charging cheap
+    midday slots on a sunny day it projected an overflow, and overflow pruning
+    drops the DEAREST charge first — always the user's overrides, which sit
+    above the threshold.  Overrides are explicit intent: the EMS gives way, and
+    an override is never pruned (the inverter's rule-1 SOC ends the charge)."""
+
+    CAP = 91.0
+    N = 96
+    PRICES = (0.10,) * 8 + (0.145,) * 12 + (0.12,) * 20 + (0.02,) * 24 + (0.20,) * 32
+    PV = types.MappingProxyType(
+        dict(zip(range(7, 19), [0.5, 2, 4, 6, 7, 8, 8, 7, 6, 4, 2, 0.5])))
+    OVERRIDES = types.MappingProxyType(
+        {str(i): "charge" for i in range(8, 20)})                # 02:00-05:00
+    EMS_MIDDAY = types.MappingProxyType(
+        dict.fromkeys(range(40, 64), "charge"))                  # cheap 10:00-16:00
+
+    def _merge(self, scheduled, overrides, soc_pct=45.0, grid_mode="from_grid", start=8):
+        remaining = [(i, self.PRICES[i]) for i in range(start, self.N)]
+
+        def validate(charge, discharge):
+            return _validate_schedule_soc(
+                remaining, charge, discharge, soc_pct / 100 * self.CAP, 20.0 / self.N,
+                dict(self.PV), 15, 1.0, self.CAP, 0.2 * self.CAP, 5.0 * 0.25, 0.9,
+                inverter_max_power_kw=10.0, safe_power_kw=5.0)
+
+        return ems.merge_slot_overrides(
+            dict(scheduled), overrides, grid_mode, dict(remaining), validate)
+
+    def test_old_single_pass_validation_dropped_every_override(self):
+        """Documents the mechanism the fix removes."""
+        remaining = [(i, self.PRICES[i]) for i in range(8, self.N)]
+        charge = set(range(8, 20)) | set(self.EMS_MIDDAY)
+        kept, _ = _validate_schedule_soc(
+            remaining, charge, set(), 0.45 * self.CAP, 20.0 / self.N, dict(self.PV), 15, 1.0,
+            self.CAP, 0.2 * self.CAP, 1.25, 0.9,
+            inverter_max_power_kw=10.0, safe_power_kw=5.0)
+        assert not kept & set(range(8, 20))
+
+    def test_overrides_survive_and_ems_slots_give_way(self):
+        merged, dropped_ems = self._merge(self.EMS_MIDDAY, dict(self.OVERRIDES))
+        assert all(merged.get(i) == "charge" for i in range(8, 20))
+        assert dropped_ems                                   # the EMS paid instead
+        assert all(i in self.EMS_MIDDAY for i, _ in dropped_ems)
+
+    def test_ems_gives_up_its_dearest_slots_first(self):
+        ems_plan = {**self.EMS_MIDDAY, 30: "charge", 31: "charge"}   # 0.12 > 0.02
+        _, dropped_ems = self._merge(ems_plan, dict(self.OVERRIDES))
+        assert {30, 31} <= {i for i, _ in dropped_ems}
+
+    def test_overrides_beyond_capacity_are_kept(self):
+        """More override charge than the battery can hold: every slot stays.
+
+        The inverter stops at the rule-1 SOC, so nothing needs protecting —
+        and pruning kept the LAST slots (the ones that end full), turning a
+        02:00 start into 04:00, and re-pruned the executing slot each tick."""
+        too_many = {str(i): "charge" for i in range(8, 40)}   # 8 h at 5 kW from 90%
+        merged, _ = self._merge({}, too_many, soc_pct=90.0)
+        assert all(merged.get(i) == "charge" for i in range(8, 40))
+
+    def test_ems_slots_never_add_to_an_override_excess(self):
+        too_many = {str(i): "charge" for i in range(8, 40)}
+        merged, dropped_ems = self._merge(self.EMS_MIDDAY, too_many, soc_pct=90.0)
+        assert not any(merged.get(i) for i in self.EMS_MIDDAY)
+        assert {i for i, _ in dropped_ems} == set(self.EMS_MIDDAY)
+
+    def test_grid_mode_filters_what_cannot_execute(self):
+        merged, _ = self._merge({}, {"30": "discharge", "31": "charge"})
+        assert 30 not in merged and merged[31] == "charge"
+
+    def test_past_slots_are_left_alone(self):
+        merged, dropped_ems = self._merge({2: "charge"}, {}, start=8)
+        assert merged == {2: "charge"} and dropped_ems == []
+
+
+class TestValidationTieBreaksKeepTheEarliestSlot:
+    """Among EQUAL prices, SOC validation gives up the LATEST slot.
+
+    The plan is re-made every poll.  Dropping the earliest equal-priced slot
+    made the plan slide forward with the clock: an 18:00-21:00 sell peak sold
+    only in its last hour and dropped the executing slot mid-slot; a cheap
+    midday charge window kept drifting until tomorrow's prices arrived and took
+    the whole deficit (tests/test_day_replay.py, CLAUDE.md 8g)."""
+
+    N = 96
+
+    def _validate(self, remaining, charge, discharge, soc_kwh, cap=20.0, floor=8.0):
+        return _validate_schedule_soc(
+            remaining, set(charge), set(discharge), soc_kwh, 0.0, {}, 15, 1.0,
+            cap, floor, 1.25, 1.0, inverter_max_power_kw=10.0, safe_power_kw=5.0)
+
+    def test_underflow_gives_up_the_latest_equal_priced_sell(self):
+        remaining = [(i, 0.40 if 72 <= i < 84 else 0.20) for i in range(64, self.N)]
+        _, kept = self._validate(remaining, [], range(72, 84), soc_kwh=13.0)  # room for 4
+        assert kept == {72, 73, 74, 75}
+
+    def test_overflow_gives_up_the_latest_equal_priced_charge(self):
+        remaining = [(i, 0.08) for i in range(40, 64)]
+        kept, _ = self._validate(remaining, range(40, 52), [], soc_kwh=15.0)   # room for 4
+        assert kept == {40, 41, 42, 43}
+
+    def test_a_cheaper_slot_still_beats_an_earlier_one(self):
+        remaining = [(i, 0.10 if i < 44 else 0.08) for i in range(40, 64)]
+        kept, _ = self._validate(remaining, range(40, 48), [], soc_kwh=15.0)
+        assert kept == {44, 45, 46, 47}
+
+
+class TestKeepTodaysChargeWhenTonightsGridIsDearer:
+    """Today's deficit stays on today's slots when charging now (after
+    round-trip losses) is cheaper than the grid the house would otherwise pay
+    tonight — even if a tomorrow slot is marginally cheaper.  Maintainer
+    decision, Oct 2026; replaces the unconditional "no safety swap"."""
+
+    # 96 slots, now 13:30 (slot 54).  Today: 0.08 until 16:00, 0.40 18-21,
+    # 0.20 otherwise.  Tomorrow: the same day half a cent cheaper.
+    @staticmethod
+    def _duck(shift=0.0):
+        def price(h):
+            return 0.40 if 18 <= h < 21 else 0.08 if 10 <= h < 16 else 0.20
+        return [round(price(i / 4) - shift, 3) for i in range(96)]
+
+    def _select(self, today_prices, tomorrow_prices, priority="cost"):
+        """20 kWh battery at 30 %, 1 kW house, plenty of sun tomorrow: the
+        tomorrow deficit is small, so tomorrow's cheap slots could take all of
+        today's deficit too — the case the old selector got wrong."""
+        remaining = [(i, today_prices[i]) for i in range(54, 96)]
+        return select_unified_charge_slots(
+            remaining_today=remaining, energy_deficit=8.0, effective_per_slot=1.125,
+            battery_capacity=20.0, discharge_min_pct=20.0, consumption_est=24.0,
+            efficiency=0.90, energy_per_slot=1.25, current_kwh=6.0, net_pv=0.0,
+            slot_prices_tomorrow=tomorrow_prices, pv_forecast_tomorrow=40.0,
+            current_hour=13, optimization_priority=priority, minutes_per_slot=15)
+
+    def test_cheap_today_beats_tonights_grid(self):
+        today, tomorrow, _ = self._select(self._duck(), self._duck(0.005))
+        energy = len(today) * 1.125
+        assert energy >= 8.0 - 1e-6, today
+        assert len(tomorrow) * 1.125 < 8.0, tomorrow        # not bought twice
+        assert all(p == 0.08 for _i, p in today)
+        assert min(i for i, _p in today) == 54              # starts now: fill asap
+
+    def test_expensive_today_still_defers_to_a_cheap_night(self):
+        """test_safety_swap's economics: an 0.30 evening slot costs 0.37 after
+        losses — dearer than tonight's 0.30 grid — so tomorrow's 0.05 wins."""
+        today = [0.30] * 96
+        tomorrow = [0.05] * 96
+        kept, _, _ = self._select(today, tomorrow)
+        assert kept == []
+
+    def test_only_slots_that_beat_tonight_are_kept(self):
+        """0.17 / 0.81 = 0.21 is NOT below a 0.20 night: such a slot defers."""
+        today_prices = [0.17 if 54 <= i < 64 else 0.20 for i in range(96)]
+        kept, _, _ = self._select(today_prices, [0.165] * 96)
+        assert kept == []
