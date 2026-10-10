@@ -22,6 +22,7 @@ import importlib.util
 import math
 import os
 import sys
+import types
 
 import pytest
 
@@ -6746,3 +6747,74 @@ class TestSpillReduction:
         assert bought_opt < bought_naive - 0.3, (
             f"expected less grid bought: opt={bought_opt:.2f} naive={bought_naive:.2f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Manual slot overrides outrank the EMS's own slots
+# ---------------------------------------------------------------------------
+
+class TestManualOverridesWinValidation:
+    """Report (Oct 2026): charge overrides set for 02:00-05:00 never charged.
+    The merged schedule was validated as one; with the EMS also charging cheap
+    midday slots on a sunny day it projected an overflow, and overflow pruning
+    drops the DEAREST charge first — always the user's overrides, which sit
+    above the threshold.  Overrides are explicit intent: the EMS gives way."""
+
+    CAP = 91.0
+    N = 96
+    PRICES = (0.10,) * 8 + (0.145,) * 12 + (0.12,) * 20 + (0.02,) * 24 + (0.20,) * 32
+    PV = types.MappingProxyType(
+        dict(zip(range(7, 19), [0.5, 2, 4, 6, 7, 8, 8, 7, 6, 4, 2, 0.5])))
+    OVERRIDES = types.MappingProxyType(
+        {str(i): "charge" for i in range(8, 20)})                # 02:00-05:00
+    EMS_MIDDAY = types.MappingProxyType(
+        dict.fromkeys(range(40, 64), "charge"))                  # cheap 10:00-16:00
+
+    def _merge(self, scheduled, overrides, soc_pct=45.0, grid_mode="from_grid", start=8):
+        remaining = [(i, self.PRICES[i]) for i in range(start, self.N)]
+
+        def validate(charge, discharge):
+            return _validate_schedule_soc(
+                remaining, charge, discharge, soc_pct / 100 * self.CAP, 20.0 / self.N,
+                dict(self.PV), 15, 1.0, self.CAP, 0.2 * self.CAP, 5.0 * 0.25, 0.9,
+                inverter_max_power_kw=10.0, safe_power_kw=5.0)
+
+        return ems.merge_slot_overrides(
+            dict(scheduled), overrides, grid_mode, dict(remaining), validate)
+
+    def test_old_single_pass_validation_dropped_every_override(self):
+        """Documents the mechanism the fix removes."""
+        remaining = [(i, self.PRICES[i]) for i in range(8, self.N)]
+        charge = set(range(8, 20)) | set(self.EMS_MIDDAY)
+        kept, _ = _validate_schedule_soc(
+            remaining, charge, set(), 0.45 * self.CAP, 20.0 / self.N, dict(self.PV), 15, 1.0,
+            self.CAP, 0.2 * self.CAP, 1.25, 0.9,
+            inverter_max_power_kw=10.0, safe_power_kw=5.0)
+        assert not kept & set(range(8, 20))
+
+    def test_overrides_survive_and_ems_slots_give_way(self):
+        merged, dropped_user, dropped_ems = self._merge(self.EMS_MIDDAY, dict(self.OVERRIDES))
+        assert all(merged.get(i) == "charge" for i in range(8, 20))
+        assert dropped_user == []
+        assert dropped_ems                                   # the EMS paid instead
+        assert all(i in self.EMS_MIDDAY for i, _ in dropped_ems)
+
+    def test_ems_gives_up_its_dearest_slots_first(self):
+        ems_plan = {**self.EMS_MIDDAY, 30: "charge", 31: "charge"}   # 0.12 > 0.02
+        _, _, dropped_ems = self._merge(ems_plan, dict(self.OVERRIDES))
+        assert {30, 31} <= {i for i, _ in dropped_ems}
+
+    def test_overrides_alone_too_much_are_still_bounded(self):
+        """More override charge than the battery can hold: physics wins."""
+        too_many = {str(i): "charge" for i in range(8, 40)}   # 8 h at 5 kW from 90%
+        merged, dropped_user, _ = self._merge({}, too_many, soc_pct=90.0)
+        assert dropped_user
+        assert sum(1 for a in merged.values() if a == "charge") < 32
+
+    def test_grid_mode_filters_what_cannot_execute(self):
+        merged, _, _ = self._merge({}, {"30": "discharge", "31": "charge"})
+        assert 30 not in merged and merged[31] == "charge"
+
+    def test_past_slots_are_left_alone(self):
+        merged, dropped_user, _ = self._merge({2: "charge"}, {}, start=8)
+        assert merged == {2: "charge"} and dropped_user == []

@@ -85,7 +85,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **590**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **600**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -2124,6 +2124,52 @@ coordinator's unit) and divides by 1000 on kW models, so setting 5 kW from the
 entity writes `round(0.005)` = 0.  Rules 2–6 have no handler and are fine; the
 IVGM is fine (its entity is already watts).
 
+### 8e. Manual slot overrides silently not executed — FIXED (Oct 2026)
+
+Report: charge overrides set the evening before for 02:00–05:00 (rotated to
+"today" at midnight) — next morning the battery sat at 66 %, the card still
+showed the override hatching and "IDLE · NO ACTION NEEDED".  Three separate
+defects, all on the coordinator/card side of the plan → inverter path that the
+test suite barely covered:
+
+1. **Overrides were pruned first on any projected overflow.**  The coordinator
+   merged overrides into the EMS schedule and validated the merged set once.
+   `_validate_schedule_soc` resolves an overflow by dropping the **dearest**
+   charge first — and overrides are usually placed above the threshold, so
+   they are the dearest.  With the EMS also planning cheap midday charging on a
+   sunny day, the projection overflowed and **every** override was dropped
+   (reproduced: 91 kWh, 45 % at 02:00, 12 override slots + 24 cheap midday EMS
+   slots → zero overrides kept; `test_old_single_pass_validation_dropped_every_override`
+   documents it).  The only trace was a WARNING `Override SOC validation:
+   dropped …`.  **Fix:** `ems.merge_slot_overrides` (the merge now lives in
+   ems.py, the single source of truth; the coordinator passes a bound validator
+   closure).  On a violation the EMS gives up its own dearest charge /
+   cheapest discharge slot, one at a time, and re-validates; an override is
+   dropped only when overrides alone violate the bounds.  Pinned by
+   `TestManualOverridesWinValidation`.
+2. **Manual price mode ignored overrides entirely.**  `_determine_energy_state`
+   compared price vs threshold only; overrides were merged solely inside
+   `_calculate_schedule`, which runs only in auto mode.  The card accepted the
+   click and drew it.  Now an override on the current slot wins over the
+   threshold (grid-mode and SOC limits respected) and `_build_manual_schedule`
+   shows them.  Pinned by `TestManualModeExecutesOverrides`.
+3. **The card's "actual" SOC line drew the plan.**  The solid past line used
+   `soc_history[i]` but fell back to `socTrajectory[i]` (the PLAN) where history
+   was missing — and `soc_history` is in-memory, so after any HA restart most
+   of the morning was plan.  A planned override charge therefore looked like it
+   had happened (45 % → 100 % → 66 % in the report, physically implausible).
+   Gaps now stay gaps; only the current slot uses the live SOC.
+
+**Why these kept slipping through (answer to "do we have too few tests?"):**
+the count is fine (600) but the coverage is lopsided — almost all of it pins
+`ems.py`'s pure planning.  The path that turns a plan into inverter writes —
+override merge, `_determine_energy_state`, `_transition_to_state`, the
+day rollover, the card's rendering — has only resilience tests (see "Still not
+covered" under Testing).  Every report this month landed there.  The missing
+piece is a **coordinator day-replay harness**: fake clock + fake register
+memory + the real coordinator, stepped through a night with overrides,
+asserting what was written to `econ_rule_1_*`.  Not built yet.
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -2463,12 +2509,9 @@ SOH factor multiplies nominal `battery_capacity_kwh` before the
   tomorrow's sunrise.  `TestSelfConsumptionFillsBattery` (incl.
   `test_self_consumption_never_charges_expensive`) pins all of this.
 
-**Override SOC validation (#9)**: after merging `slot_overrides` into
-`scheduled_slots`, the coordinator re-runs `_validate_schedule_soc`.
-Manually-added charge slots that would overflow the battery, or
-discharge slots that would drain below the reserve, are dropped
-(with a log entry).  Previously a user click could set up an
-infeasible schedule.
+**Override SOC validation (#9)** — superseded Oct 2026, see Known Issues 8e:
+overrides now go through `ems.merge_slot_overrides`, where they outrank the
+EMS's own slots instead of being pruned first.
 
 **Skip-recalc-when-unchanged (#8)**: hash of (grid_mode, SOC to 0.1%,
 today's + tomorrow's prices, today's + **tomorrow's** PV forecast, PV
@@ -2652,7 +2695,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**590 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**600 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

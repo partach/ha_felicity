@@ -7,6 +7,12 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **Manual slot overrides are executed again.** Overrides could be silently
+  discarded when the plan projected a full battery later in the day (they were
+  always the first slots dropped); now the EMS's own slots give way instead.
+  Overrides also work in manual price mode, where they were ignored.
+- **The card's solid SOC line only shows measured SOC.** After a restart it used
+  to fill missing history with the plan, so a planned charge looked done.
 - **IVGM: economic-rule settings are now controls.** For each of the six ECO
   rules: start/stop time, voltage, SOC, power and grid/generator charge enable,
   plus ECO_TimeOfUse. Work mode and the weekday mask stay read-only until their

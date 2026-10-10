@@ -526,6 +526,19 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Auto mode: no slot data available, returning idle")
             return "idle"
 
+        # Manual slot overrides from the card are explicit user intent and win
+        # over the price threshold.  Manual mode used to ignore them entirely:
+        # the card accepted the click and drew the slot, but nothing executed.
+        slot_idx = self._current_slot_index()
+        override = (self.slot_overrides.get("today", {}) or {}).get(
+            str(slot_idx)) if slot_idx is not None else None
+        if (override == "charge" and grid_mode in ("from_grid", "both")
+                and battery_soc < charge_max):
+            return "charging"
+        if (override == "discharge" and grid_mode in ("to_grid", "both")
+                and battery_soc > discharge_min):
+            return "discharging"
+
         # Manual mode: price threshold comparison with hysteresis band
         if self.current_price is None or self.price_threshold is None:
             _LOGGER.info("current price or price threshold is unknown, returning idle")
@@ -820,6 +833,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         sched: dict[int, str] = {}
         for i in range(current_slot, num):
             soc = _step(i, soc, sched, prices, pv_hourly, slot_h, mps, False)
+        # Show the card's manual overrides too — _determine_energy_state
+        # executes them in manual mode, so the displayed plan must include them.
+        for idx_str, action in (self.slot_overrides.get("today", {}) or {}).items():
+            idx = int(idx_str)
+            if idx >= current_slot and (
+                    (action == "charge" and allow_charge)
+                    or (action == "discharge" and allow_sell)):
+                sched[idx] = action
 
         self.scheduled_slots = sched
         # Tomorrow: continue the forward sim across midnight (same threshold rule).
@@ -1054,84 +1075,63 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Unpack ScheduleResult into coordinator attributes
         self.scheduled_slots = result.scheduled_slots
 
-        # Merge manual slot overrides from the card, then re-validate (#9).
-        # Without validation, a manual override could push SOC above
-        # capacity (overflow) or below the floor (deep discharge).
+        # Merge manual slot overrides from the card and re-validate (#9).
+        # ems.merge_slot_overrides owns the rule: overrides are the user's
+        # explicit intent, so on a projected bound violation the EMS's own
+        # slots are given up first and an override is dropped only when the
+        # overrides alone violate the bounds.
         today_overrides = self.slot_overrides.get("today", {})
-        if today_overrides:
-            for idx_str, action in today_overrides.items():
-                idx = int(idx_str)
-                # Respect grid_mode: from_grid only allows charge, to_grid only discharge
-                if grid_mode == "from_grid" and action != "charge":
-                    continue
-                if grid_mode == "to_grid" and action != "discharge":
-                    continue
-                self.scheduled_slots[idx] = action
+        if today_overrides and self.slot_prices_today and battery_soc is not None:
+            num_slots_t = len(self.slot_prices_today)
+            minutes_per_slot_t = (24 * 60) / num_slots_t
+            current_slot_t = min(
+                int((now.hour * 60 + now.minute) / minutes_per_slot_t), num_slots_t - 1)
+            remaining_t = [
+                (i, self.slot_prices_today[i])
+                for i in range(current_slot_t, num_slots_t)
+                if self.slot_prices_today[i] is not None
+            ]
+            current_kwh_t = (battery_soc / 100.0) * effective_capacity
+            min_kwh_t = (config.battery_discharge_min_pct / 100.0) * effective_capacity
+            # Match the main pass: discharges validate against the reserve
+            # target, not the bare hardware floor — except in make-room mode,
+            # where dips below reserve are intentional (negative-window PV
+            # refills the battery).
+            if config.discharge_to_make_room_for_negative_price:
+                floor_t = min_kwh_t
+            else:
+                reserve_kwh_t = (result.reserve_target_pct / 100.0) * effective_capacity
+                floor_t = max(min_kwh_t, reserve_kwh_t)
 
-            # Re-run SOC validation on the merged schedule.  Drops any
-            # manually-added slot that would violate battery bounds.
-            if self.slot_prices_today and battery_soc is not None:
-                num_slots_t = len(self.slot_prices_today)
-                minutes_per_slot_t = (24 * 60) / num_slots_t
-                current_slot_t = int(
-                    (now.hour * 60 + now.minute) / minutes_per_slot_t
-                )
-                current_slot_t = min(current_slot_t, num_slots_t - 1)
-                remaining_t = [
-                    (i, self.slot_prices_today[i])
-                    for i in range(current_slot_t, num_slots_t)
-                    if self.slot_prices_today[i] is not None
-                ]
-                charge_set = {
-                    i for i, a in self.scheduled_slots.items() if a == "charge"
-                }
-                discharge_set = {
-                    i for i, a in self.scheduled_slots.items() if a == "discharge"
-                }
-                current_kwh_t = (battery_soc / 100.0) * effective_capacity
-                min_kwh_t = (config.battery_discharge_min_pct / 100.0) * effective_capacity
-                # Match the main pass: discharges validate against the
-                # reserve target, not the bare hardware floor — except in
-                # make-room mode, where dips below reserve are intentional
-                # (negative-window PV refills the battery).
-                if config.discharge_to_make_room_for_negative_price:
-                    floor_t = min_kwh_t
-                else:
-                    reserve_kwh_t = (result.reserve_target_pct / 100.0) * effective_capacity
-                    floor_t = max(min_kwh_t, reserve_kwh_t)
-                consumption_per_slot_t = config.consumption_est_kwh / num_slots_t
-                energy_per_slot_t = config.safe_power_kw * (minutes_per_slot_t / 60.0)
-                validated_charge, validated_discharge = ems_module._validate_schedule_soc(
+            def _validate(charge_set, discharge_set):
+                return ems_module._validate_schedule_soc(
                     remaining_t, charge_set, discharge_set,
-                    current_kwh_t, consumption_per_slot_t,
+                    current_kwh_t, config.consumption_est_kwh / num_slots_t,
                     self.pv_hourly_kwh or {}, minutes_per_slot_t,
                     smoothed_pv_confidence,
                     effective_capacity, floor_t,
-                    energy_per_slot_t, config.efficiency,
+                    config.safe_power_kw * (minutes_per_slot_t / 60.0), config.efficiency,
                     consumption_hourly_kwh=self._hourly_consumption_profile or None,
                     inverter_max_power_kw=config.inverter_max_power_kw,
                     safe_power_kw=config.safe_power_kw,
                     keep_all_negative_charges=config.charge_to_full_on_negative_price,
                 )
-                # Drop any slot rejected by validation, including overrides
-                dropped: list[tuple[int, str]] = []
-                for idx in list(self.scheduled_slots.keys()):
-                    action = self.scheduled_slots[idx]
-                    if action == "charge" and idx not in validated_charge:
-                        del self.scheduled_slots[idx]
-                        dropped.append((idx, action))
-                    elif action == "discharge" and idx not in validated_discharge:
-                        del self.scheduled_slots[idx]
-                        dropped.append((idx, action))
-                if dropped:
-                    _LOGGER.warning(
-                        "Override SOC validation: dropped %d slot(s) that would "
-                        "violate battery bounds: %s  (soc=%.1f kWh, cap=%.1f, "
-                        "floor=%.1f, charge_count=%d, discharge_count=%d)",
-                        len(dropped), [(s, a) for s, a in dropped],
-                        current_kwh_t, effective_capacity, floor_t,
-                        len(validated_charge), len(validated_discharge),
-                    )
+
+            self.scheduled_slots, dropped_user, dropped_ems = ems_module.merge_slot_overrides(
+                self.scheduled_slots, today_overrides, grid_mode,
+                dict(remaining_t), _validate,
+            )
+            if dropped_ems:
+                _LOGGER.info(
+                    "Manual overrides: gave up %d EMS slot(s) to keep the overrides "
+                    "within battery bounds: %s", len(dropped_ems), dropped_ems)
+            if dropped_user:
+                _LOGGER.warning(
+                    "Manual overrides: dropped %d override slot(s) the battery cannot "
+                    "take even without the EMS's own slots: %s  (soc=%.1f kWh, "
+                    "cap=%.1f, floor=%.1f)",
+                    len(dropped_user), dropped_user, current_kwh_t,
+                    effective_capacity, floor_t)
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
         self.self_consumption_reserve = result.self_consumption_reserve

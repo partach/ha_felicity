@@ -718,7 +718,12 @@ Sustained-load detection is separate and deliberately slower: the coordinator on
 
 ### Slot Override Validation
 
-Users can manually override slot actions via the EMS card (click a slot to force charge/discharge/idle). After merging overrides into the schedule, the full merged schedule is re-validated through `_validate_schedule_soc`. Manually-added charge slots that would overflow the battery, or discharge slots that would drain below reserve, are dropped with a log entry — this prevents users from setting up infeasible schedules.
+Users can manually override slot actions via the EMS card (click a slot to force charge/discharge). Overrides are the user's explicit intent and **outrank the EMS's own slots** (`ems.merge_slot_overrides`):
+
+- Overrides the grid mode cannot execute are ignored (from_grid: charge only; to_grid: discharge only).
+- The merged schedule is validated against the battery bounds (`_validate_schedule_soc`). If an override would be rejected, the EMS gives up its own slots first — its dearest charge (or cheapest discharge) slot, one at a time — and re-validates.
+- An override is dropped only when overrides alone still violate the bounds (e.g. more charge than the battery can hold). That is logged as a warning; EMS slots given up for an override are logged at info.
+- **Manual price mode executes overrides too**: an override on the current slot wins over the price threshold (charge needs from_grid/both and SOC below max; discharge needs to_grid/both and SOC above min), and the displayed manual schedule includes them.
 
 ### Charge Deferral (Cheapest-First Execution)
 

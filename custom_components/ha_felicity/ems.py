@@ -732,6 +732,76 @@ def _compute_scheduled_soc_trajectory(
     return trajectory
 
 
+def merge_slot_overrides(
+    scheduled: dict[int, str],
+    overrides: dict,
+    grid_mode: str,
+    prices: dict[int, float],
+    validate,
+) -> tuple[dict[int, str], list[tuple[int, str]], list[tuple[int, str]]]:
+    """Merge the card's manual slot overrides into a schedule and validate it.
+
+    A manual override is the user's explicit intent, so it outranks the EMS's
+    own choices.  ``validate(charge_set, discharge_set) -> (kept_charge,
+    kept_discharge)`` is the SOC check (``_validate_schedule_soc`` bound to the
+    current battery state).  When the merged schedule violates the battery
+    bounds, the EMS's own slots are given up first — dearest charge / cheapest
+    discharge — and an override is dropped only when overrides alone still
+    violate them (e.g. the user picked more charge than the battery can hold).
+
+    Before this, the merged set was validated as one, and overflow pruning
+    drops the MOST EXPENSIVE charge first.  Overrides are usually placed above
+    the price threshold, so they were always the dearest: an EMS plan with
+    cheap midday charging plus a sunny day projected an overflow, and every
+    override was silently discarded (report: overrides 02:00–05:00 never
+    charged).
+
+    ``grid_mode`` filters overrides the mode cannot execute (from_grid: charge
+    only, to_grid: discharge only).  ``prices`` maps each REMAINING slot to its
+    price; slots outside it (already past) are left untouched.  Returns
+    (schedule, dropped_overrides, dropped_ems_slots).
+    """
+    allowed = {"from_grid": {"charge"}, "to_grid": {"discharge"},
+               "both": {"charge", "discharge"}}.get(grid_mode, set())
+    user = {int(i): a for i, a in (overrides or {}).items() if a in allowed}
+    merged = {i: a for i, a in scheduled.items() if i not in user}
+    merged.update(user)
+    dropped_ems: list[tuple[int, str]] = []
+
+    def _sets(sched):
+        return ({i for i, a in sched.items() if a == "charge"},
+                {i for i, a in sched.items() if a == "discharge"})
+
+    while True:
+        charge, discharge = _sets(merged)
+        kept_c, kept_d = validate(charge, discharge)
+        lost_user = [(i, a) for i, a in user.items()
+                     if i in prices and merged.get(i) == a
+                     and i not in (kept_c if a == "charge" else kept_d)]
+        if not lost_user:
+            break
+        # Give up one EMS slot of the kind that is costing the user theirs.
+        kind = lost_user[0][1]
+        ems_slots = [i for i, a in merged.items()
+                     if a == kind and i not in user and i in prices]
+        if not ems_slots:
+            break    # overrides alone violate the bounds — let validation decide
+        price = lambda i: prices.get(i, 0.0)
+        victim = max(ems_slots, key=price) if kind == "charge" else min(ems_slots, key=price)
+        del merged[victim]
+        dropped_ems.append((victim, kind))
+
+    dropped_user = []
+    for i, a in list(merged.items()):
+        if i in prices and i not in (kept_c if a == "charge" else kept_d):
+            del merged[i]
+            if user.get(i) == a:
+                dropped_user.append((i, a))
+            else:
+                dropped_ems.append((i, a))
+    return merged, dropped_user, dropped_ems
+
+
 def _validate_schedule_soc(
     remaining: list[tuple[int, float]],
     charge_slots: set[int],

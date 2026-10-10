@@ -617,3 +617,41 @@ class TestNonRespondingGroupIsolation:
         snapshot = [dict(g) for g in shared]
         await self._polls(coord, 2)
         assert shared == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Manual price mode executes the card's slot overrides
+# ---------------------------------------------------------------------------
+
+class TestManualModeExecutesOverrides:
+    """Manual mode decided by price vs threshold only: the card accepted an
+    override click and drew it, but the coordinator never executed it."""
+
+    @staticmethod
+    def _coord(grid_mode, override):
+        coord = _make_coordinator()
+        coord.slot_prices_today = [0.15] * 24
+        slot = 5
+        coord._current_slot_index = lambda: slot
+        coord.slot_overrides = {"today": {str(slot): override} if override else {},
+                                "tomorrow": {}}
+        coord.config_entry.options = {"grid_mode": grid_mode, "price_mode": "manual",
+                                      "battery_charge_max_level": 100,
+                                      "battery_discharge_min_level": 20}
+        coord.current_price = 0.15          # above the threshold: threshold says idle
+        coord.price_threshold = 0.137
+        coord.min_price, coord.max_price = 0.02, 0.35
+        coord._current_energy_state = "idle"
+        return coord
+
+    def test_charge_override_charges_above_the_threshold(self):
+        assert self._coord("from_grid", "charge")._determine_energy_state(45.0) == "charging"
+
+    def test_without_override_the_threshold_still_rules(self):
+        assert self._coord("from_grid", None)._determine_energy_state(45.0) == "idle"
+
+    def test_override_the_grid_mode_forbids_is_ignored(self):
+        assert self._coord("from_grid", "discharge")._determine_energy_state(45.0) == "idle"
+
+    def test_full_battery_does_not_charge(self):
+        assert self._coord("from_grid", "charge")._determine_energy_state(100.0) == "idle"
