@@ -297,7 +297,8 @@ class FakeInverter:
         unit_w = self.model in const.SETPOINT_WATT_MODELS
         return power / 1000.0 if unit_w else float(power)
 
-    def advance(self, seconds: float, load_kw: float, pv_kw: float, price: float) -> str:
+    def advance(self, seconds: float, load_kw: float, pv_kw: float, price: float,
+                single_phase_kw: float = 0.0) -> str:
         """Move energy for `seconds` according to the registers.
 
         PV serves the house first.  A PV surplus charges the battery (up to
@@ -355,12 +356,26 @@ class FakeInverter:
         self.pv_today_kwh += pv_kw * hours
         self.soc_pct = max(0.0, min(100.0, bat / cap * 100.0))
         self._sync_soc()
-        self._publish_telemetry(pv_kw)
+        self._publish_telemetry(pv_kw, single_phase_kw)
         return act
 
-    def _publish_telemetry(self, pv_kw: float) -> None:
+    def phase_amps(self, single_phase_kw: float = 0.0) -> list[float]:
+        """Grid current per phase at 230 V: the grid power spread over three
+        phases, plus a single-phase load (an EV charger) on L2."""
+        three_phase = (self.last_grid_kw - single_phase_kw) / 3.0
+        return [abs(three_phase) / 0.23, abs(three_phase + single_phase_kw) / 0.23,
+                abs(three_phase) / 0.23]
+
+    def _publish_telemetry(self, pv_kw: float, single_phase_kw: float = 0.0) -> None:
         """What the coordinator reads back: grid power (anti-conflict guard),
-        PV power and PV energy today (PV confidence)."""
+        grid current per phase (safe power), PV power and PV energy today
+        (PV confidence)."""
+        amps = self.phase_amps(single_phase_kw)
+        keys = (("phase_a_ct_current", "phase_b_ct_current", "phase_c_ct_current")
+                if self.eco_path else
+                ("ac_input_current", "ac_input_current_l2", "ac_input_current_l3"))
+        for key, a in zip(keys, amps, strict=True):
+            self.set(key, round(a, 1))
         if self.eco_path:
             self.set("total_grid_power", round(self.last_grid_kw, 2))       # kW, signed
             self.set("pv1_power", round(pv_kw, 2))                          # kW
@@ -400,7 +415,10 @@ class FakeHass:
         self.prices_for = prices_for
         self.forecast_kw = forecast_kw          # datetime -> kW, or None: no forecast
         self.extra_states: dict[str, _State] = {}
+        self.switch_on: dict[str, bool] = {}
+        self.numbers: dict[str, float] = {}
         self.services = MagicMock()
+        self.services.async_call = self._service_call
         self.config_entries = MagicMock()
         self.config_entries.async_update_entry.side_effect = self._update_entry
         self.states = MagicMock()
@@ -411,6 +429,13 @@ class FakeHass:
         if options is not None:
             entry.options = dict(options)
         return True
+
+    async def _service_call(self, domain, service, data=None, **_kw):
+        entity = (data or {}).get("entity_id")
+        if service in ("turn_on", "turn_off") and entity:
+            self.switch_on[entity] = service == "turn_on"
+        if service == "set_value" and entity:
+            self.numbers[entity] = float(data["value"])
 
     async def async_add_executor_job(self, func, *args):
         return func(*args)
@@ -479,6 +504,7 @@ class Tick:
     price: float = 0.0
     pv_kw: float = 0.0
     grid_kw: float = 0.0                  # + import, - export
+    max_amps: float = 0.0                 # highest grid phase current
 
 
 @dataclass
@@ -494,6 +520,10 @@ class DayReplay:
     load_kw: callable = lambda t: 0.6        # house load, kW, as a function of time
     pv_kw: callable = lambda t: 0.0          # what the panels actually produce
     forecast_kw: callable | None = None      # what the forecast entity says (None: no entity)
+    switched_loads: dict = field(default_factory=dict)   # {switch entity: kW, single-phase}
+    # {switch entity: current entity}: the load then draws amps x 230 V as set
+    # through its current entity (an EV charger), not its rated kW.
+    current_entities: dict = field(default_factory=dict)
     honour_rule_dates: bool = True
     ticks: list[Tick] = field(default_factory=list)
 
@@ -518,6 +548,10 @@ class DayReplay:
             nordpool_entity=FakeHass.PRICE_ENTITY,
             forecast_entity=FakeHass.FORECAST_ENTITY if self.forecast_kw else None,
         )
+
+    def _load_kw(self, switch: str, rated_kw: float) -> float:
+        amps = self.hass.numbers.get(self.current_entities.get(switch, ""))
+        return rated_kw if amps is None else amps * 0.23
 
     # -- what the card's set_slot_overrides service does --------------------
     def set_overrides(self, *, today: dict | None = None, tomorrow: dict | None = None):
@@ -556,10 +590,14 @@ class DayReplay:
             today = self.prices_for(now.date())
             price = today[int((now.hour * 60 + now.minute) / (1440 / len(today)))]
             pv = self.pv_kw(now)
-            act = self.inverter.advance(step_s, self.load_kw(now), pv, price)
+            switched = sum(self._load_kw(ent, kw) for ent, kw in self.switched_loads.items()
+                           if self.hass.switch_on.get(ent))
+            act = self.inverter.advance(step_s, self.load_kw(now) + switched, pv, price,
+                                        single_phase_kw=switched)
             self.ticks.append(Tick(now, round(self.inverter.soc_pct, 2),
                                    self.coordinator._current_energy_state, planned, act,
-                                   price, pv, round(self.inverter.last_grid_kw, 3)))
+                                   price, pv, round(self.inverter.last_grid_kw, 3),
+                                   round(max(self.inverter.phase_amps(switched)), 1)))
             self.clock.now = now + timedelta(seconds=step_s)
 
     # -- reading the result --------------------------------------------------

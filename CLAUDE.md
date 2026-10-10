@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **673**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **677**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1300,6 +1300,10 @@ Monitors grid current per phase and adjusts inverter power:
 
 Also detects external changes (user adjusting via inverter app).
 
+With flexible loads configured, loads are shed/stepped before the battery is
+reduced — see "Safe power priority chain" under Flexible Load Control and
+Known Issues 8h (the protection was defeated whenever a flexible load ran).
+
 ---
 
 ## Frontend Card (ha_felicity_ems.js)
@@ -1496,6 +1500,12 @@ making all entities unavailable and taking the inverter out of eco mode.
 1. EV charger current step-down (one step per tick)
 2. Binary load shed (3=least important, shed first; 1=most important, shed last)
 3. Battery power reduction (existing behavior, last resort)
+
+**Above the limit itself (> 100 %) the battery is reduced in the SAME poll as
+the load action**, not only once the loads are exhausted; between 95 % and
+100 % loads go first.  **A shed load is held off** (`_flex_load_shed_until`,
+5 min) and comes back only when `measured current + its own amps < 95 %` of
+the limit (`_shed_load_may_return`) — see Known Issues 8h for why both matter.
 
 ### Configuration (per load)
 
@@ -2412,6 +2422,41 @@ negative midday with charge-to-full, sunny Trader day.  Findings:
    Replays at 35 / 45 / 55 % SOC from 13:30: old €3.95 / €3.44 / €2.90,
    new €1.50 / €1.38 / €1.17.
 
+### 8h. Grid current protection was defeated by a running flexible load — FIXED (Oct 2026)
+
+Field report: `max_amperage_per_phase` = 18 A, L2 measured **23 A, then 28 A**,
+"Active power 8.0 kW" — safe power never cut the battery.  1-phase EV charger
+(Phoenix, 16 A) on L2 as flexible load 1, a manual charge override running.
+
+Above 95 % of the limit `_check_safe_power` first calls
+`_safe_power_shed_loads` and skips the battery reduction when that reports an
+action.  It switched the charger off — and `_actuate_flex_loads`, which runs
+later in the **same poll**, switched it straight back on (at its 16 A default)
+because the schedule still wanted it.  So every poll: "shed" the EV (action
+reported → battery untouched), EV back on, current unchanged.  A switch toggle
+every poll and no protection at all, for as long as any flexible load was
+scheduled on.  Not a recent regression — present since load shedding was added;
+it only shows on an install with a flexible load, a high charge power and a low
+current limit.
+
+Fixes (both in the coordinator; no scheduling logic involved):
+1. **A shed load is held off** — `_flex_load_shed_until[idx]` = now + 5 min;
+   `_actuate_flex_loads` cannot switch it on during the hold.  After the hold,
+   `_shed_load_may_return` lets it back only when the measured current plus the
+   load's own current (`rated kW / (V × phases)`) stays under 95 % of the limit,
+   otherwise it re-checks every minute — no 29 A spike every 5 minutes.
+2. **Over the limit itself, the battery is cut in the same poll** as the load
+   action.  A load action takes a poll to show in the current, and the battery
+   is often the bigger draw (8 kW charge vs a 3.7 kW EV).  Between 95 % and
+   100 % the documented order (loads first) is kept.
+
+Replay (`test_grid_current_limit_holds_*`, both models, binary and
+current-stepped EV): old code holds **30.6 A** for the whole hour; now the first
+poll is the only one above 18 A (13 A after).  The harness now publishes
+per-phase grid current (inverter power over three phases + a 1-phase load on
+L2) and switches loads through a fake `switch`/`number` service, so safe power
+and flex-load actuation are exercised for real.
+
 **CI note:** `.github/workflows/ci.yml` runs only on pushes to `main`, PRs into
 `main`, weekly and manually — pushes to a feature branch run nothing until a PR
 is opened.
@@ -2975,7 +3020,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**673 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**677 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -3084,10 +3129,10 @@ Known Issues 8f): the real coordinator + real `TypeSpecificHandler` against a
 fake inverter, asserting register writes and the resulting SOC across midnight,
 restarts, overrides, manual mode and a dropped Economic mode — on T-REX-10 and
 T-REX-25 — and (8g) selling, the anti-conflict guard, PV days, forecast vs
-reality, negative prices.  **Still not covered**: `_check_safe_power` with real
-grid current (the fake inverter reports 0 A), `_actuate_flex_loads`, inverter
-power limits, the consumption-deviation correction, and the IVGM/T-REX-5
-control paths.  Extend the harness rather than writing another stub-level test.
+reality, negative prices — and (8h) safe power against real per-phase grid
+current with a flexible load switched on/off and current-stepped.  **Still not
+covered**: inverter power limits, the consumption-deviation correction, EV
+boost, and the IVGM/T-REX-5 control paths.  Extend the harness rather than writing another stub-level test.
 
 ### Lint & CI
 

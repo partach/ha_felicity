@@ -7,6 +7,12 @@
   model (read-only) and saves raw + decoded values with sanity checks. Share that
   file when reporting wrong sensor values — it is far more useful than
   screenshots. A standalone `tools/ivgm_dump.py` does the same without HA.
+- **Grid current protection works again with a flexible load (EV charger)
+  running.** Safe power switched the charger off and therefore skipped cutting
+  the battery power — but the charger was switched straight back on in the
+  same cycle, so nothing was reduced and the current stayed over the limit
+  (reported: 23–28 A on an 18 A setting). A shed load now stays off until
+  there is room for it, and above the limit the battery power is cut at once.
 - **Cheap charging today is no longer postponed to a barely cheaper
   tomorrow.** Once tomorrow's prices were published, today's charging moved to
   tomorrow as soon as tomorrow was even a fraction of a cent cheaper — and the

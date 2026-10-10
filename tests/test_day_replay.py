@@ -518,3 +518,74 @@ async def test_cheap_today_is_not_deferred_to_a_marginally_cheaper_tomorrow():
     peak = [t.grid_kw for t in r.ticks if day(D, 18) <= t.at < day(D, 21)]
     assert max(peak) <= 0.0, r.timeline(60)
     assert r.inverter.grid_cost < 2.0
+
+
+# ---------------------------------------------------------------------------
+# Grid current protection with a flexible load running
+# ---------------------------------------------------------------------------
+
+EV = "switch.phoenix_charger"
+EV_OPTIONS = {"flexible_load_1_enabled": "on", "flexible_load_1_name": "Phoenix charger",
+              "flexible_load_1_switch_entity": EV, "flexible_load_1_power_kw": 3.7,
+              "power_level": 8, "max_amperage_per_phase": 18}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [TREX_10, TREX_25])
+async def test_grid_current_limit_holds_while_an_ev_charges(model):
+    """Field report: 18 A limit, L2 at 23 A then 28 A, Active power still 8 kW.
+
+    Over 95 % of the limit safe power sheds a flexible load FIRST and skips
+    the battery reduction when it did.  It switched the charger off — and
+    _actuate_flex_loads, later in the same poll, switched it straight back on
+    because the schedule wanted it.  So every poll "shed" the EV, the battery
+    kept charging at 8 kW, and the current never came down."""
+    r = _replay(model, options={**AUTO, **EV_OPTIONS}, soc=40.0, start=day(D, 11, 55),
+                prices_for=DUCK, load_kw=lambda _t: 2.0, switched_loads={EV: 3.7})
+    r.coordinator.set_slot_overrides({"today": {slot(12, m): "charge" for m in (0, 15, 30, 45)},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 13), step_s=10)
+    _chart(r, f"grid_limit_with_ev_{model[:9]}")
+
+    settled = [t.max_amps for t in r.ticks if day(D, 12, 2) <= t.at < day(D, 13)]
+    assert max(settled) <= 18.0, f"peak {max(settled)} A\n{r.timeline(5)}"
+    assert "charge" in r.inverter_actions(day(D, 12), day(D, 13))     # still charging, slower
+    assert r.coordinator.safe_max_power < 8
+
+
+@pytest.mark.asyncio
+async def test_a_shed_load_stays_off_while_the_current_is_high():
+    r = _replay(options={**AUTO, **EV_OPTIONS}, soc=40.0, start=day(D, 11, 55),
+                prices_for=DUCK, load_kw=lambda _t: 2.0, switched_loads={EV: 3.7})
+    r.coordinator.set_slot_overrides({"today": {slot(12, m): "charge" for m in (0, 15, 30, 45)},
+                                      "tomorrow": {}})
+    calls = []
+    real = r.hass._service_call
+
+    async def record(domain, service, data=None, **kw):
+        calls.append((r.clock.now, service))
+        await real(domain, service, data, **kw)
+    r.hass.services.async_call = record
+    await r.run_until(day(D, 12, 30), step_s=10)
+
+    toggles = [c for c in calls if c[0] >= day(D, 12)]
+    assert len(toggles) <= 2 * (30 // 5 + 1), toggles       # at most once per 5 min hold
+
+
+@pytest.mark.asyncio
+async def test_grid_current_limit_holds_with_a_current_controlled_ev():
+    """The reporter's charger has a current entity (16 A, steps 6-16): safe
+    power steps it down first — and above the limit now also cuts the battery
+    in the same poll instead of waiting for the EV to run out of steps."""
+    r = _replay(options={**AUTO, **EV_OPTIONS,
+                         "flexible_load_1_current_entity": "number.phoenix_current",
+                         "flexible_load_1_current_steps": "6,10,13,16"},
+                soc=40.0, start=day(D, 11, 55), prices_for=DUCK, load_kw=lambda _t: 2.0,
+                switched_loads={EV: 3.7}, current_entities={EV: "number.phoenix_current"})
+    r.coordinator.set_slot_overrides({"today": {slot(12, m): "charge" for m in (0, 15, 30, 45)},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 13), step_s=10)
+    _chart(r, "grid_limit_with_stepped_ev")
+
+    settled = [t.max_amps for t in r.ticks if day(D, 12, 2) <= t.at < day(D, 13)]
+    assert max(settled) <= 18.0, f"peak {max(settled)} A\n{r.timeline(5)}"

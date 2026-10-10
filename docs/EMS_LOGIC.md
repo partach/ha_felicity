@@ -823,12 +823,15 @@ Monitors grid current per phase and adjusts inverter power to prevent overcurren
 
 | Grid Condition | Response |
 |---|---|
-| > 95% of max amperage | Emergency — reduces by 2 kW immediately |
+| > 100% of max amperage | Over the limit — sheds/steps a load AND reduces the battery by 2 kW in the same cycle |
+| > 95% of max amperage | Emergency — sheds/steps a load first; reduces the battery by 2 kW only when there is no load to act on |
 | > 80% of max amperage | Caution — reduces by 1 kW |
 | < 70% of max amperage | Recovery — restores by 1 kW (up to Power Level) |
 | Current = 0 | Jumps to full Power Level |
 
-Recovery works in reverse: loads are restored one per cycle in reverse priority order, and battery power is increased back toward the user's Power Level.
+**A shed load stays off.** A load switched off by safe power is held off for at least 5 minutes, and after that it is switched back on only when the measured grid current plus the load's own current (`rated kW / (voltage × phases)`) stays under 95 % of the limit; otherwise it is re-checked every minute. The schedule cannot override the hold. (Before Oct 2026 the flex-load actuation, later in the same cycle, switched a shed load straight back on, so the shed never took effect and the battery reduction it replaced never happened: 18 A limit, 23–28 A measured.)
+
+Battery power is increased back toward the user's Power Level when the current is below 70 % of the limit.
 
 ---
 
