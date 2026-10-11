@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **688**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **694**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -2198,24 +2198,24 @@ retries from `response.retries`, dropped registers), a poll slower than
 `poll_stats` + `read_groups` are in Download diagnostics.  Ask the reporter for
 that after updating.
 
-**⚠️ OPEN — does the T-REX-5 even have the ECO-rule block at 8568?**  The
-`trex_five.py` map was **AI-generated, not taken from a Felicity document** —
-treat every address in it as unverified.  8568–8603 (0x2178–0x219B) is the start
-of the economic rules (`econ_rule_1..4_*`, 36 registers, the largest T-REX-5
-read; next is 21).  On T-REX-10 and T-REX-25 this chunk is read every poll
-without trouble; on the reporter's 5K it never answers.  Searched Oct 2026: no
-public 5K register document found; the 5K user guide lists General / Backup /
-ECO mode (so `operating_mode` @ 8451 with Economic=2 is plausible, and a T-REX-6K
-owner confirmed 8451 works in [#201](https://github.com/partach/ha_felicity/issues/201)),
-but nothing places the 5K's time-of-use rules at 0x2178.  Third-party
-suggestions are that the 5K series lacks T-REX-10/25-style ECO rules.
+**RESOLVED — the T-REX-5 HAS the ECO-rule block at 8568, laid out as mapped.**
+`trex_five.py` was AI-generated, not taken from a Felicity document, so this was
+an open question.  The #209 reporter then read 8568 with raw pymodbus
+(integration disabled) and got 4 rules × 9 registers that decode cleanly with
+our layout — rule 1: Charge, 00:00–07:00 (`0`, `1792`), 1 Jan–31 Dec (`257`,
+`3103`), all days (`127`), 56.0 V (`560`), 60 %, 1000 W; rule 4: 19:30–22:00
+(`4894`, `5632`), 29 Sep (`2333`), 1500 W.  This matches the four ECO modes in
+the Felicity app.  The rest of `trex_five.py` is still unverified.
 
-**This matters beyond polling:** the T-REX-5/6 control path
-(`OPERATING_MODE_MODELS`) drives the inverter through `econ_rule_1_enable`
-**@ 8568**.  If the block is absent, the EMS cannot control a 5K/6K at all —
-writes there would also fail.  If confirmed: remove the ECO registers from
-`trex_five.py` (with the evidence in the commit) and decide what the 5K/6K
-control path should be (possibly none — monitoring only).
+**The cause is the link, not the map or the integration.**  Same raw test,
+success per single attempt by read length: 9 registers ≈ 80 %, 18 ≈ 50–100 %,
+27 ≈ 30–65 %, 36 ≈ 5–20 %.  Several gateway modes changed nothing.  A
+36-register reply is 77 bytes = 0.32 s at 2400 baud, well inside every timeout.
+A healthy RS485 link fails ~0 %; failing 20 % even at 9 registers, and
+faster-than-random with length, points at wiring/termination or the gateway
+splitting long replies.  The other blocks only *look* fine: pymodbus's 3
+silent retries make 80 % per attempt into 99.8 % per read — and each hidden
+retry costs a 5 s timeout, which is where the 5 s steps in poll time came from.
 
 **Mitigation in code — `_adapt_read_groups`** (runs only when other reads in
 the same poll succeeded, so a dead link never triggers it):
@@ -2232,8 +2232,31 @@ the same poll succeeded, so a dead link never triggers it):
   register (one bad address in the map).
 - `self._address_groups` is the coordinator's own copy; the shared
   `MODEL_REGISTRY` lists are never mutated.
+
+**Intermittent links (fixed Oct 2026, from the #209 data above).**  The rules
+above were written for an address that NEVER answers, and on a flaky link they
+were wrong in a dangerous direction: strikes accumulated over the whole uptime
+(a success never reset them), every miss split the group again down to single
+registers, and two "both halves silent" polls ever dropped the whole block —
+on a 5K, the block holding `econ_rule_1_enable`, i.e. the EMS's only lever.
+Now (`_note_group_answered` / `_answered_keys`):
+- a register that has **answered once is never dropped** — it exists, so its
+  misses are the link's;
+- strikes count **consecutive** misses: any answer from a group (or either
+  half of a split) clears them;
+- a block that answered before is split no further than
+  `FLAKY_MIN_REGISTERS` (9 — one T-REX-5 ECO rule), so a flaky link settles on
+  short reads that get through within pymodbus's retries instead of
+  fragmenting into single reads (more requests = slower at 2400 baud).
+Replaying the reporter's measured rates for 800 polls (5 seeds) the block
+settles at 4 × 9 (or 9/9/18), nothing is dropped, and ≤ 1 % of polls miss
+part of it; the old code dropped registers on 4 of the 5 seeds.  A healthy link
+is untouched (nothing ever misses).
+
 Pinned by `TestNonRespondingGroupIsolation` (one silent address, whole block
-absent = 5 timeouts total, frame too large, dead link never splits).
+absent = 5 timeouts total, frame too large, dead link never splits, an
+intermittent block is never dropped or fragmented, a register that answered
+once is never dropped).
 
 Diagnostics on a 5K also help: `register_dump.async_read_all` retries a failed
 batch register-by-register, so the dump shows which of 8568–8603 answer.
@@ -3051,7 +3074,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**688 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**694 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

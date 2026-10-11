@@ -795,6 +795,8 @@ The full register map is always polled in large contiguous chunks — deliberate
 
 When a read gets no response while other reads in the same poll succeed, the link is fine and that read is the problem (a silent address, or a frame too large for a slow gateway). It is split in half for the next poll; halves that answer stay split. A single register that still gets no response in 3 polls is no longer polled until the integration reloads (one warning). If both halves of a split block stay silent, the whole block is dropped after 3 polls (the model does not have it). A dead link never triggers this: with nothing answered, the backoff above applies instead.
 
+**A register that has answered even once is never dropped** — then the misses are the link's, not a missing address. Misses count only when consecutive (a successful read resets them), and a block that answered before is split no further than 9 registers (one T-REX-5 ECO rule), so a flaky link polls it in short reads that get through instead of fragmenting it into single registers. (Oct 2026, #209: the T-REX-5's ECO block at 8568 exists — the reporter dumped all 4 rules × 9 registers — but a 2400-baud gateway link failed 36-register reads 80–95 % of the time and 9-register reads ~20 %. Misses used to accumulate over the whole uptime, so the old rule would eventually have dropped the block, and with it `econ_rule_1_enable`, the register the EMS controls a 5K through.)
+
 Each poll records its duration, reads answered / timed out and pymodbus's silent retries; a poll slower than twice the update interval logs one warning per hour. Both are in Download diagnostics.
 
 ---

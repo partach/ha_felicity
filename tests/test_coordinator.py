@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import importlib.util as _ilu
 import os
+import random
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -106,6 +107,7 @@ def _make_coordinator(**overrides):
     coord._read_backoff_until = 0.0
     coord._group_timeout_strikes = {}
     coord.dead_register_keys = set()
+    coord._answered_keys = set()
     coord.poll_stats = {}
     coord._last_slow_poll_warning = 0.0
     coord._last_register_set = None
@@ -607,6 +609,54 @@ class TestNonRespondingGroupIsolation:
         await self._polls(coord, 5)
         assert coord._address_groups == groups
         assert coord.dead_register_keys == set()
+
+    # Measured by the #209 reporter with raw pymodbus, one attempt per read,
+    # integration disabled: success rate by read length.  pymodbus makes up to
+    # four attempts per read (retries=3) before reporting "no response".
+    FLAKY_LINK = ((9, 0.80), (18, 0.75), (27, 0.45), (36, 0.12))
+
+    def _flaky(self, seed):
+        rng = random.Random(seed)
+
+        def answers(address, count):
+            if not 8568 <= address < 8604:
+                return True
+            p = next(v for n, v in self.FLAKY_LINK if count <= n)
+            return any(rng.random() < p for _ in range(4))
+        return answers
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("seed", range(5))
+    async def test_an_intermittent_block_is_never_dropped(self, seed):
+        """The 5K's ECO block exists (4 rules x 9 registers, dumped by the
+        reporter) but its link fails long reads more often than short ones.
+        Strikes used to accumulate over the whole uptime and never reset, so
+        random misses eventually dropped the block — and with it
+        econ_rule_1_enable, the register the EMS controls a 5K through."""
+        coord = self._coord(self._flaky(seed))
+        await self._polls(coord, 600)
+        assert coord.dead_register_keys == set()
+        assert self._covered(coord) == set(self.BLOCK) | {4400}
+        block = [g for g in coord._address_groups if g["start"] >= 8568]
+        assert all(g["count"] >= 9 for g in block), block       # never fragmented
+        missed = 0
+        for _ in range(200):
+            await self._polls(coord, 1)
+            missed += bool(coord.poll_stats["groups_timed_out"])
+        assert missed <= 10, f"{missed}/200 polls missed part of the block"
+
+    @pytest.mark.asyncio
+    async def test_a_register_that_answered_once_is_never_dropped(self):
+        answered = set()
+
+        def answers(address, count):
+            first = (address, count) not in answered
+            answered.add((address, count))
+            return first or not (address <= 8590 < address + count)
+        coord = self._coord(answers)
+        await self._polls(coord, 30)
+        assert coord.dead_register_keys == set()
+        assert self._covered(coord) == set(self.BLOCK) | {4400}
 
     @pytest.mark.asyncio
     async def test_shared_model_groups_are_not_mutated(self):

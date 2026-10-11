@@ -69,7 +69,14 @@ READ_BACKOFF_MAX_S = 300
 # register that still times out in DEAD_REGISTER_STRIKES polls is dropped from
 # polling until the integration reloads.  When BOTH halves stay silent the
 # whole block is dropped instead (the model lacks it) — see _adapt_read_groups.
+# Strikes count CONSECUTIVE misses, and a register that has answered even once
+# is never dropped: the same reporter later showed the block exists and answers
+# intermittently (a flaky link fails long reads more often than short ones).
 DEAD_REGISTER_STRIKES = 3
+# A block that has answered before but now misses is split no further than this
+# many registers (one T-REX-5 ECO rule): small enough for a flaky link to get
+# through within pymodbus's retries, without fragmenting into single reads.
+FLAKY_MIN_REGISTERS = 9
 # A poll slower than this many update intervals logs one warning (per hour)
 # with the statistics needed to diagnose it.
 SLOW_POLL_FACTOR = 2
@@ -111,6 +118,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._address_groups = list(groups)   # own copy: adaptive splitting replaces entries
         self._group_timeout_strikes: dict[tuple[int, int], int] = {}
         self.dead_register_keys: set[str] = set()
+        self._answered_keys: set[str] = set()   # read successfully at least once
         self.poll_stats: dict = {}
         self._last_slow_poll_warning: float = 0.0
         self.config_entry = config_entry
@@ -2659,6 +2667,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             })
         return halves
 
+    def _note_group_answered(self, group: dict) -> None:
+        """A read answered: its registers exist, and its miss streak is over."""
+        self._answered_keys.update(group["keys"])
+        self._group_timeout_strikes.pop((group["start"], group["count"]), None)
+        if "split_from" in group:
+            self._group_timeout_strikes.pop(group["split_from"], None)
+
     def _adapt_read_groups(self, timed_out: list[dict]) -> None:
         """Isolate reads that time out while the rest of the poll succeeds.
 
@@ -2668,15 +2683,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         replace: dict[int, list[dict]] = {}
 
         # Both halves of a split block silent in the same poll: the whole block
-        # is unsupported (e.g. the ECO-rule block on a T-REX-5 that may not have
-        # one), not one bad address.  Bisecting further would cost dozens of
+        # is unsupported (a block the model does not have), not one bad address.  Bisecting further would cost dozens of
         # timeouts, so after DEAD_REGISTER_STRIKES polls in total (once whole,
         # then twice as a silent pair) the block is dropped in one go.
         by_parent: dict[tuple, list[dict]] = {}
         for group in timed_out:
             if "split_from" in group:
                 by_parent.setdefault(group["split_from"], []).append(group)
-        silent_pairs = [pair for pair in by_parent.values() if len(pair) == 2]
+        # A block whose registers have answered before exists — then the misses
+        # are the link's, and the halves are handled one by one below.
+        silent_pairs = [pair for pair in by_parent.values() if len(pair) == 2
+                        and not any(k in self._answered_keys
+                                    for half in pair for k in half["keys"])]
         for pair in silent_pairs:
             parent = pair[0]["split_from"]
             strikes = self._group_timeout_strikes.get(parent, 1) + 1
@@ -2699,6 +2717,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 continue    # handled above: kept whole for now, or dropped
             if any(k not in self.register_map for k in group["keys"]):
                 continue
+            answered_before = all(k in self._answered_keys for k in group["keys"])
+            if answered_before and group["count"] <= FLAKY_MIN_REGISTERS:
+                continue    # intermittent on a known-good block: leave it as is
             if len(group["keys"]) > 1:
                 halves = self._split_group(group)
                 replace[id(group)] = halves
@@ -2709,6 +2730,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     ", ".join(f"{h['start']}/{h['count']}" for h in halves),
                 )
                 continue
+            if answered_before:
+                continue    # a register that ever answered exists: never drop it
             sig = (group["start"], group["count"])
             strikes = self._group_timeout_strikes.get(sig, 0) + 1
             self._group_timeout_strikes[sig] = strikes
@@ -2817,6 +2840,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     self._read_backoff_until = 0.0
                 any_read_ok = True
                 groups_ok += 1
+                self._note_group_answered(group)
 
                 registers = result.registers
                 pos = 0
