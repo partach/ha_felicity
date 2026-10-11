@@ -18,6 +18,17 @@
   is already at its minimum and the current is still too high. When the
   current drops, a switched-off load comes back before the battery power is
   raised again.
+- **An unreliable inverter link no longer loses registers.** On a link that
+  drops some replies (e.g. a T-REX-5 behind an RS485 gateway at 2400 baud), a
+  register that has answered once is never removed from polling, misses only
+  count when they follow each other, and a long read that keeps failing is
+  polled in shorter pieces (down to 9 registers). Before, occasional misses
+  added up over time and could remove the economic-rule registers the EMS
+  uses to control a T-REX-5/6.
+- **The battery power is cut in one step.** When the grid current exceeds the
+  limit, the battery power now drops straight to the level that brings the
+  current back under it, instead of 2 kW every 10 seconds. It is raised back
+  1 kW at a time once the current has dropped.
 - **Cheap charging today is no longer postponed to a barely cheaper
   tomorrow.** Once tomorrow's prices were published, today's charging moved to
   tomorrow as soon as tomorrow was even a fraction of a cent cheaper — and the
