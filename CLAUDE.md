@@ -1630,13 +1630,23 @@ soon" scenarios.
 ### EMS Card Status Bar
 
 Below the Strategy dropdowns the card renders a status chip row
-(`status-bar`): operational mode, current price, **Active power X kW**
-(the live `safe_max_power`), **Peak Amp. X A** (`peak_grid_current_now`),
+(`status-bar`): operational mode, current price, the **Rule 1 power chip**
+(the live `safe_max_power` = the value in `econ_rule_1_power`; labelled
+"Grid charge limit" while charging, "Discharge limit" while discharging,
+"Rule 1 power" otherwise, with a tooltip), **Peak Amp. X A** (`peak_grid_current_now`),
 and the boost chip.  The Active-power and Peak-Amp chips turn red when
 the inverter is being throttled (`safe_max_power < power_level`),
 surfacing safe-power current limiting at a glance.  The energy-state chip
 was removed (it duplicated the header badge).  This merges the status
 info that used to live in the inverter card's grey bottom bar.
+
+**Renamed Oct 2026 (was "Active power").**  A user saw "Active power 1.0 kW"
+next to a battery charging at 6.19 kW and could not reconcile them.  The value
+is right — it is what Rule 1 holds — but the inverter applies the Rule 1 power
+to *grid* charging (and discharging) only; solar charges the battery on top of
+it (that screenshot: 6.32 kW PV → 6.19 kW battery, the grid feeding the house).
+The inverter card's bar is now "Eco Rule Power (Max)": left number = Rule 1,
+bracketed = Power Level.
 
 ---
 

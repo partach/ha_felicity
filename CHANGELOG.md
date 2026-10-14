@@ -25,6 +25,11 @@
   polled in shorter pieces (down to 9 registers). Before, occasional misses
   added up over time and could remove the economic-rule registers the EMS
   uses to control a T-REX-5/6.
+- **Clearer power indicator.** The "Active power" chip in the EMS card is now
+  "Grid charge limit" while charging and "Discharge limit" while discharging
+  (hover for details), and the inverter card's bar reads "Eco Rule Power
+  (Max)". It shows the power in Economic Rule 1, which limits charging from
+  the grid only — solar still charges the battery on top of it.
 - **The battery power is cut in one step.** When the grid current exceeds the
   limit, the battery power now drops straight to the level that brings the
   current back under it, instead of 2 kW every 10 seconds. It is raised back
