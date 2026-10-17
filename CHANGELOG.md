@@ -25,6 +25,20 @@
   polled in shorter pieces (down to 9 registers). Before, occasional misses
   added up over time and could remove the economic-rule registers the EMS
   uses to control a T-REX-5/6.
+- **Self-Sufficiency no longer buys for a need that isn't there.** With little
+  sun forecast for tomorrow the plan booked many charge slots "to cover 0.0 kWh
+  deficit", including tonight's expensive evening and tomorrow's night. It
+  overstated tomorrow's need (the evening was counted twice and the flat daily
+  average was used instead of your consumption profile), and it planned every
+  slot at the reduced power the grid-current protection had set for that
+  moment. It now plans at your Power Level and computes tomorrow's need from
+  your profile.
+- **Flexible loads after a restart.** The integration now reads each load's
+  real on/off state after a restart (a charger left running is no longer shown
+  as off or left on unscheduled), and an EV Boost survives a restart.
+- **New setting: EV Charger Grid Phase (L1/L2/L3).** When the grid-current
+  protection has switched the charger off, it comes back as soon as its own
+  phase has room. Left on "unknown" it waits for the busiest phase, as before.
 - **Clearer power indicator.** The "Active power" chip in the EMS card is now
   "Grid charge limit" while charging and "Discharge limit" while discharging
   (hover for details), and the inverter card's bar reads "Eco Rule Power

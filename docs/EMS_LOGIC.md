@@ -456,6 +456,8 @@ grid_kw = min(safe_power_kw, max(0, inverter_max_power_kw - pv_kw))
 ```
 This prevents the SOC prediction from assuming unrealistic charge rates (e.g., 8 kW grid + 7 kW PV = 15 kW on a 10 kW inverter).
 
+`safe_power_kw` is the user's **Power Level**, not the live safe-power limit. The grid-current protection's cut (down to 1 kW while the house draws heavily) governs what the inverter is told now and recovers by itself when the load goes; planning every remaining slot of today and tomorrow at it made each slot an eighth as useful, so the selector booked eight times the slots and reached into the evening and night for them. If the cut persists, the battery lags its plan and the next re-plan books what is missing.
+
 This gives:
 - `min_projected`: lowest SOC the battery will hit if we do nothing
 - `max_projected`: highest SOC the battery will reach (usually midday from solar)
@@ -685,14 +687,16 @@ pick cheapest to cover total_deficit (today + tomorrow)
 
 **Tomorrow's deficit** is calculated independently:
 ```
-tomorrow_reserve_target = discharge_min_kwh + tomorrow_overnight_reserve
+tomorrow_reserve_target = discharge_min_kwh + night_after_tomorrow   # midnight → sunrise
 projected_midnight_soc = current_kwh + net_pv + today_charge - drain_to_midnight
-daytime_gap = max(0, consumption - tomorrow_pv)
-tomorrow_pv_surplus = max(0, tomorrow_pv - consumption)
+daytime_gap = max(0, tomorrow_consumption - tomorrow_pv)
+tomorrow_pv_surplus = max(0, tomorrow_pv - tomorrow_consumption)
 tomorrow_deficit = max(0, tomorrow_reserve_target + daytime_gap - projected_midnight - tomorrow_pv_surplus)
 ```
 
-The tomorrow reserve target honours the same settings as today's: a fixed `reserve_target_pct` floor when set, and the `self_consumption` priority's 1.25× overnight boost.
+The reserve is the one held at the **end** of tomorrow, so it covers that night only from **midnight** to sunrise — tomorrow's own evening is already in `tomorrow_consumption`. Consumption (tonight's drain, tomorrow's day and that night) comes from the **hourly profile** when one exists, the same profile today's reserve and the trajectory use; the flat daily average is the fallback. (Until Oct 2026 the reserve was a full sunset-to-sunrise night at the flat average: the evening was counted twice and a daytime-heavy house's night overstated — on a customer's inputs 18.7 kWh of need where the energy balance said about none, and self-sufficiency booked 28 slots for it. `self_suff_dull_tomorrow_*` scenarios.)
+
+The tomorrow reserve target honours the same settings as today's: a fixed `reserve_target_pct` floor when set, and the `self_consumption` priority's 1.25× boost.
 
 This means if tomorrow has very cheap overnight prices, the algorithm may delay charging to tomorrow rather than buying at today's more expensive prices.
 
@@ -831,7 +835,7 @@ Monitors grid current per phase and adjusts inverter power to prevent overcurren
 | < 70% of max amperage | Recovery — restores by 1 kW (up to Power Level) |
 | Current = 0 | Jumps to full Power Level |
 
-**A shed load stays off.** A load switched off by safe power is held off for at least 5 minutes, and after that it is switched back on only when the measured grid current plus the load's own current (`rated kW / (voltage × phases)`) stays under 95 % of the limit; otherwise it is re-checked every minute. The schedule cannot override the hold. (Before Oct 2026 the flex-load actuation, later in the same cycle, switched a shed load straight back on, so the shed never took effect and the battery reduction it replaced never happened: 18 A limit, 23–28 A measured.)
+**A shed load stays off.** A load switched off by safe power is held off for at least 5 minutes, and after that it is switched back on only when the grid current on **its phase** plus the load's own current (`rated kW / (voltage × phases)`) stays under 95 % of the limit — its phase is *EV Charger Grid Phase* (`flexible_load_1_phase`, L1/L2/L3) for a one-phase load 1, and the **busiest** phase when that is `unknown` (the default), for a three-phase load, and for loads 2-3; otherwise it is re-checked every minute. The schedule cannot override the hold. (Before Oct 2026 the flex-load actuation, later in the same cycle, switched a shed load straight back on, so the shed never took effect and the battery reduction it replaced never happened: 18 A limit, 23–28 A measured.)
 
 Recovery runs in reverse: below 70 % of the limit, a shed load that fits comes back first, and only then is the battery power raised back toward the user's Power Level (1 kW per cycle).
 
@@ -878,6 +882,8 @@ controllable load in the house does not exist.
 
 For the EV charger (load 1), when turning on, the current is set to `default_current` via the assigned current entity (`number.set_value` or `select.select_option`).
 
+**After a restart** the integration reads each load's real state from its switch entity before acting, the first time it sees the load (`on`/`off` only — `unavailable` leaves it unknown). A charger found on in a slot that is not scheduled is switched off; one found on in a scheduled slot is left alone. (The state used to be in memory only, so after a restart every load read as off: a charger left running was never switched off and the card showed it off.)
+
 ### EV Boost Override
 
 A one-press "+1 hour" override that forces the EV charger on at maximum current regardless of the EMS schedule:
@@ -890,6 +896,7 @@ During a boost:
 2. Normal schedule is bypassed for the charger.
 3. Safe Power Management can still step down current but will NOT fully shed the charger.
 4. Boost expires automatically when the timer runs out.
+5. The boost's end time is persisted (wall-clock), so a Home Assistant restart during a boost resumes it with the time that was left; a boost that ended while HA was down is not restored.
 
 ---
 

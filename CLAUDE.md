@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **694**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **701**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1519,7 +1519,8 @@ Oct 2026: battery first**:
 2. EV charger current step-down (one step per tick) — only once (1) cannot help
 3. Binary load shed (3=least important, shed first; 1=most important, shed last)
 
-Recovery runs in reverse: a shed load that fits (`current + its amps ≤ 95 %`)
+Recovery runs in reverse: a shed load that fits (`current on its phase + its
+amps ≤ 95 %`, its phase from `flexible_load_1_phase`, else the busiest — 8i)
 comes back before the battery power is raised (`_shed_load_waiting_to_fit`).
 **A shed load is held off** (`_flex_load_shed_until`, 5 min) and returns only
 with room for it (`_shed_load_may_return`) — see Known Issues 8h.  (The
@@ -1541,6 +1542,7 @@ user's.)
 | `flexible_load_1_phases` | number (1-3) | EV only | — |
 | `flexible_load_1_voltage` | number (110-400V) | EV only | — |
 | `flexible_load_1_default_current` | number (6-32A) | EV only | — |
+| `flexible_load_1_phase` | select (unknown/L1/L2/L3) | yes | — (busiest phase) |
 | `ev_charge_strategy` | select (smart/solar_only/cheap_only/always_on) | EV only | — |
 
 ### EV Charge Strategy
@@ -1617,6 +1619,8 @@ soon" scenarios.
 - `_safe_power_shed_loads()` can still step down the EV current during
   a boost (grid safety), but will not fully shed the EV charger.
 - Boost expires automatically when `now >= _ev_boost_until_ts`.
+- The end time is persisted (`_persist_ev_boost`, own Store) and restored on the
+  first actuation after a restart (`_restore_ev_boost`) — 8i.
 
 **Frontend** (`ha_felicity_ems.js`):
 - Cyan banner above the chart: "EV Boost active — Xh Ym remaining"
@@ -1716,7 +1720,7 @@ traces each setting from `config_entry.options` through to its consumers.
 | `battery_charge_max_level` | `battery_charge_max_pct` | ✅ | ✅ | Upper SOC bound |
 | `battery_discharge_min_level` | `battery_discharge_min_pct` | ✅ | ✅ | Lower SOC bound / hardware floor |
 | `efficiency_factor` | `efficiency` | ✅ | ✅ | Round-trip = efficiency² |
-| `power_level` | `safe_power_kw` | ✅ | ✅ | Charge/discharge power per slot |
+| `power_level` | `safe_power_kw` | ✅ | ✅ | Charge/discharge power per slot — the plan uses Power Level, never the live safe-power cut (8i) |
 | `daily_consumption_estimate` | `consumption_est_kwh` | ✅ | ✅ | Fallback when no profile available |
 | `reserve_target_pct` | `reserve_target_pct` | ✅ | ✅ via arg | Pre-computed into reserve_target kWh for MILP |
 | `arbitrage_price_delta` | `arbitrage_price_delta` | ✅ | ✅ | Per-slot price gates in both engines |
@@ -1738,6 +1742,7 @@ traces each setting from `config_entry.options` through to its consumers.
 | `voltage_level` | `_transition_to_state` | Charge voltage register (default 58V) |
 | `discharge_min_voltage` | `_transition_to_state` | Discharge voltage register (default 50V) |
 | `max_amperage_per_phase` | `_check_safe_power` | Grid current limit for power throttling |
+| `flexible_load_1_phase` | `_current_on_load_phase` | Phase a shed load 1 is tested on before it may return (8i) |
 | `safe_power_management` | `_check_safe_power` | auto/on/off — enables power monitoring |
 | `price_mode` | `_determine_energy_state` | manual (threshold) vs auto (schedule) |
 | `price_threshold_level` | manual mode calc | Price level 1-10 for manual mode threshold |
@@ -2525,6 +2530,61 @@ and flex-load actuation are exercised for real.
 `main`, weekly and manually — pushes to a feature branch run nothing until a PR
 is opened.
 
+### 8i. A self-sufficiency plan buying for a need that wasn't there; a charger lost across a restart — FIXED (Oct 2026)
+
+Customer card (live install, T-REX-10, 76 kWh at 79 % at 14:00, Self-Sufficiency,
+12 kWh of sun tomorrow): *"Charging 20 slots (up to 0.359/kWh) to cover 0.0 kWh
+deficit"*, 28 more tomorrow, the SOC line already near full by the evening; and
+the EV charger off after a restart while its slot was scheduled.  Reproduced in
+the simulator (`self_suff_dull_tomorrow_battery_covers_it` and its low-battery
+mirror) and the replay harness.  Four defects:
+
+1. **The plan ran at the current-protection throttle.**  The coordinator handed
+   `safe_max_power` — safe power's cut for *this moment* (1 kW while the house
+   drew 14 A on a phase) — to the planner as the charge power of every
+   remaining slot of today and tomorrow.  Each slot delivered an eighth of its
+   energy, so the selector booked eight times the slots and reached into the
+   late evening and the night for them.  `_plan_power_kw()` is the Power Level
+   now, in all three places that built an `EMSConfig`; the throttle still
+   governs the inverter, and if it persists the battery lags its plan and the
+   next re-plan books the rest (the self-correcting direction).  Pinned by
+   `test_the_plan_charges_at_power_level_while_safe_power_throttles`.
+2. **Tomorrow's need was overstated twice.**  `select_unified_charge_slots`
+   asked tomorrow to end at a full **sunset-to-sunrise** reserve on top of
+   tomorrow's **whole-day** consumption, so tomorrow evening was counted twice;
+   and it used the **flat daily average** where today's reserve and the
+   trajectory use the hourly profile (the Known Issue 4 fix had reached today
+   only).  18.7 kWh of need on inputs where the balance says about none.  The
+   reserve now runs from **midnight** to sunrise and every consumption term uses
+   the profile when one exists.  Greedy now matches the MILP on the customer's
+   inputs (nothing) and at 30 % / 45 % SOC (cheap midday only); before, greedy
+   bought tonight's 0.33 and tomorrow's 0.30 night.
+3. **Flexible-load state was memory-only.**  After a restart every load read as
+   off: a charger left running was never switched off in an unscheduled slot,
+   and the card showed it off.  `_seed_flex_load_states` reads each switch
+   entity once (`on`/`off` only).  The **EV Boost** end time was memory-only
+   too — a restart during a boost cancelled it; it is persisted (wall-clock) in
+   its own Store and restored on the first actuation.
+4. **A shed load's return was tested against the BUSIEST phase.**  On an 18 A
+   connection a 16 A one-phase charger then fits back only when every phase
+   carries under ~1 A, so once safe power had switched it off it stayed off
+   while its own phase had room.  `flexible_load_1_phase` (select *EV Charger
+   Grid Phase*: unknown/L1/L2/L3, default unknown = the old safe assumption)
+   tells `_current_on_load_phase` which phase to read;
+   `determine_phase_currents` supplies them.  Three-phase loads and loads 2-3
+   keep the busiest phase, which is right for them.
+
+**Not established:** whether the customer's charger was switched off by safe
+power at the restart — the log line `Safe power: shedding load` would say.  On
+that connection (18 A limit, 14 A on the busiest phase) a 16 A charger and the
+battery cannot both run on one phase, so the protection keeping it off can be
+correct; item 4 only stops it being kept off when it is on a *different* phase.
+
+The harness gained a shared `storage` dict (pass the same one to a second
+`DayReplay` to simulate a restart), switch entities that report their state,
+`async_create_task`, a yield between polls (a store save scheduled in a tick
+never ran before), and `l1_load_kw` — a one-phase house load on L1.
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -3084,7 +3144,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**694 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**701 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -3194,9 +3254,10 @@ fake inverter, asserting register writes and the resulting SOC across midnight,
 restarts, overrides, manual mode and a dropped Economic mode — on T-REX-10 and
 T-REX-25 — and (8g) selling, the anti-conflict guard, PV days, forecast vs
 reality, negative prices — and (8h) safe power against real per-phase grid
-current with a flexible load switched on/off and current-stepped.  **Still not
-covered**: inverter power limits, the consumption-deviation correction, EV
-boost, and the IVGM/T-REX-5 control paths.  Extend the harness rather than writing another stub-level test.
+current with a flexible load switched on/off and current-stepped — and (8i)
+restarts with a load running or a boost active, and a shed charger on its own
+phase.  **Still not covered**: inverter power limits, the consumption-deviation
+correction, EV boost's max-current stepping, and the IVGM/T-REX-5 control paths.  Extend the harness rather than writing another stub-level test.
 
 ### Lint & CI
 

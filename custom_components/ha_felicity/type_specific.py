@@ -140,6 +140,16 @@ class TypeSpecificHandler:
         _LOGGER.debug("Unable to determine operational mode")
         return None
 
+    def determine_phase_currents(self, data: dict) -> list[float] | None:
+        """Absolute grid current per phase, [L1, L2, L3], or None."""
+        if self._inverter_model in OPERATING_MODE_MODELS:
+            keys = ("ac_input_current", "ac_input_current_l2", "ac_input_current_l3")
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
+            keys = ("phase_a_ct_current", "phase_b_ct_current", "phase_c_ct_current")
+        else:
+            return None
+        return [abs(data.get(k) or 0.0) for k in keys]
+
     def determine_max_amperage(self, data: dict) -> float:
         """Return highest absolute grid current across all phases.
 
