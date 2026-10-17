@@ -634,3 +634,138 @@ async def test_battery_power_is_cut_in_one_step(model):
     settled = [t.max_amps for t in r.ticks if t.at > cuts[0].at]
     assert max(settled) <= 25.0, f"peak {max(settled)} A\n{r.timeline(5)}"
     assert r.hass.switch_on.get(EV) is True
+
+
+@pytest.mark.asyncio
+async def test_the_plan_charges_at_power_level_while_safe_power_throttles():
+    """Customer card, Oct 2026: Safe 1.0 kW, and 20 slots today + 28 tomorrow
+    'to cover 0.0 kWh deficit'.  The coordinator handed the planner the
+    current-protection throttle as the charge power of every remaining slot of
+    today AND tomorrow, so each slot delivered an eighth of its energy and the
+    selector booked eight times the slots.  The throttle governs the inverter
+    now; the plan must keep assuming Power Level."""
+    r = _replay(options={**AUTO, **EV_OPTIONS, "max_amperage_per_phase": 25}, soc=40.0,
+                start=day(D, 11, 55), prices_for=DUCK, load_kw=lambda _t: 2.0,
+                switched_loads={EV: 3.7})
+    glb = r.coordinator._calculate_schedule.__globals__
+    real = glb["ems_module"].calculate_schedule
+    seen = []
+
+    def spy(config, state):
+        seen.append((r.coordinator.safe_max_power, config.safe_power_kw))
+        return real(config, state)
+    glb["ems_module"].calculate_schedule = spy
+    try:
+        await r.run_until(day(D, 12, 30), step_s=10)
+    finally:
+        glb["ems_module"].calculate_schedule = real
+
+    throttled = [planned for live, planned in seen if 0 < live < 8]
+    assert throttled, f"the protection never throttled — premise lost: {seen[:5]}"
+    assert set(throttled) == {8.0}, throttled
+
+
+# ---------------------------------------------------------------------------
+# Flexible loads across a restart
+# ---------------------------------------------------------------------------
+
+ROOMY = {**AUTO, **EV_OPTIONS, "max_amperage_per_phase": 63, "power_level": 5,
+         "flexible_load_1_current_entity": "number.phoenix_current"}   # an EV charger
+
+
+@pytest.mark.asyncio
+async def test_a_charger_left_on_over_a_restart_is_seen_and_switched_off():
+    """The tracked on/off state lived in memory, so after a restart every load
+    read as off: a charger left running was never switched off (nothing turns
+    off a load believed off) and the card showed it off.  At 19:00 the
+    cheap-only charger is not scheduled — found on, it must be turned off."""
+    r = _replay(options={**ROOMY, "ev_charge_strategy": "cheap_only"}, soc=80.0,
+                start=day(D, 19, 0), prices_for=DUCK, switched_loads={EV: 3.7})
+    r.hass.switch_on[EV] = True                      # running when HA came back
+    await r.run_until(day(D, 19, 2), step_s=10)
+
+    slot = r.coordinator._current_slot_index()
+    assert slot not in r.coordinator._flex_load_scheduled.get(0, {}), "premise: not scheduled"
+    assert r.hass.switch_on[EV] is False
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_charger_found_on_is_left_alone():
+    r = _replay(options={**ROOMY, "ev_charge_strategy": "always_on"}, soc=80.0,
+                start=day(D, 19, 0), prices_for=DUCK, switched_loads={EV: 3.7})
+    r.hass.switch_on[EV] = True
+    calls = []
+    real = r.hass._service_call
+
+    async def record(domain, service, data=None, **kw):
+        calls.append(service)
+        await real(domain, service, data, **kw)
+    r.hass.services.async_call = record
+    await r.run_until(day(D, 19, 2), step_s=10)
+
+    assert r.hass.switch_on[EV] is True
+    assert r.coordinator._flex_load_states.get(0) is True
+    assert "turn_off" not in calls
+
+
+@pytest.mark.asyncio
+async def test_an_ev_boost_survives_a_restart():
+    storage: dict = {}
+    first = _replay(options={**ROOMY, "ev_charge_strategy": "cheap_only"}, soc=80.0,
+                    start=day(D, 19, 0), prices_for=DUCK, switched_loads={EV: 3.7},
+                    storage=storage)
+    first.coordinator.ev_boost_add_hour()
+    await first.run_until(day(D, 19, 5), step_s=10)
+    assert first.hass.switch_on[EV] is True
+
+    # Home Assistant restarts at 19:10 (an update install, say).
+    second = _replay(options={**ROOMY, "ev_charge_strategy": "cheap_only"}, soc=80.0,
+                     start=day(D, 19, 10), prices_for=DUCK, switched_loads={EV: 3.7},
+                     storage=storage)
+    second.hass.switch_on[EV] = True
+    await second.run_until(day(D, 19, 12), step_s=10)
+    assert second.coordinator.ev_boost_active
+    assert 45 <= second.coordinator.ev_boost_remaining_min <= 50
+    assert second.hass.switch_on[EV] is True        # not switched off as unscheduled
+
+
+@pytest.mark.asyncio
+async def test_an_expired_ev_boost_is_not_restored():
+    storage: dict = {}
+    first = _replay(options={**ROOMY, "ev_charge_strategy": "cheap_only"}, soc=80.0,
+                    start=day(D, 17, 0), prices_for=DUCK, switched_loads={EV: 3.7},
+                    storage=storage)
+    first.coordinator.ev_boost_add_hour()
+    await first.run_until(day(D, 17, 1), step_s=10)
+
+    second = _replay(options={**ROOMY, "ev_charge_strategy": "cheap_only"}, soc=80.0,
+                     start=day(D, 19, 0), prices_for=DUCK, switched_loads={EV: 3.7},
+                     storage=storage)
+    await second.run_until(day(D, 19, 2), step_s=10)
+    assert not second.coordinator.ev_boost_active
+
+
+@pytest.mark.parametrize("phase, comes_back", [("L2", True), ("unknown", False)])
+@pytest.mark.asyncio
+async def test_a_shed_charger_returns_when_its_own_phase_has_room(phase, comes_back):
+    """Safe power switched the 16 A charger (on L2) off earlier.  An oven now
+    loads L1 to ~14 A while L2 carries ~2 A.  The return test used the
+    BUSIEST phase: 14 + 16 > 23.75 A, so the charger stayed off although its
+    own phase had room for it.  With the phase set it comes back; left
+    'unknown' the old, safe assumption still holds."""
+    r = _replay(options={**ROOMY, "max_amperage_per_phase": 25,
+                         "ev_charge_strategy": "always_on",
+                         "flexible_load_1_phase": phase},
+                soc=60.0, start=day(D, 19, 0), prices_for=DUCK,
+                load_kw=lambda _t: 0.5, l1_load_kw=lambda _t: 3.0,
+                switched_loads={EV: 3.7})
+    await r.run_until(day(D, 19, 1), step_s=10)              # settle: EV running
+    assert r.hass.switch_on.get(EV) is True, "premise: the charger runs"
+    # Safe power switched it off a while ago; the 5-minute hold has run out.
+    await r.coordinator._set_flex_load(0, False)
+    r.coordinator._flex_load_shed_until[0] = r.clock.now.timestamp() - 1
+    await r.run_until(day(D, 19, 4), step_s=10)
+
+    amps = r.inverter.phase_amps(0.0, 3.0)
+    assert amps[0] + 16.1 > 0.95 * 25 > amps[1] + 16.1, f"premise: L1 busy, L2 free {amps}"
+    assert (r.hass.switch_on.get(EV) is True) is comes_back

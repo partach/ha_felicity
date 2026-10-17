@@ -273,6 +273,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # when the schedule wants them on (see _safe_power_shed_loads).
         self._flex_load_shed_until: dict[int, float] = {}
         self._last_max_grid_current: float | None = None
+        self._last_phase_currents: list[float] | None = None
         self._flex_load_current_step: int | None = None
         self._flex_load_scheduled: dict[int, dict[int, bool]] = {}  # from ScheduleResult.load_slots
         self._flex_load_scheduled_tomorrow: dict[int, dict[int, bool]] = {}
@@ -281,6 +282,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # (not every tick) so safe-power step-downs aren't fought; reset on
         # each boost press so a new press re-raises to max.
         self._ev_boost_max_applied: bool = False
+        # The boost's end time is persisted: a restart (an update install)
+        # during a boost used to cancel it silently.  Restored lazily on the
+        # first actuation, because the store is async and __init__ is not.
+        self._ev_boost_store = None
+        self._ev_boost_restored: bool = False
 
     @property
     def pv_actual_today_kwh(self) -> float | None:
@@ -815,6 +821,28 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             previous_pv_confidence=self._last_pv_confidence,
         )
 
+    def _plan_power_kw(self) -> float:
+        """Charge power the PLAN assumes for a slot: the user's Power Level.
+
+        Not ``safe_max_power``.  That is the grid-current protection's answer
+        for THIS moment — cut to 1 kW while the house draws 14 A on a phase —
+        and it recovers by itself the moment the load goes.  Planning every
+        remaining slot of today AND tomorrow at it made each slot deliver an
+        eighth of its energy, so the selector booked eight times the slots and
+        reached into the evening and the night to find them (customer card,
+        Oct 2026: 20 slots today and 28 tomorrow "to cover 0.0 kWh deficit"
+        at a 1 kW throttle; at Power Level the same need is three midday
+        slots).  The throttle still governs what the inverter is told now;
+        if it persists, the battery lags its plan and the next re-plan books
+        what is missing — which is the self-correcting direction, where a
+        throttled plan over-buys at prices nobody would choose.
+        """
+        level = self.config_entry.options.get("power_level", 5)
+        try:
+            return max(1.0, float(level))
+        except (TypeError, ValueError):
+            return 5.0
+
     def _build_manual_schedule(self) -> None:
         """Build `scheduled_slots` from the price threshold (manual mode).
 
@@ -858,7 +886,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         soc = (self.battery_soc / 100.0) * cap if self.battery_soc is not None else 0.0
         max_kwh = (opts.get("battery_charge_max_level", 100) / 100.0) * cap
         min_kwh = (opts.get("battery_discharge_min_level", 20) / 100.0) * cap
-        safe_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
+        safe_kw = self._plan_power_kw()
         inv_max = self._inverter_max_power_kw
         cons_profile = self._hourly_consumption_profile or {}
         cons_flat = self._get_consumption_estimate() / 24.0
@@ -973,8 +1001,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.schedule_reason = "Inverter communication lost — using last known state"
             return
 
-        # Use safe_max_power (kW scale 1-10) for realistic slot energy, fallback to power_level
-        safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
+        # The PLAN charges at Power Level — see _plan_power_kw.
+        safe_power_kw = self._plan_power_kw()
         inverter_model = self.config_entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
         inverter_max_kw = INVERTER_MAX_POWER_KW.get(inverter_model, 10)
 
@@ -1461,6 +1489,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         now = time.time()
         base = max(now, self._ev_boost_until_ts)
         self._ev_boost_until_ts = base + 3600
+        self._persist_ev_boost()
         # Re-apply max current on the next tick, even if the charger was
         # already on (a fresh press signals urgency) or safe-power stepped
         # the current down earlier in this boost session.
@@ -1472,7 +1501,68 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         """Cancel the EV boost override."""
         self._ev_boost_until_ts = 0.0
         self._ev_boost_max_applied = False
+        self._persist_ev_boost()
         _LOGGER.info("EV Boost cancelled")
+
+    def _boost_store(self):
+        if self._ev_boost_store is None:
+            from homeassistant.helpers.storage import Store
+            self._ev_boost_store = Store(
+                self.hass, version=1,
+                key=f"{DOMAIN}_{self.config_entry.entry_id}_ev_boost")
+        return self._ev_boost_store
+
+    def _persist_ev_boost(self) -> None:
+        """Save the boost's end time (wall-clock, so it means something after
+        a reboot).  Best effort: a boost that cannot be saved still runs."""
+        until = self._ev_boost_until_ts
+
+        async def _save() -> None:
+            try:
+                await self._boost_store().async_save({"until": until})
+            except Exception as err:
+                _LOGGER.debug("EV boost not persisted: %s", err)
+        try:
+            self.hass.async_create_task(_save())
+        except Exception as err:
+            _LOGGER.debug("EV boost not persisted: %s", err)
+
+    async def _restore_ev_boost(self) -> None:
+        """Bring back a boost that was running when Home Assistant stopped."""
+        if self._ev_boost_restored:
+            return
+        self._ev_boost_restored = True
+        try:
+            data = await self._boost_store().async_load()
+        except Exception as err:
+            _LOGGER.debug("EV boost not restored: %s", err)
+            return
+        until = data.get("until") if isinstance(data, dict) else None
+        if isinstance(until, (int, float)) and not isinstance(until, bool) \
+                and until > time.time() and until > self._ev_boost_until_ts:
+            self._ev_boost_until_ts = float(until)
+            self._ev_boost_max_applied = False
+            _LOGGER.info("EV Boost restored after restart: %d min remaining",
+                         int((until - time.time()) / 60))
+
+    def _seed_flex_load_states(self, loads) -> None:
+        """Learn each load's real on/off state the first time it is seen.
+
+        The tracked state is what this integration last commanded, and it is
+        in memory — so after a restart every load read as off whatever it was
+        really doing.  A charger left running then stayed on through slots it
+        was not scheduled in (nothing would turn off a load believed off), and
+        the card showed it off.  The switch entity is the truth; ask it once.
+        Only a definite 'on'/'off' seeds — 'unavailable' leaves it unknown.
+        """
+        for load_idx, load in enumerate(loads):
+            if load_idx in self._flex_load_states or not load.switch_entity:
+                continue
+            state = self.hass.states.get(load.switch_entity)
+            value = getattr(state, "state", None)
+            if value in ("on", "off"):
+                self._flex_load_states[load_idx] = value == "on"
+                _LOGGER.debug("Flex load '%s' found %s at startup", load.name, value)
 
     async def _actuate_flex_loads(self) -> None:
         """Turn flexible loads on/off based on current schedule slot.
@@ -1485,6 +1575,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         config parse, missing entity domain).
         """
         loads = self._build_flex_load_configs()
+        await self._restore_ev_boost()
+        self._seed_flex_load_states(loads)
         ev_boost = self.ev_boost_active
 
         # EV Boost override: force EV charger (first EV-capable load) on at max
@@ -1551,9 +1643,31 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if idx < len(loads):
                 ld = loads[idx]
                 amps = ld.rated_power_kw * 1000.0 / (max(1, ld.voltage) * max(1, ld.phases))
-                if current + amps <= 0.95 * max_amps:
+                if self._current_on_load_phase(ld, current) + amps <= 0.95 * max_amps:
                     return True
         return False
+
+    def _current_on_load_phase(self, load, worst: float) -> float:
+        """The grid current on the phase this load adds to.
+
+        Unknown (the default) means the busiest phase — safe, and wrong in the
+        direction that bit: on an 18 A connection a 16 A one-phase charger then
+        fits back only when EVERY phase carries under ~1 A, so once safe power
+        had switched it off it stayed off while its own phase had room.  Only
+        load 1 has a phase setting; a three-phase load adds to every phase, so
+        the busiest one is right for it anyway.
+        """
+        if load.phases != 1:
+            return worst
+        opts = self.config_entry.options
+        if not load.switch_entity or load.switch_entity != opts.get("flexible_load_1_switch_entity"):
+            return worst
+        idx = {"L1": 0, "L2": 1, "L3": 2}.get(str(opts.get("flexible_load_1_phase", "unknown")))
+        currents = self._last_phase_currents
+        if idx is None or not currents or idx >= len(currents):
+            return worst
+        value = currents[idx]
+        return float(value) if isinstance(value, (int, float)) else worst
 
     def _shed_load_may_return(self, load_idx: int, load) -> bool:
         """May a load that safe power shed be switched on again?
@@ -1569,7 +1683,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return False
         max_amps = self.config_entry.options.get("max_amperage_per_phase", 16)
         load_amps = load.rated_power_kw * 1000.0 / (max(1, load.voltage) * max(1, load.phases))
-        current = self._last_max_grid_current or 0.0
+        current = self._current_on_load_phase(load, self._last_max_grid_current or 0.0)
         if current + load_amps > 0.95 * max_amps:
             self._flex_load_shed_until[load_idx] = time.time() + 60   # look again in a minute
             return False
@@ -1767,7 +1881,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
 
         now = datetime.now()
-        safe_power_kw = max(1, self.safe_max_power) if self.safe_max_power > 0 else opts.get("power_level", 5)
+        safe_power_kw = self._plan_power_kw()
         inverter_model = self.config_entry.data.get(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
         nominal_capacity = opts.get("battery_capacity_kwh", 10) or 10
 
@@ -2240,6 +2354,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if max_current is not None:
             new_data["highest_grid_current_now"] = max_current
         self._last_max_grid_current = max_current
+        phase_currents = self.TypeSpecificHandler.determine_phase_currents(new_data)
+        self._last_phase_currents = phase_currents if isinstance(phase_currents, list) else None
         # This is the key: use the freshly read register value from new_data!
         applied_kwatts = self.TypeSpecificHandler.determine_rule_power(new_data) # works in kW
         if applied_kwatts is not None:

@@ -211,6 +211,22 @@ class FelicityEMSCard extends LitElement {
   // Explain the engine chip on hover. "Greedy (fallback)" on its own tells the
   // user the MILP solver failed but not WHY \u2014 the reason used to exist only in
   // a single HA log warning, long rotated away by the time anyone looks.
+  // The status-bar power chip shows the power written to Economic Rule 1.  The
+  // inverter applies it to grid charging (or discharging) only — solar charges
+  // the battery on top of it — so name it for what it limits right now.
+  _rulePowerLabel(energyState) {
+    if (energyState === "charging") return "Grid charge limit";
+    if (energyState === "discharging") return "Discharge limit";
+    return "Rule 1 power";
+  }
+
+  _rulePowerTooltip(ruleKw, powerLevelKw) {
+    const max = powerLevelKw != null ? ` (your Power Level: ${this._fmt(powerLevelKw, 1)} kW)` : "";
+    return `Power written to Economic Rule 1: ${this._fmt(ruleKw, 1)} kW${max}. `
+      + "It limits charging from the grid and discharging; solar charges the battery on top of it. "
+      + "Lowered automatically when the grid current nears your per-phase limit.";
+  }
+
   _milpTooltip() {
     const st = this._getAttr("schedule_status", "milp_status");
     if (!st || !st.state) return "Scheduler engine";
@@ -1927,7 +1943,7 @@ class FelicityEMSCard extends LitElement {
     const operationalMode = this._getState("operational_mode") || null;
     const schedulerActive = this._getAttr("schedule_status", "scheduler_active") || null;
     const schedulerEngine = this._getState("scheduler_engine") || "greedy";
-    // Active power limit + grid current (for throttle display in status bar)
+    // Rule 1 power limit + grid current (for throttle display in status bar)
     const powerLevelKw = this._getNumericState("power_level");
     const safeMaxKw = this._getNumericState("safe_max_power") != null
       ? this._getNumericState("safe_max_power") / 1000 : null;
@@ -2174,7 +2190,8 @@ class FelicityEMSCard extends LitElement {
                       title="${this._milpTooltip()}">${schedulerActive === 'milp' ? 'MILP' : schedulerActive === 'greedy_fallback' ? 'Greedy (fallback)' : 'Greedy'}</span>
               ` : ''}
               ${safeMaxKw != null ? html`
-                <span class="status-chip power ${isThrottled ? 'throttled' : ''}">Active power ${this._fmt(safeMaxKw, 1)} kW</span>
+                <span class="status-chip power ${isThrottled ? 'throttled' : ''}"
+                      title="${this._rulePowerTooltip(safeMaxKw, powerLevelKw)}">${this._rulePowerLabel(energyState)} ${this._fmt(safeMaxKw, 1)} kW</span>
               ` : ''}
               ${peakAmp != null ? html`
                 <span class="status-chip amp ${isThrottled ? 'throttled' : ''}">Peak Amp. ${this._fmt(peakAmp, 0)} A</span>

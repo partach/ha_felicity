@@ -243,6 +243,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "flexible_load_1_current_entity": "",
         "flexible_load_1_current_steps": "",
         "flexible_load_1_phases": 1,
+        "flexible_load_1_phase": "unknown",
         "flexible_load_1_voltage": 230,
         "flexible_load_1_default_current": 16,
         "ev_charge_strategy": "smart",

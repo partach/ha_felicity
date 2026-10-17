@@ -191,6 +191,23 @@ async def async_setup_entry(
         )
     )
 
+    # The grid phase the EV charger (load 1) is wired to.  Safe power uses it
+    # to decide whether a charger it switched off fits back on: 'unknown'
+    # assumes the busiest phase (safe, but on an 18 A connection a 16 A
+    # charger then never fits next to a busy phase it is not even on).
+    entities.append(
+        HA_FelicitySpecialModeSelect(
+            coordinator=coordinator,
+            entry=entry,
+            option_key="flexible_load_1_phase",
+            select_options=["unknown", "L1", "L2", "L3"],
+            name="EV Charger Grid Phase",
+            icon="mdi:sine-wave",
+            entity_category=EntityCategory.CONFIG,
+            requires_option="flexible_load_1_switch_entity",
+        )
+    )
+
     # Flexible load enable selects. Gated on a switch entity being assigned
     # to the load (assigned via the options flow).
     for i in range(1, 4):

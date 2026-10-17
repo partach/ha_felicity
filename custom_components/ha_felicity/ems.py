@@ -1572,14 +1572,34 @@ def select_unified_charge_slots(
 
     tomorrow_deficit = 0.0
     if tomorrow_pool:
+        # The reserve this deficit has to reach is the one held at the END of
+        # tomorrow, i.e. at the midnight after it — so it covers that night
+        # from MIDNIGHT to sunrise.  Tomorrow's own evening (sunset→24) is
+        # already in tomorrow's day consumption below; the old full-night
+        # reserve counted it a second time.  And it uses the hourly profile,
+        # the same one today's reserve and the trajectory use — a flat daily
+        # average overstates the night on a daytime-heavy house.  (Customer
+        # case, Oct 2026: 76 kWh pack at 79 %, 12 kWh of sun tomorrow — the
+        # two together read 18.7 kWh of need where the energy balance says
+        # about none, and self-sufficiency booked 28 slots for it.)
+        flat_per_hour = consumption_est / 24.0
         tomorrow_reserve = calculate_self_consumption_reserve(
-            consumption_est, pv_hourly_kwh)
+            consumption_est, pv_hourly_kwh_tomorrow or pv_hourly_kwh,
+            current_hour=0, consumption_hourly_kwh=consumption_hourly_kwh)
         min_kwh = (discharge_min_pct / 100.0) * battery_capacity
         tomorrow_pv = pv_forecast_tomorrow or 0.0
 
         # Project battery at midnight
         hours_to_midnight = max(1, 24 - current_hour)
-        drain_to_midnight = (consumption_est / 24.0) * hours_to_midnight
+        if consumption_hourly_kwh:
+            drain_to_midnight = _sum_hourly_consumption(
+                consumption_hourly_kwh, float(current_hour), hours_to_midnight,
+                flat_per_hour)
+            day_consumption = _sum_hourly_consumption(
+                consumption_hourly_kwh, 0.0, 24.0, flat_per_hour)
+        else:
+            drain_to_midnight = flat_per_hour * hours_to_midnight
+            day_consumption = consumption_est
         today_charge = len([s for s in today_pool if s[0] <= 0]) * effective_per_slot
         today_charge += energy_deficit
         projected_midnight = max(min_kwh, min(
@@ -1598,10 +1618,10 @@ def select_unified_charge_slots(
                 battery_capacity, max(fixed_floor, dynamic_tmr))
         else:
             tomorrow_reserve_target = min(battery_capacity, dynamic_tmr)
-        daytime_gap = max(0.0, consumption_est - tomorrow_pv)
+        daytime_gap = max(0.0, day_consumption - tomorrow_pv)
         # PV surplus beyond consumption will charge the battery during the day,
         # reducing the need for grid charging overnight.
-        tomorrow_pv_surplus = max(0.0, tomorrow_pv - consumption_est)
+        tomorrow_pv_surplus = max(0.0, tomorrow_pv - day_consumption)
         tomorrow_shortfall = max(0.0,
                                  tomorrow_reserve_target + daytime_gap
                                  - projected_midnight - tomorrow_pv_surplus)
@@ -1612,7 +1632,7 @@ def select_unified_charge_slots(
             "daytime_gap=%.1f, pv_surplus=%.1f (pv=%.1f, consumption=%.1f), "
             "shortfall=%.1f",
             tomorrow_reserve_target, projected_midnight, daytime_gap,
-            tomorrow_pv_surplus, tomorrow_pv, consumption_est,
+            tomorrow_pv_surplus, tomorrow_pv, day_consumption,
             tomorrow_shortfall,
         )
 

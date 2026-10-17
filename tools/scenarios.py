@@ -208,6 +208,15 @@ def _uncovered_kwh(result, scenario):
 
 # ── scenarios ────────────────────────────────────────────────────────────────
 
+# The customer card of Oct 2026, read off the chart (hourly): a night at
+# ~0.30, a midday dip, the 17-20 h peak and a 0.33-0.36 late evening.
+# Tomorrow follows the same shape with a shallower midday dip.
+_DULL_TOMORROW_TODAY = [0.31, 0.30, 0.30, 0.30, 0.30, 0.31, 0.33, 0.37, 0.36, 0.30, 0.25, 0.15,
+                        0.05, 0.10, 0.272, 0.29, 0.31, 0.40, 0.45, 0.42, 0.38, 0.359, 0.34, 0.33]
+_DULL_TOMORROW_TOMORROW = [0.31, 0.30, 0.30, 0.30, 0.30, 0.31, 0.33, 0.37, 0.36, 0.31, 0.29, 0.27,
+                           0.26, 0.27, 0.28, 0.30, 0.32, 0.40, 0.45, 0.42, 0.38, 0.36, 0.34, 0.33]
+
+
 SCENARIOS = [
 
     {
@@ -832,6 +841,66 @@ SCENARIOS = [
             (f"tops off from the cheap end when tomorrow is dark "
             f"(engine={r['engine']}, slots={len(r['charge_slots'])}, "
             f"prices={r['charge_prices']})"),
+        ),
+    },
+
+    {
+        "name": "self_suff_dull_tomorrow_battery_covers_it",
+        "desc": "CUSTOMER CASE (Oct 2026): 76 kWh pack at 79% at 14:00, 11.6 kWh of sun "
+                "left today and only 12 kWh tomorrow.  The card read 'Charging 20 slots "
+                "(up to 0.359) to cover 0.0 kWh deficit' plus 28 slots tomorrow.  Two "
+                "faults: tomorrow's need used the flat daily average AND counted "
+                "tomorrow evening twice (18.7 kWh where the balance says ~0), and the "
+                "plan ran at the 1 kW current-protection throttle, so it needed 8x the "
+                "slots.  Midnight ~80% minus ~31 kWh of use plus 12 kWh of sun still "
+                "leaves more than the next night needs - nothing should be bought.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=75.9, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=38.5),
+        "state": dict(battery_soc_pct=79.0,
+                      slot_prices_today=list(_DULL_TOMORROW_TODAY),
+                      slot_prices_tomorrow=list(_DULL_TOMORROW_TOMORROW),
+                      pv_hourly_kwh=pv_bell(30.1, sunrise=8, sunset=19),
+                      consumption_hourly_kwh=low_night_daytime_profile(30.8),
+                      pv_actual_today_kwh=14.1, pv_forecast_today=30.1,
+                      pv_forecast_remaining=11.6, pv_forecast_tomorrow=12.1,
+                      current_hour=14, current_minute=5),
+        "expect": lambda r, s: (
+            not r["charge_slots"] and not r["tomorrow_charge_slots"],
+            (f"buys nothing: the battery plus tomorrow's sun cover the next night "
+             f"(today={r['charge_slots']}, tomorrow={r['tomorrow_charge_slots']})"),
+        ),
+    },
+
+    {
+        "name": "self_suff_dull_tomorrow_low_battery_buys_cheap",
+        "desc": "MIRROR of self_suff_dull_tomorrow_battery_covers_it at 30% SOC: now the "
+                "battery cannot carry tomorrow, so it must still buy - from the cheap "
+                "end (today's afternoon dip, tomorrow's midday), never the 0.33+ "
+                "evening or the 0.30 night.  Pins that fixing the overstated need has "
+                "not switched the two-day buying off.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=75.9, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=38.5),
+        "state": dict(battery_soc_pct=30.0,
+                      slot_prices_today=list(_DULL_TOMORROW_TODAY),
+                      slot_prices_tomorrow=list(_DULL_TOMORROW_TOMORROW),
+                      pv_hourly_kwh=pv_bell(30.1, sunrise=8, sunset=19),
+                      consumption_hourly_kwh=low_night_daytime_profile(30.8),
+                      pv_actual_today_kwh=14.1, pv_forecast_today=30.1,
+                      pv_forecast_remaining=11.6, pv_forecast_tomorrow=12.1,
+                      current_hour=14, current_minute=5),
+        "expect": lambda r, s: (
+            bool(r["charge_slots"] or r["tomorrow_charge_slots"])
+            and all(p <= 0.31 + 1e-9 for p in r["charge_prices"])
+            and all(s["state"]["slot_prices_tomorrow"][i] <= 0.28 + 1e-9
+                    for i in r["tomorrow_charge_slots"]),
+            (f"buys only the cheap end (today={r['charge_prices']}, "
+             f"tomorrow slots={r['tomorrow_charge_slots']})"),
         ),
     },
 

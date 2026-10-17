@@ -434,7 +434,7 @@ class FelicityInverterCard extends LitElement {
     ctx.font = '10px sans-serif';
     ctx.fillStyle = '#c6c2c2dd';
     ctx.textAlign = 'center';
-    ctx.fillText('Active Power (Limit)', width / 2, barY -3 );
+    ctx.fillText('Eco Rule Power (Max)', width / 2, barY -3 );
   }
 
   _drawCurrentBar() {

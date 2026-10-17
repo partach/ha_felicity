@@ -31,6 +31,7 @@ stubbing in test_coordinator.py, which replaces type_specific with a MagicMock.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util as _ilu
 import os
 import sys
@@ -298,7 +299,7 @@ class FakeInverter:
         return power / 1000.0 if unit_w else float(power)
 
     def advance(self, seconds: float, load_kw: float, pv_kw: float, price: float,
-                single_phase_kw: float = 0.0) -> str:
+                single_phase_kw: float = 0.0, l1_kw: float = 0.0) -> str:
         """Move energy for `seconds` according to the registers.
 
         PV serves the house first.  A PV surplus charges the battery (up to
@@ -356,21 +357,23 @@ class FakeInverter:
         self.pv_today_kwh += pv_kw * hours
         self.soc_pct = max(0.0, min(100.0, bat / cap * 100.0))
         self._sync_soc()
-        self._publish_telemetry(pv_kw, single_phase_kw)
+        self._publish_telemetry(pv_kw, single_phase_kw, l1_kw)
         return act
 
-    def phase_amps(self, single_phase_kw: float = 0.0) -> list[float]:
+    def phase_amps(self, single_phase_kw: float = 0.0, l1_kw: float = 0.0) -> list[float]:
         """Grid current per phase at 230 V: the grid power spread over three
-        phases, plus a single-phase load (an EV charger) on L2."""
-        three_phase = (self.last_grid_kw - single_phase_kw) / 3.0
-        return [abs(three_phase) / 0.23, abs(three_phase + single_phase_kw) / 0.23,
+        phases, plus a single-phase load (an EV charger) on L2 and, optionally,
+        a single-phase house load (an oven) on L1."""
+        three_phase = (self.last_grid_kw - single_phase_kw - l1_kw) / 3.0
+        return [abs(three_phase + l1_kw) / 0.23, abs(three_phase + single_phase_kw) / 0.23,
                 abs(three_phase) / 0.23]
 
-    def _publish_telemetry(self, pv_kw: float, single_phase_kw: float = 0.0) -> None:
+    def _publish_telemetry(self, pv_kw: float, single_phase_kw: float = 0.0,
+                           l1_kw: float = 0.0) -> None:
         """What the coordinator reads back: grid power (anti-conflict guard),
         grid current per phase (safe power), PV power and PV energy today
         (PV confidence)."""
-        amps = self.phase_amps(single_phase_kw)
+        amps = self.phase_amps(single_phase_kw, l1_kw)
         keys = (("phase_a_ct_current", "phase_b_ct_current", "phase_c_ct_current")
                 if self.eco_path else
                 ("ac_input_current", "ac_input_current_l2", "ac_input_current_l3"))
@@ -437,6 +440,9 @@ class FakeHass:
         if service == "set_value" and entity:
             self.numbers[entity] = float(data["value"])
 
+    def async_create_task(self, coro, *_args, **_kw):
+        return asyncio.get_running_loop().create_task(coro)
+
     async def async_add_executor_job(self, func, *args):
         return func(*args)
 
@@ -447,6 +453,8 @@ class FakeHass:
             return self._forecast_state(self.clock.now.date(), with_hours=True)
         if self.forecast_kw and entity_id == self.FORECAST_TOMORROW_ENTITY:
             return self._forecast_state(self.clock.now.date() + timedelta(days=1))
+        if entity_id in self.switch_on:          # a switched load reports its state
+            return _State("on" if self.switch_on[entity_id] else "off", {})
         return self.extra_states.get(entity_id)
 
     def _forecast_hours(self, d: date) -> dict[datetime, float]:
@@ -480,14 +488,22 @@ class FakeHass:
 
 
 class _FakeStore:
-    def __init__(self, *args, **kwargs):
+    """A Store; with a shared `backing` dict it survives a simulated restart."""
+
+    def __init__(self, *args, key=None, backing=None, **kwargs):
         self.saved = None
+        self.key = key
+        self.backing = backing
 
     async def async_load(self):
+        if self.backing is not None and self.key in self.backing:
+            return dict(self.backing[self.key])
         return None
 
     async def async_save(self, data):
         self.saved = data
+        if self.backing is not None:
+            self.backing[self.key] = dict(data)
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +541,10 @@ class DayReplay:
     # through its current entity (an EV charger), not its rated kW.
     current_entities: dict = field(default_factory=dict)
     honour_rule_dates: bool = True
+    l1_load_kw: callable = lambda t: 0.0     # a single-phase house load on L1 (an oven)
+    # Persistent storage. Pass the same dict to a second DayReplay to simulate
+    # a Home Assistant restart: what the first one saved, the second one loads.
+    storage: dict = field(default_factory=dict)
     ticks: list[Tick] = field(default_factory=list)
 
     def __post_init__(self):
@@ -548,6 +568,7 @@ class DayReplay:
             nordpool_entity=FakeHass.PRICE_ENTITY,
             forecast_entity=FakeHass.FORECAST_ENTITY if self.forecast_kw else None,
         )
+        self.coordinator._ev_boost_store = _FakeStore(key="ev_boost", backing=self.storage)
 
     def _load_kw(self, switch: str, rated_kw: float) -> float:
         amps = self.hass.numbers.get(self.current_entities.get(switch, ""))
@@ -584,6 +605,9 @@ class DayReplay:
     async def run_until(self, end: datetime, step_s: int = 60) -> None:
         while self.clock.now < end:
             await self.tick()
+            # Let tasks the coordinator scheduled (a store save) run, as HA's
+            # event loop would between polls; nothing in a tick suspends.
+            await asyncio.sleep(0)
             now = self.clock.now
             slot = self.coordinator._current_slot_index()
             planned = self.coordinator.scheduled_slots.get(slot) if slot is not None else None
@@ -592,12 +616,13 @@ class DayReplay:
             pv = self.pv_kw(now)
             switched = sum(self._load_kw(ent, kw) for ent, kw in self.switched_loads.items()
                            if self.hass.switch_on.get(ent))
-            act = self.inverter.advance(step_s, self.load_kw(now) + switched, pv, price,
-                                        single_phase_kw=switched)
+            l1 = self.l1_load_kw(now)
+            act = self.inverter.advance(step_s, self.load_kw(now) + switched + l1, pv, price,
+                                        single_phase_kw=switched, l1_kw=l1)
             self.ticks.append(Tick(now, round(self.inverter.soc_pct, 2),
                                    self.coordinator._current_energy_state, planned, act,
                                    price, pv, round(self.inverter.last_grid_kw, 3),
-                                   round(max(self.inverter.phase_amps(switched)), 1)))
+                                   round(max(self.inverter.phase_amps(switched, l1)), 1)))
             self.clock.now = now + timedelta(seconds=step_s)
 
     # -- reading the result --------------------------------------------------
