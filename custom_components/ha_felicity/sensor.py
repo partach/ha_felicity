@@ -174,6 +174,9 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "schedule_reason": self.coordinator.schedule_reason,
             "scheduler_active": self.coordinator.scheduler_active,
             "milp_status": self.coordinator.milp_status,
+            # What the plan was actually built from (issue #218: a flat profile
+            # and a synthetic PV curve looked exactly like real ones).
+            "input_sources": self._build_input_sources(),
             "cheap_slots_remaining": self.coordinator.cheap_slots_remaining,
             "grid_energy_planned_kwh": self.coordinator.grid_energy_planned,
             "scheduled_slot_count": len(scheduled),
@@ -214,6 +217,8 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
                 "backend_soc_trajectory": self.coordinator._backend_soc_trajectory,
                 "backend_soc_trajectory_tomorrow": self.coordinator._backend_soc_trajectory_tomorrow,
                 "inverter_max_power_kw": self.coordinator._inverter_max_power_kw,
+                "sunrise_hour": getattr(self.coordinator, "sunrise_hour", None),
+                "sunset_hour": getattr(self.coordinator, "sunset_hour", None),
             },
             "soc_history": self.coordinator._soc_history,
             "slot_overrides": self.coordinator.slot_overrides if self.coordinator.slot_overrides else {},
@@ -225,6 +230,30 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "ev_boost_active": self.coordinator.ev_boost_active,
             "ev_boost_remaining_min": self.coordinator.ev_boost_remaining_min,
             "integration_version": self.coordinator.integration_version,
+        }
+
+    def _build_input_sources(self) -> dict:
+        """Where each planning input comes from — so a guess is visible.
+
+        ``pv_curve``: the forecast attribute the hourly PV came from, or
+        "synthetic" (daily total spread over a bell curve) or "none".
+        ``consumption_profile``: "history" / "partial" / "flat" / "none" (see
+        coordinator.consumption_profile_source).
+        """
+        coord = self.coordinator
+        milp = getattr(coord, "milp_status", None)
+        return {
+            "pv_curve": getattr(coord, "pv_curve_source", "none"),
+            "pv_curve_tomorrow": getattr(coord, "pv_curve_source_tomorrow", "none"),
+            "forecast_entity": getattr(coord, "forecast_entity", None),
+            "sun_window": (
+                [coord.sunrise_hour, coord.sunset_hour]
+                if getattr(coord, "sunrise_hour", None) is not None else None
+            ),
+            "consumption_profile": getattr(coord, "consumption_profile_source", "none"),
+            "consumption_profile_days": len(getattr(coord, "_hourly_consumption_history", []) or []),
+            "consumption_entity": getattr(coord, "consumption_entity_used", None),
+            "milp_solver": milp.get("solver") if isinstance(milp, dict) else None,
         }
 
     def _build_flex_load_attr(self) -> list[dict]:

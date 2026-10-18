@@ -198,6 +198,36 @@ behaviour, the simulator is the gate that decides whether you were right.
     the same time: tomorrow's forecast is now a first-class input to TODAY's
     plan, so a front moving in must re-plan immediately.
 
+16. **The plan's inputs are real, and say so when they are not (Oct 2026,
+    issue #218).**
+    - **Consumption profile from the recorder.** Statistics rows carry `start`
+      as a float timestamp; the parser called `.hour` on it, the exception was
+      swallowed, and every install's hourly profile was FLAT — so decision 4
+      (profile-aware reserve) and every other profile consumer ran on the flat
+      average.  Days are now cut at LOCAL midnight, the recorder converts the
+      unit (`units={"energy": "kWh"}`), the midnight bookkeeping records
+      YESTERDAY (it used to ask for the hours of the day just begun), and the
+      last 7 days are rebuilt from the recorder once at startup.  A day needs
+      ≥ 20 hours of statistics to count; once any real day exists, flat days
+      no longer shape the profile.
+    - **More forecast formats.** `wh_hours` (Forecast.Solar), `wh_period`
+      (Open-Meteo Solar Forecast, any period length), `detailedHourly` /
+      `detailedForecast` (Solcast lists, kW × period).  Offset-aware
+      timestamps are converted to local time (they had the offset stripped).
+      Open-Meteo's tomorrow hours are read from the tomorrow entity.
+    - **Synthetic curve follows the sun.** With only a daily total, the bell
+      curve runs between today's sunrise and sunset from `sun.sun` (fractional
+      hours), not a fixed 06:00–20:00 — which also moves the derived
+      sunset/sunrise, i.e. the length of the night the reserve covers.
+    - **Visible.** `schedule_status.input_sources` names the PV curve's source
+      (attribute / `synthetic` / `none`), the consumption profile's
+      (`history` / `partial` / `flat` / `none`), the entities and the MILP
+      solver; the EMS card shows an amber chip when either input is a guess.
+    - Side fix: the synthetic-PV rebuild of the state dropped every field it
+      did not list, `predicted_soc_pct` among them — so the consumption-
+      deviation correction (C7) was off whenever the curve was synthesized.
+      It now uses `dataclasses.replace`.
+
 ---
 
 ## 0. Which inverter the EMS is driving
@@ -373,10 +403,11 @@ Every 10 seconds, the coordinator gathers these inputs and feeds them to the sch
 | **PV forecast today** | Forecast entity (e.g., Forecast.Solar, Solcast) | Total expected solar kWh today |
 | **PV forecast remaining** | Forecast entity | Solar kWh still expected today |
 | **PV forecast tomorrow** | Forecast entity | Tomorrow's expected solar |
-| **PV hourly breakdown** | Forecast entity `wh_hours` | Per-hour solar production curve (filtered by date) |
+| **PV hourly breakdown** | Forecast entity `wh_hours` / `wh_period` / `detailedHourly` / `detailedForecast` | Per-hour solar production curve (filtered by date, local time); synthesized between `sun.sun` sunrise and sunset when absent |
+| **Sunrise / sunset** | `sun.sun` (`next_rising` / `next_setting`) | Window of the synthetic PV curve |
 | **PV actual today** | Inverter register (`pv_day_cost_energy`) | kWh actually produced so far |
 | **Consumption estimate** | 7-day rolling average, or user-set fallback | Expected daily household consumption |
-| **Consumption hourly profile** | 7-day HA recorder history | Per-hour average consumption pattern |
+| **Consumption hourly profile** | 7-day HA recorder hourly statistics (local days, kWh) | Per-hour average consumption pattern; rebuilt at startup |
 | **Yesterday's deficit** | Stored from previous day | Carried-over shortfall (reset on grid_mode change) |
 
 ### Derived Values
@@ -424,7 +455,7 @@ overnight_hours = (24 - sunset_hour) + sunrise_hour
 overnight_reserve = (consumption_est / 24) * overnight_hours
 reserve_target = discharge_min_kwh + overnight_reserve
 ```
-Sunset/sunrise are derived from the PV hourly profile (last/first hour with >0.1 kWh).
+Sunset/sunrise are derived from the PV hourly profile (last/first hour with >0.1 kWh) — the forecast's own curve, or the synthetic one, which since Oct 2026 runs between `sun.sun`'s sunrise and sunset.
 
 When `optimization_priority = self_consumption`, the overnight reserve is multiplied by 1.25× to keep more PV energy for self-use.
 
@@ -772,7 +803,7 @@ This prevents the inverter from flipping between discharge → idle → discharg
 
 ### Midnight Rollover
 
-The day-rollover block resets yesterday deficit, daily consumption, SOC history, and rotates slot overrides (by their date stamp, see Slot Override Validation) — but does NOT force the inverter to idle. The normal cycle re-determines the desired state, so valid charge/discharge actions continue across midnight (e.g., a customer selling overnight to clear the battery before negative-midday PV).
+The day-rollover block records **yesterday's** consumption (from the recorder's hourly statistics when it has them — that is also where the hourly profile comes from — else the day register spread flat), resets yesterday deficit and SOC history, and rotates slot overrides (by their date stamp, see Slot Override Validation) — but does NOT force the inverter to idle. The normal cycle re-determines the desired state, so valid charge/discharge actions continue across midnight (e.g., a customer selling overnight to clear the battery before negative-midday PV).
 
 When an action is running at midnight, rule 1's start/stop **date** (T-REX-5/6/10) is rewritten to the new date — otherwise the rule would still carry yesterday's date and the inverter would stop obeying it while the EMS believes it is still active. The rollover bookkeeping also runs on the first poll after every start, but that first poll neither rotates same-day overrides nor rewrites the rule date.
 
@@ -849,32 +880,16 @@ Up to 3 controllable loads (EV charger, boiler, pool pump) can be managed by the
 
 ### Scheduling
 
-`_schedule_flexible_loads()` in ems.py activates loads as an overlay on the battery schedule — they don't affect the battery plan itself. Each enabled load with a switch entity is scheduled into slots matching any of:
+`_schedule_flexible_loads()` in ems.py activates loads as an overlay on the battery schedule — they don't affect the battery plan itself. Each enabled load with a switch entity is scheduled into slots matching any of (per strategy, see `ev_charge_strategy`):
 
-- **Price below threshold** (cheap)
-- **Negative-price slots** (paid to consume)
-- **PV surplus slots** (hourly solar > hourly consumption)
-- **Battery charge slots** (already identified as cheap)
+- **Battery charge slots** — the grid feeds the house and the battery, at the cheapest prices of the plan.
+- **Cheap slots the grid feeds** — price ≤ the dearest charge price, and the battery is charging there or planned at its floor. A cheap slot the battery is *not* charging in is no longer used: the inverter is in self-use, so the battery would serve the load and the cheap price would never be paid (issue #218).  With no charge slot at all there is no cheap threshold.
+- **Negative-price slots** (paid to consume).
+- **PV-surplus slots that fit the load (Oct 2026).** The surplus per slot is the forecast PV × today's confidence minus the house's **hourly profile** (flat average only without one), and a slot counts for a load only when it covers that load's **minimum power** — the lowest current step of a stepped charger, else its running power (default current / rated kW).  It used to be `pv_hour > consumption_est/24` for every load: on #218's install the EV ran 16 A from 07–08 h to 18–19 h and took 35 % of its energy from the battery.  Tomorrow's overlay uses the forecast as given (today's confidence says nothing about tomorrow).
 
-⚠️ **Two of those four gates do not behave as this description implies** (open,
-Sept 2026 — see CLAUDE.md §10 "Flexible loads are invisible to the battery plan",
-reproduced by the `self_suff_ev_sunny_reserve_met` scenario):
+**Planned current.** For a charger with current steps, `ScheduleResult.load_currents` gives the planned amps per slot: in a slot it runs for the sun alone, the highest step the surplus covers (capped at its default current); otherwise its default current.  The coordinator sets it when the charger switches on and once per slot after that; raising it must leave the measured current on its phase under 95 % of the limit (the same test a shed load's return uses), and within a slot safe power's step-down has the last word.
 
-- **"PV surplus" is `pv_hour > consumption_est/24`** — the forecast hour against
-  the household **flat daily average**. It does not consider the load's own
-  power, does not use the hourly consumption profile even when one exists, and
-  does not apply the PV confidence factor. A 3.7 kW charger is therefore
-  switched on for a surplus of a few hundred watts, and the rest is imported.
-- **"Price below threshold" is dead whenever the battery buys nothing.** The
-  threshold handed to the overlay is the max price among the battery's *charge*
-  slots, or `None` when there are none — and `None` makes every slot "not
-  cheap". On a sunny day with a comfortable battery the load cannot prefer the
-  cheap window at all; only the PV-surplus gate remains.
-
-**Loads are additive and never enter the battery plan.** `soc_trajectory` is
-identical with and without a running load, so "reserve is met / no charging
-needed" — and the SOC line the card draws — are computed as if the largest
-controllable load in the house does not exist.
+**Still additive.** The battery plan and `soc_trajectory` do not include the load.  With the fit rule a solar run no longer drains the battery, and the cheap-slot rule keeps a cheap run on the grid, so the remaining gap is a load running in a charge slot alongside the battery (both from the grid — the grid-current budget is safe power's, at run time).  Not done: a live guard that switches a solar-only charger off when the battery feeds it — it needs a battery-power reading whose sign and scale are verified per model.
 
 ### Actuation
 

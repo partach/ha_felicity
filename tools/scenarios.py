@@ -193,17 +193,58 @@ def _uncovered_kwh(result, scenario):
     loads = scenario["config"].get("flexible_loads") or []
     st, cfg = scenario["state"], scenario["config"]
     pv = st.get("pv_hourly_kwh") or {}
+    if not pv and (st.get("pv_forecast_today") or 0) > 0:
+        # Daily total only: the curve the EMS synthesizes (real sun window).
+        sun = (st.get("sunrise_hour"), st.get("sunset_hour"))
+        ems_mod = _ems_module()
+        pv = (ems_mod._synthesize_pv_hourly(st["pv_forecast_today"], *sun)
+              if None not in sun else ems_mod._synthesize_pv_hourly(st["pv_forecast_today"]))
     profile = st.get("consumption_hourly_kwh") or {}
     flat = (cfg.get("consumption_est_kwh") or 0.0) / 24.0
     total = 0.0
     for idx, slots in (result.get("load_slots") or {}).items():
         if idx >= len(loads):
             continue
-        kw = loads[idx].rated_power_kw or 0.0
+        load = loads[idx]
+        amps = (result.get("load_currents") or {}).get(idx, {})
         for slot in slots:
+            kw = (load.power_at_current(amps[slot]) if slot in amps
+                  else (load.running_power_kw or 0.0))
             surplus = max(0.0, pv.get(slot, 0.0) - profile.get(slot, flat))
             total += max(0.0, kw - surplus)
     return total
+
+
+def _issue218_profile():
+    """60 kWh battery home of issue #218: ~29.5 kWh/day, evening-heavy."""
+    return {h: (0.7 if h < 6 else 1.0 if h < 16 else 2.2 if h < 22 else 1.0) for h in range(24)}
+
+
+#: October in the Netherlands: sunrise ~08:06, sunset ~18:45.
+_OCT_SUN = dict(sunrise_hour=8.1, sunset_hour=18.75)
+
+#: Prices of a typical October day of #218: cheap night, midday dip, 17-20 h peak.
+_OCT_PRICES = [0.22, 0.21, 0.20, 0.19, 0.19, 0.21, 0.25, 0.30, 0.29, 0.25, 0.22, 0.20,
+               0.19, 0.20, 0.22, 0.26, 0.31, 0.36, 0.38, 0.34, 0.29, 0.26, 0.24, 0.23]
+
+
+def _ev_solar_only_in_fitting_slots(r, s, sun=None):
+    """The charger's SOLAR slots must lie in the sun and be covered by it.
+
+    Slots the battery is grid-charging in are excluded: there the grid feeds
+    both, at the cheapest price of the day, which is the point of following it.
+    """
+    charging = set(r.get("charge_slots") or [])
+    slots = sorted(sl for sl in (r.get("load_slots") or {}).get(0, {}) if sl not in charging)
+    solar_only = {**r, "load_slots": {0: {sl: True for sl in slots}}}
+    uncovered = _uncovered_kwh(solar_only, s)
+    lo, hi = sun if sun else (0, 24)
+    in_sun = all(lo <= sl < hi for sl in slots)
+    return (
+        bool(slots) and in_sun and uncovered < 0.6,
+        (f"EV in {slots} at {(r.get('load_currents') or {}).get(0, {})} A - "
+         f"{uncovered:.1f} kWh of its draw NOT covered by sun"),
+    )
 
 
 # ── scenarios ────────────────────────────────────────────────────────────────
@@ -934,11 +975,82 @@ SCENARIOS = [
         # The message prints how much of the charger's draw the sun does not
         # cover, so every run reports the number while the build stays green.
         "expect": lambda r, s: (
-            len(r["charge_slots"]) == 0,
+            len(r["charge_slots"]) == 0 and _uncovered_kwh(r, s) < 0.5,
             "battery correctly buys nothing (reserve met); EV charger scheduled at "
             f"{sorted(r['load_slots'].get(0, {})) or 'no slots'}"
             + (f" - {_uncovered_kwh(r, s):.1f} kWh of its draw NOT covered by sun"
                if r["load_slots"] else ""),
+        ),
+    },
+
+    {
+        "name": "ev_issue218_october_sun_hourly",
+        "desc": "ISSUE #218: October self-sufficiency, 60 kWh at 70% at 07:00, 8 kW, "
+                "16 A one-phase charger with steps 6/10/13/16, an evening-heavy house "
+                "and an hourly forecast of 16 kWh between 08:06 and 18:45.  The old "
+                "overlay switched the EV on from 07-08 h to 18-19 h at 16 A against the "
+                "flat average (35% of its energy from the battery).  It must now run "
+                "only where the sun covers it, at the step that fits.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=60.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=29.5,
+                       flexible_loads=[ev_charger(kw=3.7, amps=16)],
+                       ev_charge_strategy="smart"),
+        "state": dict(battery_soc_pct=70.0, slot_prices_today=_OCT_PRICES,
+                      pv_hourly_kwh=pv_bell(16.0, sunrise=8, sunset=18),
+                      consumption_hourly_kwh=_issue218_profile(),
+                      pv_actual_today_kwh=0.0, pv_forecast_today=16.0,
+                      pv_forecast_remaining=16.0, pv_forecast_tomorrow=12.0,
+                      current_hour=7, current_minute=0, **_OCT_SUN),
+        "expect": lambda r, s: _ev_solar_only_in_fitting_slots(r, s, (8, 19)),
+    },
+
+    {
+        "name": "ev_issue218_october_sun_synthetic",
+        "desc": "ISSUE #218 with the forecast entity giving only a DAILY total (as "
+                "Open-Meteo did before wh_period was parsed): the synthetic curve must "
+                "follow the real sunrise/sunset, so no solar EV slot before 08:00 or "
+                "after 18:45, and none the sun does not cover.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=60.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=29.5,
+                       flexible_loads=[ev_charger(kw=3.7, amps=16)],
+                       ev_charge_strategy="solar_only"),
+        "state": dict(battery_soc_pct=70.0, slot_prices_today=_OCT_PRICES,
+                      pv_hourly_kwh={}, consumption_hourly_kwh=_issue218_profile(),
+                      pv_actual_today_kwh=0.0, pv_forecast_today=20.0,
+                      pv_forecast_remaining=20.0, pv_forecast_tomorrow=12.0,
+                      current_hour=7, current_minute=0, **_OCT_SUN),
+        "expect": lambda r, s: _ev_solar_only_in_fitting_slots(r, s, (8, 19)),
+    },
+
+    {
+        "name": "ev_issue218_dark_day_follows_battery",
+        "desc": "MIRROR: a dark October day at 30% - the battery buys in the cheap night, "
+                "and the smart EV follows it into those slots (grid feeds both, at the "
+                "cheapest prices) while no 'solar' slot is invented for 2 kWh of sun.",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=60.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=29.5,
+                       flexible_loads=[ev_charger(kw=3.7, amps=16)],
+                       ev_charge_strategy="smart"),
+        "state": dict(battery_soc_pct=30.0, slot_prices_today=_OCT_PRICES,
+                      pv_hourly_kwh=pv_bell(2.0, sunrise=8, sunset=18),
+                      consumption_hourly_kwh=_issue218_profile(),
+                      pv_actual_today_kwh=0.0, pv_forecast_today=2.0,
+                      pv_forecast_remaining=2.0, pv_forecast_tomorrow=3.0,
+                      current_hour=0, current_minute=0, **_OCT_SUN),
+        "expect": lambda r, s: (
+            bool(r["charge_slots"])
+            and set((r.get("load_slots") or {}).get(0, {})) <= set(r["charge_slots"]),
+            (f"battery charges {r['charge_slots']}; EV in "
+             f"{sorted((r.get('load_slots') or {}).get(0, {}))} (must be a subset)"),
         ),
     },
 

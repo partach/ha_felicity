@@ -57,6 +57,26 @@ class FlexibleLoadConfig:
                 return step
         return self.current_steps[0]  # minimum step
 
+    @property
+    def running_power_kw(self) -> float:
+        """What the load draws when the EMS switches it on.
+
+        A charger is switched on at its default current; a plain load at its
+        rated power.
+        """
+        if self.is_ev_charger and self.current_steps:
+            return self.power_at_current(self.nearest_step_at_or_below(self.default_current) or 0)
+        if self.rated_power_kw > 0:
+            return self.rated_power_kw
+        return self.power_at_current(self.default_current) if self.is_ev_charger else 0.0
+
+    @property
+    def min_power_kw(self) -> float:
+        """The least the load can run at: its lowest current step, if it has any."""
+        if self.is_ev_charger and self.current_steps:
+            return self.power_at_current(min(self.current_steps))
+        return self.running_power_kw
+
     def nearest_step_for_power(self, target_kw: float) -> int | None:
         """Find the highest current step that stays at or below target_kw."""
         if not self.current_steps:
@@ -169,6 +189,11 @@ class EMSState:
     pv_fallback_today_kwh: float | None = None
     current_hour: int = 12
     current_minute: int = 0
+    # Today's sunrise / sunset in local hours (from HA's sun.sun).  Only shape
+    # the SYNTHETIC PV curve used when the forecast gives a daily total and no
+    # hourly breakdown; None keeps the legacy 06:00-20:00 window.
+    sunrise_hour: float | None = None
+    sunset_hour: float | None = None
 
 
 @dataclass
@@ -193,6 +218,11 @@ class ScheduleResult:
     # Flexible load schedules: {load_index: {slot_idx: True}}
     load_slots: dict[int, dict[int, bool]] = field(default_factory=dict)
     tomorrow_load_slots: dict[int, dict[int, bool]] = field(default_factory=dict)
+    # Planned EV current per slot ({load_idx: {slot: amps}}), for a charger with
+    # current steps: in a slot it runs only for the sun, the step that fits the
+    # forecast surplus; elsewhere its default current.
+    load_currents: dict[int, dict[int, int]] = field(default_factory=dict)
+    tomorrow_load_currents: dict[int, dict[int, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -207,30 +237,40 @@ class AvailableInfo:
 
 def _synthesize_pv_hourly(
     pv_forecast_today: float,
-    sunrise: int = 6,
-    sunset: int = 20,
+    sunrise: float = 6,
+    sunset: float = 20,
 ) -> dict[int, float]:
     """Generate synthetic hourly PV distribution using a solar bell curve.
 
     Used as a fallback when the forecast entity provides a daily total
-    but no per-hour breakdown (wh_hours / detailedHourly missing).
+    but no per-hour breakdown (wh_hours / wh_period / detailedHourly missing).
+    ``sunrise`` / ``sunset`` may be fractional hours (real sun times); a
+    partial first or last hour gets only its share.  Integer bounds give
+    exactly the legacy curve.
     """
     if pv_forecast_today <= 0:
         return {}
+    if not (0 <= sunrise < sunset <= 24):
+        sunrise, sunset = 6, 20
 
-    total_minutes = (sunset - sunrise) * 60
+    def produced(t: float) -> float:
+        f = (t - sunrise) / (sunset - sunrise)
+        return (1 - math.cos(math.pi * f)) / 2
+
     hourly: dict[int, float] = {}
-    for hour in range(sunrise, sunset):
-        # fraction of solar day elapsed at start and end of this hour
-        start_min = (hour - sunrise) * 60
-        end_min = start_min + 60
-        f_start = start_min / total_minutes
-        f_end = end_min / total_minutes
-        # bell-curve fraction produced in this hour
-        produced_start = (1 - math.cos(math.pi * f_start)) / 2
-        produced_end = (1 - math.cos(math.pi * f_end)) / 2
-        hourly[hour] = pv_forecast_today * (produced_end - produced_start)
+    for hour in range(math.floor(sunrise), math.ceil(sunset)):
+        a = max(float(hour), sunrise)
+        b = min(float(hour + 1), sunset)
+        if b > a:
+            hourly[hour] = pv_forecast_today * (produced(b) - produced(a))
     return hourly
+
+
+def _synthesize_pv_for(state: EMSState, total: float) -> dict[int, float]:
+    """The synthetic curve for ``total`` kWh under this state's sun window."""
+    if state.sunrise_hour is not None and state.sunset_hour is not None:
+        return _synthesize_pv_hourly(total, state.sunrise_hour, state.sunset_hour)
+    return _synthesize_pv_hourly(total)
 
 
 def _sunset_sunrise_hours(
@@ -1381,6 +1421,9 @@ def _schedule_flexible_loads(
     price_threshold: float | None,
     pv_surplus_slots: set[int] | None = None,
     ev_charge_strategy: str = "smart",
+    pv_surplus_kw: dict[int, float] | None = None,
+    currents_out: dict[int, dict[int, int]] | None = None,
+    grid_fed_slots: set[int] | None = None,
 ) -> dict[int, dict[int, bool]]:
     """Schedule flexible loads into cheap or PV-surplus slots.
 
@@ -1389,12 +1432,30 @@ def _schedule_flexible_loads(
     the threshold, OR the slot has PV surplus.  Loads don't affect the
     battery schedule — they're additive consumption.
 
+    PV surplus is judged PER LOAD when ``pv_surplus_kw`` (forecast PV minus
+    the house's own consumption, per slot, in kW) is given: a slot is solar
+    for a load only when that surplus covers the load's minimum power.  The
+    older ``pv_surplus_slots`` set (any surplus at all) is still accepted.
+    A 3.7 kW charger switched on against 0.4 kW of surplus runs from the
+    battery, not the sun (issue #218: 35 % of an EV's energy over ten days).
+
     The EV charger (load with is_ev_charger) honours ``ev_charge_strategy``:
       - smart      — cheap / negative / PV-surplus / battery-charge slots
       - solar_only — only PV-surplus slots
       - cheap_only — only at/below threshold or negative-price slots
       - always_on  — every remaining slot (safe-power then throttles current)
     All other loads always use the smart overlay.
+
+    ``grid_fed_slots``, when given, narrows "cheap" to slots where the GRID
+    feeds the house: the battery is charging there, or the plan has it at its
+    floor.  In any other slot the inverter runs in self-use, so a load switched
+    on for a cheap price is served by the battery instead and the cheap price is
+    never paid — the battery is, and refilled later at a round-trip loss.
+
+    ``currents_out``, when given, receives the planned current per slot for
+    each charger with current steps: in a slot it runs for the sun alone, the
+    highest step the surplus covers (capped at its default current);
+    otherwise the default current.
 
     Returns {load_index: {slot_idx: True}} for each active slot.
     """
@@ -1411,10 +1472,19 @@ def _schedule_flexible_loads(
 
     for load_idx, load in active_loads:
         strategy = ev_charge_strategy if load.is_ev_charger else "smart"
+        stepped = load.is_ev_charger and bool(load.current_steps)
         load_schedule: dict[int, bool] = {}
+        load_currents: dict[int, int] = {}
         for slot_idx, price in sorted_by_price:
             is_cheap = price_threshold is not None and price <= price_threshold
-            is_pv_surplus = slot_idx in pv_surplus
+            if is_cheap and grid_fed_slots is not None and slot_idx not in grid_fed_slots:
+                is_cheap = False
+            if pv_surplus_kw is not None:
+                surplus = pv_surplus_kw.get(slot_idx, 0.0)
+                is_pv_surplus = surplus > 0 and surplus + 1e-9 >= load.min_power_kw
+            else:
+                surplus = None
+                is_pv_surplus = slot_idx in pv_surplus
             is_negative = price < 0
             already_charging = scheduled_slots.get(slot_idx) == "charge"
 
@@ -1429,9 +1499,21 @@ def _schedule_flexible_loads(
 
             if active:
                 load_schedule[slot_idx] = True
+                if stepped:
+                    default = load.nearest_step_at_or_below(load.default_current) or load.default_current
+                    amps = default
+                    solar_only_reason = (
+                        is_pv_surplus and surplus is not None and strategy != "always_on"
+                        and not (is_cheap or is_negative or already_charging)
+                    )
+                    if solar_only_reason:
+                        amps = min(default, load.nearest_step_for_power(surplus) or default)
+                    load_currents[slot_idx] = amps
 
         if load_schedule:
             result[load_idx] = load_schedule
+            if currents_out is not None and load_currents:
+                currents_out[load_idx] = load_currents
             _LOGGER.debug(
                 "Flexible load '%s' scheduled for %d slots (strategy=%s)",
                 load.name or f"load_{load_idx + 1}",
@@ -1439,6 +1521,36 @@ def _schedule_flexible_loads(
             )
 
     return result
+
+
+def _flex_pv_surplus_kw(
+    slots: list[int],
+    minutes_per_slot: int,
+    pv_hourly_kwh: dict[int, float] | None,
+    consumption_hourly_kwh: dict[int, float] | None,
+    consumption_est_kwh: float,
+    pv_confidence: float = 1.0,
+) -> dict[int, float]:
+    """Forecast solar surplus per slot (kW): PV x confidence minus the house.
+
+    The house is the hourly consumption PROFILE where there is one — the same
+    one the trajectory and reserve use — not the flat daily average, which on
+    a daytime-heavy house finds surplus in exactly its busiest hours.  The PV
+    is scaled by today's confidence, as calculate_net_pv_surplus does, so a
+    dull day does not promise the sun of a forecast that is not happening.
+    """
+    flat = (consumption_est_kwh or 0.0) / 24.0
+    out: dict[int, float] = {}
+    for slot_idx in slots:
+        hr = int((slot_idx * minutes_per_slot) / 60) % 24
+        pv_hr = (pv_hourly_kwh or {}).get(hr, 0.0) * pv_confidence
+        if pv_hr <= 0:
+            continue
+        cons_hr = (consumption_hourly_kwh or {}).get(hr, flat)
+        surplus = pv_hr - cons_hr
+        if surplus > 0:
+            out[slot_idx] = surplus
+    return out
 
 
 # How much of TOMORROW's PV forecast the self-consumption top-off is allowed
@@ -2453,8 +2565,11 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     if (not forecast_total or forecast_total <= 0) and state.pv_fallback_today_kwh:
         forecast_total = state.pv_fallback_today_kwh
         # Estimate remaining as: total × (remaining_daylight / total_daylight)
-        # using the 6-20 daylight window from _synthesize_pv_hourly.
-        daylight_start, daylight_end = 6, 20
+        # using the same daylight window as _synthesize_pv_for.
+        if state.sunrise_hour is not None and state.sunset_hour is not None:
+            daylight_start, daylight_end = state.sunrise_hour, state.sunset_hour
+        else:
+            daylight_start, daylight_end = 6, 20
         remaining_daylight_min = max(
             0,
             (daylight_end * 60) - max(
@@ -2479,23 +2594,17 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         pv_hourly_kwh_tomorrow = state.pv_hourly_kwh_tomorrow
         if (not pv_hourly_kwh_tomorrow
                 and state.pv_forecast_tomorrow and state.pv_forecast_tomorrow > 0):
-            pv_hourly_kwh_tomorrow = _synthesize_pv_hourly(state.pv_forecast_tomorrow)
-        state = EMSState(
-            battery_soc_pct=state.battery_soc_pct,
-            slot_prices_today=state.slot_prices_today,
-            slot_prices_tomorrow=state.slot_prices_tomorrow,
-            pv_hourly_kwh=_synthesize_pv_hourly(forecast_total),
+            pv_hourly_kwh_tomorrow = _synthesize_pv_for(state, state.pv_forecast_tomorrow)
+        # replace(), not a hand-listed EMSState(...): the hand-listed copy
+        # dropped every field it did not name — predicted_soc_pct among them,
+        # which silently switched the consumption-deviation correction off on
+        # every install whose forecast has no hourly breakdown.
+        state = replace(
+            state,
+            pv_hourly_kwh=_synthesize_pv_for(state, forecast_total),
             pv_hourly_kwh_tomorrow=pv_hourly_kwh_tomorrow,
             pv_forecast_remaining=forecast_remaining,
             pv_forecast_today=forecast_total,
-            pv_forecast_tomorrow=state.pv_forecast_tomorrow,
-            pv_actual_today_kwh=state.pv_actual_today_kwh,
-            consumption_hourly_kwh=state.consumption_hourly_kwh,
-            previous_pv_confidence=state.previous_pv_confidence,
-            last_modbus_read_ts=state.last_modbus_read_ts,
-            pv_fallback_today_kwh=state.pv_fallback_today_kwh,
-            current_hour=state.current_hour,
-            current_minute=state.current_minute,
         )
         if used_fallback:
             _LOGGER.warning(
@@ -2527,7 +2636,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             and state.pv_forecast_tomorrow and state.pv_forecast_tomorrow > 0):
         state = replace(
             state,
-            pv_hourly_kwh_tomorrow=_synthesize_pv_hourly(state.pv_forecast_tomorrow),
+            pv_hourly_kwh_tomorrow=_synthesize_pv_for(state, state.pv_forecast_tomorrow),
         )
 
     battery_soc = state.battery_soc_pct
@@ -2660,53 +2769,71 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     # Schedule flexible loads into cheap / PV-surplus slots
     active_loads = [ld for ld in config.flexible_loads if ld.enabled]
     if active_loads:
-        cons_per_hour = config.consumption_est_kwh / 24.0
-        pv_surplus_set = set()
-        if state.pv_hourly_kwh:
-            for slot_idx, _ in remaining:
-                hr = int((slot_idx * minutes_per_slot) / 60) % 24
-                pv_hr = state.pv_hourly_kwh.get(hr, 0.0)
-                if pv_hr > cons_per_hour:
-                    pv_surplus_set.add(slot_idx)
+        flex_conf = _calculate_pv_confidence(
+            state.pv_hourly_kwh, state.pv_actual_today_kwh,
+            state.current_hour, state.current_minute,
+            previous_confidence=state.previous_pv_confidence,
+        )
+        pv_surplus_kw = _flex_pv_surplus_kw(
+            [i for i, _ in remaining], minutes_per_slot, state.pv_hourly_kwh,
+            state.consumption_hourly_kwh, config.consumption_est_kwh, flex_conf,
+        )
         # Flex loads need a BUY-side cheapness threshold.  result.price_threshold
         # is the max charge price in from_grid/both-with-charges, but the MIN
         # SELL price in to_grid (and both without charges) — using that would
         # switch loads on for most of the day, including expensive slots.
+        # With no charge slot there is deliberately NO cheap threshold: a load
+        # run in a "cheap" slot the battery is not charging in is served by the
+        # battery (self-use), which is the drain #218 measured.
         charge_prices = [p for i, p in remaining
                          if result.scheduled_slots.get(i) == "charge"]
         flex_buy_threshold = max(charge_prices) if charge_prices else None
+        floor_pct = config.battery_discharge_min_pct + 1.0
+        grid_fed = {i for i, _ in remaining if result.scheduled_slots.get(i) == "charge"}
+        traj = result.soc_trajectory or []
+        grid_fed |= {i for i, _ in remaining
+                     if i < len(traj) and traj[i] is not None and traj[i] <= floor_pct}
         result.load_slots = _schedule_flexible_loads(
             config.flexible_loads,
             remaining,
             result.scheduled_slots,
             flex_buy_threshold,
-            pv_surplus_set,
-            config.ev_charge_strategy,
+            ev_charge_strategy=config.ev_charge_strategy,
+            pv_surplus_kw=pv_surplus_kw,
+            currents_out=result.load_currents,
+            grid_fed_slots=grid_fed,
         )
 
-        # Tomorrow's flex load schedule (same strategy, tomorrow's data)
+        # Tomorrow's flex load schedule (same strategy, tomorrow's data).
+        # Today's confidence says nothing about tomorrow, so the forecast
+        # stands as given.
         if state.slot_prices_tomorrow:
             tmr_remaining = list(enumerate(state.slot_prices_tomorrow))
-            tmr_pv_surplus = set()
-            pv_tmr = state.pv_hourly_kwh_tomorrow or {}
-            if pv_tmr:
-                for slot_idx, _ in tmr_remaining:
-                    hr = int((slot_idx * minutes_per_slot) / 60) % 24
-                    pv_hr = pv_tmr.get(hr, 0.0)
-                    if pv_hr > cons_per_hour:
-                        tmr_pv_surplus.add(slot_idx)
+            tmr_surplus_kw = _flex_pv_surplus_kw(
+                [i for i, _ in tmr_remaining], minutes_per_slot,
+                state.pv_hourly_kwh_tomorrow, state.consumption_hourly_kwh,
+                config.consumption_est_kwh,
+            )
             tmr_charge_prices = [
                 p for i, p in tmr_remaining
                 if result.tomorrow_scheduled_slots.get(i) == "charge"
             ]
             tmr_threshold = max(tmr_charge_prices) if tmr_charge_prices else flex_buy_threshold
+            tmr_traj = result.tomorrow_soc_trajectory or []
+            tmr_grid_fed = {i for i, _ in tmr_remaining
+                            if result.tomorrow_scheduled_slots.get(i) == "charge"}
+            tmr_grid_fed |= {i for i, _ in tmr_remaining
+                             if i < len(tmr_traj) and tmr_traj[i] is not None
+                             and tmr_traj[i] <= floor_pct}
             result.tomorrow_load_slots = _schedule_flexible_loads(
                 config.flexible_loads,
                 tmr_remaining,
                 result.tomorrow_scheduled_slots,
                 tmr_threshold,
-                tmr_pv_surplus,
-                config.ev_charge_strategy,
+                ev_charge_strategy=config.ev_charge_strategy,
+                pv_surplus_kw=tmr_surplus_kw,
+                currents_out=result.tomorrow_load_currents,
+                grid_fed_slots=tmr_grid_fed,
             )
 
     return result

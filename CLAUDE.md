@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **701**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **724**) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -151,7 +151,7 @@ custom_components/ha_felicity/
 tests/
 ├── conftest.py              # Shared HA-free bootstrap: stubs HA/pymodbus, loads the
 │                            #   REAL const.py (never a hand-typed replica — see below)
-├── test_ems.py              # 268 tests for the pure EMS algorithm
+├── test_ems.py              # 289 tests for the pure EMS algorithm
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
@@ -1487,11 +1487,21 @@ negative-price / PV-surplus slots as the battery, but they don't affect the
 battery schedule itself.  They're additive consumption.
 
 **Scheduling**: `_schedule_flexible_loads()` in `ems.py` activates loads
-during:
-- Slots where price ≤ threshold (cheap)
+during (Oct 2026, issue #218 — see Known Issues 10 / 8j):
+- Battery charge slots (the grid feeds both)
+- Cheap slots the GRID feeds — price ≤ the dearest charge price AND the battery
+  is charging there or planned at its floor (`grid_fed_slots`).  A cheap slot
+  the battery is not charging in would be served by the battery (self-use).
 - Negative-price slots
-- PV-surplus slots (hourly PV > hourly consumption)
-- Battery charge slots (already identified as cheap)
+- PV-surplus slots that FIT the load: `_flex_pv_surplus_kw` = forecast PV ×
+  today's confidence − the hourly consumption PROFILE, and the slot counts only
+  when that covers the load's `min_power_kw` (lowest current step, else its
+  running power).  A stepped charger gets the step that fits
+  (`ScheduleResult.load_currents`); the coordinator applies it per slot, and a
+  raise must pass the same 95 %-of-limit test a shed load's return uses
+  (`_ev_current_raise_fits`) — without it, each slot boundary re-raised a
+  charger safe power had stepped down (a 20 A spike every 15 min on an 18 A
+  limit, caught by `test_grid_current_limit_holds_with_a_current_controlled_ev`).
 
 **Actuation**: `coordinator._actuate_flex_loads()` runs every 10s cycle,
 turning loads on/off via `hass.services.async_call` (switch.turn_on/off).
@@ -2020,6 +2030,11 @@ own simulation only for live slider previews.
 The confidence factor can drop to 0.1 early in the day on partially cloudy mornings, causing excessive grid charging. It doesn't recover when clouds clear.
 
 ### 4. Consumption Estimate Sensitivity — PARTLY FIXED
+
+⚠️ **Until Oct 2026 the hourly profile this section relies on was always FLAT
+in the field** (recorder parsing bug, Known Issue 8j) — the profile-aware
+behaviour below was correct code fed a flat input.  Fixed; check
+`input_sources.consumption_profile` reads `history` on an install.
 The SOC trajectory (`_project_soc_trajectory`) uses the 7-day **hourly**
 consumption profile (`consumption_hourly_kwh`) when available, so it handles
 non-flat days (evening peaks, daytime EV charging) accurately.
@@ -2076,7 +2091,10 @@ Felicity firmware bug).  Three-tier fallback in `pv_actual_today_kwh`:
 
 ### 7. Forecast.Solar `wh_hours` date handling
 *(Oct 2026: the same filter was missing from `pv_forecast_remaining` — it
-summed every future hour, tomorrow included — see 8g item 4.)*
+summed every future hour, tomorrow included — see 8g item 4.  Also Oct 2026:
+`wh_period` (Open-Meteo) and Solcast's `detailedHourly` / `detailedForecast`
+lists are parsed too, through the same date filter, and offset-aware times
+are converted to local — see 8j.)*
 `_retrieve_pv_forecast` now filters `wh_hours` entries by today's date before
 bucketing them into `pv_hourly_kwh[hour]`. Without that filter, a multi-day
 forecast would sum today's + tomorrow's + day-after's values into the same
@@ -2585,6 +2603,56 @@ The harness gained a shared `storage` dict (pass the same one to a second
 `async_create_task`, a yield between polls (a store save scheduled in a tick
 never ran before), and `l1_load_kw` — a one-phase house load on L1.
 
+### 8j. The plan ran on fabricated inputs — FIXED (Oct 2026, issue #218)
+
+Owner's analysis of a live install (60 kWh, self_sufficiency, 8 kW, 18 A, ten
+days of history): charge timing was good, but the planner silently used made-up
+consumption and solar data, and the EV paid for it.  Five defects:
+
+1. **The hourly consumption profile was always flat** (see the data path under
+   C): `start.hour` on a float, swallowed.  Also UTC day boundaries, a
+   `> 100` Wh/kWh guess, and the midnight bookkeeping recording under the NEW
+   day's date and querying the hours of a day that had just begun — so even a
+   fixed parser returned nothing, and a daily meter already reset to 0 left no
+   daily entry.  Everything "profile-aware" (Known Issue 4's reserve, the
+   trajectory, last week's tomorrow-need fix in 8i) had only ever run on the
+   flat average outside tests.  Fixed + 7-day backfill at startup.  ⚠️ This
+   changes plans for every install the day it lands — that is the point, but
+   it is a behaviour change, not a refactor.
+2. **Only `wh_hours` was parsed.**  Open-Meteo Solar Forecast's `wh_period`
+   and Solcast's `detailedHourly` (a LIST — the old code looked it up but
+   required a dict) fell to the synthetic curve; offset-aware timestamps had
+   the offset stripped.  `_forecast_points` handles all four attributes;
+   tomorrow's hours are also read from the tomorrow entity.
+3. **The synthetic curve was 06:00–20:00 in every season.**  Now
+   `sun.sun` → `EMSState.sunrise_hour/sunset_hour` → `_synthesize_pv_for`
+   (fractional hours; integer bounds give the old curve exactly).  The card's
+   `_synthPvHourly` mirrors it from `sim_params`.  Because `_sunset_sunrise_hours`
+   derives the night from the PV curve, this also lengthens the October night
+   the reserve covers (10 h → ~13 h).
+4. **EV solar runs drained the battery** — Known Issue 10, now mostly fixed.
+5. **Nothing showed any of it** → `input_sources` + amber card chip.
+
+Side find: the synthetic-PV rebuild in `calculate_schedule` built a NEW
+`EMSState(...)` listing fields by hand and dropped the rest —
+`predicted_soc_pct`, so C7's deviation correction was off on every install
+without an hourly forecast (`sunrise_hour` would have been dropped next).  Now
+`dataclasses.replace`.  **Prefer `replace` whenever a dataclass is "copied with
+changes" — a hand-listed copy is a second definition that drifts.**
+
+Pinned by `TestConsumptionProfileFromRecorder`, `TestForecastParsing`
+(test_coordinator), `TestSyntheticPvSunWindow`, `TestFlexLoadSurplusFitsTheLoad`
+(test_ems), `test_a_solar_ev_runs_only_where_the_sun_covers_it` (replay) and the
+`ev_issue218_*` scenarios.  Mutation-checked: float `start` (4 fail), UTC day
+cut, stripped offset, dropped `predicted_soc_pct`, surplus ignoring the load's
+power (replay + 2 scenarios), planned current not applied (replay), profile
+ignored in the surplus.
+
+**Not done (deliberately):** `highspy` as a requirement (a failed pip install
+would stop the whole integration loading; `_pick_solver` already uses HiGHS
+when present), and grid-limit budgeting at plan time (v1.3.12's one-step
+battery cut handles the stacking; check the history after 11 Oct first).
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -2603,7 +2671,21 @@ changes to 8451 revert BY DESIGN until the EMS is turned off.  After updating,
 the old `select.*_working_mode` entity shows as orphaned ("no longer
 provided") and can be removed; the new `sensor.*_working_mode` replaces it.
 
-### 10. Flexible loads are invisible to the battery plan — OPEN (Sept 2026)
+### 10. Flexible loads are invisible to the battery plan — MOSTLY FIXED (Oct 2026)
+
+**Status (Oct 2026, issue #218):** problems 1-3 below are fixed — the surplus
+test is per load (covers its minimum power), uses the hourly profile and the
+confidence-scaled PV, and a stepped charger is set to the step the surplus
+covers.  Problem 4 is resolved the other way round: a cheap slot only runs a
+load where the GRID feeds it (battery charging, or planned at its floor) — with
+no charge slot there is still no cheap threshold, on purpose, because in
+self-use the battery would serve the load.  The scenario now asserts < 0.5 kWh
+of the load's draw uncovered by sun (it schedules nothing at 16:00).  **Still
+open**: the battery plan does not include the load (it no longer drains the
+battery in solar or cheap runs, so the gap is mostly gone), and there is no
+LIVE guard that switches a solar-only charger off when the battery or grid
+feeds it — that needs a battery-power accessor whose sign and scale are
+measured per model, not guessed.  The text below is the original finding.
 
 Customer card: sunny day, 72 kWh pack at **83%**, reserve met, `0 charge /
 0.0 kWh planned / "Battery reserve is met — no charging needed"` — yet a 3.7 kW
@@ -2723,17 +2805,23 @@ Hourly consumption profiles from 7-day HA recorder history. `EMSState.consumptio
    `consumption_override_entity` if set, else an inverter load-energy sensor
    (`homeload_day_cost_energy` / `load_day_cost_energy` / …) resolved via the
    **entity registry** by the exact `unique_id` (`{entry_id}_{key}`).
-2. `_query_hourly_from_history` — HA recorder `statistics_during_period`
-   ("change" per hour) → 24 hourly buckets.  Falls back to a FLAT daily/24
-   distribution when no statistics exist.
-3. `_record_hourly_consumption` (midnight) appends to a 7-day
-   `_hourly_consumption_history`; `_calculate_hourly_profile` averages it into
-   `_hourly_consumption_profile`.  Persisted in the consumption Store and
-   **recomputed on startup** from the loaded history (no cold-start gap).
-4. Exposed as `consumption_hourly_profile` in `schedule_status` attributes —
-   inspect it to confirm the shape (low-night/high-day for EV loads).  A FLAT
-   profile (all hours equal) means the history query fell back (no stats or,
-   pre-fix, an unresolved entity).
+2. `_query_hourly_from_history(entity, day)` — HA recorder
+   `statistics_during_period` ("change" per hour, `units={"energy": "kWh"}`)
+   for one LOCAL day → `_hourly_from_statistics` bins rows by local hour.
+   ⚠️ **`start` is a float UTC timestamp** in the recorder API; until Oct 2026
+   the code called `.hour` on it, the broad except swallowed the error, and
+   EVERY install's profile was flat (issue #218 — see 8j).
+3. `_record_daily_consumption` (first tick after midnight) records
+   **yesterday** — from the recorder when it has ≥ `MIN_HOURS_FOR_HISTORY_DAY`
+   (20) hours, else the day register spread flat — via
+   `_store_consumption_day`, which keeps 7 days of `_hourly_consumption_history`
+   (each entry carries `source`: `history` / `flat`) and the daily history.
+   `_backfill_consumption_history` rebuilds the last 7 days from the recorder
+   once after startup (retried every 5 min until the entity resolves).
+   `_calculate_hourly_profile` averages only `history` days when any exist.
+4. Exposed as `consumption_hourly_profile` in `sim_params`, and its source as
+   `input_sources.consumption_profile` (`history` / `partial` / `flat` /
+   `none`) — the card shows an amber chip for flat/partial.
 
 **Registry-lookup fix (July 2026)**: `_resolve_consumption_entity` previously
 GUESSED the entity_id as `sensor.{title}_{key}`.  HA derives the entity_id
@@ -3144,7 +3232,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**701 tests**). `test_ems.py` (268) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**724 tests**). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -3256,7 +3344,7 @@ T-REX-25 — and (8g) selling, the anti-conflict guard, PV days, forecast vs
 reality, negative prices — and (8h) safe power against real per-phase grid
 current with a flexible load switched on/off and current-stepped — and (8i)
 restarts with a load running or a boost active, and a shed charger on its own
-phase.  **Still not covered**: inverter power limits, the consumption-deviation
+phase — and (8j) a stepped charger following the sun.  **Still not covered**: inverter power limits, the consumption-deviation
 correction, EV boost's max-current stepping, and the IVGM/T-REX-5 control paths.  Extend the harness rather than writing another stub-level test.
 
 ### Lint & CI

@@ -420,6 +420,7 @@ class FakeHass:
         self.extra_states: dict[str, _State] = {}
         self.switch_on: dict[str, bool] = {}
         self.numbers: dict[str, float] = {}
+        self.number_history: dict[str, list[float]] = {}   # every value ever set
         self.services = MagicMock()
         self.services.async_call = self._service_call
         self.config_entries = MagicMock()
@@ -439,6 +440,7 @@ class FakeHass:
             self.switch_on[entity] = service == "turn_on"
         if service == "set_value" and entity:
             self.numbers[entity] = float(data["value"])
+            self.number_history.setdefault(entity, []).append(float(data["value"]))
 
     def async_create_task(self, coro, *_args, **_kw):
         return asyncio.get_running_loop().create_task(coro)
@@ -521,6 +523,7 @@ class Tick:
     pv_kw: float = 0.0
     grid_kw: float = 0.0                  # + import, - export
     max_amps: float = 0.0                 # highest grid phase current
+    switched_kw: float = 0.0              # what the switched (flexible) loads drew
 
 
 @dataclass
@@ -622,7 +625,8 @@ class DayReplay:
             self.ticks.append(Tick(now, round(self.inverter.soc_pct, 2),
                                    self.coordinator._current_energy_state, planned, act,
                                    price, pv, round(self.inverter.last_grid_kw, 3),
-                                   round(max(self.inverter.phase_amps(switched, l1)), 1)))
+                                   round(max(self.inverter.phase_amps(switched, l1)), 1),
+                                   round(switched, 3)))
             self.clock.now = now + timedelta(seconds=step_s)
 
     # -- reading the result --------------------------------------------------

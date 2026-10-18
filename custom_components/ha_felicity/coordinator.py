@@ -81,6 +81,13 @@ FLAKY_MIN_REGISTERS = 9
 # with the statistics needed to diagnose it.
 SLOW_POLL_FACTOR = 2
 
+# Consumption history (the hourly profile behind the reserve and trajectory).
+# A day counts as real only when the recorder has statistics for most of its
+# hours; fewer means the recorder was down and the day would bend the shape.
+CONSUMPTION_HISTORY_DAYS = 7
+MIN_HOURS_FOR_HISTORY_DAY = 20
+CONSUMPTION_BACKFILL_RETRY_S = 300
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -175,6 +182,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.pv_forecast_tomorrow: float | None = None
         self.pv_hourly_kwh: dict[int, float] = {}  # {hour: kwh} from forecast entity
         self.pv_hourly_kwh_tomorrow: dict[int, float] = {}  # tomorrow's hourly PV
+        # Which forecast attribute the hourly curves came from ("wh_hours",
+        # "wh_period", ...), "synthetic" when only a daily total exists, or
+        # "none".  Shown on the card: a synthetic curve is a guess.
+        self.pv_curve_source: str = "none"
+        self.pv_curve_source_tomorrow: str = "none"
+        self.sunrise_hour: float | None = None
+        self.sunset_hour: float | None = None
         self.scheduled_slots: dict[int, str] = {}  # {slot_idx: "charge" | "discharge"}
         self.slot_overrides: dict = config_entry.options.get("slot_overrides", {})  # manual overrides from card, persisted in entry.options
         self.cheap_slots_remaining: int = 0
@@ -197,7 +211,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._yesterday_deficit: float = 0.0
         # Hourly consumption profiles: {hour: avg_kwh} from 7-day history
         self._hourly_consumption_profile: dict[int, float] = {}
-        self._hourly_consumption_history: list = []  # [{date, hours: {0: kwh, 1: kwh, ...}}]
+        self._hourly_consumption_history: list = []  # [{date, hours: {0: kwh, 1: kwh, ...}, source}]
+        # The recorder backfill (see _backfill_consumption_history) runs once
+        # the consumption entity can be resolved; retried every few minutes
+        # until then.
+        self._consumption_backfilled = False
+        self._consumption_backfill_attempt_ts = 0.0
+        self.consumption_entity_used: str | None = None
         self.self_consumption_reserve: float = 0.0
         self._reserve_target_pct: float = 0.0  # computed reserve target as battery %
         self._last_net_pv: float = 0.0
@@ -276,6 +296,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._last_phase_currents: list[float] | None = None
         self._flex_load_current_step: int | None = None
         self._flex_load_scheduled: dict[int, dict[int, bool]] = {}  # from ScheduleResult.load_slots
+        # Planned EV current per slot (ScheduleResult.load_currents) and the
+        # slot each load's planned current was last applied in.
+        self._flex_load_currents: dict[int, dict[int, int]] = {}
+        self._flex_load_current_slot: dict[int, int] = {}
         self._flex_load_scheduled_tomorrow: dict[int, dict[int, bool]] = {}
         self._ev_boost_until_ts: float = 0.0  # epoch ts — EV override active when now < this
         # Max current applied for the current boost session.  Applied once
@@ -697,11 +721,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
     def _retrieve_pv_forecast(self) -> None:
         """Retrieve PV production forecast from configured entity."""
+        self._retrieve_sun_times()
+        self.pv_curve_source = "none"
+        self.pv_curve_source_tomorrow = "none"
         if not self.forecast_entity:
             self.pv_forecast_today = None
             self.pv_forecast_remaining = None
             self.pv_forecast_tomorrow = None
             self.pv_hourly_kwh = {}
+            self.pv_hourly_kwh_tomorrow = {}
             return
 
         state = self.hass.states.get(self.forecast_entity)
@@ -709,6 +737,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.pv_forecast_today = None
             self.pv_forecast_remaining = None
             self.pv_hourly_kwh = {}
+            self.pv_hourly_kwh_tomorrow = {}
             return
 
         try:
@@ -717,39 +746,58 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self.pv_forecast_today = None
             self.pv_forecast_remaining = None
             self.pv_hourly_kwh = {}
+            self.pv_hourly_kwh_tomorrow = {}
             return
 
         now = datetime.now()
         today_date = now.date()
         tomorrow_date = today_date + timedelta(days=1)
-        attrs = state.attributes or {}
         remaining = None
         hourly_kwh: dict[int, float] = {}
         hourly_kwh_tomorrow: dict[int, float] = {}
 
-        # Try Forecast.Solar (wh_hours) or Solcast (detailedHourly) hourly breakdown
-        wh_data = attrs.get("wh_hours") or attrs.get("detailedHourly")
-        if isinstance(wh_data, dict):
-            try:
-                remaining_wh = 0.0
-                for ts_str, value in wh_data.items():
-                    ts = self._parse_forecast_time(ts_str)
-                    if ts:
-                        wh_val = float(value)
-                        if ts.date() == today_date:
-                            hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + wh_val / 1000.0
-                            # TODAY's remaining only.  wh_hours spans several
-                            # days; summing every future hour counted all of
-                            # tomorrow's sun as still to come today (~2x), so
-                            # the EMS under-bought on a day the sun fell short
-                            # (found by the day-replay harness).
-                            if ts >= now:
-                                remaining_wh += wh_val
-                        elif ts.date() == tomorrow_date:
-                            hourly_kwh_tomorrow[ts.hour] = hourly_kwh_tomorrow.get(ts.hour, 0.0) + wh_val / 1000.0
-                remaining = remaining_wh / 1000.0
-            except Exception as err:
-                _LOGGER.debug("Could not parse forecast hourly data: %s", err)
+        # Hourly breakdown: Forecast.Solar (wh_hours), Open-Meteo Solar
+        # Forecast (wh_period), Solcast (detailedHourly / detailedForecast).
+        attr_name, points = self._forecast_points(state.attributes or {})
+        if points:
+            remaining_kwh = 0.0
+            for ts, kwh in points:
+                if ts.date() == today_date:
+                    hourly_kwh[ts.hour] = hourly_kwh.get(ts.hour, 0.0) + kwh
+                    # TODAY's remaining only.  wh_hours spans several
+                    # days; summing every future hour counted all of
+                    # tomorrow's sun as still to come today (~2x), so
+                    # the EMS under-bought on a day the sun fell short
+                    # (found by the day-replay harness).
+                    if ts >= now:
+                        remaining_kwh += kwh
+                elif ts.date() == tomorrow_date:
+                    hourly_kwh_tomorrow[ts.hour] = hourly_kwh_tomorrow.get(ts.hour, 0.0) + kwh
+            if hourly_kwh:
+                remaining = remaining_kwh
+                self.pv_curve_source = attr_name
+            if hourly_kwh_tomorrow:
+                self.pv_curve_source_tomorrow = attr_name
+
+        # Tomorrow forecast: try separate entity
+        self.pv_forecast_tomorrow = None
+        tomorrow_entity = self.config_entry.options.get("forecast_entity_tomorrow")
+        if tomorrow_entity:
+            t_state = self.hass.states.get(tomorrow_entity)
+            if t_state and t_state.state not in ("unknown", "unavailable"):
+                try:
+                    self.pv_forecast_tomorrow = float(t_state.state)
+                except (ValueError, TypeError):
+                    pass
+                # Open-Meteo puts tomorrow's hours on the TOMORROW entity
+                # only; the today entity's attribute stops at midnight.
+                if not hourly_kwh_tomorrow:
+                    t_name, t_points = self._forecast_points(t_state.attributes or {})
+                    for ts, kwh in t_points:
+                        if ts.date() == tomorrow_date:
+                            hourly_kwh_tomorrow[ts.hour] = hourly_kwh_tomorrow.get(ts.hour, 0.0) + kwh
+                    if hourly_kwh_tomorrow:
+                        self.pv_curve_source_tomorrow = t_name
 
         self.pv_hourly_kwh = hourly_kwh
         self.pv_hourly_kwh_tomorrow = hourly_kwh_tomorrow
@@ -770,42 +818,116 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 )
                 self.pv_forecast_today = round(hourly_total_today, 2)
 
+        if not hourly_kwh and self.pv_forecast_today:
+            self.pv_curve_source = "synthetic"
+        if not hourly_kwh_tomorrow and self.pv_forecast_tomorrow:
+            self.pv_curve_source_tomorrow = "synthetic"
+
         # Fallback: estimate remaining PV using solar bell curve
         if remaining is None and self.pv_forecast_today:
-            remaining = self._estimate_remaining_pv(self.pv_forecast_today, now)
+            remaining = self._estimate_remaining_pv(
+                self.pv_forecast_today, now, self.sunrise_hour, self.sunset_hour)
 
         self.pv_forecast_remaining = round(remaining, 2) if remaining is not None else None
 
-        # Tomorrow forecast: try separate entity
-        self.pv_forecast_tomorrow = None
-        tomorrow_entity = self.config_entry.options.get("forecast_entity_tomorrow")
-        if tomorrow_entity:
-            t_state = self.hass.states.get(tomorrow_entity)
-            if t_state and t_state.state not in ("unknown", "unavailable"):
-                try:
-                    self.pv_forecast_tomorrow = float(t_state.state)
-                except (ValueError, TypeError):
-                    pass
+    # Forecast attributes holding an hourly (or finer) breakdown, in order of
+    # preference.  A dict maps a timestamp to Wh; a list holds Solcast
+    # {period_start, pv_estimate (kW)} entries.
+    _FORECAST_HOURLY_ATTRS: ClassVar[tuple[str, ...]] = (
+        "wh_hours", "wh_period", "detailedHourly", "detailedForecast",
+    )
+
+    @classmethod
+    def _forecast_points(cls, attrs) -> tuple[str, list[tuple[datetime, float]]]:
+        """(attribute used, [(local start, kWh)]) from a forecast entity's attributes.
+
+        Only ``wh_hours`` used to be read (``detailedHourly`` was looked up but
+        only accepted as a dict, which Solcast's list never is), so Open-Meteo
+        Solar Forecast and Solcast installs planned on the synthetic curve.
+        """
+        for name in cls._FORECAST_HOURLY_ATTRS:
+            data = attrs.get(name)
+            points: list[tuple[datetime, float]] = []
+            try:
+                if isinstance(data, dict):
+                    for ts_str, value in data.items():
+                        ts = cls._parse_forecast_time(ts_str)
+                        if ts is not None and value is not None:
+                            points.append((ts, float(value) / 1000.0))
+                elif isinstance(data, list):
+                    # Solcast: kW averaged over the period; detailedForecast
+                    # is half-hourly, detailedHourly hourly.
+                    period_h = 0.5 if name == "detailedForecast" else 1.0
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        ts = cls._parse_forecast_time(item.get("period_start"))
+                        kw = item.get("pv_estimate")
+                        if ts is not None and kw is not None:
+                            points.append((ts, float(kw) * period_h))
+            except (ValueError, TypeError) as err:
+                _LOGGER.debug("Could not parse forecast attribute %s: %s", name, err)
+                points = []
+            if points:
+                return name, points
+        return "", []
+
+    def _retrieve_sun_times(self) -> None:
+        """Today's sunrise / sunset (local hours) from ``sun.sun``, if available.
+
+        Feeds the synthetic PV curve used when the forecast has no hourly
+        breakdown: a fixed 06:00-20:00 window put PV into the dark hours of an
+        October morning and evening.  The next rising/setting differ from
+        today's by a minute or two, which the curve does not notice.
+        """
+        self.sunrise_hour = None
+        self.sunset_hour = None
+        try:
+            sun = self.hass.states.get("sun.sun")
+            attrs = getattr(sun, "attributes", None)
+            if not isinstance(attrs, dict):
+                return
+            rising = self._parse_forecast_time(attrs.get("next_rising"))
+            setting = self._parse_forecast_time(attrs.get("next_setting"))
+            if rising is None or setting is None:
+                return
+            sunrise = rising.hour + rising.minute / 60.0
+            sunset = setting.hour + setting.minute / 60.0
+            if 0 < sunrise < sunset < 24:
+                self.sunrise_hour = round(sunrise, 2)
+                self.sunset_hour = round(sunset, 2)
+        except Exception as err:   # never let the sun break a poll
+            _LOGGER.debug("Could not read sun.sun: %s", err)
 
     @staticmethod
-    def _parse_forecast_time(time_str: str):
-        """Try to parse a forecast timestamp string to naive datetime."""
+    def _parse_forecast_time(value):
+        """Parse a forecast timestamp to a NAIVE LOCAL datetime.
+
+        An offset-aware timestamp is converted to local time first.  It used to
+        have its offset stripped, so a forecast published in UTC landed 1-2 h
+        early.  Naive values are taken as local, like datetime.now().
+        """
         try:
-            return datetime.fromisoformat(str(time_str)).replace(tzinfo=None)
+            ts = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
         except (ValueError, TypeError):
             return None
+        if ts.tzinfo is not None:
+            ts = ts.astimezone().replace(tzinfo=None)
+        return ts
 
     @staticmethod
-    def _estimate_remaining_pv(total_kwh: float, now: datetime) -> float:
+    def _estimate_remaining_pv(total_kwh: float, now: datetime,
+                               sunrise: float | None = None,
+                               sunset: float | None = None) -> float:
         """Estimate remaining PV production using a solar bell curve."""
-        sunrise, sunset = 6, 20
-        if now.hour >= sunset:
+        sunrise = 6.0 if sunrise is None else sunrise
+        sunset = 20.0 if sunset is None else sunset
+        now_h = now.hour + now.minute / 60.0
+        if now_h >= sunset:
             return 0.0
-        if now.hour < sunrise:
+        if now_h < sunrise:
             return total_kwh
-        total_minutes = (sunset - sunrise) * 60
-        elapsed = (now.hour - sunrise) * 60 + now.minute
-        fraction = max(0.0, min(1.0, elapsed / total_minutes))
+        fraction = max(0.0, min(1.0, (now_h - sunrise) / (sunset - sunrise)))
         produced_fraction = (1 - math.cos(math.pi * fraction)) / 2
         return round(total_kwh * (1 - produced_fraction), 2)
 
@@ -1111,6 +1233,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             pv_fallback_today_kwh=pv_fallback,
             current_hour=now.hour,
             current_minute=now.minute,
+            sunrise_hour=self.sunrise_hour,
+            sunset_hour=self.sunset_hour,
             predicted_soc_pct=predicted_soc,
         )
 
@@ -1272,7 +1396,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if forecast_total and forecast_total > 0:
                     traj_state = dataclasses.replace(
                         state,
-                        pv_hourly_kwh=ems_module._synthesize_pv_hourly(forecast_total),
+                        pv_hourly_kwh=ems_module._synthesize_pv_for(state, forecast_total),
                     )
             self._backend_soc_trajectory = ems_module._compute_scheduled_soc_trajectory(
                 self.slot_prices_today, num_slots_r, minutes_per_slot_r,
@@ -1284,6 +1408,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._tomorrow_scheduled_slots = result.tomorrow_scheduled_slots
         self._backend_soc_trajectory_tomorrow = result.tomorrow_soc_trajectory
         self._flex_load_scheduled = result.load_slots
+        self._flex_load_currents = result.load_currents or {}
         self._flex_load_scheduled_tomorrow = result.tomorrow_load_slots
 
         if result.price_threshold is not None:
@@ -1629,10 +1754,39 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if should_be_on != currently_on:
                     await self._set_flex_load(load_idx, should_be_on, load)
 
-                if should_be_on and load.is_ev_charger and not currently_on:
-                    await self._set_ev_charger_current(load, load.default_current)
+                if should_be_on and load.is_ev_charger:
+                    # The plan's current for this slot: in a slot the charger
+                    # runs for the sun alone, the step the forecast surplus
+                    # covers; otherwise its default.  Applied when it switches
+                    # on and once per slot after that — within a slot, safe
+                    # power's step-down has the last word.
+                    planned = self._flex_load_currents.get(load_idx, {}).get(slot_idx)
+                    new_slot = self._flex_load_current_slot.get(load_idx) != slot_idx
+                    if not currently_on:
+                        await self._set_ev_charger_current(load, planned or load.default_current)
+                    elif (new_slot and planned is not None
+                          and planned != self._flex_load_current_step
+                          and self._ev_current_raise_fits(load, planned)):
+                        await self._set_ev_charger_current(load, planned)
+                    self._flex_load_current_slot[load_idx] = slot_idx
             except Exception as err:
                 _LOGGER.error("Flex load '%s' actuation failed: %s", load.name, err)
+
+    def _ev_current_raise_fits(self, load, target_amps: int) -> bool:
+        """May the charger go to ``target_amps`` without crowding the grid limit?
+
+        Lowering always may.  Raising — a new slot's plan asking for more than
+        safe power left it at — only when the measured current on its phase
+        plus the extra amps stays under 95 % of the limit, the same test a shed
+        load's return uses.  Otherwise safe power steps it down and the next
+        slot raises it again: a spike every 15 minutes.
+        """
+        step = self._flex_load_current_step
+        if step is None or target_amps <= step:
+            return True
+        max_amps = self.config_entry.options.get("max_amperage_per_phase", 16)
+        current = self._current_on_load_phase(load, self._last_max_grid_current or 0.0)
+        return current + (target_amps - step) <= 0.95 * max_amps
 
     def _shed_load_waiting_to_fit(self, current: float, max_amps: float) -> bool:
         """Is a load that safe power shed waiting, and would it fit right now?"""
@@ -1908,6 +2062,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             previous_pv_confidence=self._last_pv_confidence,
             current_hour=now.hour,
             current_minute=now.minute,
+            sunrise_hour=self.sunrise_hour,
+            sunset_hour=self.sunset_hour,
         )
 
         info = ems_module.calculate_available_info(
@@ -1949,26 +2105,53 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self._consumption_store_loaded = True
 
     async def _record_daily_consumption(self) -> None:
-        """Record today's consumption and update 7-day rolling average.
+        """Record the day that just ended and update the 7-day averages.
 
-        Priority: override entity > inverter daily register > skip.
+        Runs on the first tick after midnight, so the day to record is
+        YESTERDAY.  It used to be stamped with the new day's date and to ask
+        the recorder for the hours of a day that had only just begun — which
+        returned nothing, so even a working statistics parser fell back to a
+        flat profile, and a daily meter that had already reset to 0 left the
+        weekly average with no entry at all.
+
+        Priority: the recorder's hourly statistics for yesterday (exact, and
+        the hourly shape comes with it) > the override entity / inverter day
+        register read now (the previous poll's value, i.e. yesterday's total)
+        spread flat over the day.
         """
         await self._init_consumption_store()
 
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        today_consumption = None
+        day = (datetime.now() - timedelta(days=1)).date()
+        day_str = day.strftime("%Y-%m-%d")
+
+        entity_id = self._resolve_consumption_entity()
+        if entity_id:
+            self.consumption_entity_used = entity_id
+            hourly = await self._query_hourly_from_history(entity_id, day)
+            if len(hourly) >= MIN_HOURS_FOR_HISTORY_DAY:
+                self._store_consumption_day(day_str, hourly, "history")
+                await self._save_consumption_store()
+                _LOGGER.info(
+                    "Recorded consumption for %s from the recorder: %.2f kWh "
+                    "(7-day avg: %.2f kWh)", day_str, sum(hourly.values()),
+                    self.weekly_avg_consumption or 0,
+                )
+                return
+
+        day_consumption = None
 
         # 1. Try override entity (P1 meter / utility meter / template sensor)
         if self.consumption_override_entity:
             state = self.hass.states.get(self.consumption_override_entity)
             if state and state.state not in ("unknown", "unavailable"):
                 try:
-                    today_consumption = float(state.state)
+                    day_consumption = float(state.state)
                 except (ValueError, TypeError):
                     pass
 
-        # 2. Try inverter daily energy registers
-        if today_consumption is None and self.data:
+        # 2. Try inverter daily energy registers (self.data is the last poll
+        #    before midnight, so it still holds yesterday's total)
+        if (day_consumption is None or day_consumption <= 0) and self.data:
             for key in ["daily_energy_consumed", "daily_load_energy", "total_load_energy_today",
                         "daily_consumption", "daily_energy_used",
                         "total_load_consumption_energy_day",
@@ -1978,32 +2161,42 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 val = self.data.get(key)
                 if val is not None and val > 0:
                     # Convert Wh to kWh if value seems to be in Wh (>100)
-                    today_consumption = val / 1000.0 if val > 100 else val
+                    day_consumption = val / 1000.0 if val > 100 else val
                     break
 
-        if today_consumption is None or today_consumption <= 0:
+        if day_consumption is None or day_consumption <= 0:
             _LOGGER.warning(
                 "No daily consumption data found — weekly average will remain unknown. "
                 "Configure a consumption_override_entity or check inverter registers."
             )
             return
 
-        # Remove existing entry for today (if any), then append
-        self._daily_consumption_history = [
-            entry for entry in self._daily_consumption_history
-            if entry["date"] != today_str
-        ]
-        self._daily_consumption_history.append({
-            "date": today_str,
-            "kwh": round(today_consumption, 2)
-        })
-        # Keep last 7 days
-        self._daily_consumption_history = self._daily_consumption_history[-7:]
+        per_hour = round(day_consumption / 24.0, 3)
+        self._store_consumption_day(day_str, {str(h): per_hour for h in range(24)}, "flat")
+        await self._save_consumption_store()
+        _LOGGER.info("Recorded daily consumption: %.2f kWh (7-day avg: %.2f kWh, "
+                     "no hourly statistics — flat profile for this day)",
+                     day_consumption, self.weekly_avg_consumption or 0)
 
-        # Record hourly breakdown from HA history
-        await self._record_hourly_consumption(today_str)
+    def _store_consumption_day(self, day_str: str, hourly: dict[str, float],
+                               source: str) -> None:
+        """Put one day's hourly breakdown (and its total) into the histories."""
+        total = round(sum(hourly.values()), 2)
+        self._hourly_consumption_history = sorted(
+            [e for e in self._hourly_consumption_history if e.get("date") != day_str]
+            + [{"date": day_str, "hours": hourly, "source": source}],
+            key=lambda e: e.get("date", ""),
+        )[-CONSUMPTION_HISTORY_DAYS:]
+        if total > 0:
+            self._daily_consumption_history = sorted(
+                [e for e in self._daily_consumption_history if e.get("date") != day_str]
+                + [{"date": day_str, "kwh": total}],
+                key=lambda e: e.get("date", ""),
+            )[-CONSUMPTION_HISTORY_DAYS:]
+        self._calculate_hourly_profile()
+        self._calculate_weekly_avg()
 
-        # Persist
+    async def _save_consumption_store(self) -> None:
         if self._consumption_store:
             await self._consumption_store.async_save({
                 "daily_history": self._daily_consumption_history,
@@ -2013,9 +2206,66 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 "battery_soh_factor": round(self._battery_soh_factor, 4),
             })
 
-        self._calculate_weekly_avg()
-        _LOGGER.info("Recorded daily consumption: %.2f kWh (7-day avg: %.2f kWh)",
-                         today_consumption, self.weekly_avg_consumption or 0)
+    async def _backfill_consumption_history(self) -> None:
+        """Rebuild the last 7 days from the recorder's hourly statistics.
+
+        Every stored day before this fix is FLAT: the statistics parser never
+        worked (see _hourly_from_statistics), so without a backfill a fixed
+        parser would take a week to replace them one midnight at a time.  The
+        recorder already holds the real hours, so read them now.  Days the
+        recorder cannot account for (fewer than MIN_HOURS_FOR_HISTORY_DAY
+        hours of statistics) keep whatever was stored.
+
+        Retried every CONSUMPTION_BACKFILL_RETRY_S until the consumption
+        entity resolves — right after a restart the inverter's own sensors
+        may not have a state yet.
+        """
+        now_ts = time.time()
+        if self._consumption_backfilled or now_ts - self._consumption_backfill_attempt_ts < CONSUMPTION_BACKFILL_RETRY_S:
+            return
+        self._consumption_backfill_attempt_ts = now_ts
+        entity_id = self._resolve_consumption_entity()
+        if not entity_id:
+            return
+        self._consumption_backfilled = True
+        self.consumption_entity_used = entity_id
+        today = datetime.now().date()
+        filled = 0
+        for back in range(CONSUMPTION_HISTORY_DAYS, 0, -1):
+            day = today - timedelta(days=back)
+            hourly = await self._query_hourly_from_history(entity_id, day)
+            if len(hourly) >= MIN_HOURS_FOR_HISTORY_DAY:
+                self._store_consumption_day(day.strftime("%Y-%m-%d"), hourly, "history")
+                filled += 1
+        if filled:
+            await self._save_consumption_store()
+            _LOGGER.info(
+                "Consumption profile rebuilt from %d day(s) of recorder statistics "
+                "for %s (7-day avg: %.2f kWh)", filled, entity_id,
+                self.weekly_avg_consumption or 0,
+            )
+        else:
+            _LOGGER.info(
+                "No hourly recorder statistics for %s — the consumption profile "
+                "stays flat until the recorder has some (does the sensor have a "
+                "state_class?)", entity_id,
+            )
+
+    @property
+    def consumption_profile_source(self) -> str:
+        """Where the hourly consumption profile comes from.
+
+        "history" — every stored day has real hourly statistics; "partial" —
+        some days do; "flat" — none do (daily totals spread evenly over 24 h);
+        "none" — no consumption history at all.
+        """
+        days = self._hourly_consumption_history
+        if not days:
+            return "none"
+        real = sum(1 for e in days if e.get("source") == "history")
+        if real == len(days):
+            return "history"
+        return "partial" if real else "flat"
 
     def _calculate_weekly_avg(self) -> None:
         """Calculate 7-day rolling average from consumption history."""
@@ -2101,39 +2351,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self._cycle_charged_kwh, self._cycle_discharged_kwh,
             )
 
-    async def _record_hourly_consumption(self, date_str: str) -> None:
-        """Record hourly consumption breakdown using HA recorder history.
-
-        Queries the consumption entity's history for the given date and bins
-        energy usage into 24 hourly buckets.  Falls back to flat distribution
-        from the daily total when history is unavailable.
-        """
-        hourly: dict[str, float] = {}  # str keys for JSON serialisation
-
-        entity_id = self._resolve_consumption_entity()
-        if entity_id:
-            hourly = await self._query_hourly_from_history(entity_id, date_str)
-
-        if not hourly:
-            # Fallback: distribute daily total evenly across 24 hours
-            today_entry = next(
-                (e for e in self._daily_consumption_history if e["date"] == date_str), None
-            )
-            if today_entry:
-                per_hour = round(today_entry["kwh"] / 24.0, 3)
-                hourly = {str(h): per_hour for h in range(24)}
-
-        if not hourly:
-            return
-
-        # Remove existing entry for this date
-        self._hourly_consumption_history = [
-            e for e in self._hourly_consumption_history if e["date"] != date_str
-        ]
-        self._hourly_consumption_history.append({"date": date_str, "hours": hourly})
-        self._hourly_consumption_history = self._hourly_consumption_history[-7:]
-        self._calculate_hourly_profile()
-
     def _resolve_consumption_entity(self) -> str | None:
         """Return the best entity_id to query for hourly consumption history.
 
@@ -2178,19 +2395,23 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 return eid
         return None
 
-    async def _query_hourly_from_history(self, entity_id: str, date_str: str) -> dict[str, float]:
-        """Query HA recorder for hourly energy breakdown on a given date."""
-        try:
+    async def _query_hourly_from_history(self, entity_id: str, day) -> dict[str, float]:
+        """Hourly consumption (kWh) for one LOCAL calendar day, from the recorder.
 
+        Returns {"<hour>": kWh} for each hour the recorder has statistics for;
+        {} when it has none or the query fails.
+        """
+        try:
             from homeassistant.components.recorder import get_instance
             from homeassistant.components.recorder.statistics import (
                 statistics_during_period,
             )
 
-            start = datetime.strptime(date_str, "%Y-%m-%d").replace(
-                hour=0, minute=0, second=0, tzinfo=UTC
-            )
-            end = start + timedelta(hours=24)
+            # Local midnight to local midnight (aware, so a DST day spans 23
+            # or 25 hours).  The day used to be cut at UTC midnight, which put
+            # 22:00-24:00 of the previous evening into this day's hours 0-1.
+            start = datetime.combine(day, datetime.min.time()).astimezone()
+            end = datetime.combine(day + timedelta(days=1), datetime.min.time()).astimezone()
 
             stats = await get_instance(self.hass).async_add_executor_job(
                 statistics_during_period,
@@ -2199,26 +2420,46 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 end,
                 {entity_id},
                 "hour",
-                None,
+                # Ask the recorder for kWh: it converts from the statistic's
+                # own unit, so a Wh meter no longer depends on a guess.
+                {"energy": "kWh"},
                 {"change"},
             )
-
-            if entity_id not in stats or not stats[entity_id]:
-                return {}
-
-            hourly: dict[str, float] = {}
-            for entry in stats[entity_id]:
-                hour = entry["start"].hour
-                change = entry.get("change")
-                if change is not None and change > 0:
-                    # Convert Wh to kWh if needed
-                    kwh = change / 1000.0 if change > 100 else change
-                    hourly[str(hour)] = round(kwh, 3)
-
-            return hourly
+            return self._hourly_from_statistics(stats.get(entity_id) or [])
         except Exception as err:
             _LOGGER.debug("Could not query hourly consumption history: %s", err)
             return {}
+
+    @staticmethod
+    def _hourly_from_statistics(rows) -> dict[str, float]:
+        """Bin recorder statistics rows into local hours.
+
+        ``start`` is a float UTC timestamp in the recorder API this integration
+        runs against (HA 2023.3+).  The code used to call ``.hour`` on it, which
+        raised, the broad except swallowed it, and every install's hourly
+        profile silently fell back to FLAT — so the profile-aware reserve and
+        trajectory never saw a real profile.  A datetime is still accepted.
+        The bucket is the hour in local time, the same clock as the rest of the
+        coordinator (datetime.now()).
+        """
+        hourly: dict[str, float] = {}
+        for entry in rows:
+            if not isinstance(entry, dict):
+                continue
+            start = entry.get("start")
+            if isinstance(start, (int, float)) and not isinstance(start, bool):
+                local = datetime.fromtimestamp(start, UTC).astimezone().replace(tzinfo=None)
+            elif isinstance(start, datetime):
+                local = start.astimezone().replace(tzinfo=None) if start.tzinfo else start
+            else:
+                continue
+            change = entry.get("change")
+            if not isinstance(change, (int, float)) or isinstance(change, bool) or change < 0:
+                continue
+            key = str(local.hour)
+            # The repeated hour of a DST fall-back day lands in one bucket.
+            hourly[key] = round(hourly.get(key, 0.0) + float(change), 3)
+        return hourly
 
     def _calculate_hourly_profile(self) -> None:
         """Build per-hour average consumption from 7-day hourly history."""
@@ -2227,7 +2468,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             return
 
         hour_totals: dict[int, list[float]] = {h: [] for h in range(24)}
-        for entry in self._hourly_consumption_history:
+        days = self._hourly_consumption_history
+        # A flat day says nothing about the SHAPE, so once any real day exists
+        # only real days shape the profile.
+        real_days = [e for e in days if e.get("source") == "history"]
+        for entry in (real_days or days):
             hours = entry.get("hours", {})
             for h_str, kwh in hours.items():
                 h = int(h_str)
@@ -3082,6 +3327,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             # Initialize consumption store on first run
                             await self._init_consumption_store()
+                            await self._backfill_consumption_history()
 
                             # Midnight bookkeeping (once per day change)
                             now = datetime.now()

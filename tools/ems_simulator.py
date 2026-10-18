@@ -69,7 +69,8 @@ from scenarios import SCENARIOS
 def _result_dict(engine, prices, sched, traj, cur_slot, *,
                  planned_kwh=0.0, reserve_pct=0.0, overnight_need=0.0,
                  status=None, reason=None, threshold=None, tomorrow_sched=None,
-                 tomorrow_traj=None, load_slots=None, tomorrow_load_slots=None):
+                 tomorrow_traj=None, load_slots=None, tomorrow_load_slots=None,
+                 load_currents=None, tomorrow_load_currents=None):
     charge = sorted(i for i, a in (sched or {}).items() if a == "charge")
     sell = sorted(i for i, a in (sched or {}).items() if a == "discharge")
     tmr_charge = sorted(i for i, a in (tomorrow_sched or {}).items() if a == "charge")
@@ -100,6 +101,11 @@ def _result_dict(engine, prices, sched, traj, cur_slot, *,
         "load_slots": {int(k): dict(v) for k, v in (load_slots or {}).items()},
         "tomorrow_load_slots": {int(k): dict(v)
                                 for k, v in (tomorrow_load_slots or {}).items()},
+        # Planned EV current per slot: a stepped charger follows the forecast
+        # surplus in its solar slots, so its draw is NOT its rated power there.
+        "load_currents": {int(k): dict(v) for k, v in (load_currents or {}).items()},
+        "tomorrow_load_currents": {int(k): dict(v)
+                                   for k, v in (tomorrow_load_currents or {}).items()},
     }
 
 
@@ -124,6 +130,8 @@ def run_one(scenario: dict, engine: str) -> dict:
         tomorrow_traj=result.tomorrow_soc_trajectory,
         load_slots=result.load_slots,
         tomorrow_load_slots=result.tomorrow_load_slots,
+        load_currents=result.load_currents,
+        tomorrow_load_currents=result.tomorrow_load_currents,
     )
 
 
@@ -257,20 +265,25 @@ def report_one(scenario: dict, results: dict) -> bool:
                 nm = getattr(loads[idx], "name", None) or f"load_{idx + 1}" \
                     if idx < len(loads) else f"load_{idx + 1}"
                 kw = getattr(loads[idx], "rated_power_kw", 0.0) if idx < len(loads) else 0.0
+                draw = load_draw_kw(loads[idx] if idx < len(loads) else None,
+                                    r.get("load_currents", {}).get(idx, {}))
                 # How much of the load's own draw the sun actually covers in the
                 # slots it was switched on for.  The PV-surplus test only asks
                 # whether PV beats the HOUSEHOLD average, never whether it beats
                 # the load — so this is where a "solar" run turns into an import.
                 imported = sum(
-                    max(0.0, kw - max(0.0, pv_slot[s] - cons_slot[s]))
+                    max(0.0, draw(s) - max(0.0, pv_slot[s] - cons_slot[s]))
                     for s in slots if s < n0
                 )
                 cost = sum(
-                    max(0.0, kw - max(0.0, pv_slot[s] - cons_slot[s])) * prices[s]
+                    max(0.0, draw(s) - max(0.0, pv_slot[s] - cons_slot[s])) * prices[s]
                     for s in slots if s < n0 and s < len(prices) and prices[s] is not None
                 )
+                amps = r.get("load_currents", {}).get(idx, {})
+                amps_txt = (" @ " + ", ".join(f"{s}:{a}A" for s, a in sorted(amps.items()))
+                            if amps else "")
                 print(f"           load '{nm}' ({kw}kW) on "
-                      f"{_fmt_slots(sorted(slots), prices)}")
+                      f"{_fmt_slots(sorted(slots), prices)}{amps_txt}")
                 print(f"                -> {imported:.1f}kWh NOT covered by sun "
                       f"(~{cost:.2f} at those prices)")
 
@@ -303,7 +316,13 @@ def effective_pv_per_slot(state_kwargs: dict, n: int, tomorrow: bool = False):
     if not hourly:
         total_key = "pv_forecast_tomorrow" if tomorrow else "pv_forecast_today"
         total = state_kwargs.get(total_key) or 0.0
-        hourly = ems._synthesize_pv_hourly(total) if total > 0 else {}
+        sun = (state_kwargs.get("sunrise_hour"), state_kwargs.get("sunset_hour"))
+        if total <= 0:
+            hourly = {}
+        elif None not in sun:
+            hourly = ems._synthesize_pv_hourly(total, *sun)
+        else:
+            hourly = ems._synthesize_pv_hourly(total)
     mps = (24 * 60) / n
     out = []
     for i in range(n):
@@ -313,7 +332,20 @@ def effective_pv_per_slot(state_kwargs: dict, n: int, tomorrow: bool = False):
     return out
 
 
-def flex_load_power_per_slot(config_kwargs: dict, load_slots: dict, n: int):
+def load_draw_kw(load, currents: dict):
+    """kW a scheduled load draws in a slot: its planned current, else its running power."""
+    def draw(slot):
+        if load is None:
+            return 0.0
+        amps = currents.get(slot)
+        if amps is not None:
+            return load.power_at_current(amps)
+        return getattr(load, "running_power_kw", None) or getattr(load, "rated_power_kw", 0.0) or 0.0
+    return draw
+
+
+def flex_load_power_per_slot(config_kwargs: dict, load_slots: dict, n: int,
+                             load_currents: dict | None = None):
     """Per-slot kWh drawn by the scheduled flexible loads.
 
     The battery plan and the SOC trajectory are computed as if these loads did
@@ -329,10 +361,10 @@ def flex_load_power_per_slot(config_kwargs: dict, load_slots: dict, n: int):
     for idx, slots in load_slots.items():
         if idx >= len(loads):
             continue
-        kw = getattr(loads[idx], "rated_power_kw", 0.0) or 0.0
+        draw = load_draw_kw(loads[idx], (load_currents or {}).get(idx, {}))
         for slot in slots:
             if 0 <= slot < n:
-                out[slot] += kw * (mps / 60.0)
+                out[slot] += draw(slot) * (mps / 60.0)
     return out
 
 
@@ -424,10 +456,12 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
         # switched a load on; the stacked line says whether the sun was ever
         # going to cover it.  Without the second one a load scheduled into a
         # 0.4 kW "PV surplus" at 3.7 kW looks like solar charging.
-        flex = flex_load_power_per_slot(scenario["config"], r.get("load_slots"), n)
+        flex = flex_load_power_per_slot(scenario["config"], r.get("load_slots"), n,
+                                        r.get("load_currents"))
         if has_tmr:
             flex = flex + flex_load_power_per_slot(
-                scenario["config"], r.get("tomorrow_load_slots"), n_tmr)
+                scenario["config"], r.get("tomorrow_load_slots"), n_tmr,
+                r.get("tomorrow_load_currents"))
         else:
             flex = flex + [0.0] * (total - len(flex))
         if any(v > 0.001 for v in flex):
