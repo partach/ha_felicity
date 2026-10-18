@@ -4290,9 +4290,32 @@ class TestFlexibleLoadScheduling:
         result = calculate_schedule(config, state)
         assert 0 in result.load_slots, "Load should have schedule entries"
         load_0_slots = result.load_slots[0]
-        # Cheap slots (2-5) should be in the load schedule
-        for s in [2, 3, 4, 5]:
-            assert s in load_0_slots, f"Cheap slot {s} should have load scheduled"
+        charging = {i for i, a in result.scheduled_slots.items() if a == "charge"}
+        assert charging, "the battery charges in the cheap slots"
+        # Every cheap slot the battery charges in runs the load (the grid feeds
+        # both) ...
+        for s in charging:
+            assert s in load_0_slots, f"Cheap charge slot {s} should have load scheduled"
+        # ... but a cheap slot the battery is NOT charging in does not: the
+        # inverter is in self-use there, so the battery would serve the load
+        # and the cheap price would never be paid (issue #218).
+        floor = config.battery_discharge_min_pct + 1.0
+        for s in {2, 3, 4, 5} - charging:
+            if result.soc_trajectory[s] > floor:
+                assert s not in load_0_slots, f"slot {s} is battery-fed"
+
+    def test_cheap_slot_runs_the_load_when_the_battery_is_at_its_floor(self):
+        """At the floor the house is on grid passthrough, so a cheap slot is cheap."""
+        load = FlexibleLoadConfig(enabled=True, name="Boiler",
+                                  switch_entity="switch.boiler", rated_power_kw=2.0)
+        result = ems._schedule_flexible_loads(
+            [load], [(2, 0.05), (3, 0.05), (9, 0.30)], {2: "charge"}, 0.05,
+            grid_fed_slots={2, 3})
+        assert set(result[0]) == {2, 3}
+        result = ems._schedule_flexible_loads(
+            [load], [(2, 0.05), (3, 0.05), (9, 0.30)], {2: "charge"}, 0.05,
+            grid_fed_slots={2})
+        assert set(result[0]) == {2}
 
     def test_load_scheduled_during_negative_price(self):
         """Loads should always run during negative-price slots."""
@@ -6908,3 +6931,85 @@ class TestKeepTodaysChargeWhenTonightsGridIsDearer:
         today_prices = [0.17 if 54 <= i < 64 else 0.20 for i in range(96)]
         kept, _, _ = self._select(today_prices, [0.165] * 96)
         assert kept == []
+
+
+class TestSyntheticPvSunWindow:
+    """Issue #218: with no hourly forecast the synthetic curve ran 06:00-20:00
+    whatever the season — PV in the dark on an October morning and evening."""
+
+    def test_integer_window_is_the_legacy_curve(self):
+        legacy = {h: 10.0 * ((1 - math.cos(math.pi * (h - 6 + 1) / 14)) / 2
+                             - (1 - math.cos(math.pi * (h - 6) / 14)) / 2) for h in range(6, 20)}
+        got = ems._synthesize_pv_hourly(10.0)
+        assert got.keys() == legacy.keys()
+        assert all(abs(got[h] - legacy[h]) < 1e-12 for h in got)
+
+    def test_fractional_sun_times(self):
+        got = ems._synthesize_pv_hourly(10.0, 8.1, 18.75)
+        assert min(got) == 8 and max(got) == 18
+        assert abs(sum(got.values()) - 10.0) < 1e-9
+        assert got[8] < got[9] < got[13]
+
+    def test_state_sun_window_drives_the_plan(self):
+        state = ems.EMSState(battery_soc_pct=50, slot_prices_today=[0.2] * 24,
+                             pv_forecast_today=10.0, pv_forecast_remaining=8.0,
+                             current_hour=10, sunrise_hour=8.1, sunset_hour=18.75)
+        assert min(ems._synthesize_pv_for(state, 10.0)) == 8
+
+    def test_synthesis_keeps_every_other_state_field(self):
+        """The rebuild used a hand-listed EMSState(...) that dropped every field
+        it did not name — predicted_soc_pct among them, which switched the
+        consumption-deviation correction off whenever the PV curve was
+        synthesized."""
+        captured = {}
+        real = ems._consumption_deviation_kwh
+
+        def spy(state, *a, **kw):
+            captured["predicted"] = state.predicted_soc_pct
+            return real(state, *a, **kw)
+
+        ems._consumption_deviation_kwh = spy
+        try:
+            ems.calculate_schedule(
+                ems.EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10),
+                ems.EMSState(battery_soc_pct=40, slot_prices_today=[0.2] * 24,
+                             pv_forecast_today=6.0, pv_forecast_remaining=5.0,
+                             predicted_soc_pct=55.0, current_hour=9))
+        finally:
+            ems._consumption_deviation_kwh = real
+        assert captured.get("predicted") == 55.0
+
+
+class TestFlexLoadSurplusFitsTheLoad:
+    """Issue #218 / Known Issue 10: the PV-surplus test compared the RAW forecast
+    with the FLAT daily average and never with the load's own power."""
+
+    def test_surplus_uses_the_profile_and_the_confidence(self):
+        pv = {12: 4.0}
+        profile = {12: 3.0}
+        flat = ems._flex_pv_surplus_kw([12], 60, pv, None, 24.0)
+        assert flat == {12: 3.0}                                 # 4 - 24/24
+        with_profile = ems._flex_pv_surplus_kw([12], 60, pv, profile, 24.0)
+        assert with_profile == {12: 1.0}                         # the busy hour
+        dull = ems._flex_pv_surplus_kw([12], 60, pv, profile, 24.0, pv_confidence=0.5)
+        assert dull == {}                                        # 2 - 3 < 0
+
+    def test_a_load_needs_a_surplus_that_covers_its_lowest_step(self):
+        ev = FlexibleLoadConfig(enabled=True, name="EV", switch_entity="switch.ev",
+                                rated_power_kw=3.7, current_entity="number.ev",
+                                current_steps=[6, 10, 13, 16], default_current=16)
+        remaining = [(10, 0.30), (11, 0.30), (12, 0.30)]
+        surplus = {10: 0.9, 11: 1.5, 12: 4.0}          # 6 A = 1.38 kW
+        currents = {}
+        out = ems._schedule_flexible_loads([ev], remaining, {}, None,
+                                           ev_charge_strategy="solar_only",
+                                           pv_surplus_kw=surplus, currents_out=currents)
+        assert set(out[0]) == {11, 12}
+        assert currents[0] == {11: 6, 12: 16}            # the step that fits, capped at default
+
+    def test_a_plain_load_needs_its_rated_power(self):
+        boiler = FlexibleLoadConfig(enabled=True, name="Boiler", switch_entity="switch.b",
+                                    rated_power_kw=2.0)
+        out = ems._schedule_flexible_loads([boiler], [(12, 0.3), (13, 0.3)], {}, None,
+                                           pv_surplus_kw={12: 1.9, 13: 2.1})
+        assert set(out[0]) == {13}

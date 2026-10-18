@@ -6,6 +6,7 @@ import importlib.util as _ilu
 import os
 import random
 import sys
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -705,3 +706,253 @@ class TestManualModeExecutesOverrides:
 
     def test_full_battery_does_not_charge(self):
         assert self._coord("from_grid", "charge")._determine_energy_state(100.0) == "idle"
+
+
+class TestConsumptionProfileFromRecorder:
+    """The hourly consumption profile must come from the recorder's statistics.
+
+    Issue #218: the recorder returns ``start`` as a float timestamp, and the
+    parser called ``.hour`` on it — the exception was swallowed and every
+    install's profile was FLAT.  The midnight bookkeeping also asked for the
+    hours of the day that had just begun, so even a working parser got
+    nothing.
+    """
+
+    DAY = datetime(2026, 10, 17)  # noqa: DTZ001 - naive local, as the coordinator
+
+    @classmethod
+    def _rows(cls, day=None, shape=None):
+        day = day or cls.DAY
+        shape = shape or [0.3] * 7 + [1.0] * 10 + [2.5] * 5 + [0.5] * 2
+        return [{"start": (day + timedelta(hours=h)).timestamp(), "change": kwh}
+                for h, kwh in enumerate(shape)]
+
+    def _coord_with_recorder(self, rows_by_day, monkeypatch, now=None):
+        coord = _make_coordinator()
+        coord._hourly_consumption_history = []
+        coord._hourly_consumption_profile = {}
+        coord._daily_consumption_history = []
+        coord.consumption_override_entity = None
+        coord._consumption_backfilled = False
+        coord._consumption_backfill_attempt_ts = 0.0
+        coord.consumption_entity_used = None
+        coord._cycle_charged_kwh = coord._cycle_discharged_kwh = 0.0
+        coord._battery_soh_factor = 1.0
+        coord._consumption_store = MagicMock()
+        coord._consumption_store.async_save = AsyncMock()
+        coord._consumption_store_loaded = True
+        coord._resolve_consumption_entity = lambda: "sensor.house_energy"
+        calls = []
+
+        async def query(entity_id, day):
+            calls.append(day)
+            return coord._hourly_from_statistics(rows_by_day.get(day, []))
+
+        coord._query_hourly_from_history = query
+        if now is not None:
+            fixed = now
+
+            class _Clock(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return fixed
+
+            monkeypatch.setattr(coordinator_mod, "datetime", _Clock)
+        return coord, calls
+
+    def test_float_timestamps_are_parsed_into_local_hours(self):
+        hourly = HA_FelicityCoordinator._hourly_from_statistics(self._rows())
+        assert len(hourly) == 24
+        assert hourly["3"] == 0.3 and hourly["12"] == 1.0 and hourly["19"] == 2.5
+
+    def test_datetime_starts_and_bad_rows(self):
+        aware = (self.DAY + timedelta(hours=8)).astimezone()
+        rows = [{"start": aware, "change": 1.2}, {"start": None, "change": 9},
+                {"start": self.DAY.timestamp(), "change": None},
+                {"start": self.DAY.timestamp(), "change": -4.0}, "junk"]
+        assert HA_FelicityCoordinator._hourly_from_statistics(rows) == {"8": 1.2}
+
+    @pytest.mark.asyncio
+    async def test_query_asks_for_the_local_day_in_kwh(self, monkeypatch, amsterdam):
+        seen = {}
+
+        def statistics_during_period(hass, start, end, ids, period, units, types):
+            seen.update(start=start, end=end, units=units, types=types)
+            return {"sensor.x": self._rows()}
+
+        rec = MagicMock()
+        rec.get_instance.return_value.async_add_executor_job = (
+            lambda fn, *a: asyncio.sleep(0, result=fn(*a)))
+        stats_mod = MagicMock()
+        stats_mod.statistics_during_period = statistics_during_period
+        monkeypatch.setitem(sys.modules, "homeassistant.components.recorder", rec)
+        monkeypatch.setitem(sys.modules, "homeassistant.components.recorder.statistics", stats_mod)
+        coord = _make_coordinator()
+        hourly = await coord._query_hourly_from_history("sensor.x", self.DAY.date())
+        assert len(hourly) == 24
+        assert seen["start"] == self.DAY.astimezone()            # LOCAL midnight
+        assert seen["end"] == (self.DAY + timedelta(days=1)).astimezone()
+        assert seen["units"] == {"energy": "kWh"}
+
+    @pytest.mark.asyncio
+    async def test_midnight_records_yesterday_from_the_recorder(self, monkeypatch):
+        coord, calls = self._coord_with_recorder(
+            {self.DAY.date(): self._rows()}, monkeypatch,
+            now=self.DAY + timedelta(days=1, seconds=5))
+        await coord._record_daily_consumption()
+        assert calls == [self.DAY.date()]
+        assert coord._hourly_consumption_history[-1]["date"] == "2026-10-17"
+        assert coord.consumption_profile_source == "history"
+        assert coord._hourly_consumption_profile[19] == 2.5
+        assert coord._hourly_consumption_profile[3] == 0.3
+        assert coord._daily_consumption_history[-1] == {"date": "2026-10-17", "kwh": 25.6}
+
+    @pytest.mark.asyncio
+    async def test_backfill_replaces_the_flat_days(self, monkeypatch):
+        now = self.DAY + timedelta(days=1, hours=9)
+        rows = {(self.DAY - timedelta(days=d)).date(): self._rows(self.DAY - timedelta(days=d))
+                for d in range(7)}
+        coord, calls = self._coord_with_recorder(rows, monkeypatch, now=now)
+        # A week of legacy flat days, as every install has today
+        for d in range(7):
+            ds = (self.DAY - timedelta(days=d)).strftime("%Y-%m-%d")
+            coord._hourly_consumption_history.append({"date": ds, "hours": {str(h): 1.1 for h in range(24)}})
+        coord._calculate_hourly_profile()
+        assert coord.consumption_profile_source == "flat"
+        await coord._backfill_consumption_history()
+        assert len(calls) == 7
+        assert coord.consumption_profile_source == "history"
+        assert coord._hourly_consumption_profile[19] == 2.5
+        assert coord._consumption_store.async_save.await_count == 1
+        # once only
+        await coord._backfill_consumption_history()
+        assert len(calls) == 7
+
+    @pytest.mark.asyncio
+    async def test_backfill_retries_until_the_entity_resolves(self, monkeypatch):
+        coord, calls = self._coord_with_recorder({}, monkeypatch)
+        coord._resolve_consumption_entity = lambda: None
+        await coord._backfill_consumption_history()
+        assert not coord._consumption_backfilled
+        coord._consumption_backfill_attempt_ts = 0.0       # retry window passed
+        coord._resolve_consumption_entity = lambda: "sensor.house_energy"
+        await coord._backfill_consumption_history()
+        assert coord._consumption_backfilled and len(calls) == 7
+
+    def test_a_flat_day_does_not_shape_a_real_profile(self):
+        coord = _make_coordinator()
+        coord._hourly_consumption_history = [
+            {"date": "2026-10-16", "hours": {str(h): 1.0 for h in range(24)}, "source": "flat"},
+            {"date": "2026-10-17", "hours": {"19": 3.0, "3": 0.2}, "source": "history"},
+        ]
+        coord._calculate_hourly_profile()
+        assert coord._hourly_consumption_profile[19] == 3.0
+        assert coord._hourly_consumption_profile[3] == 0.2
+        assert coord.consumption_profile_source == "partial"
+
+
+@pytest.fixture
+def amsterdam(monkeypatch):
+    """Run in a timezone that is NOT UTC, so a stripped offset shows up."""
+    import time as _time
+    monkeypatch.setenv("TZ", "Europe/Amsterdam")
+    _time.tzset()
+    yield
+    monkeypatch.undo()
+    _time.tzset()
+
+
+class TestForecastParsing:
+    """Issue #218: only Forecast.Solar's wh_hours was read.  Open-Meteo Solar
+    Forecast (wh_period) and Solcast (detailedHourly, a LIST) fell back to the
+    synthetic 06:00-20:00 curve, and offset-aware timestamps had the offset
+    stripped instead of converted."""
+
+    TODAY = datetime(2026, 10, 18)  # noqa: DTZ001 - naive local, as the coordinator
+
+    @classmethod
+    def _iso(cls, day_offset, hour, utc=False):
+        local = cls.TODAY + timedelta(days=day_offset, hours=hour)
+        return local.astimezone().astimezone(UTC).isoformat() if utc else local.astimezone().isoformat()
+
+    def _coord(self, states, monkeypatch, options=None):
+        coord = _make_coordinator()
+        coord.forecast_entity = "sensor.pv_today"
+        coord.config_entry.options = options or {}
+        coord.hass.states.get = lambda eid: states.get(eid)
+        fixed = self.TODAY + timedelta(hours=11)
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+
+        monkeypatch.setattr(coordinator_mod, "datetime", _Clock)
+        return coord
+
+    @staticmethod
+    def _state(value, **attrs):
+        st = MagicMock()
+        st.state = str(value)
+        st.attributes = attrs
+        return st
+
+    def test_open_meteo_wh_period(self, monkeypatch):
+        wh = {self._iso(0, h): 1000.0 for h in range(9, 17)}
+        tmr = {self._iso(1, h): 500.0 for h in range(9, 17)}
+        coord = self._coord({
+            "sensor.pv_today": self._state(8.0, wh_period=wh, watts={}),
+            "sensor.pv_tomorrow": self._state(4.0, wh_period=tmr),
+        }, monkeypatch, {"forecast_entity_tomorrow": "sensor.pv_tomorrow"})
+        coord._retrieve_pv_forecast()
+        assert coord.pv_curve_source == "wh_period"
+        assert sorted(coord.pv_hourly_kwh) == list(range(9, 17))
+        assert coord.pv_forecast_remaining == 6.0                  # 11:00..16:00
+        # tomorrow's hours live on the tomorrow entity
+        assert coord.pv_curve_source_tomorrow == "wh_period"
+        assert coord.pv_hourly_kwh_tomorrow[12] == 0.5
+
+    def test_fifteen_minute_periods_sum_into_hours(self, monkeypatch):
+        wh = {(self.TODAY + timedelta(hours=12, minutes=15 * q)).astimezone().isoformat(): 250.0
+              for q in range(4)}
+        coord = self._coord({"sensor.pv_today": self._state(1.0, wh_period=wh)}, monkeypatch)
+        coord._retrieve_pv_forecast()
+        assert coord.pv_hourly_kwh == {12: 1.0}
+
+    def test_solcast_detailed_hourly_list(self, monkeypatch):
+        rows = [{"period_start": self._iso(0, h), "pv_estimate": 2.0} for h in range(10, 14)]
+        coord = self._coord({"sensor.pv_today": self._state(8.0, detailedHourly=rows)}, monkeypatch)
+        coord._retrieve_pv_forecast()
+        assert coord.pv_curve_source == "detailedHourly"
+        assert coord.pv_hourly_kwh == {10: 2.0, 11: 2.0, 12: 2.0, 13: 2.0}
+
+    def test_solcast_half_hourly_is_halved(self, monkeypatch):
+        rows = [{"period_start": (self.TODAY + timedelta(hours=12, minutes=30 * q)).astimezone(),
+                 "pv_estimate": 2.0} for q in range(2)]
+        coord = self._coord({"sensor.pv_today": self._state(2.0, detailedForecast=rows)}, monkeypatch)
+        coord._retrieve_pv_forecast()
+        assert coord.pv_hourly_kwh == {12: 2.0}
+
+    def test_utc_timestamps_are_converted_not_stripped(self, monkeypatch, amsterdam):
+        wh = {self._iso(0, 13, utc=True): 1000.0}
+        coord = self._coord({"sensor.pv_today": self._state(1.0, wh_hours=wh)}, monkeypatch)
+        coord._retrieve_pv_forecast()
+        assert coord.pv_hourly_kwh == {13: 1.0}
+
+    def test_no_breakdown_is_reported_as_synthetic(self, monkeypatch):
+        coord = self._coord({"sensor.pv_today": self._state(9.0)}, monkeypatch)
+        coord._retrieve_pv_forecast()
+        assert coord.pv_hourly_kwh == {}
+        assert coord.pv_curve_source == "synthetic"
+
+    def test_sun_times_come_from_sun_entity(self, monkeypatch):
+        sun = self._state("below_horizon",
+                          next_rising=self._iso(1, 8.1, utc=True),
+                          next_setting=self._iso(0, 18.75, utc=True))
+        coord = self._coord({"sensor.pv_today": self._state(9.0), "sun.sun": sun}, monkeypatch)
+        coord._retrieve_pv_forecast()
+        assert coord.sunrise_hour == 8.1 and coord.sunset_hour == 18.75
+        # the remaining-PV estimate uses the real window: 11:00 of 08:06-18:45
+        frac = (11 - 8.1) / (18.75 - 8.1)
+        import math as _m
+        assert coord.pv_forecast_remaining == round(9.0 * (1 - (1 - _m.cos(_m.pi * frac)) / 2), 2)

@@ -769,3 +769,38 @@ async def test_a_shed_charger_returns_when_its_own_phase_has_room(phase, comes_b
     amps = r.inverter.phase_amps(0.0, 3.0)
     assert amps[0] + 16.1 > 0.95 * 25 > amps[1] + 16.1, f"premise: L1 busy, L2 free {amps}"
     assert (r.hass.switch_on.get(EV) is True) is comes_back
+
+
+# ---------------------------------------------------------------------------
+# An EV charging "on solar" that the sun does not cover (issue #218)
+# ---------------------------------------------------------------------------
+
+OCTOBER_SUN = pv_bell(3.0, sunrise=8, sunset=18)     # a modest October day
+
+
+@pytest.mark.asyncio
+async def test_a_solar_ev_runs_only_where_the_sun_covers_it():
+    """Issue #218: the overlay called an hour "PV surplus" whenever the forecast
+    beat the household AVERAGE, never the 3.7 kW charger about to be switched
+    on, so the EV ran 16 A from morning to evening and the battery fed it.
+
+    Now it runs only where the forecast surplus covers its lowest step, at the
+    step that fits — measured here as the energy the sun did NOT supply while
+    the charger was on (from the battery or the grid)."""
+    r = _replay(options={**ROOMY, "ev_charge_strategy": "solar_only",
+                         "optimization_priority": "self_consumption",
+                         "flexible_load_1_current_steps": "6,10,13,16",
+                         "flexible_load_1_default_current": 16,
+                         "daily_consumption_estimate": 14.4},
+                soc=90.0, start=day(D, 6), prices_for=DUCK, load_kw=lambda _t: 0.6,
+                pv_kw=OCTOBER_SUN, forecast_kw=OCTOBER_SUN,
+                switched_loads={EV: 3.7}, current_entities={EV: "number.phoenix_current"})
+    await r.run_until(day(D, 20), step_s=60)
+    _chart(r, "ev_solar_only_october")
+
+    on = [t for t in r.ticks if t.switched_kw > 0]
+    assert on, "premise: the sun does cover a 6 A step at midday"
+    assert all(9 <= t.at.hour < 17 for t in on), sorted({t.at.hour for t in on})
+    not_from_sun = sum(max(0.0, 0.6 + t.switched_kw - t.pv_kw) / 60.0 for t in on)
+    assert not_from_sun < 0.5, f"{not_from_sun:.2f} kWh of the EV's energy not from the sun"
+    assert max(r.hass.number_history.get("number.phoenix_current", [16])) <= 13

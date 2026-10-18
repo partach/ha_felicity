@@ -2,6 +2,33 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **Your real consumption pattern is used at last.** The hour-by-hour
+  consumption profile behind the overnight reserve and the battery forecast
+  was always flat (every hour the same), because the history it was read from
+  was never parsed. It now comes from Home Assistant's long-term statistics
+  for your consumption sensor, in local time, and the last 7 days are rebuilt
+  as soon as the integration starts — no week of waiting. The daily average is
+  recorded for the right day too.
+- **More solar forecasts give an hourly curve.** Open-Meteo Solar Forecast
+  (`wh_period`, today and tomorrow entities) and Solcast (`detailedHourly` /
+  `detailedForecast`) are now read; before, only Forecast.Solar was, and the
+  others were spread over a guessed 06:00–20:00 curve. Forecasts published in
+  UTC land in the right hour. When a forecast gives only a daily total, the
+  guessed curve now runs from today's sunrise to sunset (from `sun.sun`).
+- **The EMS card says when it is guessing.** An amber chip appears when the
+  solar curve is estimated or the consumption profile is flat, with a tooltip
+  saying why; `schedule_status` has a new `input_sources` attribute listing
+  what each input comes from.
+- **The EV charger no longer "charges on solar" from your battery.** A slot
+  only counts as solar for a load when the forecast surplus (after your
+  household's own use at that hour) covers the load's minimum power, and a
+  charger with current steps is set to the step the sun can cover. A load is
+  also no longer switched on in a "cheap" slot the battery isn't charging in —
+  there the battery, not the grid, would have fed it. Reported: 35 % of an
+  EV's energy over ten days came from the battery.
+- **Consumption-deviation correction works without an hourly forecast.** It
+  was silently switched off whenever the solar curve had to be estimated.
+
 - **Download diagnostics now contains a full register dump.** Settings → Devices
   & services → Felicity → ⋮ → Download diagnostics reads every register of your
   model (read-only) and saves raw + decoded values with sanity checks. Share that

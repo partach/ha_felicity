@@ -45,16 +45,16 @@ class FelicityEMSCard extends LitElement {
 
   // Mirror of ems._synthesize_pv_hourly — a solar bell curve from a daily total,
   // used for the PV overlay when the forecast has no hourly breakdown.
+  // sunrise / sunset may be fractional (real sun times from sim_params).
   _synthPvHourly(total, sunrise = 6, sunset = 20) {
     if (!(total > 0)) return {};
-    const totalMin = (sunset - sunrise) * 60;
+    if (!(sunrise >= 0 && sunrise < sunset && sunset <= 24)) { sunrise = 6; sunset = 20; }
+    const produced = (t) => (1 - Math.cos(Math.PI * (t - sunrise) / (sunset - sunrise))) / 2;
     const out = {};
-    for (let h = sunrise; h < sunset; h++) {
-      const fS = ((h - sunrise) * 60) / totalMin;
-      const fE = (((h - sunrise) * 60) + 60) / totalMin;
-      const pS = (1 - Math.cos(Math.PI * fS)) / 2;
-      const pE = (1 - Math.cos(Math.PI * fE)) / 2;
-      out[h] = total * (pE - pS);
+    for (let h = Math.floor(sunrise); h < Math.ceil(sunset); h++) {
+      const a = Math.max(h, sunrise);
+      const b = Math.min(h + 1, sunset);
+      if (b > a) out[h] = total * (produced(b) - produced(a));
     }
     return out;
   }
@@ -208,9 +208,6 @@ class FelicityEMSCard extends LitElement {
     return entity.attributes?.[attr];
   }
 
-  // Explain the engine chip on hover. "Greedy (fallback)" on its own tells the
-  // user the MILP solver failed but not WHY \u2014 the reason used to exist only in
-  // a single HA log warning, long rotated away by the time anyone looks.
   // The status-bar power chip shows the power written to Economic Rule 1.  The
   // inverter applies it to grid charging (or discharging) only — solar charges
   // the battery on top of it — so name it for what it limits right now.
@@ -227,6 +224,9 @@ class FelicityEMSCard extends LitElement {
       + "Lowered automatically when the grid current nears your per-phase limit.";
   }
 
+  // Explain the engine chip on hover. "Greedy (fallback)" on its own tells the
+  // user the MILP solver failed but not WHY \u2014 the reason used to exist only in
+  // a single HA log warning, long rotated away by the time anyone looks.
   _milpTooltip() {
     const st = this._getAttr("schedule_status", "milp_status");
     if (!st || !st.state) return "Scheduler engine";
@@ -239,6 +239,34 @@ class FelicityEMSCard extends LitElement {
       ? "\nInstall a solver: pip install pulp[cbc]  (or pulp[highs]), then restart HA."
       : "";
     return `MILP not running \u2014 ${st.reason || "reason unknown"}${tried}${hint}`;
+  }
+
+  // Planning inputs the backend had to GUESS (schedule_status.input_sources).
+  // Silent before issue #218: a flat consumption profile and a synthetic PV
+  // curve drove the plan for months while looking exactly like real data.
+  _inputWarnings() {
+    const src = this._getAttr("schedule_status", "input_sources");
+    if (!src) return [];
+    const out = [];
+    if (src.pv_curve === "synthetic") {
+      const sun = Array.isArray(src.sun_window)
+        ? ` between sunrise and sunset (${this._fmt(src.sun_window[0], 1)}\u2013${this._fmt(src.sun_window[1], 1)} h)`
+        : " over 06:00\u201320:00";
+      out.push({
+        label: "PV curve estimated",
+        title: `${src.forecast_entity || "The forecast entity"} gives a daily total but no hourly `
+          + `breakdown (wh_hours, wh_period or detailedHourly), so the plan spreads it on a bell curve${sun}.`,
+      });
+    }
+    if (src.consumption_profile === "flat" || src.consumption_profile === "partial") {
+      out.push({
+        label: src.consumption_profile === "flat" ? "Flat consumption profile" : "Consumption profile partial",
+        title: `No hourly recorder statistics for ${src.consumption_entity || "the consumption entity"}`
+          + `${src.consumption_profile === "partial" ? " on some of the last 7 days" : ""}, so those days `
+          + "are spread evenly over 24 h. Check that the sensor has a state_class and is recorded.",
+      });
+    }
+    return out;
   }
 
   // Helper: safely format a number, returns fallback string if value is null/undefined
@@ -1101,7 +1129,9 @@ class FelicityEMSCard extends LitElement {
         const total = showTomorrow
           ? (this._getNumericState("pv_forecast_tomorrow") || 0)
           : (this._getNumericState("pv_forecast_today") || 0);
-        pvHourly = this._synthPvHourly(total);
+        pvHourly = (simPv.sunrise_hour != null && simPv.sunset_hour != null)
+          ? this._synthPvHourly(total, simPv.sunrise_hour, simPv.sunset_hour)
+          : this._synthPvHourly(total);
       }
       if (pvHourly && Object.keys(pvHourly).length) {
         const slotsPerHour = numSlots / 24;
@@ -2199,6 +2229,9 @@ class FelicityEMSCard extends LitElement {
               ${evBoostActive ? html`
                 <span class="status-chip boost">Boost ${evBoostHours}h${evBoostMins}m</span>
               ` : ''}
+              ${this._inputWarnings().map((w) => html`
+                <span class="status-chip estimate" title="${w.title}">${w.label}</span>
+              `)}
             </div>
           </div>
 
@@ -3149,6 +3182,11 @@ class FelicityEMSCard extends LitElement {
       .status-chip.engine.fallback {
         background: rgba(255, 152, 0, 0.18);
         color: #FF9800;
+      }
+      .status-chip.estimate {
+        background: rgba(255, 193, 7, 0.16);
+        color: #FFB300;
+        text-transform: none;
       }
       .status-chip.boost {
         background: rgba(0, 188, 212, 0.18);
