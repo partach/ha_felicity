@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **724**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **766**: 764 pass + 2 documented skips) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -110,7 +110,7 @@ this rule exists to prevent — don't.
 
 ## Project Overview
 
-**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50** and the **IVGM family (8K / 15K / 20K, provisional)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
+**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50**, the **IVGM family (8K / 15K / 20K, provisional)** and the **IVAM6048P1G1 (monitoring only — no control registers, see below)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
 
 **Version**: see `custom_components/ha_felicity/manifest.json` — the only copy
 that matters.  A number written here goes stale the first time someone bumps the
@@ -141,6 +141,8 @@ custom_components/ha_felicity/
 ├── trex_fifty.py            # TREX-50 register map
 ├── ivgm.py                  # IVGM family map (8K + 3-phase, derived from ONE table)
 ├── ivgm_documented_registers.json # Frozen transcript of the IVGM protocol document
+├── ivam.py                  # IVAM6048P1G1 map — MONITOR-ONLY (telemetry; no control registers)
+├── ivam_documented_registers.json # Frozen transcript of the IVAM protocol document
 ├── register_dump.py         # HA-free read-only register dump (diagnostics + tools/ivgm_dump.py)
 ├── diagnostics.py           # "Download diagnostics" → full register dump
 ├── date.py                  # Date entities
@@ -162,6 +164,7 @@ tests/
 │                            #   (custom_components/ha_felicity/ivgm_documented_registers.json)
 ├── test_power_scaling.py    # Per-model telemetry/setpoint scaling — measured, never inherited
 ├── test_card_contract.py    # The cards' name-based coupling to the register maps
+├── test_ivam_support.py     # IVAM: provenance vs its document; no write ever reaches the bus
 ├── day_replay.py            # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
 └── test_day_replay.py       # Replays: what actually reaches the inverter registers
 
@@ -839,6 +842,63 @@ and `tests/test_model_coverage.py` fails if any supported model is missing from
 exactly one control path, from `MODEL_REGISTRY`, from `INVERTER_MAX_POWER_KW`, or
 lacks the registers its own control path writes.  (Verified by removing IVGM from
 `ECO_TIMEOFUSE_MODELS`: two tests fail.)
+
+### IVAM6048P1G1 — MONITOR-ONLY (Oct 2026)
+
+Added from Felicity's *IVAM High-Frequency Inverter External Communication
+Protocol RS485* (v01, 2026-07-06; 9600 8N1, slave 1–31), frozen as
+`ivam_documented_registers.json`.  **The document has one register table and it
+is read-only telemetry** — no operating/economic mode, no time-of-use rule, no
+power limit.  So there is nothing for the EMS to drive, and the model is the
+first member of a third category, `const.MONITOR_ONLY_MODELS`:
+
+- `TypeSpecificHandler.async_write_registers` — the bottom of EVERY write path
+  (coordinator, number/select/time/date entities, a future write service) —
+  refuses on a monitor-only model, logs once, returns False.
+- The coordinator never calls `_transition_to_state` for it (reports `idle` /
+  self-use instead of warning "transition failed" every poll), and
+  `_transition_to_state` refuses too; safe power returns the Power Level
+  without throttling (there is no power register).
+- `__init__` forces `grid_mode = off` at setup; the Grid Mode select offers only
+  `off`; the strategy select is not created.  The EMS does not run, so flexible
+  loads do not either.
+- `type_specific` reads it through the shared keys (`bat1_soc`, `bat1_voltage`,
+  `grid_a_phase_power`, `grid_a_current`) and reports the mode "Monitoring only".
+
+**Why a third category, not "in neither control path":**
+`test_model_has_exactly_one_control_path` exists to catch a model someone forgot
+to plumb.  A declared absence keeps that test meaningful; an implicit one would
+make every future forgotten model look like a deliberate monitor-only install.
+The inverse is pinned too: a monitor-only map must contain **no** control
+register and no writable entity (`test_control_path_registers_exist_in_the_model_map`).
+
+⚠️ **Its telemetry sits at the IVGM / T-REX-25/50 addresses** (31 of 34 match —
+SOC 0x1138, PV1 0x1128, grid 0x1173 …), but 0x118C is *Smart Load power* (W)
+where the IVGM has *Micro-inverter total energy* — same block, not the same map.
+That match does **not** license borrowing their SETTING addresses: the
+addresses rule above applies, and `tests/test_ivam_support.py` fails on any
+address or name not in the IVAM document.
+
+⚠️ **The power scale is the document's (W) and unmeasured.**  The IVGM document
+also said W and was 10× off.  Monitor-only makes a wrong scale a wrong reading,
+not a wrong command; the diagnostics dump's physics checks (now including
+`Grid A` and `Load A`) settle it.  Open questions: `docs/IVAM_SUPPORT_GAPS.md`.
+
+Not mapped: the "inquiry – Day/Month/Year" registers (0x1260–0x1269,
+0x1294–0x1298) — undocumented period; in the transcript, so the dump reads them.
+
+The card contract exempts two keys on this model only, with reasons
+(`_ABSENT_ON` in `test_card_contract.py`): `loadpower_lineside` (no grid-side
+meter) and `battery_discharge_depth_on_grid_bms` (no BMS limit registers).  The
+replay harness models a monitor-only inverter (`FakeInverter.monitor_only`):
+`test_a_monitor_only_inverter_is_never_written` runs a day with the EMS and
+safe power ON and asserts zero writes.
+
+**Side find, NOT fixed:** the `ha_felicity.write_register` service in
+`__init__.py` calls `coordinator.async_write_register`, which does not exist
+(only `TypeSpecificHandler` has it) — the service raises `AttributeError` on any
+model.  Pre-existing; fixing it turns a raw register-write service on, which is
+the maintainer's call.
 
 `INVERTER_MAX_POWER_KW` in `const.py` maps each model to its max power.
 The power_level slider range and SOC trajectory calculations use this to
@@ -3232,7 +3292,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**724 tests**). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**766 tests**: 764 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -3293,6 +3353,10 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
   they differ only in `INVERTER_MAX_POWER_KW`, and share every model group)
 - Setpoint power unit declared for every model (a model missing from
   `SETPOINT_POWER_UNIT_BY_MODEL` would silently under-command charge power)
+- Monitor-only model (`test_ivam_support.py` + replay): IVAM addresses, names,
+  sizes and scales traced to its document; every write refused at the bottom of
+  the write path; a whole replayed day with the EMS and safe power ON writes
+  nothing
 - Card contract (`test_card_contract.py`): every model exposes an entity NAMED
   for each key the energy-flow card resolves, of the right device_class AND unit;
   the shortest-match rule picks the intended entity (not a same-suffixed

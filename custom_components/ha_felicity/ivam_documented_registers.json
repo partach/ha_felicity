@@ -1,0 +1,397 @@
+{
+ "_source": "Felicity 'IVAM High-Frequency Inverter External Communication Protocol RS485', v01 2026-07-06 (model IVAM6048P1G1, 9600 8N1, slave address 1-31). Frozen transcript of section 3.1, the ONLY register table the document has: read-only telemetry. It defines NO setting registers (no operating/economic mode, no time-of-use rules, no power limit), which is why the IVAM is MONITOR-ONLY in this integration. tests/test_ivam_support.py asserts every address in the IVAM map is in here, with a matching name.",
+ "registers": {
+  "0x1109": {
+   "name": "Alarm Code",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "0",
+   "unit": "-",
+   "attribute": "R"
+  },
+  "0x110A": {
+   "name": "Fault Code",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "0",
+   "unit": "-",
+   "attribute": "R"
+  },
+  "0x1118": {
+   "name": "PV1 input voltage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "V",
+   "attribute": "R"
+  },
+  "0x1119": {
+   "name": "PV2 input voltage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "V",
+   "attribute": "R"
+  },
+  "0x111C": {
+   "name": "PV1 Current",
+   "size": 1,
+   "type": "int",
+   "rate": "-1",
+   "unit": "A",
+   "attribute": "R"
+  },
+  "0x111D": {
+   "name": "PV2 Current",
+   "size": 1,
+   "type": "int",
+   "rate": "-1",
+   "unit": "A",
+   "attribute": "R"
+  },
+  "0x1128": {
+   "name": "PV1 input power",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "W",
+   "attribute": "R"
+  },
+  "0x1129": {
+   "name": "PV2 input power",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "W",
+   "attribute": "R"
+  },
+  "0x112C": {
+   "name": "Battery voltage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "V",
+   "attribute": "R"
+  },
+  "0x1130": {
+   "name": "Battery current",
+   "size": 1,
+   "type": "int",
+   "rate": "-1",
+   "unit": "A",
+   "attribute": "R"
+  },
+  "0x1131": {
+   "name": "Battery power",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "W",
+   "attribute": "R"
+  },
+  "0x1138": {
+   "name": "Battery SOC",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "%",
+   "attribute": "R"
+  },
+  "0x1144": {
+   "name": "SccHs temperature",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "℃",
+   "attribute": "R"
+  },
+  "0x114D": {
+   "name": "Generater voltage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "V",
+   "attribute": "R"
+  },
+  "0x114A": {
+   "name": "Generater current",
+   "size": 1,
+   "type": "int",
+   "rate": "-1",
+   "unit": "A",
+   "attribute": "R"
+  },
+  "0x1170": {
+   "name": "Generater Power",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "W",
+   "attribute": "R"
+  },
+  "0x1150": {
+   "name": "Grid voltage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "V",
+   "attribute": "R"
+  },
+  "0x115C": {
+   "name": "Grid current",
+   "size": 1,
+   "type": "int",
+   "rate": "-1",
+   "unit": "A",
+   "attribute": "R"
+  },
+  "0x1173": {
+   "name": "Grid Power",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "W",
+   "attribute": "R"
+  },
+  "0x1156": {
+   "name": "Load voltage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "V",
+   "attribute": "R"
+  },
+  "0x1162": {
+   "name": "Load current",
+   "size": 1,
+   "type": "int",
+   "rate": "-1",
+   "unit": "A",
+   "attribute": "R"
+  },
+  "0x1179": {
+   "name": "Load Power",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "W",
+   "attribute": "R"
+  },
+  "0x117C": {
+   "name": "Load apparent power",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "0",
+   "unit": "VA",
+   "attribute": "R"
+  },
+  "0x117F": {
+   "name": "Load percentage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "0",
+   "unit": "%",
+   "attribute": "R"
+  },
+  "0x116F": {
+   "name": "Load frequency",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-2",
+   "unit": "Hz",
+   "attribute": "R"
+  },
+  "0x1185": {
+   "name": "Smart Load voltage",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "V",
+   "attribute": "R"
+  },
+  "0x1188": {
+   "name": "Smart Load current",
+   "size": 1,
+   "type": "int",
+   "rate": "-1",
+   "unit": "A",
+   "attribute": "R"
+  },
+  "0x118C": {
+   "name": "Smart Load power",
+   "size": 1,
+   "type": "int",
+   "rate": "0",
+   "unit": "W",
+   "attribute": "R"
+  },
+  "0x1195": {
+   "name": "PV1 Generated energy inquiry Total 32 bit",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1197": {
+   "name": "PV2 Generated energy inquiry Total 32 bit",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11B1": {
+   "name": "PV1 Generated energy inquiry This day",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11B2": {
+   "name": "PV1 Generated energy inquiry This month",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11B4": {
+   "name": "PV1 Generated energy inquiry This year",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11B6": {
+   "name": "PV2 Generated energy inquiry This day",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11B7": {
+   "name": "PV2 Generated energy inquiry This month",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11B9": {
+   "name": "PV2 Generated energy inquiry This year",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1260": {
+   "name": "PV1 Generated energy inquiry - Day",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1261": {
+   "name": "PV1 Generated energy inquiry - Month",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1263": {
+   "name": "PV1 Generated energy inquiry - Year",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1265": {
+   "name": "PV2 Generated energy inquiry - Day",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1266": {
+   "name": "PV2 Generated energy inquiry - Month",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1268": {
+   "name": "PV2 Generated energy inquiry - Year",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11A9": {
+   "name": "Load consumption energy inquiry Total 32 bit",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11E5": {
+   "name": "Load consumption energy inquiry This day",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11E6": {
+   "name": "Load consumption energy inquiry This month",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x11E8": {
+   "name": "Load consumption energy inquiry This year",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1294": {
+   "name": "Load consumption energy inquiry - Day",
+   "size": 1,
+   "type": "unsigned int",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1295": {
+   "name": "Load consumption energy inquiry - Month",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  },
+  "0x1297": {
+   "name": "Load consumption energy inquiry - Year",
+   "size": 2,
+   "type": "unsigned long",
+   "rate": "-1",
+   "unit": "KWH",
+   "attribute": "R"
+  }
+ }
+}

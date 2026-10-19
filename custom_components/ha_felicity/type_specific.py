@@ -5,6 +5,7 @@ from .const import (
     ECO_TIMEOFUSE_MODELS,
     IVGM_MODELS,
     IVGM_UNSUPPORTED_WRITES,
+    MONITOR_ONLY_MODELS,
     OPERATING_MODE_MODELS,
     SETPOINT_WATT_MODELS,
     WATT_POWER_MODELS,
@@ -25,6 +26,12 @@ class TypeSpecificHandler:
         self.slave_id = slave_id
         self.register_map = register_map
         self.peak_shaving_enabled = False
+        self._monitor_only_refusal_logged = False
+
+    @property
+    def monitor_only(self) -> bool:
+        """True for a model the integration may read but must never write."""
+        return self._inverter_model in MONITOR_ONLY_MODELS
 
     async def _write_if_defined(self, key: str, value: int) -> bool:
         """Write a register, unless this model's protocol doesn't define it.
@@ -63,7 +70,7 @@ class TypeSpecificHandler:
             _LOGGER.debug("battery_voltage missing or invalid (≤%.1fV) on 5/10K model", MIN_VALID_VOLTAGE)
             return None
     
-        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS or self.monitor_only:
             bat1 = data.get("bat1_voltage")
             bat2 = data.get("bat2_voltage")
     
@@ -108,6 +115,8 @@ class TypeSpecificHandler:
                         Zero Export To CT Sell Enable (0 Disabled, 1 Enabled)
                         Zero-export mode selection (0 CT, 1 Meter)
         """
+        if self.monitor_only:
+            return "Monitoring only"
         try:
             if self._inverter_model in OPERATING_MODE_MODELS:
                 modes = {
@@ -146,6 +155,8 @@ class TypeSpecificHandler:
             keys = ("ac_input_current", "ac_input_current_l2", "ac_input_current_l3")
         elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             keys = ("phase_a_ct_current", "phase_b_ct_current", "phase_c_ct_current")
+        elif self.monitor_only:
+            keys = ("grid_a_current",)      # one phase, the inverter's grid port
         else:
             return None
         return [abs(data.get(k) or 0.0) for k in keys]
@@ -166,6 +177,8 @@ class TypeSpecificHandler:
             phase_2 = abs(data.get("phase_b_ct_current", 0.0))
             phase_3 = abs(data.get("phase_c_ct_current", 0.0))
             return max(phase_1, phase_2, phase_3)
+        elif self.monitor_only:
+            return abs(data.get("grid_a_current") or 0.0)
 
         _LOGGER.debug("max current not found / is None")
         return None
@@ -191,6 +204,12 @@ class TypeSpecificHandler:
             if any(p is not None for p in powers):
                 total = sum((p or 0.0) for p in powers)
                 return total if self._inverter_model in WATT_POWER_MODELS else total * 1000.0
+        elif self.monitor_only:
+            # The inverter's grid port (no CT).  Sign undocumented — assumed
+            # import-positive like the other models; see IVAM_SUPPORT_GAPS.md.
+            val = data.get("grid_a_phase_power")
+            if val is not None:
+                return float(val) if self._inverter_model in WATT_POWER_MODELS else float(val) * 1000.0
         return None
 
     def determine_battery_soc(self, data: dict) -> int | float | None:
@@ -209,7 +228,7 @@ class TypeSpecificHandler:
             _LOGGER.debug("battery_capacity missing on 10K model")
             return None
         
-        elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
+        elif self._inverter_model in ECO_TIMEOFUSE_MODELS or self.monitor_only:
             bat1 = data.get("bat1_soc")
             bat2 = data.get("bat2_soc")
         
@@ -514,7 +533,24 @@ class TypeSpecificHandler:
         return await self.async_write_registers(address, values)
     
     async def async_write_registers(self, start_address: int, values: list[int]) -> bool:
-        """Write multiple registers."""
+        """Write multiple registers.
+
+        Every write in the integration ends here, so this is where a
+        monitor-only model is protected: its protocol document defines no
+        writable register, and an undocumented address can be a protection
+        parameter (const.IVGM_UNSUPPORTED_WRITES is the precedent).  Refused,
+        logged once, and reported as a failure so no caller believes it worked.
+        """
+        if self.monitor_only:
+            if not self._monitor_only_refusal_logged:
+                self._monitor_only_refusal_logged = True
+                _LOGGER.warning(
+                    "Refused a write to %s on %s: this model is monitoring-only — "
+                    "its protocol document defines no writable registers. The EMS "
+                    "cannot control it; see docs/IVAM_SUPPORT_GAPS.md",
+                    start_address, self._inverter_model,
+                )
+            return False
         try:
             result = await self.client.write_registers(
                 address=start_address, 

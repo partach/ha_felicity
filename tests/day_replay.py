@@ -192,13 +192,19 @@ class FakeInverter:
         self._pv_day = clock.now.date()
         self.last_grid_kw = 0.0               # signed: + import, - export
         # Factory-ish defaults: rule 1 all day, every weekday, General mode.
-        self.set("econ_rule_1_start_time", 0)
-        self.set("econ_rule_1_stop_time", 0)
-        if self.eco_path:
+        # A monitor-only model has no rule registers at all: it just runs
+        # self-use, whatever anyone tries to write.
+        if self.monitor_only:
+            pass
+        elif self.eco_path:
+            self.set("econ_rule_1_start_time", 0)
+            self.set("econ_rule_1_stop_time", 0)
             self.set("eco_timeofuse", 0)
             self.set("eco_effectiveweek", 0x7F)
             self.set("system_mode", 2)
         else:
+            self.set("econ_rule_1_start_time", 0)
+            self.set("econ_rule_1_stop_time", 0)
             self.set("operating_mode", 0)
             self.set("econ_rule_1_effective_week", 0x7F)
         self._sync_soc()
@@ -207,6 +213,10 @@ class FakeInverter:
     @property
     def eco_path(self) -> bool:
         return self.model in const.ECO_TIMEOFUSE_MODELS
+
+    @property
+    def monitor_only(self) -> bool:
+        return self.model in const.MONITOR_ONLY_MODELS
 
     def set(self, key: str, value: float) -> None:
         info = self.register_map[key]
@@ -273,6 +283,8 @@ class FakeInverter:
         runs on grid, the battery rests); 'self_use' otherwise (General mode,
         rule off or outside its window: the battery covers the house).
         """
+        if self.monitor_only:
+            return "self_use"
         if self.eco_path:
             if self.get("eco_timeofuse") != 1 or not self._rule_in_window():
                 return "self_use"
@@ -374,6 +386,12 @@ class FakeInverter:
         grid current per phase (safe power), PV power and PV energy today
         (PV confidence)."""
         amps = self.phase_amps(single_phase_kw, l1_kw)
+        if self.monitor_only:                  # IVAM: one phase, W
+            self.set("grid_a_current", round(max(amps), 1))
+            self.set("grid_a_phase_power", round(self.last_grid_kw * 1000))
+            self.set("pv1_power", round(pv_kw * 1000))
+            self.set("pv1_day_gen_energy", round(self.pv_today_kwh, 1))
+            return
         keys = (("phase_a_ct_current", "phase_b_ct_current", "phase_c_ct_current")
                 if self.eco_path else
                 ("ac_input_current", "ac_input_current_l2", "ac_input_current_l3"))

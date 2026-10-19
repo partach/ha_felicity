@@ -30,6 +30,7 @@ from .const import (
     DEFAULT_STOPBITS,
     DOMAIN,
     MODEL_REGISTRY,
+    MONITOR_ONLY_MODELS,
 )
 from .coordinator import HA_FelicityCoordinator
 
@@ -275,6 +276,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if updated_options.get("scheduler_engine") == "milp":
             updated_options["scheduler_engine"] = "greedy"
         updated_options["_scheduler_milp_reverted"] = True
+
+    # A monitoring-only model (no documented control registers) cannot be
+    # driven by the EMS: keep it off, whatever an option or a strategy preset
+    # stored, so the card never shows a plan the inverter cannot carry out.
+    if inverter_model in MONITOR_ONLY_MODELS and updated_options.get("grid_mode") != "off":
+        _LOGGER.warning(
+            "%s is monitoring-only (its protocol defines no control registers) — "
+            "EMS grid mode set to off", inverter_model)
+        updated_options["grid_mode"] = "off"
 
     if updated_options != options:
         hass.config_entries.async_update_entry(entry, options=updated_options)

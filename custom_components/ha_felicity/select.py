@@ -10,7 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL, DOMAIN
+from .const import (
+    CONF_INVERTER_MODEL,
+    DEFAULT_INVERTER_MODEL,
+    DOMAIN,
+    MONITOR_ONLY_MODELS,
+)
 from .coordinator import HA_FelicityCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,13 +52,19 @@ async def async_setup_entry(
         if info.get("type") == "select_multi"
     ])
 
+    # A monitoring-only model cannot be driven: the EMS stays off, so the
+    # strategy presets (which switch grid_mode on) are not offered and Grid Mode
+    # offers only "off".
+    monitor_only = coordinator.inverter_model in MONITOR_ONLY_MODELS
+
     # Strategy preset — the primary user-facing control
-    entities.append(
-        HA_FelicityStrategySelect(
-            coordinator=coordinator,
-            entry=entry,
+    if not monitor_only:
+        entities.append(
+            HA_FelicityStrategySelect(
+                coordinator=coordinator,
+                entry=entry,
+            )
         )
-    )
 
     # Internal configuration select entities (stored in entry.options)
     entities.append(
@@ -61,7 +72,7 @@ async def async_setup_entry(
             coordinator=coordinator,
             entry=entry,
             option_key="grid_mode",
-            select_options=["off", "from_grid", "to_grid", "both"],
+            select_options=["off"] if monitor_only else ["off", "from_grid", "to_grid", "both"],
             name="Grid Mode",
             icon="mdi:transmission-tower",
             entity_category=EntityCategory.CONFIG,

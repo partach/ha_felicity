@@ -25,6 +25,7 @@ from .const import (
     INVERTER_MODEL_TREX_TEN,
     INVERTER_MODEL_TREX_TWENTY_FIVE,
     INVERTER_PHASES,
+    MONITOR_ONLY_MODELS,
 )
 from .type_specific import TypeSpecificHandler
 
@@ -2552,7 +2553,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # "auto" = active only when grid_mode is from_grid, to_grid, or both
         # "on" = always active (explicit override)
         # "off" = never active (external EMS handles everything)
-        if safe_power_enabled == "off":
+        # A monitor-only model has no power register to lower: protection
+        # through the inverter is impossible, so do not pretend to throttle.
+        if safe_power_enabled == "off" or self.inverter_model in MONITOR_ONLY_MODELS:
             self.safe_max_power = user_level
             return user_level
         if safe_power_enabled == "auto" and grid_mode == "off":
@@ -2689,6 +2692,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def _transition_to_state(self, new_state: str) -> bool:
         """Apply state change via economic rule 1. Returns True if critical writes succeeded."""
         opts = self.config_entry.options
+        # A monitor-only model (const.MONITOR_ONLY_MODELS) has no documented
+        # control registers: never attempt a transition.  False, so the state
+        # is not recorded as applied.  type_specific refuses the writes anyway;
+        # this keeps the coordinator from trying every tick.
+        if self.inverter_model in MONITOR_ONLY_MODELS:
+            _LOGGER.debug("%s is monitoring-only — not applying state %s",
+                          self.inverter_model, new_state)
+            return False
         # grid_mode "off" means HANDS OFF the inverter.  The only write still
         # allowed is undoing a charge/discharge THIS session started (the user
         # switched the EMS off mid-action).  Without this guard every HA start
@@ -3536,7 +3547,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                 f"{grid_power:.0f}W" if grid_power is not None else "?",
                             )
 
-                            if desired_state != self._current_energy_state:
+                            if self.inverter_model in MONITOR_ONLY_MODELS:
+                                # Nothing to drive (const.MONITOR_ONLY_MODELS):
+                                # report self-use, never attempt a transition.
+                                self._current_energy_state = "idle"
+                            elif desired_state != self._current_energy_state:
                                 success = await self._transition_to_state(desired_state)
                                 if success:
                                     # Arm / disarm the charge commitment on the

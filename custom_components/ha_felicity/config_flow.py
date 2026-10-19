@@ -38,6 +38,7 @@ from .const import (
     DEFAULT_STOPBITS,
     DEFAULT_TCP_PORT,
     DOMAIN,
+    INVERTER_MODEL_IVAM_SIX,
     INVERTER_MODEL_IVGM_EIGHT,
     INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
@@ -184,6 +185,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             selector.SelectOptionDict(
                                 value=INVERTER_MODEL_IVGM_TWENTY,
                                 label=f"{INVERTER_MODEL_IVGM_TWENTY} (3-phase, provisional)"),
+                            # 9600 baud per its protocol; read-only — no EMS control
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVAM_SIX,
+                                label=f"{INVERTER_MODEL_IVAM_SIX} (monitoring only, 9600 baud, provisional)"),
                             # Future models go here
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,

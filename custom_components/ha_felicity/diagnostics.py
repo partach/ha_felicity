@@ -21,7 +21,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from . import register_dump
-from .const import CONF_HOST, CONF_INVERTER_MODEL, DOMAIN, IVGM_MODELS, MODEL_REGISTRY
+from .const import (
+    CONF_HOST,
+    CONF_INVERTER_MODEL,
+    DOMAIN,
+    INVERTER_MODEL_IVAM_SIX,
+    IVGM_MODELS,
+    MODEL_REGISTRY,
+)
 
 _TO_REDACT = {CONF_HOST}
 
@@ -61,6 +68,11 @@ async def _async_dump(hass: HomeAssistant, coordinator, model: str | None) -> di
     if model in IVGM_MODELS:
         documented = await hass.async_add_executor_job(
             register_dump.load_ivgm_documented_addresses)
+    elif model == INVERTER_MODEL_IVAM_SIX:
+        # Includes the unmapped "inquiry - Day/Month/Year" block, so a dump
+        # can tell what those registers answer.
+        documented = await hass.async_add_executor_job(
+            register_dump.load_ivam_documented_addresses)
 
     addresses = register_dump.map_addresses(register_map)
     if documented:

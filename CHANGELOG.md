@@ -2,6 +2,13 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **New model: IVAM6048P1G1 (6 kW) — monitoring only, provisional.** Sensors
+  and the energy-flow card work; the EMS does not. Felicity's protocol document
+  for this inverter defines only read-only measurements and no settings, so the
+  integration never writes to it and keeps the EMS off. Choose 9600 baud. What
+  is still unverified (the power scale above all) is listed in
+  `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
+
 - **Your real consumption pattern is used at last.** The hour-by-hour
   consumption profile behind the overnight reserve and the battery forecast
   was always flat (every hour the same), because the history it was read from

@@ -804,3 +804,23 @@ async def test_a_solar_ev_runs_only_where_the_sun_covers_it():
     not_from_sun = sum(max(0.0, 0.6 + t.switched_kw - t.pv_kw) / 60.0 for t in on)
     assert not_from_sun < 0.5, f"{not_from_sun:.2f} kWh of the EV's energy not from the sun"
     assert max(r.hass.number_history.get("number.phoenix_current", [16])) <= 13
+
+
+# ---------------------------------------------------------------------------
+# A monitor-only inverter (IVAM6048P1G1) is never written
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_monitor_only_inverter_is_never_written():
+    """The IVAM's protocol defines no control registers.  Even with the EMS
+    switched on (the setup migration forces it off; the replay bypasses setup)
+    and safe power set to "on", a whole day passes without one write, and the
+    coordinator reports self-use instead of retrying a transition each poll."""
+    r = _replay(const.INVERTER_MODEL_IVAM_SIX,
+                options={**AUTO, "safe_power_management": "on", "max_amperage_per_phase": 10},
+                soc=30.0, start=day(D, 0), prices_for=DUCK, load_kw=lambda _t: 3.0,
+                pv_kw=SUN, forecast_kw=SUN)
+    await r.run_until(day(D, 23), step_s=300)
+    assert r.inverter.writes == []
+    assert r.coordinator._current_energy_state == "idle"
+    assert r.coordinator.battery_soc is not None        # but it IS read

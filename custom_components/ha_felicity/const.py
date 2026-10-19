@@ -1,4 +1,9 @@
 """Constants for the Felicity integration."""
+from .ivam import (
+    _COMBINED_REGISTERS_IVAM_SIX,
+    _REGISTERS_IVAM_SIX,
+    REGISTER_SETS_IVAM_SIX,
+)
 from .ivgm import (
     _COMBINED_REGISTERS_IVGM_EIGHT,
     _COMBINED_REGISTERS_IVGM_TWENTY,
@@ -58,6 +63,10 @@ INVERTER_MODEL_IVGM_EIGHT = "IVGM-8KLP1G1"
 INVERTER_MODEL_IVGM_FIFTEEN = "IVGM-15KLP3G1"
 INVERTER_MODEL_IVGM_TWENTY = "IVGM-20KLP3G1"
 
+# IVAM high-frequency inverter (see ivam.py and docs/IVAM_SUPPORT_GAPS.md).
+# MONITOR-ONLY: its protocol document defines telemetry and no settings.
+INVERTER_MODEL_IVAM_SIX = "IVAM6048P1G1"
+
 INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_TREX_FIVE: 5,
     INVERTER_MODEL_TREX_SIX: 6,
@@ -67,6 +76,7 @@ INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_IVGM_EIGHT: 8,
     INVERTER_MODEL_IVGM_FIFTEEN: 15,
     INVERTER_MODEL_IVGM_TWENTY: 20,
+    INVERTER_MODEL_IVAM_SIX: 6,
 }
 
 # Phases the inverter spreads its AC power over (the P1/P3 in the model id).
@@ -82,6 +92,7 @@ INVERTER_PHASES = {
     INVERTER_MODEL_IVGM_EIGHT: 1,
     INVERTER_MODEL_IVGM_FIFTEEN: 3,
     INVERTER_MODEL_IVGM_TWENTY: 3,
+    INVERTER_MODEL_IVAM_SIX: 1,
 }
 
 SUPPORTED_MODELS = [
@@ -93,6 +104,7 @@ SUPPORTED_MODELS = [
     INVERTER_MODEL_IVGM_EIGHT,
     INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
+    INVERTER_MODEL_IVAM_SIX,
     # add new ones here
 ]
 
@@ -114,6 +126,17 @@ OPERATING_MODE_MODELS = (
     INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_SIX,
     INVERTER_MODEL_TREX_TEN,
+)
+
+#: Models the integration can READ but must never WRITE.  Their protocol
+#: document defines no control registers (no operating/economic mode, no
+#: time-of-use rule, no power limit), so there is no control path to belong to:
+#: type_specific refuses every write on them, the coordinator never attempts a
+#: state transition, and the EMS stays off.  A third category rather than
+#: "neither of the two above", so that leaving a new model out of both control
+#: paths is still a test failure and not a silent monitor-only install.
+MONITOR_ONLY_MODELS = (
+    INVERTER_MODEL_IVAM_SIX,
 )
 
 #: IVGM family members.  They share the ECO block with TREX-25/50 but NOT the
@@ -171,6 +194,8 @@ POWER_UNIT_BY_MODEL = {
     INVERTER_MODEL_IVGM_EIGHT:       "kW",   # follows the 3-phase measurement
     INVERTER_MODEL_IVGM_FIFTEEN:     "kW",   # measured on this hardware
     INVERTER_MODEL_IVGM_TWENTY:      "kW",   # measured; still fully supported
+    INVERTER_MODEL_IVAM_SIX:         "W",    # its document ("Rate 0", W) — UNMEASURED;
+                                             # the IVGM document said W and was 10x off
 }
 
 #: Derived — kept so type_specific.py keeps reading a single, obvious name.
@@ -207,6 +232,7 @@ SETPOINT_POWER_UNIT_BY_MODEL = {
     INVERTER_MODEL_IVGM_EIGHT:       "W",    # its document says W, and the
     INVERTER_MODEL_IVGM_FIFTEEN:     "W",    # 15K's defaults prove it for the
     INVERTER_MODEL_IVGM_TWENTY:      "W",    # 3-phase members
+    INVERTER_MODEL_IVAM_SIX:         "W",    # no setpoint registers exist; never written
 }
 
 #: Derived — used on the SETPOINT read/write path (determine_rule_power,
@@ -295,6 +321,14 @@ def build_groups(registers):
 
 
 MODEL_REGISTRY = {
+    INVERTER_MODEL_IVAM_SIX: {
+        "registers":        _REGISTERS_IVAM_SIX,
+        "combined":         _COMBINED_REGISTERS_IVAM_SIX,
+        "register_groups":  build_groups(_REGISTERS_IVAM_SIX),
+        "register_sets":    REGISTER_SETS_IVAM_SIX,
+        "default_first_reg": 0x1109,   # the document's first register
+        "default_slave_id": 1,
+    },
     INVERTER_MODEL_IVGM_EIGHT: {
         "registers":        _REGISTERS_IVGM_EIGHT,
         "combined":         _COMBINED_REGISTERS_IVGM_EIGHT,

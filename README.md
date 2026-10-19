@@ -14,6 +14,8 @@ Currently supports IVGM / TREX types:
 - The T-REX 5 and 10K series with H or L (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3).<br>
 Letters are in the type indication like  T-REX-**10**K**H**P**3**G01
 - The T-REX 25K and 50K range is now released with v0.8.0 (has complete new register setup).
+- The IVGM 8K / 15K / 20K range (provisional — see `docs/IVGM_SUPPORT_GAPS.md`).
+- The IVAM6048P1G1 (6 kW) — **monitoring only**: its protocol defines no setting registers, so the EMS cannot control it (see `docs/IVAM_SUPPORT_GAPS.md`).
 - Others with exactly similar register configurations as above types, just be aware you chose the right configuration matching your type.
 
 
