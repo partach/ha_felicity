@@ -26,6 +26,7 @@ from .const import (
     MONITOR_ONLY_MODELS,
     OPERATING_MODE_MODELS,
 )
+from .plausibility import PlausibilityGuard
 from .type_specific import TypeSpecificHandler
 
 _LOGGER = logging.getLogger(__name__)
@@ -133,6 +134,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.model_combined = model_combined
         self.inverter_model = inverter_model if inverter_model else INVERTER_MODEL_TREX_TEN
         self._inverter_max_power_kw = INVERTER_MAX_POWER_KW.get(self.inverter_model, 10)
+        # Impossible readings never reach the sensors or the EMS (issue #220).
+        self._plausibility = PlausibilityGuard(register_map, self._inverter_max_power_kw)
+        self._reply_count_mismatches = 0
         self.TypeSpecificHandler = TypeSpecificHandler(client=self.client, slave_id=self.slave_id, inverter_model=self.inverter_model, register_map=self.register_map)
         
         # Nordpool: override wins over entity
@@ -3127,6 +3131,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "groups_timed_out": [f"{g['start']}/{g['count']}" for g in timed_out],
             "silent_retries": silent_retries,
             "dead_registers": sorted(self.dead_register_keys),
+            "reply_count_mismatches": getattr(self, "_reply_count_mismatches", 0),
+            "implausible_readings": dict(getattr(
+                getattr(self, "_plausibility", None), "rejected", {}) or {}),
         }
         update_interval = getattr(self, "update_interval", None)
         interval = update_interval.total_seconds() if update_interval else 10
@@ -3200,6 +3207,20 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if result.isError():
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
                     continue
+                # A reply of the wrong length answers some OTHER request (issue
+                # #220): pymodbus RTU accepts any reply from the right slave, so
+                # after a late reply and a silent retry a poll can run one reply
+                # behind — a 4-register lifetime total decoded into a 6-register
+                # year/month/day block (0 in one, the lifetime in the next).
+                # Discard it rather than decode it against the wrong keys.
+                registers = getattr(result, "registers", None)
+                if not isinstance(registers, list) or len(registers) != count:
+                    self._reply_count_mismatches += 1
+                    _LOGGER.warning(
+                        "Reply for %d/%d had %s registers — not this request's "
+                        "answer, discarded", start_addr, count,
+                        len(registers) if isinstance(registers, list) else "no")
+                    continue
 
                 if not any_read_ok and self._read_backoff_s:
                     _LOGGER.info("Felicity inverter responding again — polling resumed")
@@ -3252,6 +3273,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                         value = round(value, precision)
 
                     new_data[key] = value
+            self._plausibility.apply(new_data, time.time())
             self._record_poll_stats(poll_started, groups_ok, timed_out_groups, silent_retries)
             if any_read_ok and timed_out_groups:
                 self._adapt_read_groups(timed_out_groups)

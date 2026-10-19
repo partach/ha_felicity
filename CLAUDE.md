@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **824**: 822 pass + 2 documented skips) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **845**: 843 pass + 2 documented skips) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -144,6 +144,7 @@ custom_components/ha_felicity/
 ├── ivam.py                  # IVAM6048P1G1 map — MONITOR-ONLY (telemetry; no control registers)
 ├── ivam_documented_registers.json # Frozen transcript of the IVAM protocol document
 ├── trex_documented_registers.json # Frozen transcript of the IVGM5048/10048 document = T-REX-5/6/10 layout
+├── plausibility.py          # HA-free guard: impossible readings never reach sensors/EMS (#220)
 ├── register_dump.py         # HA-free read-only register dump (diagnostics + tools/ivgm_dump.py)
 ├── diagnostics.py           # "Download diagnostics" → full register dump
 ├── date.py                  # Date entities
@@ -168,6 +169,8 @@ tests/
 ├── test_ivam_support.py     # IVAM: provenance vs its document; no write ever reaches the bus
 ├── test_trex_documented_registers.py # T-REX-5/6/10 maps vs the IVGM5048/10048 document
 ├── test_write_register_service.py    # the write_register service, through the real write path
+├── test_plausibility.py     # #220 guard, judged by HA's own total_increasing sum rule
+├── test_sensor_startup.py   # sensors show the first poll at once; energy counters restore
 ├── day_replay.py            # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
 └── test_day_replay.py       # Replays: what actually reaches the inverter registers
 
@@ -2841,6 +2844,71 @@ would stop the whole integration loading; `_pick_solver` already uses HiGHS
 when present), and grid-limit budgeting at plan time (v1.3.12's one-step
 battery cut handles the stacking; check the history after 11 Oct first).
 
+### 8k. Long-term statistics inflated 3–8.5×; totals unknown at startup — FIXED (Oct 2026, issue #220)
+
+Maintainer's own install (T-REX-10, since Dec 2025, statistics corrected by hand
+20+ times).  The decisive fact is how HA's recorder sums a `total_increasing`
+sensor: any value below **0.9 × the previous** is a meter RESET, and the next
+value is counted again **in full**.  So one wrong reading on an energy counter
+adds the counter's whole value — a year of energy on a year counter.  `unknown`
+/ `unavailable` are skipped, so a missing reading is harmless; a wrong one is not.
+On a failed read the integration never published 0 (the key is absent → unknown);
+every inflation came from a wrong number in a *successful* read.  Three sources
+and three fixes, **all models** (maintainer: "more a HA fix"), `state_class`
+kept so the statistics continue:
+
+1. **The inverter's rollover glitch** (T-REX-10, observed): at its period change
+   it answers the previous period's total for one poll, then 0 — the day counter
+   read 34,309 Wh at 04:05 every day; month counters the same on the first days
+   of a month.  250–310 such spikes per statistic since Dec 2025.
+2. **A reply decoded against the wrong request.**  pymodbus 3.x RTU forces the
+   transaction id to 0 and accepts any reply from the right slave; the
+   coordinator never checked the length.  After a late reply and a silent retry
+   a poll can run one reply behind — a 4-register lifetime total decoded into
+   the 6-register year/month/day block (0 in the year counter, the lifetime in
+   the month counter).  Plausible source of the one-poll garbage too
+   (`total_ac_input_power` 1.25e8 W, `loadpower_lineside` 3.9e9 W, a year
+   counter +3,858,109 kWh).  **Fix:** a reply whose register count differs from
+   the request is discarded, never decoded (`_reply_count_mismatches` in
+   `poll_stats`).
+3. **No plausibility check anywhere.**  **Fix:** `plausibility.PlausibilityGuard`,
+   applied in the coordinator to each poll's decoded values — so the EMS is
+   protected too, not only the sensors.  Bounds come from the register's unit and
+   the model's `INVERTER_MAX_POWER_KW`, nothing model-specific:
+   - an energy counter may rise at most `5 × rating × elapsed + 0.5 kWh`;
+   - a lifetime total never falls and never reads 0; a period counter
+     (`day`/`month`/`year` in its key) may fall only to what it could have
+     counted since a reset — that IS its reset;
+   - a rejected reading publishes the last good value; a new level that holds,
+     consistently, for `CONFIRM_POLLS` (3) polls is accepted (a counter cleared
+     on the inverter is not frozen for ever);
+   - power beyond `10 × rating` is dropped (last good value for ≤ 60 s, then
+     unknown).
+   Rejections are counted per key in `poll_stats.implausible_readings`
+   (diagnostics).
+4. **Unknown for a poll after every restart.**  The first refresh runs before
+   the platforms load and `CoordinatorEntity` does not replay it.  Register and
+   combined sensors now take the data in memory in `async_added_to_hass`;
+   `total_increasing` registers use `HA_FelicityEnergySensor` (a `RestoreSensor`)
+   and show their pre-restart value until the inverter has answered for them.
+
+**Item 3 of the issue (signedness) is the T-REX-10 dump fix in 8 above**, and
+the issue's suggested index 8 would have been wrong: the dump shows the
+conversion registers are raw W, so index 8 (signed /10) reads 10× low.  They
+are index 3 (signed, raw) on the T-REX-10 only.
+
+Not done: existing inflated statistics are not repaired by code — the user
+adjusts them once (Developer tools → Statistics), or clears the conversion
+statistics that never held a meaningful value.  A garbage FIRST reading after
+a restart is accepted as the baseline (nothing to compare it with); the
+confirm-after-3 rule then recovers, but that one poll is published.
+
+Pinned by `tests/test_plausibility.py` (every scenario judged by `lts_sum`, a
+model of HA's reset rule — the old readings inflate it, the published ones do
+not), `TestRepliesOfTheWrongLength` (test_coordinator) and
+`tests/test_sensor_startup.py`.  Mutation-checked: guard not applied (2 fail),
+length check removed (1), startup value not taken (4).
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -3420,7 +3488,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**824 tests**: 822 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**845 tests**: 843 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

@@ -9,6 +9,17 @@
   is still unverified (the power scale above all) is listed in
   `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
 
+- **Energy statistics no longer inflate** (issue #220, all models). The
+  inverter's day/month/year counters briefly report the previous period's
+  total around their reset, and occasional wrong readings slipped through;
+  Home Assistant counted each one as extra energy (sums 3–8.5× too high).
+  Impossible readings are now rejected before they are published — and before
+  the EMS uses them — and a Modbus reply that doesn't match its request is
+  discarded. Existing statistics stay as they are; correct them once in
+  Developer tools → Statistics if you want.
+- **No more "unknown" after a restart.** Sensors show their value straight
+  away, and energy totals keep their last value until the inverter answers.
+
 - **T-REX-10: corrected readings, checked against a real T-REX-10.** (The
   T-REX-5/6K is unchanged until one is measured.)
   "Linepowerconversion", "Batpowerconversion" and "Loadpowerconversion" showed

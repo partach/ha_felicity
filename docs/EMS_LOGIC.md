@@ -244,6 +244,16 @@ prices. What *is* model-specific is how the plan reaches the hardware
 
 Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
 
+**Inputs are filtered before the EMS sees them (issue #220).**  Each poll's
+decoded values pass `plausibility.PlausibilityGuard` in the coordinator: an
+energy counter that jumps faster than 5 × the inverter rating could fill it, a
+lifetime total that falls or reads 0, a period counter that falls to anything
+but a reset, and power beyond 10 × the rating are replaced by the last good
+value (or left out), and a reply whose register count does not match its
+request is discarded.  So PV-today, consumption-today and grid power — inputs
+to PV confidence, the anti-conflict guard and safe power — can no longer carry a
+one-poll garbage value into a plan.
+
 The Economic-mode self-heal (re-apply the active state when the inverter reports
 a non-Economic mode mid-action) follows the same two paths — `eco_timeofuse != 1`
 or `operating_mode != 2` — for **every** model on them (Oct 2026: it used to cover

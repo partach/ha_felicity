@@ -109,6 +109,8 @@ def _make_coordinator(**overrides):
     coord._group_timeout_strikes = {}
     coord.dead_register_keys = set()
     coord._answered_keys = set()
+    coord._plausibility = coordinator_mod.PlausibilityGuard(coord.register_map, 10)
+    coord._reply_count_mismatches = 0
     coord.poll_stats = {}
     coord._last_slow_poll_warning = 0.0
     coord._last_register_set = None
@@ -956,3 +958,80 @@ class TestForecastParsing:
         frac = (11 - 8.1) / (18.75 - 8.1)
         import math as _m
         assert coord.pv_forecast_remaining == round(9.0 * (1 - (1 - _m.cos(_m.pi * frac)) / 2), 2)
+
+
+class TestRepliesOfTheWrongLength:
+    """Issue #220: pymodbus RTU accepts any reply from the right slave, so after
+    a late reply and a silent retry a poll can run one reply behind.  A
+    4-register lifetime total decoded into the 6-register year/month/day block
+    puts 0 in the year counter and the lifetime in the month counter — a reset
+    and a spike in the statistics.  A reply whose length is not the request's
+    is somebody else's answer and must not be decoded."""
+
+    def _coord(self, replies):
+        regs = {
+            "pv_total": {"address": 4438, "size": 4, "name": "T", "index": 0,
+                         "unit": "Wh", "state_class": "total_increasing"},
+            "pv_year": {"address": 4442, "size": 2, "name": "Y", "index": 0,
+                        "unit": "Wh", "state_class": "total_increasing"},
+            "pv_month": {"address": 4444, "size": 2, "name": "M", "index": 0,
+                         "unit": "Wh", "state_class": "total_increasing"},
+            "pv_day": {"address": 4446, "size": 2, "name": "D", "index": 0,
+                       "unit": "Wh", "state_class": "total_increasing"},
+        }
+        coord = _make_coordinator(
+            register_map=regs,
+            groups=[{"start": 4438, "count": 4, "keys": ["pv_total"]},
+                    {"start": 4442, "count": 6, "keys": ["pv_year", "pv_month", "pv_day"]}])
+
+        async def read(address, count, device_id):
+            ok = MagicMock()
+            ok.isError.return_value = False
+            ok.registers = replies(address, count)
+            ok.retries = 0
+            return ok
+
+        coord.client.read_holding_registers = AsyncMock(side_effect=read)
+        return coord
+
+    @staticmethod
+    async def _poll(coord):
+        with contextlib.suppress(Exception):     # later stages are not under test
+            await coord._async_update_data()
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_a_reply_meant_for_another_block_is_discarded(self):
+        total = [0, 0, 295, 33_686]                     # (295 << 16) | 33686 Wh
+        good = [0, 148, 0, 7, 0, 6777]                  # year / month / day
+        # One reply behind: the year/month/day request gets the total's answer.
+        coord = self._coord(lambda a, n: total)
+        captured = {}
+        orig = coord._plausibility.apply
+
+        def spy(data, now):
+            orig(data, now)
+            captured.update(data)
+        coord._plausibility.apply = spy
+        await self._poll(coord)
+        assert "pv_year" not in captured and "pv_month" not in captured
+        assert captured.get("pv_total") == (295 << 16) | 33_686
+        assert coord._reply_count_mismatches == 1
+        assert len(good) == 6   # what that block's own reply looks like
+
+    @pytest.mark.asyncio
+    async def test_a_reply_of_the_right_length_is_decoded(self):
+        total = [0, 0, 295, 33_686]
+        good = [0, 148, 0, 7, 0, 6777]
+        coord = self._coord(lambda a, n: total if a == 4438 else good)
+        captured = {}
+        orig = coord._plausibility.apply
+
+        def spy(data, now):
+            orig(data, now)
+            captured.update(data)
+        coord._plausibility.apply = spy
+        await self._poll(coord)
+        assert captured["pv_year"] == 148 and captured["pv_month"] == 7
+        assert captured["pv_day"] == 6777
+        assert coord._reply_count_mismatches == 0

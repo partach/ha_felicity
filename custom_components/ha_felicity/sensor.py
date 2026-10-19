@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import (
+    RestoreSensor,
+    SensorDeviceClass,
+    SensorEntity,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
@@ -33,7 +37,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Filter out keys that were already added as specific entity types above
     special_types = {"select", "time8bit", "date8bit", "select_multi", "number"}
     entities.extend([
-        HA_FelicitySensor(coordinator, entry, key, info)
+        (HA_FelicityEnergySensor if info.get("state_class") == "total_increasing"
+         else HA_FelicitySensor)(coordinator, entry, key, info)
         for key, info in coordinator.register_map.items()
         if info.get("type") not in special_types
         and info.get("index", 0) != 99
@@ -365,10 +370,25 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
             self._attr_options = self._enum_options
             self._attr_state_class = None  # enum sensors carry no state class
 
+    async def async_added_to_hass(self) -> None:
+        """Show the first poll's value at once (issue #220).
+
+        The first refresh runs before the platforms are set up, and
+        CoordinatorEntity does not replay it, so every sensor read "unknown"
+        until the NEXT poll finished — ~15 s after a restart, longer on a slow
+        link.  Templates reading it with `| float(0)` saw 0 in that window.
+        """
+        await super().async_added_to_hass()
+        self._update_value()
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        value = self.coordinator.data.get(self._key)
+        self._update_value()
+        self.async_write_ha_state()
+
+    def _update_value(self) -> None:
+        value = (self.coordinator.data or {}).get(self._key)
 
         if value is None:
             self._attr_native_value = None
@@ -387,14 +407,12 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
                 value = round(value, precision)
             self._attr_native_value = value
 
-        self.async_write_ha_state()
-
     @property
     def available(self) -> bool:
         """Return True if the entity is available."""
         return (
             self.coordinator.last_update_success
-            and self.coordinator.data.get(self._key) is not None
+            and (self.coordinator.data or {}).get(self._key) is not None
         )
         
     @property
@@ -406,6 +424,41 @@ class HA_FelicitySensor(CoordinatorEntity, SensorEntity):
         if unit == "Wh" and value is not None:
             attrs["kWh"] = round(value / 1000.0, 3)
         return attrs
+
+class HA_FelicityEnergySensor(HA_FelicitySensor, RestoreSensor):
+    """An energy counter (``total_increasing``) that survives a restart.
+
+    Until the inverter has answered for this register, it shows the value it
+    had before the restart instead of "unknown" — a counter only grows, so the
+    old value is a true lower bound, and long-term statistics see no gap and no
+    dip.  The coordinator's plausibility guard (plausibility.py) keeps wrong
+    readings away from it after that.
+    """
+
+    _restored_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self._attr_native_value is not None:
+            return
+        last = await self.async_get_last_sensor_data()
+        value = getattr(last, "native_value", None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            self._restored_value = value
+            self._attr_native_value = value
+
+    def _update_value(self) -> None:
+        super()._update_value()
+        if self._attr_native_value is None and self._restored_value is not None:
+            self._attr_native_value = self._restored_value
+        elif self._attr_native_value is not None:
+            self._restored_value = None     # a real reading replaces it for good
+
+    @property
+    def available(self) -> bool:
+        return super().available or (
+            self.coordinator.last_update_success and self._restored_value is not None)
+
 
 class HA_FelicityCombinedSensor(CoordinatorEntity, SensorEntity):
     """Representation of a combined/post-processed sensor."""
@@ -423,9 +476,18 @@ class HA_FelicityCombinedSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_class = info.get("device_class")
         self._attr_state_class = info.get("state_class")
 
+    async def async_added_to_hass(self) -> None:
+        """Show the first poll's value at once (see HA_FelicitySensor)."""
+        await super().async_added_to_hass()
+        self._update_value()
+
     @callback
     def _handle_coordinator_update(self) -> None:
-        values = [self.coordinator.data.get(src) for src in self._sources]
+        self._update_value()
+        self.async_write_ha_state()
+
+    def _update_value(self) -> None:
+        values = [(self.coordinator.data or {}).get(src) for src in self._sources]
 
         if any(v is None for v in values):
             self._attr_native_value = None
@@ -452,8 +514,6 @@ class HA_FelicityCombinedSensor(CoordinatorEntity, SensorEntity):
             except Exception as e:
                 _LOGGER.error("Error calculating combined sensor %s: %s", self._key, e)
                 self._attr_native_value = None
-                
-        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:
