@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **818**: 816 pass + 2 documented skips) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **824**: 822 pass + 2 documented skips) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -558,7 +558,7 @@ documentation is **wrong** about it, and two models that share a document do
 
 | Model | Telemetry power (4xxx) | Setpoint power (8xxx) | Evidence |
 |---|---|---|---|
-| T-REX-5/6/10 | raw **W** | **W** | long-standing, unchallenged |
+| T-REX-5/6/10 | raw **W** | **W** | long-standing; T-REX-10 telemetry confirmed by physics in a dump (Oct 2026) |
 | T-REX-25 | **/100 → kW**, precision 1 | kW (index 1) | **FROZEN — do not touch.** Proven in the field; firmware was altered, so it legitimately differs from the 50 |
 | T-REX-50 | **/100 → kW**, precision 2 | kW (index 1), **unverified** | customer B, Sept 2026 — telemetry was /10, reporting **10× too high** |
 | IVGM-8K/15K/20K | **/100 → kW**, precision 2 | raw **W** | customers A + C, measured — see the IVGM section |
@@ -946,10 +946,9 @@ document writes "Convertion", "temperautre", "Operated mode"), every rule row
 belongs to its rule.  Result on first run: **all 250 documented addresses in
 `trex_ten.py` (178 in `trex_five.py`) carry the document's quantity** — the
 AI-generated map was right.  Exceptions, each with its reason in the test:
-`setting_data_sn` (0x1100) and six version words at 0xF83C–0xF841 are not in
-the document (it puts version IDs at 0xF80A–0xF80F — a dump will tell which
-answers); `min_cell_temperature` keeps its name where the document repeats
-"Maximum" (typo).  Mutation-checked: a rule-2 SOC moved to rule 3, a battery
+`setting_data_sn` (0x1100) is not in the document; `min_cell_temperature`
+keeps its name where the document repeats "Maximum" (typo).  (The six version
+words were a second exception — settled by the dump below.)  Mutation-checked: a rule-2 SOC moved to rule 3, a battery
 voltage typed one address on, a dropped select value and an invented address
 each fail.
 
@@ -966,14 +965,40 @@ new model ids, so existing entries are untouched.  **Download diagnostics** on
 these models now reads every documented address (`register_dump.
 load_trex_documented_addresses`), so the unmapped settings come along.
 
-**Open — scale questions, deliberately NOT changed** (the IVGM document was 10×
-wrong about power; change only with a dump): `line/load/bat_power_conversion`
-(0x1195–0x1199) are /10 in our maps, the document says W; `battery_capacity_
-secondary` (0x11B0) /10 vs the document's %; `econ_rule_N_power` is signed per
-the document (−rated..+rated W), unsigned in ours (harmless for the positive
-values we write).  ~150 settings registers stay unmapped on purpose — mostly
-grid-code protection; the candidates if ever wanted are zero-export mode/power
-(0x2176/0x2177), charging mode PV-only/PV+grid (0x21B8), max AC power (0x21B9).
+**Settled by a T-REX-10 dump (maintainer's unit, Download diagnostics on
+1.3.13, 2026-10-19, charging 8.8 kW from the grid; 534 words, 0 failed,
+7.6 s).**  Each answer is a raw word compared with a register that reports the
+same quantity — not a guess at the document:
+- `line_power_conversion` (0x1195) raw **8430** = `total_ac_input_power` 8430 =
+  2877 + 2755 + 2798 over the phases; `bat_power_conversion` (0x1199) raw
+  **8825** = `battery_power` 8825 = 55.3 V × 159.6 A; `load_power_conversion`
+  (0x1197) raw **495** = `load_power_line_side` 495.  So they are raw **W** as
+  the document says; our /10 showed 843 / 882 / 50 W.  Now index 3 / 3 / 0 —
+  each the same scaling as its twin.
+- `battery_capacity_secondary` (0x11B0) raw **94** beside a 56.7 V pack in the
+  same snapshot: whole %, as the document says (0x1110 is the 0.1 % one).  Now
+  index 0.  ⚠️ The "secondary" block (0x11AB–0x11CD) is **not a second unit**:
+  it follows the Log Type/Index/Time registers, and on this unit its AC input
+  read 0 and its timestamp July 2025 — it is the snapshot stored with the last
+  log event.  Names left as they are (renaming changes entity names).
+- Version words: 0xF83C–0xF841 read 65535 / 523 / 5 / 0 / 0 / 65535; the
+  document's 0xF80A–0xF80F read 213 / 311 / 112 / 100 / 100 / 100 (2.13, 3.11,
+  1.12, 1.00 …) — where the T-REX-25/50 maps already read.  Moved there on both
+  T-REX-5 and -10 (one document covers both; "Control panel hardware version"
+  renamed "Control board …" to match it).
+- The T-REX-10 telemetry scale itself is confirmed by physics: battery 1.00,
+  PV1 1.06, PV2 1.05, grid L1 1.01.  The dump's `physics_checks` used to be
+  EMPTY on a T-REX (it only knew IVGM/IVAM key names); it now has T-REX rows and
+  `_SAME_QUANTITY` twin checks, so the next dump checks itself.
+Pinned with the dump's raw words in `tests/test_trex_documented_registers.py`
+(`_DUMP_T10`); a /10 put back or the old version address each fail two tests.
+The T-REX-5 got the same corrections from the shared document; it has not been
+dumped.  **Still open:** `econ_rule_N_power` is signed per the document
+(−rated..+rated W), unsigned in ours — the dump only had positive values
+(8000 / 5100), so nothing to measure; harmless for what we write.  ~150 settings
+registers stay unmapped on purpose — mostly grid-code protection; the candidates
+if ever wanted are zero-export mode/power (0x2176/0x2177, read 2 / 0),
+charging mode PV-only/PV+grid (0x21B8, read 0), max AC power (0x21B9, read 0).
 
 **`ha_felicity.write_register` service — FIXED (Oct 2026, maintainer: "keep the
 service via write_type_specific_register").**  The service called
@@ -3384,7 +3409,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**818 tests**: 816 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**824 tests**: 822 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

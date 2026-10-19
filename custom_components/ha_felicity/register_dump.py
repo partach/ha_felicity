@@ -300,6 +300,21 @@ _PHYSICS = (
     # still nowhere near the 0.1 or 10 a scale error gives.
     ("Grid A", "grid_a_voltage", "grid_a_current", "grid_a_phase_power"),
     ("Load A", "load_a_voltage", "load_a_current", "load_aphase_power"),
+    # T-REX-5/6/10 names (the IVGM5048/10048 layout).
+    ("Battery", "battery_voltage", "battery_current", "battery_power"),
+    ("PV input", "pv_input_voltage", "pv_input_current", "pv_input_power"),
+    ("PV2 input", "pv2_input_voltage", "pv2_input_current", "pv2_input_power"),
+    ("Grid L1", "ac_input_voltage", "ac_input_current", "ac_input_power"),
+)
+
+#: Pairs of registers that report the SAME quantity, so they must decode to
+#: the same number.  This is how the T-REX power-conversion registers were found
+#: to be raw W, not /10 (dump, Oct 2026): each read the identical raw word as its
+#: twin and decoded to a tenth of it.
+_SAME_QUANTITY = (
+    ("Line power conversion = total AC input", "line_power_conversion", "total_ac_input_power"),
+    ("Battery power conversion = battery power", "bat_power_conversion", "battery_power"),
+    ("Load power conversion = line-side load", "load_power_conversion", "load_power_line_side"),
 )
 
 
@@ -325,6 +340,16 @@ def physics_checks(decoded: dict) -> list[dict]:
         ratio = p_w / vi_w
         checks.append({"check": label, "v_x_i_w": round(vi_w), "reported_w": round(p_w),
                        "ratio": round(ratio, 2),
+                       "result": "ok" if 0.7 <= ratio <= 1.3 else "SCALE SUSPECT"})
+    for label, ak, bk in _SAME_QUANTITY:
+        a, b = _value(decoded, ak), _value(decoded, bk)
+        if None in (a, b):
+            continue
+        if max(abs(a), abs(b)) < 50:
+            checks.append({"check": label, "result": "skipped (too little power)"})
+            continue
+        ratio = abs(a) / abs(b) if b else float("inf")
+        checks.append({"check": label, ak: a, bk: b, "ratio": round(ratio, 2),
                        "result": "ok" if 0.7 <= ratio <= 1.3 else "SCALE SUSPECT"})
     return checks
 
