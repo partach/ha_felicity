@@ -143,13 +143,13 @@ def _record_batch(raw, start, words):
         raw[start + i] = word
 
 
-def read_all(read, reads, budget_s: float = 120.0):
+def read_all(read, reads, budget_s: float = 120.0, clock=time.monotonic):
     """Synchronous variant (standalone tool)."""
     raw, failed = {}, {}
-    deadline = time.monotonic() + budget_s
+    deadline = clock() + budget_s
     for start, count in reads:
-        if time.monotonic() > deadline:
-            _mark_skipped(failed, start, count, "time budget exhausted")
+        if clock() > deadline:
+            _mark_skipped(failed, start, count, BUDGET_EXHAUSTED)
             continue
         try:
             _record_batch(raw, start, read(start, count))
@@ -161,6 +161,9 @@ def read_all(read, reads, budget_s: float = 120.0):
             if streak >= _MAX_CONSECUTIVE_FAILURES:
                 _mark_skipped(failed, addr, start + count - addr, batch_error)
                 break
+            if clock() > deadline:
+                _mark_skipped(failed, addr, start + count - addr, BUDGET_EXHAUSTED)
+                break
             try:
                 raw[addr] = read(addr, 1)[0]
                 streak = 0
@@ -170,13 +173,32 @@ def read_all(read, reads, budget_s: float = 120.0):
     return raw, failed
 
 
-async def async_read_all(read, reads, budget_s: float = 60.0):
-    """Async variant (diagnostics, using the integration's own client)."""
+#: Bus time the in-request dump may spend (Download diagnostics).  The browser
+#: waits for the whole read before it gets a single byte, and a proxy in front
+#: of Home Assistant may cut a request after ~60 s.  The deadline is checked
+#: before EVERY read, the register-by-register fallback included, so the worst
+#: case is this budget plus one read's own timeout (5 s x pymodbus retries).
+DIAGNOSTICS_BUDGET_S = 25.0
+
+BUDGET_EXHAUSTED = "time budget exhausted"
+
+
+async def async_read_all(read, reads, budget_s: float = DIAGNOSTICS_BUDGET_S,
+                         clock=time.monotonic):
+    """Async variant (diagnostics, using the integration's own client).
+
+    The deadline used to be checked only between batches.  After a failed
+    batch the register-by-register retry ran unbounded — a failure only ended
+    it after three in a row, so on a flaky link (successes in between) one
+    60-register batch could cost 60 reads at up to ~20 s each.  The download
+    then never answered and the browser reported a network error (the file
+    named after the config-entry id: no response headers ever arrived).
+    """
     raw, failed = {}, {}
-    deadline = time.monotonic() + budget_s
+    deadline = clock() + budget_s
     for start, count in reads:
-        if time.monotonic() > deadline:
-            _mark_skipped(failed, start, count, "time budget exhausted")
+        if clock() > deadline:
+            _mark_skipped(failed, start, count, BUDGET_EXHAUSTED)
             continue
         try:
             _record_batch(raw, start, await read(start, count))
@@ -187,6 +209,9 @@ async def async_read_all(read, reads, budget_s: float = 60.0):
         for addr in range(start, start + count):
             if streak >= _MAX_CONSECUTIVE_FAILURES:
                 _mark_skipped(failed, addr, start + count - addr, batch_error)
+                break
+            if clock() > deadline:
+                _mark_skipped(failed, addr, start + count - addr, BUDGET_EXHAUSTED)
                 break
             try:
                 raw[addr] = (await read(addr, 1))[0]

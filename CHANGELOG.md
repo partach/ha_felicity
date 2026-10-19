@@ -9,6 +9,12 @@
   is still unverified (the power scale above all) is listed in
   `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
 
+- **Download diagnostics works on slow or unreliable connections.** On a
+  flaky RS485 link the register read behind it could run for many minutes, and
+  the browser gave up with a network error. It now finishes within about half a
+  minute — registers it had no time for are listed as "not read" in the file —
+  and answers at once while the inverter is not responding.
+
 - **IVGM5048 / IVGM6048 / IVGM10048 owners: pick the T-REX-5K / 6K / 10K.**
   Felicity's protocol document for these inverters has exactly the T-REX-5/10
   register layout; the setup list now shows both names. (The IVGM 8K/15K/20K

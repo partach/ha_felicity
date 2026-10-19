@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **814**: 812 pass + 2 documented skips) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **818**: 816 pass + 2 documented skips) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -708,7 +708,25 @@ being checked.
 ⚠️ **Read-only, and only documented addresses.**  Function 3 only; `plan_reads`
 never spans a gap (an undefined address can fault a whole batch).  A failed
 batch is retried register-by-register, giving up after 3 consecutive failures
-so a dead link can't hang the diagnostics download.  The decoder mirrors
+so a dead link can't hang the diagnostics download.
+
+⚠️ **"Download diagnostics" failed with a browser network error — FIXED
+(Oct 2026).**  The download is one HTTP request that answers only after the
+whole bus read, and the read's time budget was checked only *between batches*.
+After a failed batch the register-by-register retry ignored it, and on a flaky
+link the "3 consecutive failures" give-up never triggered (a success in between
+resets it) — one 60-register batch could cost 60 reads × ~20 s.  The browser
+waited, then reported a network error, with the file named after the
+config-entry id (the tell: no response headers ever arrived — a normal download
+is `ha_felicity-<entry>.json.txt`).  "Resume" cannot help: HA's signed download
+link expires after ~30 s and a retry re-runs the read.  Now: the deadline
+(`DIAGNOSTICS_BUDGET_S`, 25 s) is checked before **every** read, so the worst
+case is the budget plus one read's own timeout; mapped registers are read
+first, documented-only extras after; while polling is paused for a silent
+inverter (8b) the dump answers at once without touching the bus; the outcome is
+logged at INFO ("Diagnostics register dump: N words read …") and recorded in the
+file (`budget_s`, `not_read_budget_exhausted`, `skipped`).  Pinned by
+`test_a_flaky_link_cannot_run_past_the_time_budget` and two diagnostics tests.  The decoder mirrors
 `coordinator._apply_scaling`; `test_scaling_matches_the_coordinator` keeps the
 two from drifting.  Pair a dump with a photo of the inverter display taken at
 the same moment — that is how the enum values (gaps doc item 0) get confirmed.
@@ -3366,7 +3384,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**814 tests**: 812 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**818 tests**: 816 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
