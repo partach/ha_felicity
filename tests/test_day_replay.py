@@ -187,6 +187,29 @@ async def test_economic_mode_dropped_by_the_inverter_is_healed():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", [
+    const.INVERTER_MODEL_TREX_FIVE, const.INVERTER_MODEL_TREX_SIX, const.INVERTER_MODEL_TREX_TEN,
+    const.INVERTER_MODEL_TREX_TWENTY_FIVE, const.INVERTER_MODEL_TREX_FIFTY,
+    const.INVERTER_MODEL_IVGM_EIGHT, const.INVERTER_MODEL_IVGM_FIFTEEN,
+    const.INVERTER_MODEL_IVGM_TWENTY,
+])
+async def test_every_controllable_model_is_healed(model):
+    """The watchdog listed its models by hand — (T-REX-25, T-REX-50) and
+    (T-REX-5, T-REX-10) — so T-REX-6K and the whole IVGM family had no
+    self-heal at all.  It now branches on the control path."""
+    eco = model in const.ECO_TIMEOFUSE_MODELS
+    mode_key, economic = ("eco_timeofuse", 1) if eco else ("operating_mode", 2)
+    r = _replay(model, soc=50.0, start=day(NEXT, 1, 55))
+    r.coordinator.set_slot_overrides({"today": NIGHT_CHARGE, "tomorrow": {}})
+    await r.run_until(day(NEXT, 2, 30))
+    r.inverter.set(mode_key, 0)                  # dropped out between two polls
+    assert r.inverter.action() == "self_use"
+    await r.run_until(day(NEXT, 2, 40))
+    assert r.writes_after(mode_key, day(NEXT, 2, 29)) == [(day(NEXT, 2, 30), economic)]
+    assert r.inverter_actions(day(NEXT, 2, 30), day(NEXT, 2, 40)) == {"charge"}, r.timeline(1)
+
+
+@pytest.mark.asyncio
 async def test_a_charge_that_spans_midnight_keeps_charging():
     """T-REX-5/10 rule 1 carries a start/stop DATE, written as today's date on
     each transition.  A charge running at 23:59 has no transition at 00:00, so

@@ -2,8 +2,9 @@
 
 Settings → Devices & services → Felicity → ⋮ → **Download diagnostics**
 returns one JSON file containing a fresh read of every register the model's
-map defines (for the IVGM family: every address its protocol document
-defines), with the RAW words, the decoded values, and physics cross-checks.
+map defines (for the IVGM family, T-REX-5/6/10 and IVAM: every address its
+protocol document defines), with the RAW words, the decoded values, and
+physics cross-checks.
 That file is what to share when checking a register map against hardware.
 
 Read-only: only function 3 (read holding registers) goes over the bus.  It
@@ -28,6 +29,7 @@ from .const import (
     INVERTER_MODEL_IVAM_SIX,
     IVGM_MODELS,
     MODEL_REGISTRY,
+    OPERATING_MODE_MODELS,
 )
 
 _TO_REDACT = {CONF_HOST}
@@ -68,6 +70,12 @@ async def _async_dump(hass: HomeAssistant, coordinator, model: str | None) -> di
     if model in IVGM_MODELS:
         documented = await hass.async_add_executor_job(
             register_dump.load_ivgm_documented_addresses)
+    elif model in OPERATING_MODE_MODELS:
+        # T-REX-5/6/10: every address of the IVGM5048/10048 document, so the
+        # unmapped settings and the scale questions (power-conversion
+        # registers) can be read off one dump.
+        documented = await hass.async_add_executor_job(
+            register_dump.load_trex_documented_addresses)
     elif model == INVERTER_MODEL_IVAM_SIX:
         # Includes the unmapped "inquiry - Day/Month/Year" block, so a dump
         # can tell what those registers answer.

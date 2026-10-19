@@ -231,6 +231,18 @@ class FakeInverter:
         raw = register_dump.combine_words(words, info.get("endian", "big"))
         return register_dump.apply_scaling(raw, info.get("index", 0), info.get("size", 1))
 
+    def _publish(self, key: str, value: float) -> None:
+        """Telemetry: written only where the model's map has the register.
+
+        The fake publishes the T-REX-10 / T-REX-25 names; other maps lack some
+        (the T-REX-5 has one phase, the IVGM no `pv1_day_energy`).  Those
+        replays then run without that reading, as an inverter that does not
+        report it would.  Control registers still go through the strict
+        `set`, which raises on a key the map lacks.
+        """
+        if key in self.register_map:
+            self.set(key, value)
+
     def _sync_soc(self) -> None:
         for key in ("battery_capacity", "bat1_soc"):
             if key in self.register_map:
@@ -396,15 +408,15 @@ class FakeInverter:
                 if self.eco_path else
                 ("ac_input_current", "ac_input_current_l2", "ac_input_current_l3"))
         for key, a in zip(keys, amps, strict=True):
-            self.set(key, round(a, 1))
+            self._publish(key, round(a, 1))
         if self.eco_path:
-            self.set("total_grid_power", round(self.last_grid_kw, 2))       # kW, signed
-            self.set("pv1_power", round(pv_kw, 2))                          # kW
-            self.set("pv1_day_energy", round(self.pv_today_kwh, 1))         # kWh
+            self._publish("total_grid_power", round(self.last_grid_kw, 2))       # kW, signed
+            self._publish("pv1_power", round(pv_kw, 2))                          # kW
+            self._publish("pv1_day_energy", round(self.pv_today_kwh, 1))         # kWh
         else:
-            self.set("total_ac_input_power", round(self.last_grid_kw * 1000))   # W, signed
-            self.set("pv_power_conversion", round(pv_kw * 1000))                # W
-            self.set("pv_generated_energy_day", round(self.pv_today_kwh * 1000))  # Wh
+            self._publish("total_ac_input_power", round(self.last_grid_kw * 1000))   # W, signed
+            self._publish("pv_power_conversion", round(pv_kw * 1000))                # W
+            self._publish("pv_generated_energy_day", round(self.pv_today_kwh * 1000))  # Wh
 
 
 # ---------------------------------------------------------------------------

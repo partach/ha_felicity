@@ -9,6 +9,21 @@
   is still unverified (the power scale above all) is listed in
   `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
 
+- **IVGM5048 / IVGM6048 / IVGM10048 owners: pick the T-REX-5K / 6K / 10K.**
+  Felicity's protocol document for these inverters has exactly the T-REX-5/10
+  register layout; the setup list now shows both names. (The IVGM 8K/15K/20K
+  are a different layout and keep their own entries.) The T-REX-5/6/10 register
+  maps are now checked against that document — every documented register
+  matched.
+- **New select values**: Operating Mode "Oil engine mode" and Economic Rule
+  "ECO mode" (value 3), which the inverter can report but the integration
+  showed as unknown.
+- **T-REX-6K and IVGM inverters now recover when they drop out of Economic
+  mode** during a charge or discharge (app, power blip). The recovery check
+  only covered the T-REX-5/10/25/50 before.
+- *Download diagnostics* on T-REX-5/6/10 reads every register in Felicity's
+  document, for checking open scale questions.
+
 - **The `ha_felicity.write_register` service works.** It failed with an
   error on every call in every release that had it (it called a method that
   had been moved). It now writes through the same path as the register's own

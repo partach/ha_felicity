@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **773**: 771 pass + 2 documented skips) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **814**: 812 pass + 2 documented skips) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -143,6 +143,7 @@ custom_components/ha_felicity/
 ├── ivgm_documented_registers.json # Frozen transcript of the IVGM protocol document
 ├── ivam.py                  # IVAM6048P1G1 map — MONITOR-ONLY (telemetry; no control registers)
 ├── ivam_documented_registers.json # Frozen transcript of the IVAM protocol document
+├── trex_documented_registers.json # Frozen transcript of the IVGM5048/10048 document = T-REX-5/6/10 layout
 ├── register_dump.py         # HA-free read-only register dump (diagnostics + tools/ivgm_dump.py)
 ├── diagnostics.py           # "Download diagnostics" → full register dump
 ├── date.py                  # Date entities
@@ -165,6 +166,8 @@ tests/
 ├── test_power_scaling.py    # Per-model telemetry/setpoint scaling — measured, never inherited
 ├── test_card_contract.py    # The cards' name-based coupling to the register maps
 ├── test_ivam_support.py     # IVAM: provenance vs its document; no write ever reaches the bus
+├── test_trex_documented_registers.py # T-REX-5/6/10 maps vs the IVGM5048/10048 document
+├── test_write_register_service.py    # the write_register service, through the real write path
 ├── day_replay.py            # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
 └── test_day_replay.py       # Replays: what actually reaches the inverter registers
 
@@ -472,6 +475,17 @@ mode → battery sits inert.  This check runs every cycle: when in an active
 state but the Economic-mode register reads off (`eco_timeofuse`!=1 on
 TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-applies the state.
 Idempotent (only fires when the register actually shows General).
+
+⚠️ **It branches on the control path (`ECO_TIMEOFUSE_MODELS` /
+`OPERATING_MODE_MODELS`) — fixed Oct 2026.**  It used to list its models by hand,
+`(TREX_25, TREX_50)` and `(TREX_5, TREX_10)`, with no else — so **T-REX-6K and
+the whole IVGM family had no self-heal at all**: the same "hand-listed model
+pair" failure `type_specific.py` was rid of, surviving in the coordinator.
+Found while checking the IVGM5048 document.  Pinned per model by
+`test_every_controllable_model_is_healed` (replay; the 4 models the old lists
+missed fail on the old code).  The replay harness now publishes telemetry only
+where a model's map has the register (`FakeInverter._publish`), so it runs every
+controllable model, not just T-REX-10/25.
 
 **It re-applies the FULL state, not just the mode (fixed Sept 2026).** The heal
 used to write only the operating mode.  But whatever knocked the inverter out
@@ -893,6 +907,55 @@ meter) and `battery_discharge_depth_on_grid_bms` (no BMS limit registers).  The
 replay harness models a monitor-only inverter (`FakeInverter.monitor_only`):
 `test_a_monitor_only_inverter_is_never_written` runs a day with the EMS and
 safe power ON and asserts zero writes.
+
+### T-REX-5/6/10 = IVGM5048 / IVGM6048 / IVGM10048 — documented (Oct 2026)
+
+Support sent *Inverter Communication Protocol — Series RS485*, **V02
+2025-09-30** (V01 2025-03-18; V02 adds only 0x21BF–0x21C5), titled for the
+**IVGM5048 / IVGM10048**; its machine-code register (0x21B5) also lists the
+**IVGM6048** (5048 = 101, 6048 = 401, 10048 = 201).  Same title as the IVGM-8K
+document, **different product and layout**: this one is the T-REX-5/10 layout
+(`operating_mode` 0x2103, `econ_rule_1_enable` 0x2178, telemetry from 0x1101,
+2400 baud), the 8K one the T-REX-25/50 layout.  Never borrow an address across
+the two because the titles match.
+
+It is frozen as `trex_documented_registers.json` (458 registers, the document's
+name/size/unit/remark; economic-rule rows carry `rule`, since the document names
+them only "Start time", "SOC" …).  `tests/test_trex_documented_registers.py`
+holds the T-REX-5/6/10 maps to it like the IVGM maps are held to theirs:
+every mapped word is documented, names match (spelling-normalised — the
+document writes "Convertion", "temperautre", "Operated mode"), every rule row
+belongs to its rule.  Result on first run: **all 250 documented addresses in
+`trex_ten.py` (178 in `trex_five.py`) carry the document's quantity** — the
+AI-generated map was right.  Exceptions, each with its reason in the test:
+`setting_data_sn` (0x1100) and six version words at 0xF83C–0xF841 are not in
+the document (it puts version IDs at 0xF80A–0xF80F — a dump will tell which
+answers); `min_cell_temperature` keeps its name where the document repeats
+"Maximum" (typo).  Mutation-checked: a rule-2 SOC moved to rule 3, a battery
+voltage typed one address on, a dropped select value and an invented address
+each fail.
+
+**Select values added** (the document enumerates them, our lists stopped at 2):
+`operating_mode` **3 = Oil engine (generator) mode** (5048 firmware 2203+,
+10048 firmware 207+) and `econ_rule_N_enable` **3 = ECO mode** — before, a
+register holding 3 rendered as an unknown option and the rule summary sensor as
+`Unknown(3)`.  The EMS never writes 3; while it is active the self-heal returns
+`operating_mode` to 2 (Economic), as for any other non-Economic value.
+
+**Setup dropdown** labels the entries `T-REX-5K-P1G01 / IVGM5048`,
+`T-REX-6KLP1G01 / IVGM6048`, `T-REX-10K-P3G01 / IVGM10048` — labels only, no
+new model ids, so existing entries are untouched.  **Download diagnostics** on
+these models now reads every documented address (`register_dump.
+load_trex_documented_addresses`), so the unmapped settings come along.
+
+**Open — scale questions, deliberately NOT changed** (the IVGM document was 10×
+wrong about power; change only with a dump): `line/load/bat_power_conversion`
+(0x1195–0x1199) are /10 in our maps, the document says W; `battery_capacity_
+secondary` (0x11B0) /10 vs the document's %; `econ_rule_N_power` is signed per
+the document (−rated..+rated W), unsigned in ours (harmless for the positive
+values we write).  ~150 settings registers stay unmapped on purpose — mostly
+grid-code protection; the candidates if ever wanted are zero-export mode/power
+(0x2176/0x2177), charging mode PV-only/PV+grid (0x21B8), max AC power (0x21B9).
 
 **`ha_felicity.write_register` service — FIXED (Oct 2026, maintainer: "keep the
 service via write_type_specific_register").**  The service called
@@ -2308,7 +2371,8 @@ an open question.  The #209 reporter then read 8568 with raw pymodbus
 our layout — rule 1: Charge, 00:00–07:00 (`0`, `1792`), 1 Jan–31 Dec (`257`,
 `3103`), all days (`127`), 56.0 V (`560`), 60 %, 1000 W; rule 4: 19:30–22:00
 (`4894`, `5632`), 29 Sep (`2333`), 1500 W.  This matches the four ECO modes in
-the Felicity app.  The rest of `trex_five.py` is still unverified.
+the Felicity app.  ~~The rest of `trex_five.py` is still unverified.~~  It now
+has a document — see "T-REX-5/6/10 = IVGM5048/6048/10048" below.
 
 **The cause is the link, not the map or the integration.**  Same raw test,
 success per single attempt by read length: 9 registers ≈ 80 %, 18 ≈ 50–100 %,
@@ -3302,7 +3366,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**773 tests**: 771 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**814 tests**: 812 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -3363,6 +3427,10 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
   they differ only in `INVERTER_MAX_POWER_KW`, and share every model group)
 - Setpoint power unit declared for every model (a model missing from
   `SETPOINT_POWER_UNIT_BY_MODEL` would silently under-command charge power)
+- T-REX-5/6/10 provenance (`test_trex_documented_registers.py`): every mapped
+  word in the IVGM5048/10048 document, names match it, rule rows in their rule,
+  select lists cover every documented value
+- Economic-mode self-heal on every controllable model (replay)
 - Monitor-only model (`test_ivam_support.py` + replay): IVAM addresses, names,
   sizes and scales traced to its document; every write refused at the bottom of
   the write path; a whole replayed day with the EMS and safe power ON writes

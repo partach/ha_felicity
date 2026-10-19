@@ -244,6 +244,14 @@ prices. What *is* model-specific is how the plan reaches the hardware
 
 Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
 
+The Economic-mode self-heal (re-apply the active state when the inverter reports
+a non-Economic mode mid-action) follows the same two paths — `eco_timeofuse != 1`
+or `operating_mode != 2` — for **every** model on them (Oct 2026: it used to cover
+only T-REX-5/10/25/50 by name, leaving T-REX-6K and the IVGM family unprotected).
+The T-REX-5/6/10 path is documented by Felicity's IVGM5048/10048 protocol
+(`trex_documented_registers.json`); an IVGM5048/6048/10048 is driven exactly as a
+T-REX-5K/6K/10K.
+
 Power scaling is per model and **measured, never inherited from a sibling** — the
 vendor documentation is wrong about it, and models sharing a document can still
 differ (the T-REX-25's firmware was altered, so its field-proven scaling is

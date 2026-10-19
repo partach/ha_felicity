@@ -19,13 +19,12 @@ from .const import (
     CONF_INVERTER_MODEL,
     DEFAULT_INVERTER_MODEL,
     DOMAIN,
+    ECO_TIMEOFUSE_MODELS,
     INVERTER_MAX_POWER_KW,
-    INVERTER_MODEL_TREX_FIFTY,
-    INVERTER_MODEL_TREX_FIVE,
     INVERTER_MODEL_TREX_TEN,
-    INVERTER_MODEL_TREX_TWENTY_FIVE,
     INVERTER_PHASES,
     MONITOR_ONLY_MODELS,
+    OPERATING_MODE_MODELS,
 )
 from .type_specific import TypeSpecificHandler
 
@@ -2901,16 +2900,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         enable_value = {"charging": 1, "discharging": 2}[self._current_energy_state]
 
-        if self.inverter_model in (
-            INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
-        ):
+        # By control path, not by a hand-listed model pair: the pair lists
+        # left T-REX-6K and every IVGM model with no self-heal at all.
+        if self.inverter_model in ECO_TIMEOFUSE_MODELS:
             eco = data.get("eco_timeofuse")
             if eco is None or int(eco) == 1:
                 return  # register not read, or Economic mode already active
             register_val = eco
-        elif self.inverter_model in (
-            INVERTER_MODEL_TREX_FIVE, INVERTER_MODEL_TREX_TEN
-        ):
+        elif self.inverter_model in OPERATING_MODE_MODELS:
             mode = data.get("operating_mode")
             if mode is None or int(mode) == 2:
                 return  # register not read, or Economic mode already active
@@ -2946,9 +2943,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if ok:
             # Reflect the re-assertion in cached data so we don't re-trigger
             # before the next read.
-            if self.inverter_model in (
-                INVERTER_MODEL_TREX_TWENTY_FIVE, INVERTER_MODEL_TREX_FIFTY
-            ):
+            if self.inverter_model in ECO_TIMEOFUSE_MODELS:
                 data["eco_timeofuse"] = 1
             else:
                 data["operating_mode"] = 2

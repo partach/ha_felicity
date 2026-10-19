@@ -123,7 +123,8 @@ class TypeSpecificHandler:
                     0:    "General mode",
                     1:    "Backup mode",
                     2:    "Economic mode",
-                }           
+                    3:    "Oil engine mode",
+                }
                 mode = data.get("operating_mode", 0)
                 return modes[mode] # should be textual as it is a select
             elif self._inverter_model in ECO_TIMEOFUSE_MODELS:

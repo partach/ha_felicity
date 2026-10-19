@@ -32,6 +32,12 @@ IVGM_DOCUMENT_PATH = os.path.join(os.path.dirname(__file__),
 IVAM_DOCUMENT_PATH = os.path.join(os.path.dirname(__file__),
                                   "ivam_documented_registers.json")
 
+#: Frozen transcript of the IVGM5048/IVGM10048 protocol document (V02,
+#: 2025-09-30) — the register layout the T-REX-5/6/10 maps use.  Source of
+#: truth for tests/test_trex_documented_registers.py.
+TREX_DOCUMENT_PATH = os.path.join(os.path.dirname(__file__),
+                                  "trex_documented_registers.json")
+
 #: Addresses in the transcript that are PDF-extraction artifacts, not
 #: registers: 0xAAAA is the prose example of a write frame, 0x122F is the
 #: "4. Communication frame format" section heading that follows the last
@@ -74,6 +80,27 @@ def load_ivam_documented_addresses() -> dict[int, str]:
         out[address] = info["name"]
         for i in range(1, info.get("size", 1)):
             out[address + i] = f"{info['name']} (low word)"
+    return out
+
+
+def load_trex_documented_addresses() -> dict[int, str]:
+    """{address: name} for every word the T-REX-5/6/10 document defines.
+
+    Multi-word registers list every word (``<name> (word n)``) so a dump reads
+    the whole value; economic-rule rows carry their rule number, because the
+    document names them only "Start time", "SOC" and so on.
+    """
+    with open(TREX_DOCUMENT_PATH, encoding="utf-8") as fh:
+        raw = json.load(fh)["registers"]
+    out: dict[int, str] = {}
+    for key, info in raw.items():
+        address = int(key, 16)
+        name = info["name"]
+        if "rule" in info:
+            name = f"Economic model rule {info['rule']} {name}"
+        out[address] = name
+        for i in range(1, info.get("size", 1)):
+            out[address + i] = f"{name} (word {i + 1})"
     return out
 
 
