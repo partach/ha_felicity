@@ -9,13 +9,14 @@
   is still unverified (the power scale above all) is listed in
   `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
 
-- **T-REX-5/6/10: corrected readings, checked against a real T-REX-10.**
+- **T-REX-10: corrected readings, checked against a real T-REX-10.** (The
+  T-REX-5/6K is unchanged until one is measured.)
   "Linepowerconversion", "Batpowerconversion" and "Loadpowerconversion" showed
   a tenth of the real power (e.g. 843 W instead of 8430 W); "Battery Capacity
   secondary" showed 9 % instead of 94 %; the six firmware/hardware version
   sensors read the wrong registers (65535, 5.23 …) and now show the real
   versions. Long-term statistics of the three power sensors will show a step
-  at the update. Download diagnostics now also checks T-REX readings against
+  at the update. Download diagnostics now also checks T-REX-5/6/10 readings against
   each other (V × I against power, and registers that report the same thing).
 
 - **Download diagnostics works on slow or unreliable connections.** On a

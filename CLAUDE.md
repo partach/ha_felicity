@@ -983,17 +983,28 @@ same quantity — not a guess at the document:
   log event.  Names left as they are (renaming changes entity names).
 - Version words: 0xF83C–0xF841 read 65535 / 523 / 5 / 0 / 0 / 65535; the
   document's 0xF80A–0xF80F read 213 / 311 / 112 / 100 / 100 / 100 (2.13, 3.11,
-  1.12, 1.00 …) — where the T-REX-25/50 maps already read.  Moved there on both
-  T-REX-5 and -10 (one document covers both; "Control panel hardware version"
-  renamed "Control board …" to match it).
+  1.12, 1.00 …) — where the T-REX-25/50 maps already read.  Moved there on the
+  T-REX-10 ("Control panel hardware version" renamed "Control board …" to match
+  the document).
 - The T-REX-10 telemetry scale itself is confirmed by physics: battery 1.00,
   PV1 1.06, PV2 1.05, grid L1 1.01.  The dump's `physics_checks` used to be
   EMPTY on a T-REX (it only knew IVGM/IVAM key names); it now has T-REX rows and
   `_SAME_QUANTITY` twin checks, so the next dump checks itself.
 Pinned with the dump's raw words in `tests/test_trex_documented_registers.py`
 (`_DUMP_T10`); a /10 put back or the old version address each fail two tests.
-The T-REX-5 got the same corrections from the shared document; it has not been
-dumped.  **Still open:** `econ_rule_N_power` is signed per the document
+
+⚠️ **T-REX-10 ONLY — the T-REX-5/6K map is deliberately NOT corrected
+(maintainer, Oct 2026: "this is the trex10 only … don't make assumptions").**
+A first cut applied the same fixes to the 5K because the two share the
+document; it was reverted.  A measurement on one model says nothing about
+another — the same rule that freezes the T-REX-25 against the T-REX-50 — and
+"they share a document" is exactly the premise that rule rejects.  The 5K keeps
+its /10 conversion registers and its 0xF83C version words (listed as the 5K's
+own undocumented exception) until a 5K is dumped;
+`test_the_t_rex_five_is_not_corrected_from_the_ten` pins it.  The new dump
+checks match T-REX-5/6/10 key names only (no other map has them), so a 5K dump
+will show `SCALE SUSPECT` on the twins if the 10's finding applies there too —
+that is the evidence to act on.  **Still open:** `econ_rule_N_power` is signed per the document
 (−rated..+rated W), unsigned in ours — the dump only had positive values
 (8000 / 5100), so nothing to measure; harmless for what we write.  ~150 settings
 registers stay unmapped on purpose — mostly grid-code protection; the candidates

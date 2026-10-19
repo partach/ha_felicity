@@ -39,6 +39,22 @@ _UNDOCUMENTED = {
     "setting_data_sn",
 }
 
+#: Version words the T-REX-5 map still reads at 0xF83C-0xF841, which the
+#: document does not define.  On a T-REX-10 that block proved not to hold the
+#: versions (see the dump tests below) and the 10 was moved to 0xF80A-0xF80F.
+#: The 5K has NOT been dumped, so its map stays as it was (maintainer: a
+#: measurement on one model says nothing about another).
+_T5_VERSION_KEYS = {
+    "display_software_version", "mcu1_software_version", "mcu2_software_version",
+    "display_hardware_version", "control_hardware_version", "power_hardware_version",
+}
+
+
+def _undocumented(model):
+    if model == const.INVERTER_MODEL_TREX_TEN:
+        return _UNDOCUMENTED
+    return _UNDOCUMENTED | _T5_VERSION_KEYS
+
 #: The document's spelling, mapped onto ours (regexes), before names are compared.
 _SPELLING = {
     "temperautre": "temperature", "convertion": "conversion", "exsit": "exist",
@@ -99,7 +115,7 @@ def test_the_transcript_is_the_v02_document():
 def test_every_mapped_word_is_in_the_document(model):
     undocumented = {}
     for key, info in _registers(model).items():
-        if key in _UNDOCUMENTED:
+        if key in _undocumented(model):
             continue
         words = range(info["address"], info["address"] + info.get("size", 1))
         missing = [w for w in words if w not in _WORDS]
@@ -112,7 +128,7 @@ def test_every_mapped_word_is_in_the_document(model):
 def test_the_undocumented_list_is_not_stale(model):
     """An exception that no longer applies hides the next real one."""
     registers = _registers(model)
-    for key in _UNDOCUMENTED & set(registers):
+    for key in _undocumented(model) & set(registers):
         info = registers[key]
         assert info["address"] not in _WORDS, f"{key} is documented now — drop the exception"
 
@@ -121,7 +137,7 @@ def test_the_undocumented_list_is_not_stale(model):
 def test_register_names_match_the_document(model):
     mismatched = []
     for key, info in _registers(model).items():
-        if key in _UNDOCUMENTED or key in _RENAMED:
+        if key in _undocumented(model) or key in _RENAMED:
             continue
         doc = _REGS.get(info["address"])
         if doc is None:
@@ -260,16 +276,16 @@ def test_the_log_snapshot_battery_capacity_is_whole_percent():
     assert d["battery_capacity_secondary"]["value"] == 94
 
 
-@pytest.mark.parametrize("model", _MODELS)
-def test_versions_are_read_where_the_document_puts_them(model):
+def test_versions_are_read_where_the_document_puts_them():
     """0xF83C-0xF841 is not in the document and read 65535 / 523 / 5 / 0 / 0 /
     65535 — not versions.  The document's 0xF80A-0xF80F read 213 / 311 / 112 /
     100 / 100 / 100, the T-REX-25/50 maps already read there."""
+    model = const.INVERTER_MODEL_TREX_TEN
     registers = _registers(model)
     keys = ("display_software_version", "mcu1_software_version", "mcu2_software_version",
             "display_hardware_version", "control_hardware_version", "power_hardware_version")
     assert [registers[k]["address"] for k in keys] == list(range(0xF80A, 0xF810))
-    _, d = _decoded_t10(model)
+    _, d = _decoded_t10()
     assert [d[k]["value"] for k in keys] == [2.13, 3.11, 1.12, 1.0, 1.0, 1.0]
 
 
@@ -284,3 +300,18 @@ def test_the_dump_checks_t_rex_physics_and_twin_registers():
             "Battery power conversion = battery power",
             "Load power conversion = line-side load"} <= set(checks)
     assert set(checks.values()) == {"ok"}, checks
+
+
+@pytest.mark.parametrize("model", [const.INVERTER_MODEL_TREX_FIVE, const.INVERTER_MODEL_TREX_SIX])
+def test_the_t_rex_five_is_not_corrected_from_the_ten(model):
+    """The dump above is a T-REX-10's.  The T-REX-5 (and the 6K, which shares
+    its map) shares the protocol document but has not been measured, so its
+    scales and version addresses stay exactly as shipped — the same rule that
+    freezes the T-REX-25 against the T-REX-50.  Change this only with a 5K
+    dump, in the same commit, with the evidence in the message."""
+    r = _registers(model)
+    assert r["line_power_conversion"]["index"] == 1
+    assert r["load_power_conversion"]["index"] == 1
+    assert r["bat_power_conversion"]["index"] == 1
+    assert r["display_software_version"]["address"] == 0xF83C
+    assert r["power_hardware_version"]["address"] == 0xF841
