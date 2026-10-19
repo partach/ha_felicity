@@ -59,11 +59,17 @@ def test_model_has_exactly_one_control_path(model):
     `return False` and the inverter is never driven.
     Both → the branches are ambiguous and the first one silently wins.
     """
-    operating = model in const.OPERATING_MODE_MODELS
-    eco = model in const.ECO_TIMEOFUSE_MODELS
-    assert operating != eco, (
-        f"{model} must belong to exactly one control path "
-        f"(OPERATING_MODE_MODELS={operating}, ECO_TIMEOFUSE_MODELS={eco})"
+    paths = {
+        "OPERATING_MODE_MODELS": model in const.OPERATING_MODE_MODELS,
+        "ECO_TIMEOFUSE_MODELS": model in const.ECO_TIMEOFUSE_MODELS,
+        # Not a control path but a declared ABSENCE of one: a model whose
+        # protocol defines no control registers.  Declared, so that leaving a
+        # new model out of both paths above is still a failure here rather than
+        # an install that silently cannot be driven.
+        "MONITOR_ONLY_MODELS": model in const.MONITOR_ONLY_MODELS,
+    }
+    assert sum(paths.values()) == 1, (
+        f"{model} must belong to exactly one of {sorted(paths)} (got {paths})"
     )
 
 
@@ -75,6 +81,19 @@ def test_control_path_registers_exist_in_the_model_map(model):
     state transition fails at runtime — on hardware, not in review.
     """
     registers = const.MODEL_REGISTRY[model]["registers"]
+    if model in const.MONITOR_ONLY_MODELS:
+        # The inverse: a monitor-only map must contain NO control register.  A
+        # control key appearing here means an address was borrowed from another
+        # model's map — the very thing that made it monitor-only is gone, or
+        # someone is about to write an undocumented address.
+        control = {"operating_mode", "econ_rule_1_enable", "eco_timeofuse",
+                   "system_mode", "econ_rule_1_grid_charge_enable",
+                   "econ_rule_1_voltage", "econ_rule_1_soc", "econ_rule_1_power"}
+        present = sorted(control & set(registers))
+        assert not present, f"{model} is monitor-only but maps control registers {present}"
+        assert not any(info.get("type") for info in registers.values()), (
+            f"{model}: a monitor-only map must expose no writable entity")
+        return
     if model in const.OPERATING_MODE_MODELS:
         required = ["operating_mode", "econ_rule_1_enable",
                     "econ_rule_1_voltage", "econ_rule_1_soc", "econ_rule_1_power"]
@@ -92,8 +111,12 @@ def test_soc_and_grid_power_sources_exist(model):
     registers = const.MODEL_REGISTRY[model]["registers"]
     soc = ("battery_capacity",) if model in const.OPERATING_MODE_MODELS else ("bat1_soc", "bat2_soc")
     assert any(k in registers for k in soc), f"{model}: no SOC register among {soc}"
-    grid = ("total_ac_input_power",) if model in const.OPERATING_MODE_MODELS else (
-        "total_grid_power", "phase_a_ct_active_power")
+    if model in const.OPERATING_MODE_MODELS:
+        grid = ("total_ac_input_power",)
+    elif model in const.MONITOR_ONLY_MODELS:
+        grid = ("grid_a_phase_power",)       # type_specific's monitor-only branch
+    else:
+        grid = ("total_grid_power", "phase_a_ct_active_power")
     assert any(k in registers for k in grid), f"{model}: no grid-power register among {grid}"
 
 

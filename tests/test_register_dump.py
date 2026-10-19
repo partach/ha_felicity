@@ -114,6 +114,47 @@ def test_dead_link_gives_up_instead_of_timing_out_every_address():
     assert len(failed) == 60
 
 
+def test_a_flaky_link_cannot_run_past_the_time_budget():
+    """Download diagnostics hung on a flaky link: after a failed batch the
+    register-by-register retry was not bounded by the deadline, and successes
+    between failures kept resetting the give-up counter — one 60-register
+    batch could cost 60 reads at ~20 s each.  The browser got no response and
+    reported a network error.  Every read now checks the deadline first."""
+    now = [0.0]
+    calls = []
+
+    async def read(addr, count):
+        calls.append((addr, count))
+        now[0] += 5.0                            # each read costs a timeout
+        if count > 1 or addr % 2:
+            raise OSError("timeout")             # batch fails; singles alternate
+        return [addr]
+
+    reads = [(0, 60), (100, 60), (200, 60)]
+    raw, failed = asyncio.run(rd.async_read_all(read, reads, budget_s=25.0,
+                                                clock=lambda: now[0]))
+    assert now[0] <= 25.0 + 5.0                  # budget + the one read in flight
+    assert len(calls) <= 6
+    assert set(raw) | {int(a, 16) for a in failed} == set(range(60)) | \
+        set(range(100, 160)) | set(range(200, 260))
+    assert any(rd.BUDGET_EXHAUSTED in why for why in failed.values())
+
+
+def test_the_old_unbounded_retry_is_what_the_budget_now_stops():
+    """The same link without a budget: the per-register fallback reads all 60
+    (successes reset the streak), i.e. 61 reads — 5 minutes at 5 s each."""
+    calls = []
+
+    async def read(addr, count):
+        calls.append(addr)
+        if count > 1 or addr % 2:
+            raise OSError("timeout")
+        return [addr]
+
+    asyncio.run(rd.async_read_all(read, [(0, 60)], budget_s=1e9))
+    assert len(calls) == 61
+
+
 # ---------------------------------------------------------------------------
 # Diagnostics platform
 # ---------------------------------------------------------------------------
@@ -181,6 +222,58 @@ def test_diagnostics_dumps_the_full_ivgm_map_read_only():
     touched = {a for start, n in inverter.calls for a in range(start, start + n)}
     assert touched <= documented                      # never an undocumented address
     json.dumps(dump)                                  # serialisable as-is
+
+
+def _diag_setup(model, inverter, **coordinator_attrs):
+    diagnostics = _load_diagnostics()
+    coordinator = MagicMock()
+    coordinator.client, coordinator.slave_id = inverter, 1
+    coordinator.inverter_model = model
+    coordinator.register_map = {}
+    coordinator.data = {}
+    coordinator.milp_status = None
+    for k, v in coordinator_attrs.items():
+        setattr(coordinator, k, v)
+    entry = MagicMock()
+    entry.entry_id = "e1"
+    entry.data = {"inverter_model": model}
+    entry.options = {}
+    hass = MagicMock()
+    hass.data = {const.DOMAIN: {"e1": coordinator}}
+
+    async def executor(fn, *args):
+        return fn(*args)
+    hass.async_add_executor_job = executor
+    return diagnostics, hass, entry
+
+
+def test_diagnostics_reads_the_mapped_registers_before_the_rest():
+    """If the budget runs out, what is missing is the unmapped extras, never
+    a register the integration uses."""
+    model = const.INVERTER_MODEL_TREX_TEN
+    inverter = _FakeInverter({})
+    diagnostics, hass, entry = _diag_setup(model, inverter)
+    out = asyncio.run(diagnostics.async_get_config_entry_diagnostics(hass, entry))
+    mapped = rd.map_addresses(const.MODEL_REGISTRY[model]["registers"])
+    order = [a for start, n in inverter.calls for a in range(start, start + n)]
+    first_extra = next(i for i, a in enumerate(order) if a not in mapped)
+    assert set(order[:first_extra]) == mapped
+    assert out["register_dump"]["budget_s"] == rd.DIAGNOSTICS_BUDGET_S
+    assert "unmapped_documented" in out["register_dump"]   # T-REX now has a document
+
+
+def test_diagnostics_answers_at_once_while_polling_is_paused():
+    """A silent inverter (polling paused, Known Issues 8b) would cost a full
+    timeout per read; the download must still arrive."""
+    import time as _time
+
+    inverter = _FakeInverter({})
+    diagnostics, hass, entry = _diag_setup(
+        const.INVERTER_MODEL_TREX_TEN, inverter, _read_backoff_until=_time.time() + 60)
+    out = asyncio.run(diagnostics.async_get_config_entry_diagnostics(hass, entry))
+    assert inverter.calls == []
+    assert "paused" in out["register_dump"]["skipped"]
+    json.dumps(out["register_dump"])
 
 
 # ---------------------------------------------------------------------------

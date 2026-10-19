@@ -240,8 +240,17 @@ prices. What *is* model-specific is how the plan reaches the hardware
 |---|---|---|
 | `operating_mode` | T-REX-5 / 6 / 10 | `operating_mode=2` (Economic) then `econ_rule_1_enable` 0/1/2 |
 | `ECO_TimeOfUse` | T-REX-25 / 50, **IVGM-8K / 15K / 20K** | `system_mode` + `eco_timeofuse=1` then `econ_rule_1_grid_charge_enable` |
+| **none — monitor only** | **IVAM6048P1G1** | Nothing.  Its protocol defines no setting registers, so every write is refused (`type_specific.async_write_registers`), no transition is attempted, safe power does not throttle, and `grid_mode` is held at `off` (setup migration + a Grid Mode select offering only `off`, no strategy presets).  The EMS does not run on it. |
 
 Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
+
+The Economic-mode self-heal (re-apply the active state when the inverter reports
+a non-Economic mode mid-action) follows the same two paths — `eco_timeofuse != 1`
+or `operating_mode != 2` — for **every** model on them (Oct 2026: it used to cover
+only T-REX-5/10/25/50 by name, leaving T-REX-6K and the IVGM family unprotected).
+The T-REX-5/6/10 path is documented by Felicity's IVGM5048/10048 protocol
+(`trex_documented_registers.json`); an IVGM5048/6048/10048 is driven exactly as a
+T-REX-5K/6K/10K.
 
 Power scaling is per model and **measured, never inherited from a sibling** — the
 vendor documentation is wrong about it, and models sharing a document can still

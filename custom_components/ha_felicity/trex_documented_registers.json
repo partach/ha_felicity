@@ -1,0 +1,2358 @@
+{
+ "_source": "Felicity 'Inverter Communication Protocol - Series RS485', V02 2025-09-30 (V01 2025-03-18; V02 adds 0x21BF-0x21C5), file FLS_INVERTER_Communication_Protocol_RS485_--_IVGM5048_IVGM10048_20250930. Covers the IVGM5048 / IVGM10048 (and, per its MachCode table, IVGM6048) - the register layout of the T-REX-5/6/10 maps. 2400 baud 8N1, slave 0x01, function codes 0x03/0x06/0x10. Frozen transcript of every register the document's tables define (sections 3.1, 3.2, 4.1), with the document's own name, size (words), unit and remark. 'rule' gives the economic-mode rule a row belongs to (the document names those rows only 'Start time', 'SOC', ...). Not transcribed: 0xAAAA, the prose example of a write frame. Document typos are kept verbatim (0x1158 'Total-High 32 bit' is the low half of the total at 0x1156; 0x121F 'MaximumCellTemperature' is the minimum; 0x2103's unit 'V' is spurious). tests/test_trex_documented_registers.py checks the T-REX-5/6/10 maps against it.",
+ "registers": {
+  "0x1101": {
+   "size": 1,
+   "name": "Working mode"
+  },
+  "0x1102": {
+   "size": 2,
+   "name": "Warning state 1"
+  },
+  "0x1104": {
+   "size": 2,
+   "name": "Warning state 2"
+  },
+  "0x1106": {
+   "size": 2,
+   "name": "Warning state 3"
+  },
+  "0x1108": {
+   "size": 1,
+   "name": "Fault code"
+  },
+  "0x1109": {
+   "size": 1,
+   "name": "AC input voltage",
+   "unit": "0.1V"
+  },
+  "0x110A": {
+   "size": 1,
+   "name": "AC input current",
+   "unit": "0.1A"
+  },
+  "0x110B": {
+   "size": 1,
+   "name": "AC input frequency",
+   "unit": "0.01Hz"
+  },
+  "0x110C": {
+   "size": 1,
+   "name": "AC input power",
+   "unit": "W"
+  },
+  "0x110D": {
+   "size": 1,
+   "name": "Battery voltage",
+   "unit": "0.1V"
+  },
+  "0x110E": {
+   "size": 1,
+   "name": "Battery current",
+   "unit": "0.1A"
+  },
+  "0x110F": {
+   "size": 1,
+   "name": "Battery power",
+   "unit": "W"
+  },
+  "0x1110": {
+   "size": 1,
+   "name": "Battery capacity",
+   "unit": "0.1%"
+  },
+  "0x1111": {
+   "size": 1,
+   "name": "AC output voltage",
+   "unit": "0.1V"
+  },
+  "0x1112": {
+   "size": 1,
+   "name": "AC output current",
+   "unit": "0.1A"
+  },
+  "0x1113": {
+   "size": 1,
+   "name": "AC output frequency",
+   "unit": "0.01Hz"
+  },
+  "0x1114": {
+   "size": 1,
+   "name": "AC output active power",
+   "unit": "W"
+  },
+  "0x1115": {
+   "size": 1,
+   "name": "AC output apparent power",
+   "unit": "VA"
+  },
+  "0x1116": {
+   "size": 1,
+   "name": "Load percentage",
+   "unit": "%"
+  },
+  "0x1117": {
+   "size": 1,
+   "name": "PV input voltage",
+   "unit": "0.1V"
+  },
+  "0x1118": {
+   "size": 1,
+   "name": "PV input current",
+   "unit": "0.1A"
+  },
+  "0x1119": {
+   "size": 1,
+   "name": "PV input power",
+   "unit": "W"
+  },
+  "0x111A": {
+   "size": 1,
+   "name": "PV2 input voltage",
+   "unit": "0.1V"
+  },
+  "0x111B": {
+   "size": 1,
+   "name": "PV2 input current",
+   "unit": "0.1A"
+  },
+  "0x111C": {
+   "size": 1,
+   "name": "PV2 input power",
+   "unit": "W"
+  },
+  "0x111D": {
+   "size": 1,
+   "name": "PV3 input voltage",
+   "unit": "0.1V"
+  },
+  "0x111E": {
+   "size": 1,
+   "name": "PV3 input current",
+   "unit": "0.1A"
+  },
+  "0x111F": {
+   "size": 1,
+   "name": "PV3 input power",
+   "unit": "W"
+  },
+  "0x1120": {
+   "size": 1,
+   "name": "AC input voltage L2",
+   "unit": "0.1V"
+  },
+  "0x1121": {
+   "size": 1,
+   "name": "AC input current L2",
+   "unit": "0.1A"
+  },
+  "0x1122": {
+   "size": 1,
+   "name": "AC input frequency L2",
+   "unit": "0.01Hz"
+  },
+  "0x1123": {
+   "size": 1,
+   "name": "AC input power L2",
+   "unit": "W"
+  },
+  "0x1124": {
+   "size": 1,
+   "name": "AC input voltage L3",
+   "unit": "0.1V"
+  },
+  "0x1125": {
+   "size": 1,
+   "name": "AC input current L3",
+   "unit": "0.1A"
+  },
+  "0x1126": {
+   "size": 1,
+   "name": "AC input frequency L3",
+   "unit": "0.01Hz"
+  },
+  "0x1127": {
+   "size": 1,
+   "name": "AC input power L3",
+   "unit": "W"
+  },
+  "0x1128": {
+   "size": 2,
+   "name": "Total AC input power",
+   "unit": "W"
+  },
+  "0x112A": {
+   "size": 1,
+   "name": "AC output voltage L2",
+   "unit": "0.1V"
+  },
+  "0x112B": {
+   "size": 1,
+   "name": "AC output current L2",
+   "unit": "0.1A"
+  },
+  "0x112C": {
+   "size": 1,
+   "name": "AC output frequency L2",
+   "unit": "0.01Hz"
+  },
+  "0x112D": {
+   "size": 1,
+   "name": "AC output active power L2",
+   "unit": "W"
+  },
+  "0x112E": {
+   "size": 1,
+   "name": "AC output apparent power L2",
+   "unit": "VA"
+  },
+  "0x112F": {
+   "size": 1,
+   "name": "AC output voltage L3",
+   "unit": "0.1V"
+  },
+  "0x1130": {
+   "size": 1,
+   "name": "AC output current L3",
+   "unit": "0.1A"
+  },
+  "0x1131": {
+   "size": 1,
+   "name": "AC output frequency L3",
+   "unit": "0.01Hz"
+  },
+  "0x1132": {
+   "size": 1,
+   "name": "AC output active power L3",
+   "unit": "W"
+  },
+  "0x1133": {
+   "size": 1,
+   "name": "AC output apparent power L3",
+   "unit": "VA"
+  },
+  "0x1134": {
+   "size": 2,
+   "name": "Total AC output active power",
+   "unit": "W"
+  },
+  "0x1136": {
+   "size": 2,
+   "name": "Total AC output apparent power",
+   "unit": "VA"
+  },
+  "0x1138": {
+   "size": 1,
+   "name": "Invert voltage",
+   "unit": "0.1V"
+  },
+  "0x1139": {
+   "size": 1,
+   "name": "Invert current",
+   "unit": "0.1A"
+  },
+  "0x113A": {
+   "size": 1,
+   "name": "Invert active power",
+   "unit": "W"
+  },
+  "0x113B": {
+   "size": 1,
+   "name": "Invert voltage L2",
+   "unit": "0.1V"
+  },
+  "0x113C": {
+   "size": 1,
+   "name": "Invert current L2",
+   "unit": "0.1A"
+  },
+  "0x113D": {
+   "size": 1,
+   "name": "Invert active power L2",
+   "unit": "W"
+  },
+  "0x113E": {
+   "size": 1,
+   "name": "Invert voltage L3",
+   "unit": "0.1V"
+  },
+  "0x113F": {
+   "size": 1,
+   "name": "Invert current L3",
+   "unit": "0.1A"
+  },
+  "0x1140": {
+   "size": 1,
+   "name": "Invert active power L3",
+   "unit": "W"
+  },
+  "0x1141": {
+   "size": 1,
+   "name": "AC input mid voltage",
+   "unit": "0.1V"
+  },
+  "0x1142": {
+   "size": 1,
+   "name": "AC input mid voltage L2",
+   "unit": "0.1V"
+  },
+  "0x1143": {
+   "size": 1,
+   "name": "AC input mid voltage L3",
+   "unit": "0.1V"
+  },
+  "0x1144": {
+   "size": 1,
+   "name": "P BUS voltage_Master",
+   "unit": "0.1V"
+  },
+  "0x1145": {
+   "size": 1,
+   "name": "N BUS voltage_Master",
+   "unit": "0.1V"
+  },
+  "0x1146": {
+   "size": 1,
+   "name": "P DC Converter voltage",
+   "unit": "0.1V"
+  },
+  "0x1147": {
+   "size": 1,
+   "name": "N DC Converter voltage",
+   "unit": "0.1V"
+  },
+  "0x1148": {
+   "size": 1,
+   "name": "P DC/DC Current",
+   "unit": "0.1A"
+  },
+  "0x1149": {
+   "size": 1,
+   "name": "N DC/DC Current",
+   "unit": "0.1A"
+  },
+  "0x114A": {
+   "size": 1,
+   "name": "Inner temperautre 1",
+   "unit": "0.1oC"
+  },
+  "0x114B": {
+   "size": 1,
+   "name": "Inner temperautre 2",
+   "unit": "0.1oC"
+  },
+  "0x114C": {
+   "size": 1,
+   "name": "Heatsink temperature 1",
+   "unit": "0.1oC"
+  },
+  "0x114D": {
+   "size": 1,
+   "name": "Heatsink temperature 2",
+   "unit": "0.1oC"
+  },
+  "0x114E": {
+   "size": 1,
+   "name": "Heatsink temperature 3",
+   "unit": "0.1oC"
+  },
+  "0x114F": {
+   "size": 1,
+   "name": "Heatsink temperature 4",
+   "unit": "0.1oC"
+  },
+  "0x1150": {
+   "size": 1,
+   "name": "Heatsink temperature 5",
+   "unit": "0.1oC"
+  },
+  "0x1151": {
+   "size": 1,
+   "name": "Heatsink temperature 6",
+   "unit": "0.1oC"
+  },
+  "0x1152": {
+   "size": 1,
+   "name": "Time Year-Month"
+  },
+  "0x1153": {
+   "size": 1,
+   "name": "Time Day-Hour"
+  },
+  "0x1154": {
+   "size": 1,
+   "name": "Time Minute-Second"
+  },
+  "0x1155": {
+   "size": 1,
+   "name": "Time Week"
+  },
+  "0x1156": {
+   "size": 2,
+   "name": "PV Generated energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1158": {
+   "size": 2,
+   "name": "PV Generated energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x115A": {
+   "size": 2,
+   "name": "PV Generated energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x115C": {
+   "size": 2,
+   "name": "PV Generated energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x115E": {
+   "size": 2,
+   "name": "PV Generated energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x1160": {
+   "size": 2,
+   "name": "Load consumption energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1162": {
+   "size": 2,
+   "name": "Load consumption energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1164": {
+   "size": 2,
+   "name": "Load consumption energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x1166": {
+   "size": 2,
+   "name": "Load consumption energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x1168": {
+   "size": 2,
+   "name": "Load consumption energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x116A": {
+   "size": 2,
+   "name": "AC input energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x116C": {
+   "size": 2,
+   "name": "AC input energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x116E": {
+   "size": 2,
+   "name": "AC input energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x1170": {
+   "size": 2,
+   "name": "AC input energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x1172": {
+   "size": 2,
+   "name": "AC input energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x1174": {
+   "size": 2,
+   "name": "AC generated energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1176": {
+   "size": 2,
+   "name": "AC generated energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1178": {
+   "size": 2,
+   "name": "AC generated energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x117A": {
+   "size": 2,
+   "name": "AC generated energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x117C": {
+   "size": 2,
+   "name": "AC generated energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x117E": {
+   "size": 2,
+   "name": "Battery charged energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1180": {
+   "size": 2,
+   "name": "Battery charged energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1182": {
+   "size": 2,
+   "name": "Battery charged energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x1184": {
+   "size": 2,
+   "name": "Battery charged energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x1186": {
+   "size": 2,
+   "name": "Battery charged energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x1188": {
+   "size": 2,
+   "name": "Battery discharged energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x118A": {
+   "size": 2,
+   "name": "Battery discharged energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x118C": {
+   "size": 2,
+   "name": "Battery discharged energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x118E": {
+   "size": 2,
+   "name": "Battery discharged energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x1190": {
+   "size": 2,
+   "name": "Battery discharged energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x1192": {
+   "size": 1,
+   "name": "Status bit"
+  },
+  "0x1193": {
+   "size": 1,
+   "name": "P BUS voltage_Slv",
+   "unit": "0.1V"
+  },
+  "0x1194": {
+   "size": 1,
+   "name": "N BUS voltage_Slv",
+   "unit": "0.1V"
+  },
+  "0x1195": {
+   "size": 2,
+   "name": "LinePowerConvertion",
+   "unit": "W"
+  },
+  "0x1197": {
+   "size": 2,
+   "name": "LoadPowerConvertion",
+   "unit": "W"
+  },
+  "0x1199": {
+   "size": 1,
+   "name": "BatPowerConvertion",
+   "unit": "W"
+  },
+  "0x119A": {
+   "size": 1,
+   "name": "PVPowerConvertion",
+   "unit": "W"
+  },
+  "0x119B": {
+   "size": 1,
+   "name": "PowerFlowMsg"
+  },
+  "0x119C": {
+   "size": 1,
+   "name": "ParallelSystemState"
+  },
+  "0x119D": {
+   "size": 2,
+   "name": "LoadPower_LineSide",
+   "unit": "W"
+  },
+  "0x119F": {
+   "size": 1,
+   "name": "g_uwExsitNum_Parallel"
+  },
+  "0x11A0": {
+   "size": 1,
+   "name": "Reserved"
+  },
+  "0x11A1": {
+   "size": 1,
+   "name": "Reserved"
+  },
+  "0x11A2": {
+   "size": 1,
+   "name": "Reserved"
+  },
+  "0x11A3": {
+   "size": 1,
+   "name": "Reserved"
+  },
+  "0x11A4": {
+   "size": 1,
+   "name": "Log type"
+  },
+  "0x11A5": {
+   "size": 1,
+   "name": "Log index"
+  },
+  "0x11A6": {
+   "size": 1,
+   "name": "Log status"
+  },
+  "0x11A7": {
+   "size": 1,
+   "name": "Log ID"
+  },
+  "0x11A8": {
+   "size": 1,
+   "name": "Log Time Year-Month"
+  },
+  "0x11A9": {
+   "size": 1,
+   "name": "Log Time Day-Hour"
+  },
+  "0x11AA": {
+   "size": 1,
+   "name": "Log Time"
+  },
+  "0x11AB": {
+   "size": 1,
+   "name": "AC input voltage",
+   "unit": "0.1V"
+  },
+  "0x11AC": {
+   "size": 1,
+   "name": "AC input frequency",
+   "unit": "0.01Hz"
+  },
+  "0x11AD": {
+   "size": 1,
+   "name": "AC input power",
+   "unit": "W"
+  },
+  "0x11AE": {
+   "size": 1,
+   "name": "Battery voltage",
+   "unit": "0.1V"
+  },
+  "0x11AF": {
+   "size": 1,
+   "name": "Battery power",
+   "unit": "W"
+  },
+  "0x11B0": {
+   "size": 1,
+   "name": "Battery capacity",
+   "unit": "%"
+  },
+  "0x11B1": {
+   "size": 1,
+   "name": "AC output voltage",
+   "unit": "0.1V"
+  },
+  "0x11B2": {
+   "size": 1,
+   "name": "AC output frequency",
+   "unit": "0.01Hz"
+  },
+  "0x11B3": {
+   "size": 1,
+   "name": "AC output active power",
+   "unit": "W"
+  },
+  "0x11B4": {
+   "size": 1,
+   "name": "AC output apparent power",
+   "unit": "VA"
+  },
+  "0x11B5": {
+   "size": 1,
+   "name": "Load percentage",
+   "unit": "%"
+  },
+  "0x11B6": {
+   "size": 1,
+   "name": "PV input voltage",
+   "unit": "0.1V"
+  },
+  "0x11B7": {
+   "size": 1,
+   "name": "PV input power",
+   "unit": "W"
+  },
+  "0x11B8": {
+   "size": 1,
+   "name": "PV2 input voltage",
+   "unit": "0.1V"
+  },
+  "0x11B9": {
+   "size": 1,
+   "name": "PV2 input power",
+   "unit": "W"
+  },
+  "0x11BA": {
+   "size": 1,
+   "name": "PV3 input voltage",
+   "unit": "0.1V"
+  },
+  "0x11BB": {
+   "size": 1,
+   "name": "PV3 input power",
+   "unit": "W"
+  },
+  "0x11BC": {
+   "size": 1,
+   "name": "AC input voltage L2",
+   "unit": "0.1V"
+  },
+  "0x11BD": {
+   "size": 1,
+   "name": "AC input frequency L2",
+   "unit": "0.01Hz"
+  },
+  "0x11BE": {
+   "size": 1,
+   "name": "AC input power L2",
+   "unit": "W"
+  },
+  "0x11BF": {
+   "size": 1,
+   "name": "AC input voltage L3",
+   "unit": "0.1V"
+  },
+  "0x11C0": {
+   "size": 1,
+   "name": "AC input frequency L3",
+   "unit": "0.01Hz"
+  },
+  "0x11C1": {
+   "size": 1,
+   "name": "AC input power L3",
+   "unit": "W"
+  },
+  "0x11C2": {
+   "size": 1,
+   "name": "AC output voltage L2",
+   "unit": "0.1V"
+  },
+  "0x11C3": {
+   "size": 1,
+   "name": "AC output frequency L2",
+   "unit": "0.01Hz"
+  },
+  "0x11C4": {
+   "size": 1,
+   "name": "AC output active power L2",
+   "unit": "W"
+  },
+  "0x11C5": {
+   "size": 1,
+   "name": "AC output apparent power L2",
+   "unit": "VA"
+  },
+  "0x11C6": {
+   "size": 1,
+   "name": "AC output voltage L3",
+   "unit": "0.1V"
+  },
+  "0x11C7": {
+   "size": 1,
+   "name": "AC output frequency L3",
+   "unit": "0.01Hz"
+  },
+  "0x11C8": {
+   "size": 1,
+   "name": "AC output active power L3",
+   "unit": "W"
+  },
+  "0x11C9": {
+   "size": 1,
+   "name": "AC output apparent power L3",
+   "unit": "VA"
+  },
+  "0x11CA": {
+   "size": 1,
+   "name": "P BUS voltage",
+   "unit": "0.1V"
+  },
+  "0x11CB": {
+   "size": 1,
+   "name": "N BUS voltage",
+   "unit": "0.1V"
+  },
+  "0x11CC": {
+   "size": 1,
+   "name": "P DC/DC Current",
+   "unit": "0.1A"
+  },
+  "0x11CD": {
+   "size": 1,
+   "name": "N DC/DC Current",
+   "unit": "0.1A"
+  },
+  "0x11CE": {
+   "size": 1,
+   "name": "Max. inner temperature",
+   "unit": "0.1oC"
+  },
+  "0x11CF": {
+   "size": 1,
+   "name": "Max. heat-sink temperature",
+   "unit": "0.1oC"
+  },
+  "0x11D0": {
+   "size": 1,
+   "name": "Reserved"
+  },
+  "0x11D1": {
+   "size": 1,
+   "name": "Reserved"
+  },
+  "0x11D2": {
+   "size": 1,
+   "name": "FrequencyHigh1Seting",
+   "unit": "0.01Hz"
+  },
+  "0x11D3": {
+   "size": 1,
+   "name": "FrequencyHigh1TimeSeting",
+   "unit": "ms"
+  },
+  "0x11D4": {
+   "size": 1,
+   "name": "FrequencyHigh1Adj",
+   "unit": "0.1Hz"
+  },
+  "0x11D5": {
+   "size": 1,
+   "name": "gridFrequency",
+   "unit": "0.1Hz"
+  },
+  "0x11D6": {
+   "size": 1,
+   "name": "FrequencyHigh1Time",
+   "unit": "0.1ms"
+  },
+  "0x11D7": {
+   "size": 1,
+   "name": "Log Time Year-Month"
+  },
+  "0x11D8": {
+   "size": 1,
+   "name": "Log Time Day-Hour"
+  },
+  "0x11D9": {
+   "size": 1,
+   "name": "Log Time Minute-Second"
+  },
+  "0x11DA": {
+   "size": 1,
+   "name": "AutoTestResult"
+  },
+  "0x11DB": {
+   "size": 1,
+   "name": "Secondly grid over voltage",
+   "unit": "0.1V"
+  },
+  "0x11DC": {
+   "size": 1,
+   "name": "Secondly grid over voltage Triptime",
+   "unit": "ms"
+  },
+  "0x11DD": {
+   "size": 1,
+   "name": "Secondly grid over Adjvoltage",
+   "unit": "0.1V"
+  },
+  "0x11DE": {
+   "size": 1,
+   "name": "gridVoltage",
+   "unit": "0.1V"
+  },
+  "0x11DF": {
+   "size": 1,
+   "name": "VoltageHigh2LossTime",
+   "unit": "0.1ms"
+  },
+  "0x11E0": {
+   "size": 1,
+   "name": "VoltageLow2Seting",
+   "unit": "0.1V"
+  },
+  "0x11E1": {
+   "size": 1,
+   "name": "VoltageLow2TimeSeting",
+   "unit": "ms"
+  },
+  "0x11E2": {
+   "size": 1,
+   "name": "VoltageLow2Adj",
+   "unit": "0.1V"
+  },
+  "0x11E3": {
+   "size": 1,
+   "name": "gridVoltage",
+   "unit": "0.1V"
+  },
+  "0x11E4": {
+   "size": 1,
+   "name": "VoltageLow2LossTime",
+   "unit": "0.1ms"
+  },
+  "0x11E5": {
+   "size": 1,
+   "name": "10minute VoltageHighLossSeting",
+   "unit": "0.1V"
+  },
+  "0x11E6": {
+   "size": 1,
+   "name": "10minute VoltageHighLossTimeSet",
+   "unit": "s"
+  },
+  "0x11E7": {
+   "size": 1,
+   "name": "10minute VoltageHighLossAdj",
+   "unit": "0.1V"
+  },
+  "0x11E8": {
+   "size": 1,
+   "name": "gridVoltage",
+   "unit": "0.1V"
+  },
+  "0x11E9": {
+   "size": 1,
+   "name": "10minute VoltageHighLossTime",
+   "unit": "0.1s"
+  },
+  "0x11EA": {
+   "size": 1,
+   "name": "VoltageLowSeting",
+   "unit": "0.1V"
+  },
+  "0x11EB": {
+   "size": 1,
+   "name": "VoltageLowLossTimeSeting",
+   "unit": "ms"
+  },
+  "0x11EC": {
+   "size": 1,
+   "name": "VoltageLowAdj",
+   "unit": "0.1V"
+  },
+  "0x11ED": {
+   "size": 1,
+   "name": "gridVoltage",
+   "unit": "0.1V"
+  },
+  "0x11EE": {
+   "size": 1,
+   "name": "VoltageLowLossTime",
+   "unit": "0.1ms"
+  },
+  "0x11EF": {
+   "size": 1,
+   "name": "FrequencyHigh2Seting",
+   "unit": "0.01Hz"
+  },
+  "0x11F0": {
+   "size": 1,
+   "name": "FrequencyHigh2TimeSeting",
+   "unit": "ms"
+  },
+  "0x11F1": {
+   "size": 1,
+   "name": "FrequencyHigh2Adj",
+   "unit": "0.1Hz"
+  },
+  "0x11F2": {
+   "size": 1,
+   "name": "gridFrequency",
+   "unit": "0.1Hz"
+  },
+  "0x11F3": {
+   "size": 1,
+   "name": "FrequencyHigh2Time",
+   "unit": "0.1ms"
+  },
+  "0x11F4": {
+   "size": 1,
+   "name": "FrequencyLow2Seting",
+   "unit": "0.01Hz"
+  },
+  "0x11F5": {
+   "size": 1,
+   "name": "FrequencyLow2TimeSeting",
+   "unit": "ms"
+  },
+  "0x11F6": {
+   "size": 1,
+   "name": "FrequencyLow2Adj",
+   "unit": "0.1Hz"
+  },
+  "0x11F7": {
+   "size": 1,
+   "name": "gridFrequency",
+   "unit": "0.1Hz"
+  },
+  "0x11F8": {
+   "size": 1,
+   "name": "FrequencyLow2Time",
+   "unit": "0.1ms"
+  },
+  "0x11F9": {
+   "size": 1,
+   "name": "FrequencyLow1Seting",
+   "unit": "0.01Hz"
+  },
+  "0x11FA": {
+   "size": 1,
+   "name": "FrequencyLow1TimeSeting",
+   "unit": "ms"
+  },
+  "0x11FB": {
+   "size": 1,
+   "name": "FrequencyLow1Adj",
+   "unit": "0.1Hz"
+  },
+  "0x11FC": {
+   "size": 1,
+   "name": "gridFrequency",
+   "unit": "0.1Hz"
+  },
+  "0x11FD": {
+   "size": 1,
+   "name": "FrequencyLow1Time",
+   "unit": "0.1ms"
+  },
+  "0x11FE": {
+   "size": 1,
+   "name": "CurrBMSAddr"
+  },
+  "0x11FF": {
+   "size": 1,
+   "name": "BMS_Flg"
+  },
+  "0x1200": {
+   "size": 1,
+   "name": "ChargeVoltageLimit",
+   "unit": "0.1V"
+  },
+  "0x1201": {
+   "size": 1,
+   "name": "DischargeVoltageLimit",
+   "unit": "0.1V"
+  },
+  "0x1202": {
+   "size": 1,
+   "name": "ChargeCurrentLimit",
+   "unit": "0.1A"
+  },
+  "0x1203": {
+   "size": 1,
+   "name": "DischargeCurrentLimit",
+   "unit": "0.1A"
+  },
+  "0x1204": {
+   "size": 1,
+   "name": "BmsStatusLo"
+  },
+  "0x1205": {
+   "size": 1,
+   "name": "BmsStatusHi"
+  },
+  "0x1206": {
+   "size": 1,
+   "name": "FaultFlagLo"
+  },
+  "0x1207": {
+   "size": 1,
+   "name": "FaultFlagHi"
+  },
+  "0x1208": {
+   "size": 1,
+   "name": "AlarmFlagLo"
+  },
+  "0x1209": {
+   "size": 1,
+   "name": "AlarmFlagHi"
+  },
+  "0x120A": {
+   "size": 1,
+   "name": "NoticeFlagLo"
+  },
+  "0x120B": {
+   "size": 1,
+   "name": "NoticeFlagHi"
+  },
+  "0x120C": {
+   "size": 1,
+   "name": "TotalCurrent",
+   "unit": "0.1A"
+  },
+  "0x120D": {
+   "size": 1,
+   "name": "TotalVoltage",
+   "unit": "0.01V"
+  },
+  "0x120E": {
+   "size": 1,
+   "name": "Reservd"
+  },
+  "0x120F": {
+   "size": 1,
+   "name": "Reservd"
+  },
+  "0x1210": {
+   "size": 1,
+   "name": "TotalSOC",
+   "unit": "0.1%"
+  },
+  "0x1211": {
+   "size": 1,
+   "name": "TotalSOH",
+   "unit": "0.1%"
+  },
+  "0x1212": {
+   "size": 1,
+   "name": "TotalCapacityHigh",
+   "unit": "mAH"
+  },
+  "0x1213": {
+   "size": 1,
+   "name": "TotalCapacityLow",
+   "unit": "mAH"
+  },
+  "0x1214": {
+   "size": 1,
+   "name": "ParallelNumber"
+  },
+  "0x1215": {
+   "size": 1,
+   "name": "ParallelStatus"
+  },
+  "0x1216": {
+   "size": 1,
+   "name": "Reservd"
+  },
+  "0x1217": {
+   "size": 1,
+   "name": "Reservd"
+  },
+  "0x1218": {
+   "size": 1,
+   "name": "MaximumCellVoltageNo."
+  },
+  "0x1219": {
+   "size": 1,
+   "name": "MaximumCellVoltage",
+   "unit": "mV"
+  },
+  "0x121A": {
+   "size": 1,
+   "name": "MinimumCellVoltageNo."
+  },
+  "0x121B": {
+   "size": 1,
+   "name": "MinimumCellVoltage",
+   "unit": "mV"
+  },
+  "0x121C": {
+   "size": 1,
+   "name": "MaximumCellTemperatureNo."
+  },
+  "0x121D": {
+   "size": 1,
+   "name": "MaximumCellTemperature",
+   "unit": "0.1℃"
+  },
+  "0x121E": {
+   "size": 1,
+   "name": "MinimumCellTemperatureNo."
+  },
+  "0x121F": {
+   "size": 1,
+   "name": "MaximumCellTemperature",
+   "unit": "0.1℃"
+  },
+  "0x1220": {
+   "size": 5,
+   "name": "SN"
+  },
+  "0x1225": {
+   "size": 2,
+   "name": "LineLoad consumption energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1227": {
+   "size": 2,
+   "name": "LineLoad consumption energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1229": {
+   "size": 2,
+   "name": "LineLoad consumption energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x122B": {
+   "size": 2,
+   "name": "LineLoad consumption energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x122D": {
+   "size": 2,
+   "name": "LineLoad consumption energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x122F": {
+   "size": 2,
+   "name": "TotalLoad consumption energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1231": {
+   "size": 2,
+   "name": "TotalLoad consumption energy inquiry Total-High 32 bit",
+   "unit": "WH"
+  },
+  "0x1233": {
+   "size": 2,
+   "name": "TotalLoad consumption energy inquiry Year",
+   "unit": "WH"
+  },
+  "0x1235": {
+   "size": 2,
+   "name": "TotalLoad consumption energy inquiry Month",
+   "unit": "WH"
+  },
+  "0x1237": {
+   "size": 2,
+   "name": "TotalLoad consumption energy inquiry Day",
+   "unit": "WH"
+  },
+  "0x2100": {
+   "size": 1,
+   "name": "Standard",
+   "remark": "0：Germany 1：Warehouse 2:50Hz grid default 3： 60Hz grid default 4：Italy 5： Britain 6：Australia 7：New Zealand 8：South African 9：cNetherland 10：cBrazil 11: EN50549 12: Poland 13. Czech"
+  },
+  "0x2101": {
+   "size": 1,
+   "name": "AC output rated voltage",
+   "unit": "0.1V",
+   "remark": "220.0V；230.0V；240.0V"
+  },
+  "0x2102": {
+   "size": 1,
+   "name": "AC output rated frequency",
+   "unit": "Hz",
+   "remark": "0：50Hz: ；1：60Hz"
+  },
+  "0x2103": {
+   "size": 1,
+   "name": "Operated mode",
+   "unit": "V",
+   "remark": "0:Gen Mode (Prioritize load) 1:Backup Mode (Battery not discharging, PV charging) 2:Econ Mode (Timed charging and discharging at different electricity prices) 3:Oil Engine Mode(Only 5048: Version 2203, 10048: Version 207)"
+  },
+  "0x2104": {
+   "size": 1,
+   "name": "Firstly grid over voltage",
+   "unit": "0.1V",
+   "remark": "230.0~300.0V"
+  },
+  "0x2105": {
+   "size": 2,
+   "name": "Firstly grid over voltage tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x2107": {
+   "size": 1,
+   "name": "Firstly grid under voltage",
+   "unit": "0.1V",
+   "remark": "0.1~300.0V"
+  },
+  "0x2108": {
+   "size": 2,
+   "name": "Firstly grid under voltage tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x210A": {
+   "size": 1,
+   "name": "Secondly grid over voltage",
+   "unit": "0.1V",
+   "remark": "230.0~300.0V"
+  },
+  "0x210B": {
+   "size": 2,
+   "name": "Secondly grid over voltage tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x210D": {
+   "size": 1,
+   "name": "Secondly grid under voltage",
+   "unit": "0.1V",
+   "remark": "0.1~300.0V"
+  },
+  "0x210E": {
+   "size": 2,
+   "name": "Secondly grid under voltage tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x2110": {
+   "size": 1,
+   "name": "10min grid over voltage",
+   "unit": "0.1V",
+   "remark": "230.0~300.0V"
+  },
+  "0x2111": {
+   "size": 1,
+   "name": "Firstly grid over frequency",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2112": {
+   "size": 2,
+   "name": "Firstly grid over frequency tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x2114": {
+   "size": 1,
+   "name": "Firstly grid under frequency",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2115": {
+   "size": 2,
+   "name": "Firstly grid under frequency tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x2117": {
+   "size": 1,
+   "name": "Secondly grid over frequency",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2118": {
+   "size": 2,
+   "name": "Secondly grid over frequency tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x211A": {
+   "size": 1,
+   "name": "Secondly grid under frequency",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x211B": {
+   "size": 2,
+   "name": "Secondly grid under frequency tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x211D": {
+   "size": 1,
+   "name": "Grid connected waitting time",
+   "unit": "Sec",
+   "remark": "1~3000Sec"
+  },
+  "0x211E": {
+   "size": 1,
+   "name": "Grid power slope",
+   "unit": "Sec",
+   "remark": "0~65535Sec"
+  },
+  "0x211F": {
+   "size": 1,
+   "name": "Grid power limitation",
+   "unit": "0.1%",
+   "remark": "0.0~100.0%"
+  },
+  "0x2120": {
+   "size": 1,
+   "name": "Grid power unbalance",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x2121": {
+   "size": 1,
+   "name": "Grid power factor",
+   "unit": "%",
+   "remark": "80~100%（0.8~1.0） 180%~199% (-0.8~-0.99)"
+  },
+  "0x2122": {
+   "size": 1,
+   "name": "Grid wave detect mode",
+   "remark": "0：Full Wave 1：Half Wave:Rapid undervoltage detection 2: LowV Mode: Turn off waveform rapid detection"
+  },
+  "0x2123": {
+   "size": 1,
+   "name": "Battery type",
+   "remark": "0: User defined 1: Lithium battery (default) 2: FelicitySolar(LPBF series) 3: FelicitySolar(LPBA series) 4: No battery"
+  },
+  "0x2124": {
+   "size": 1,
+   "name": "Battery pack number in series",
+   "remark": "1~10"
+  },
+  "0x2125": {
+   "size": 1,
+   "name": "Battery charged voltage",
+   "unit": "0.1V",
+   "remark": "(Min num of battery packs)*40.0V, (Max num of battery packs )*60.0V"
+  },
+  "0x2126": {
+   "size": 1,
+   "name": "Battery floating charged voltage",
+   "unit": "0.1V",
+   "remark": "(Min num of battery packs )*40.0V, (Max num of battery"
+  },
+  "0x2127": {
+   "size": 1,
+   "name": "Battery cut-off voltage(On-grid, no BMS)",
+   "unit": "0.1V",
+   "remark": "(Min num of battery packs )*40.0V, (Max num of battery packs )*60.0V"
+  },
+  "0x2128": {
+   "size": 1,
+   "name": "Battery cut-off voltage(Off-grid, no BMS)",
+   "unit": "0.1V",
+   "remark": "(Min num of battery packs )*40.0V, (Max num of battery packs )*60.0V"
+  },
+  "0x2129": {
+   "size": 1,
+   "name": "Battery restart voltage(Off-grid, no BMS)",
+   "unit": "0.1V",
+   "remark": "(Min num of battery packs )*40.0V, (Max num of battery packs )*60.0V"
+  },
+  "0x212A": {
+   "size": 1,
+   "name": "Battery dischaged depth (On-grid, BMS connected)",
+   "unit": "%",
+   "remark": "0~100%"
+  },
+  "0x212B": {
+   "size": 1,
+   "name": "Battery dischaged depth (Off-grid, BMS connected)",
+   "unit": "%",
+   "remark": "0~100%"
+  },
+  "0x212C": {
+   "size": 1,
+   "name": "Battery restart depth (Off-grid, BMS connected)",
+   "unit": "%",
+   "remark": "0~100%"
+  },
+  "0x212D": {
+   "size": 1,
+   "name": "Battery Max. charged current",
+   "unit": "0.1A",
+   "remark": "0.1~200.0A"
+  },
+  "0x212E": {
+   "size": 1,
+   "name": "Battery Max. discharged current",
+   "unit": "0.1A",
+   "remark": "0.5~200.0A"
+  },
+  "0x212F": {
+   "size": 1,
+   "name": "PF-Power curve function",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x2130": {
+   "size": 1,
+   "name": "PF-Power curve A point power",
+   "unit": "0.1%",
+   "remark": "0.0%~100.0%"
+  },
+  "0x2131": {
+   "size": 1,
+   "name": "PF-Power curve A point power factor",
+   "unit": "0.1%",
+   "remark": "80.0~100.0%（0.8~1.0） -80.0%~-99.0% (-0.8~-0.99)"
+  },
+  "0x2132": {
+   "size": 1,
+   "name": "PF-Power curve B point power",
+   "unit": "0.1%",
+   "remark": "0.0%~100.0%"
+  },
+  "0x2133": {
+   "size": 1,
+   "name": "PF-Power curve B point power factor",
+   "unit": "0.1%",
+   "remark": "80.0~100.0%（0.8~1.0） -80.0%~-99.0% (-0.8~-0.99)"
+  },
+  "0x2134": {
+   "size": 1,
+   "name": "PF-Power curve C point power",
+   "unit": "0.1%",
+   "remark": "0.0%~100.0%"
+  },
+  "0x2135": {
+   "size": 1,
+   "name": "PF-Power curve C point power factor",
+   "unit": "0.1%",
+   "remark": "80.0~100.0%（0.8~1.0） -80.0%~-99.0% (-0.8~-0.99)"
+  },
+  "0x2136": {
+   "size": 1,
+   "name": "PF-Power curve entance voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300V"
+  },
+  "0x2137": {
+   "size": 1,
+   "name": "PF-Power curve escape voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300V"
+  },
+  "0x2138": {
+   "size": 1,
+   "name": "PF-Power curve escape power",
+   "unit": "0.1%",
+   "remark": "0.0~100.0%"
+  },
+  "0x2139": {
+   "size": 1,
+   "name": "P(U) curve function",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x213A": {
+   "size": 1,
+   "name": "P(U) curve A point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x213B": {
+   "size": 1,
+   "name": "P(U) curve A point power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Positive:feeding power Negative:charging power)"
+  },
+  "0x213C": {
+   "size": 1,
+   "name": "P(U) curve B point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x213D": {
+   "size": 1,
+   "name": "P(U) curve B point power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Positive:feeding power Negative:charging power)"
+  },
+  "0x213E": {
+   "size": 1,
+   "name": "P(U) curve C point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x213F": {
+   "size": 1,
+   "name": "P(U) curve C point power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Positive:feeding power Negative:charging power)"
+  },
+  "0x2140": {
+   "size": 1,
+   "name": "P(U) curve D point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x2141": {
+   "size": 1,
+   "name": "P(U) curve D point power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Positive:feeding power Negative:charging power)"
+  },
+  "0x2142": {
+   "size": 1,
+   "name": "Q(U) curve function",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x2143": {
+   "size": 1,
+   "name": "Q(U) curve A point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x2144": {
+   "size": 1,
+   "name": "Q(U) curve A point reactive power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Input positive current , Positive:capacitive reactive power Negative:inductive reactive power)"
+  },
+  "0x2145": {
+   "size": 1,
+   "name": "Q(U) curve B point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x2146": {
+   "size": 1,
+   "name": "Q(U) curve B point reactive power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Input positive current , Positive:capacitive reactive power Negative:inductive reactive"
+  },
+  "0x2147": {
+   "size": 1,
+   "name": "Q(U) curve C point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x2148": {
+   "size": 1,
+   "name": "Q(U) curve C point reactive power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Input positive current , Positive:capacitive reactive power Negative:inductive reactive power)"
+  },
+  "0x2149": {
+   "size": 1,
+   "name": "Q(U) curve D point voltage",
+   "unit": "0.1V",
+   "remark": "60.0~300.0V"
+  },
+  "0x214A": {
+   "size": 1,
+   "name": "Q(U) curve D point reactive power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Input positive current , Positive:capacitive reactive power Negative:inductive reactive power)"
+  },
+  "0x214B": {
+   "size": 1,
+   "name": "Q(U) curve entrance power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Input positive current , Positive:capacitive reactive power Negative:inductive reactive power)"
+  },
+  "0x214C": {
+   "size": 1,
+   "name": "Q(U) curve escape power",
+   "unit": "0.1%",
+   "remark": "-100.0%~100.0% (Input positive current , Positive:capacitive reactive power Negative:inductive reactive power)"
+  },
+  "0x214D": {
+   "size": 1,
+   "name": "Frequency-Power curve function",
+   "remark": "0: disable, 1: enable"
+  },
+  "0x214E": {
+   "size": 1,
+   "name": "Frequency-Power curve over frequency starting piont",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x214F": {
+   "size": 1,
+   "name": "Frequency-Power curve under frequency starting piont",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2150": {
+   "size": 1,
+   "name": "Frequency-Power curve over frequency endpiont",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2151": {
+   "size": 1,
+   "name": "Frequency-Power curve under frequency endpiont",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2152": {
+   "size": 1,
+   "name": "Frequency-Power curve restore frequency upper limit",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2153": {
+   "size": 1,
+   "name": "Frequency-Power curve restore frequency lower limit",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x2154": {
+   "size": 1,
+   "name": "Frequency-Power curve restore frequency waitting time",
+   "unit": "Sec",
+   "remark": "1~65535Sec"
+  },
+  "0x2155": {
+   "size": 1,
+   "name": "Frequency-Power curve restore power slope",
+   "unit": "Sec",
+   "remark": "1~65535Sec"
+  },
+  "0x2156": {
+   "size": 1,
+   "name": "Frequency-Power curve over frequency power slope",
+   "unit": "0.1%",
+   "remark": "0%~100.0%"
+  },
+  "0x2157": {
+   "size": 1,
+   "name": "Frequency-Power curve under frequency power slope",
+   "unit": "0.1%",
+   "remark": "0%~100.0%"
+  },
+  "0x2158": {
+   "size": 1,
+   "name": "Frequency-Power curve restore frequency power slope",
+   "unit": "0.1%",
+   "remark": "0%~100.0%"
+  },
+  "0x2159": {
+   "size": 1,
+   "name": "Frequency-Power charge curve function",
+   "remark": "0: disable, 1: enable"
+  },
+  "0x215A": {
+   "size": 1,
+   "name": "Frequency-Power charge curve under frequency charge power slope",
+   "unit": "0.1%",
+   "remark": "0%~100.0%"
+  },
+  "0x215B": {
+   "size": 1,
+   "name": "Low voltage ride through function",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x215C": {
+   "size": 1,
+   "name": "Low voltage ride through starting point",
+   "unit": "0.1V",
+   "remark": "0.0~230.0V"
+  },
+  "0x215D": {
+   "size": 1,
+   "name": "Low voltage ride through endpoint",
+   "unit": "0.1V",
+   "remark": "0.0~230.0V"
+  },
+  "0x215E": {
+   "size": 1,
+   "name": "Low voltage ride through threshold",
+   "unit": "0.1V",
+   "remark": "0.0~230.0V"
+  },
+  "0x215F": {
+   "size": 2,
+   "name": "Low voltage ride through starting point tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x2161": {
+   "size": 2,
+   "name": "Low voltage ride through endpoint tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x2163": {
+   "size": 1,
+   "name": "High voltage ride through function",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x2164": {
+   "size": 1,
+   "name": "High voltage ride through starting point",
+   "unit": "0.1V",
+   "remark": "230.0~300.0V"
+  },
+  "0x2165": {
+   "size": 1,
+   "name": "High voltage ride through endpoint",
+   "unit": "0.1V",
+   "remark": "230.0~300.0V"
+  },
+  "0x2166": {
+   "size": 1,
+   "name": "High voltage ride through threshold",
+   "unit": "0.1V",
+   "remark": "230.0~300.0V"
+  },
+  "0x2167": {
+   "size": 2,
+   "name": "High voltage ride through starting point tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x2169": {
+   "size": 2,
+   "name": "High voltage ride through endpoint tripping time",
+   "unit": "0.01Sec",
+   "remark": "0.02~1000.00Sec"
+  },
+  "0x216B": {
+   "size": 1,
+   "name": "LCD backlight function",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x216C": {
+   "size": 1,
+   "name": "Buzzer beepping function",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x216D": {
+   "size": 1,
+   "name": "Over load protection reset",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x216E": {
+   "size": 1,
+   "name": "Remote off",
+   "remark": "0：disable, 1: enable"
+  },
+  "0x216F": {
+   "size": 1,
+   "name": "Remote turn on/off AC output",
+   "remark": "0：off, 1: on"
+  },
+  "0x2170": {
+   "size": 1,
+   "name": "Time setting Year-Month",
+   "remark": "Highest eighth digit:Year Lowest eighth digit:Month"
+  },
+  "0x2171": {
+   "size": 1,
+   "name": "Time setting Day-Hour",
+   "remark": "Highest eighth digit:Day Lowest eighth digit:Hour"
+  },
+  "0x2172": {
+   "size": 1,
+   "name": "Time setting Minute-Second",
+   "remark": "Highest eighth digit:Minutes Lowest eighth digit:Second"
+  },
+  "0x2173": {
+   "size": 1,
+   "name": "Time setting week",
+   "remark": "0~7，0 Represent Sunday"
+  },
+  "0x2174": {
+   "size": 1,
+   "name": "Generated energy inquiry Year-Month",
+   "remark": "Highest eighth digit:Year Lowest eighth digit:Month"
+  },
+  "0x2175": {
+   "size": 1,
+   "name": "Generated energy inquiry Day"
+  },
+  "0x2176": {
+   "size": 1,
+   "name": "Zero export mode",
+   "remark": "1: To load, 2: To CT（Default On）"
+  },
+  "0x2177": {
+   "size": 1,
+   "name": "Zero export power",
+   "unit": "W",
+   "remark": "-500~500(Negative:reduces output power)"
+  },
+  "0x2178": {
+   "size": 1,
+   "name": "Economic model rule 1",
+   "remark": "0：disable, 1: enable charge 2: enable discharge，3：ECO Mode"
+  },
+  "0x2179": {
+   "size": 1,
+   "name": "Start time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 1
+  },
+  "0x217A": {
+   "size": 1,
+   "name": "Stop time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 1
+  },
+  "0x217B": {
+   "size": 1,
+   "name": "Start day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 1
+  },
+  "0x217C": {
+   "size": 1,
+   "name": "Stop day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 1
+  },
+  "0x217D": {
+   "size": 1,
+   "name": "Effective week",
+   "remark": "0:disenable 1:enable b0: Sun b1~b6: Mon~Sat",
+   "rule": 1
+  },
+  "0x217E": {
+   "size": 1,
+   "name": "Voltage",
+   "unit": "0.1V",
+   "remark": "(Min num of bat)*40.0V, (Max num of bat)*60.0V",
+   "rule": 1
+  },
+  "0x217F": {
+   "size": 1,
+   "name": "SOC",
+   "unit": "%",
+   "remark": "0~100%",
+   "rule": 1
+  },
+  "0x2180": {
+   "size": 1,
+   "name": "Power",
+   "unit": "W",
+   "remark": "-Rated power W ~Rated ower W",
+   "rule": 1
+  },
+  "0x2181": {
+   "size": 1,
+   "name": "Economic model rule 2",
+   "remark": "0：disable, 1: enable charge 2: enable discharge，3：ECO Mode"
+  },
+  "0x2182": {
+   "size": 1,
+   "name": "Start time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 2
+  },
+  "0x2183": {
+   "size": 1,
+   "name": "Stop time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 2
+  },
+  "0x2184": {
+   "size": 1,
+   "name": "Start day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 2
+  },
+  "0x2185": {
+   "size": 1,
+   "name": "Stop day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 2
+  },
+  "0x2186": {
+   "size": 1,
+   "name": "Effective week",
+   "remark": "0:disenable 1:enable b0: Sun b1~b6: Mon~Sat",
+   "rule": 2
+  },
+  "0x2187": {
+   "size": 1,
+   "name": "Voltage",
+   "unit": "0.1V",
+   "remark": "(Min num of bat)*40.0V, (Max num of bat)*60.0V",
+   "rule": 2
+  },
+  "0x2188": {
+   "size": 1,
+   "name": "SOC",
+   "unit": "%",
+   "remark": "0~100%",
+   "rule": 2
+  },
+  "0x2189": {
+   "size": 1,
+   "name": "Power",
+   "unit": "W",
+   "remark": "-Rated power W ~Rated ower W",
+   "rule": 2
+  },
+  "0x218A": {
+   "size": 1,
+   "name": "Economic model rule 3",
+   "remark": "0：disable, 1: enable charge 2: enable discharge，3：ECO Mode"
+  },
+  "0x218B": {
+   "size": 1,
+   "name": "Start time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 3
+  },
+  "0x218C": {
+   "size": 1,
+   "name": "Stop time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 3
+  },
+  "0x218D": {
+   "size": 1,
+   "name": "Start day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 3
+  },
+  "0x218E": {
+   "size": 1,
+   "name": "Stop day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 3
+  },
+  "0x218F": {
+   "size": 1,
+   "name": "Effective week",
+   "remark": "0:disenable 1:enable b0: Sun b1~b6: Mon~Sat",
+   "rule": 3
+  },
+  "0x2190": {
+   "size": 1,
+   "name": "Voltage",
+   "unit": "0.1V",
+   "remark": "(Min num of bat)*40.0V, (Max num of bat)*60.0V",
+   "rule": 3
+  },
+  "0x2191": {
+   "size": 1,
+   "name": "SOC",
+   "unit": "%",
+   "remark": "0~100%",
+   "rule": 3
+  },
+  "0x2192": {
+   "size": 1,
+   "name": "Power",
+   "unit": "W",
+   "remark": "-Rated power W ~Rated ower W",
+   "rule": 3
+  },
+  "0x2193": {
+   "size": 1,
+   "name": "Economic model rule 4",
+   "remark": "0：disable, 1: enable charge 2: enable discharge，3：ECO Mode"
+  },
+  "0x2194": {
+   "size": 1,
+   "name": "Start time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 4
+  },
+  "0x2195": {
+   "size": 1,
+   "name": "Stop time",
+   "remark": "Highest eighth digit:Hour Lowest eighth digit:Minutes",
+   "rule": 4
+  },
+  "0x2196": {
+   "size": 1,
+   "name": "Start day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 4
+  },
+  "0x2197": {
+   "size": 1,
+   "name": "Stop day",
+   "remark": "Highest eighth digit:Month Lowest eighth digit:Day",
+   "rule": 4
+  },
+  "0x2198": {
+   "size": 1,
+   "name": "Effective week",
+   "remark": "0:disenable 1:enable b0: Sun b1~b6: Mon~Sat",
+   "rule": 4
+  },
+  "0x2199": {
+   "size": 1,
+   "name": "Voltage",
+   "unit": "0.1V",
+   "remark": "(Min num of bat)*40.0V, (Max num of bat)*60.0V",
+   "rule": 4
+  },
+  "0x219A": {
+   "size": 1,
+   "name": "SOC",
+   "unit": "%",
+   "remark": "0~100%",
+   "rule": 4
+  },
+  "0x219B": {
+   "size": 1,
+   "name": "Power",
+   "unit": "W",
+   "remark": "-Rated power W ~Rated ower W",
+   "rule": 4
+  },
+  "0x219C": {
+   "size": 1,
+   "name": "Clear energy storage log",
+   "remark": "1：Clear"
+  },
+  "0x219D": {
+   "size": 1,
+   "name": "Clear event log",
+   "remark": "1：Clear"
+  },
+  "0x219E": {
+   "size": 1,
+   "name": "Factory reset",
+   "remark": "1：Recover"
+  },
+  "0x219F": {
+   "size": 1,
+   "name": "Event Log function",
+   "remark": "0：Disable， 1：Enable"
+  },
+  "0x21A0": {
+   "size": 1,
+   "name": "Fault Log function",
+   "remark": "0：Disable， 1：Enable"
+  },
+  "0x21A1": {
+   "size": 1,
+   "name": "Log type",
+   "remark": "0：Fault, 1: Event"
+  },
+  "0x21A2": {
+   "size": 1,
+   "name": "Log index",
+   "remark": "0~9"
+  },
+  "0x21A3": {
+   "size": 1,
+   "name": "GFCI Primary Protection",
+   "remark": "0：Disable， 1：Enable"
+  },
+  "0x21A4": {
+   "size": 1,
+   "name": "GFCI Secondary Protection",
+   "remark": "0：Disable， 1：Enable"
+  },
+  "0x21A5": {
+   "size": 1,
+   "name": "GFCI Tertiary Protection",
+   "remark": "0：Disable， 1：Enable"
+  },
+  "0x21A6": {
+   "size": 1,
+   "name": "ISO Detect",
+   "remark": "0：Disable， 1：Enable"
+  },
+  "0x21A7": {
+   "size": 1,
+   "name": "Anti-islanding detect",
+   "remark": "0：Disable， 1：Enable"
+  },
+  "0x21A8": {
+   "size": 1,
+   "name": "PV parallelSet",
+   "remark": "1:Parallel connection 0:Independent Slave EE"
+  },
+  "0x21A9": {
+   "size": 1,
+   "name": "FixQPencent",
+   "unit": "0.01%",
+   "remark": "Reactive power range: -6000~6000（-60%~60%）"
+  },
+  "0x21AA": {
+   "size": 1,
+   "name": "CommOffLine",
+   "remark": "0：Disable， 1：Enable (Italian regulations)"
+  },
+  "0x21AB": {
+   "size": 1,
+   "name": "AutoTestEnable",
+   "remark": "0：Disable， 1：Enable (Italian regulations)"
+  },
+  "0x21AC": {
+   "size": 1,
+   "name": "DeratingByVoltage",
+   "remark": "0：Disable， 1：Enable (Italian regulations EE)"
+  },
+  "0x21AD": {
+   "size": 1,
+   "name": "BatteyAddr",
+   "remark": "1~15:Query the SN code of the battery pack based on the address"
+  },
+  "0x21AE": {
+   "size": 1,
+   "name": "DSPParallelEn",
+   "remark": "(Set in standby mode) 0: Single machine 1: Single phase parallel operation 2: Group three-phase parallelization_L1 3: Three phase parallel team_L2 4: Group Three Phase Parallel Unit_L3 5: Double Fire Line Parallel Unit_L1 6: Dual Fire Line Parallel Unit_L2"
+  },
+  "0x21AF": {
+   "size": 1,
+   "name": "/",
+   "remark": "/"
+  },
+  "0x21B0": {
+   "size": 1,
+   "name": "MeterFinalPower",
+   "remark": "Grid power limit (electricity meter installed in the main branch of the power grid)"
+  },
+  "0x21B1": {
+   "size": 1,
+   "name": "HouseholdLoadPower"
+  },
+  "0x21B2": {
+   "size": 1,
+   "name": "CloseGSRlyEn",
+   "remark": "Allow N ground relays to close in off grid mode (set in standby mode)"
+  },
+  "0x21B3": {
+   "size": 1,
+   "name": "ChargingPilePowerControlEn",
+   "remark": "0：Disable， 1：Enable Default：Enable"
+  },
+  "0x21B4": {
+   "size": 1,
+   "name": "FaultReset"
+  },
+  "0x21B5": {
+   "size": 1,
+   "name": "MachCode",
+   "remark": "The machine equipment code is a 5-digit pure number: AAA-BB. AAA (Model Code) 00: None 001: 5048 002: 10048 003: 100600. BB (model) 00: None 01: High frequency machine 02: High frequency all-in-one machine. IVGM5048: 101, IVGM6048: 401, IVGM10048: 201, IVGM100600: 301, All-in-one5048: 102, All-in-one100600: 302"
+  },
+  "0x21B6": {
+   "size": 1,
+   "name": "BMSHeartDataEn",
+   "remark": "IVGM5048：101"
+  },
+  "0x21B7": {
+   "size": 1,
+   "name": "-"
+  },
+  "0x21B8": {
+   "size": 1,
+   "name": "ChargingModeSetting",
+   "remark": "0：Only PV charge 1： PV+Grid charge"
+  },
+  "0x21B9": {
+   "size": 1,
+   "name": "MAXACPower",
+   "unit": "W",
+   "remark": "0W-rate power"
+  },
+  "0x21BF": {
+   "size": 1,
+   "name": "OverLoadRstEn",
+   "remark": "0：Disable， 1：Enable Default：Disable"
+  },
+  "0x21C0": {
+   "size": 1,
+   "name": "VoltHBack",
+   "unit": "0.1V",
+   "remark": "230.0~300.0V"
+  },
+  "0x21C1": {
+   "size": 1,
+   "name": "VoltLBack",
+   "unit": "0.1V",
+   "remark": "1.0~300.0V"
+  },
+  "0x21C2": {
+   "size": 1,
+   "name": "FreHBack",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x21C3": {
+   "size": 1,
+   "name": "FreLBack",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x21C4": {
+   "size": 1,
+   "name": "Freq_PowerCurve_OverFreqMidPiont",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0x21C5": {
+   "size": 1,
+   "name": "Freq_PowerCurve_UnderFreqMidPiont",
+   "unit": "0.01Hz",
+   "remark": "30.00Hz~80.00Hz"
+  },
+  "0xF800": {
+   "size": 1,
+   "name": "Device TypeID"
+  },
+  "0xF801": {
+   "size": 1,
+   "name": "Device SubTypeID"
+  },
+  "0xF802": {
+   "size": 1,
+   "name": "Communication Protocol Information VersionID"
+  },
+  "0xF803": {
+   "size": 1,
+   "name": "Communication Protocol InformationID"
+  },
+  "0xF804": {
+   "size": 5,
+   "name": "Machine Serial NumberSNID"
+  },
+  "0xF809": {
+   "size": 1,
+   "name": "Machine Serial NumberSNLenID"
+  },
+  "0xF80A": {
+   "size": 1,
+   "name": "Display Board Software Number VersionID"
+  },
+  "0xF80B": {
+   "size": 1,
+   "name": "MCU1 Software VersionID"
+  },
+  "0xF80C": {
+   "size": 1,
+   "name": "MCU2 Software VersionID"
+  },
+  "0xF80D": {
+   "size": 1,
+   "name": "Display Board Hardware VersionID"
+  },
+  "0xF80E": {
+   "size": 1,
+   "name": "Control Board Hardware VersionID"
+  },
+  "0xF80F": {
+   "size": 1,
+   "name": "Power Board Hardware VersionID"
+  },
+  "0xF810": {
+   "size": 1,
+   "name": "Rsvd1ID"
+  },
+  "0xF811": {
+   "size": 1,
+   "name": "Rsvd2ID"
+  },
+  "0xF812": {
+   "size": 1,
+   "name": "Rsvd3ID"
+  },
+  "0xF813": {
+   "size": 1,
+   "name": "Rsvd4ID"
+  },
+  "0xF814": {
+   "size": 1,
+   "name": "Rsvd5ID"
+  },
+  "0xF815": {
+   "size": 1,
+   "name": "Rsvd6ID"
+  }
+ }
+}

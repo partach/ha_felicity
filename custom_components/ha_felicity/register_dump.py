@@ -27,6 +27,17 @@ DUMP_FORMAT_VERSION = 1
 IVGM_DOCUMENT_PATH = os.path.join(os.path.dirname(__file__),
                                   "ivgm_documented_registers.json")
 
+#: Frozen transcript of the IVAM protocol document (section 3.1, telemetry
+#: only).  Source of truth for tests/test_ivam_support.py.
+IVAM_DOCUMENT_PATH = os.path.join(os.path.dirname(__file__),
+                                  "ivam_documented_registers.json")
+
+#: Frozen transcript of the IVGM5048/IVGM10048 protocol document (V02,
+#: 2025-09-30) — the register layout the T-REX-5/6/10 maps use.  Source of
+#: truth for tests/test_trex_documented_registers.py.
+TREX_DOCUMENT_PATH = os.path.join(os.path.dirname(__file__),
+                                  "trex_documented_registers.json")
+
 #: Addresses in the transcript that are PDF-extraction artifacts, not
 #: registers: 0xAAAA is the prose example of a write frame, 0x122F is the
 #: "4. Communication frame format" section heading that follows the last
@@ -53,6 +64,44 @@ def load_ivgm_documented_addresses() -> dict[int, str]:
         raw = json.load(fh)["addresses"]
     return {int(k, 16): text for k, text in raw.items()
             if int(k, 16) not in NOT_REGISTERS}
+
+
+def load_ivam_documented_addresses() -> dict[int, str]:
+    """{address: name} for every word the IVAM document defines.
+
+    A 32-bit register occupies two addresses; both are listed so a dump reads
+    the whole value (the second word is named "<name> (low word)").
+    """
+    with open(IVAM_DOCUMENT_PATH, encoding="utf-8") as fh:
+        raw = json.load(fh)["registers"]
+    out: dict[int, str] = {}
+    for key, info in raw.items():
+        address = int(key, 16)
+        out[address] = info["name"]
+        for i in range(1, info.get("size", 1)):
+            out[address + i] = f"{info['name']} (low word)"
+    return out
+
+
+def load_trex_documented_addresses() -> dict[int, str]:
+    """{address: name} for every word the T-REX-5/6/10 document defines.
+
+    Multi-word registers list every word (``<name> (word n)``) so a dump reads
+    the whole value; economic-rule rows carry their rule number, because the
+    document names them only "Start time", "SOC" and so on.
+    """
+    with open(TREX_DOCUMENT_PATH, encoding="utf-8") as fh:
+        raw = json.load(fh)["registers"]
+    out: dict[int, str] = {}
+    for key, info in raw.items():
+        address = int(key, 16)
+        name = info["name"]
+        if "rule" in info:
+            name = f"Economic model rule {info['rule']} {name}"
+        out[address] = name
+        for i in range(1, info.get("size", 1)):
+            out[address + i] = f"{name} (word {i + 1})"
+    return out
 
 
 def map_addresses(register_map: dict) -> set[int]:
@@ -94,13 +143,13 @@ def _record_batch(raw, start, words):
         raw[start + i] = word
 
 
-def read_all(read, reads, budget_s: float = 120.0):
+def read_all(read, reads, budget_s: float = 120.0, clock=time.monotonic):
     """Synchronous variant (standalone tool)."""
     raw, failed = {}, {}
-    deadline = time.monotonic() + budget_s
+    deadline = clock() + budget_s
     for start, count in reads:
-        if time.monotonic() > deadline:
-            _mark_skipped(failed, start, count, "time budget exhausted")
+        if clock() > deadline:
+            _mark_skipped(failed, start, count, BUDGET_EXHAUSTED)
             continue
         try:
             _record_batch(raw, start, read(start, count))
@@ -112,6 +161,9 @@ def read_all(read, reads, budget_s: float = 120.0):
             if streak >= _MAX_CONSECUTIVE_FAILURES:
                 _mark_skipped(failed, addr, start + count - addr, batch_error)
                 break
+            if clock() > deadline:
+                _mark_skipped(failed, addr, start + count - addr, BUDGET_EXHAUSTED)
+                break
             try:
                 raw[addr] = read(addr, 1)[0]
                 streak = 0
@@ -121,13 +173,32 @@ def read_all(read, reads, budget_s: float = 120.0):
     return raw, failed
 
 
-async def async_read_all(read, reads, budget_s: float = 60.0):
-    """Async variant (diagnostics, using the integration's own client)."""
+#: Bus time the in-request dump may spend (Download diagnostics).  The browser
+#: waits for the whole read before it gets a single byte, and a proxy in front
+#: of Home Assistant may cut a request after ~60 s.  The deadline is checked
+#: before EVERY read, the register-by-register fallback included, so the worst
+#: case is this budget plus one read's own timeout (5 s x pymodbus retries).
+DIAGNOSTICS_BUDGET_S = 25.0
+
+BUDGET_EXHAUSTED = "time budget exhausted"
+
+
+async def async_read_all(read, reads, budget_s: float = DIAGNOSTICS_BUDGET_S,
+                         clock=time.monotonic):
+    """Async variant (diagnostics, using the integration's own client).
+
+    The deadline used to be checked only between batches.  After a failed
+    batch the register-by-register retry ran unbounded — a failure only ended
+    it after three in a row, so on a flaky link (successes in between) one
+    60-register batch could cost 60 reads at up to ~20 s each.  The download
+    then never answered and the browser reported a network error (the file
+    named after the config-entry id: no response headers ever arrived).
+    """
     raw, failed = {}, {}
-    deadline = time.monotonic() + budget_s
+    deadline = clock() + budget_s
     for start, count in reads:
-        if time.monotonic() > deadline:
-            _mark_skipped(failed, start, count, "time budget exhausted")
+        if clock() > deadline:
+            _mark_skipped(failed, start, count, BUDGET_EXHAUSTED)
             continue
         try:
             _record_batch(raw, start, await read(start, count))
@@ -138,6 +209,9 @@ async def async_read_all(read, reads, budget_s: float = 60.0):
         for addr in range(start, start + count):
             if streak >= _MAX_CONSECUTIVE_FAILURES:
                 _mark_skipped(failed, addr, start + count - addr, batch_error)
+                break
+            if clock() > deadline:
+                _mark_skipped(failed, addr, start + count - addr, BUDGET_EXHAUSTED)
                 break
             try:
                 raw[addr] = (await read(addr, 1))[0]
@@ -222,6 +296,10 @@ _PHYSICS = (
     ("Bat1", "bat1_voltage", "bat1_current", "bat1_power"),
     ("PV1", "pv1_voltage", "pv1_current", "pv1_power"),
     ("PV2", "pv2_voltage", "pv2_current", "pv2_power"),
+    # AC: P = V x I x power factor, so a healthy load reads a little under 1 —
+    # still nowhere near the 0.1 or 10 a scale error gives.
+    ("Grid A", "grid_a_voltage", "grid_a_current", "grid_a_phase_power"),
+    ("Load A", "load_a_voltage", "load_a_current", "load_aphase_power"),
 )
 
 

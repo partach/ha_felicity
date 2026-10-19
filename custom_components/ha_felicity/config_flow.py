@@ -38,6 +38,7 @@ from .const import (
     DEFAULT_STOPBITS,
     DEFAULT_TCP_PORT,
     DOMAIN,
+    INVERTER_MODEL_IVAM_SIX,
     INVERTER_MODEL_IVGM_EIGHT,
     INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
@@ -165,10 +166,22 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_INVERTER_MODEL, default=default_model): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIVE, label=INVERTER_MODEL_TREX_FIVE),
+                            # Felicity's protocol document for these is titled
+                            # IVGM5048 / IVGM10048 (trex_documented_registers.json),
+                            # and its machine-code table lists the IVGM6048 too —
+                            # same register layout, so the same entries.  Not to
+                            # be confused with the IVGM-8K/15K/20K below, which
+                            # use the T-REX-25/50 layout.
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_TREX_FIVE,
+                                label=f"{INVERTER_MODEL_TREX_FIVE} / IVGM5048"),
                             # Register-identical to the 5K; only the rating differs.
-                            selector.SelectOptionDict(value=INVERTER_MODEL_TREX_SIX, label=INVERTER_MODEL_TREX_SIX),
-                            selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TEN, label=INVERTER_MODEL_TREX_TEN),
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_TREX_SIX,
+                                label=f"{INVERTER_MODEL_TREX_SIX} / IVGM6048"),
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_TREX_TEN,
+                                label=f"{INVERTER_MODEL_TREX_TEN} / IVGM10048"),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TWENTY_FIVE, label=INVERTER_MODEL_TREX_TWENTY_FIVE),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIFTY, label=INVERTER_MODEL_TREX_FIFTY),
                             # IVGM family — PROVISIONAL, built from the 8K RS485
@@ -184,6 +197,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             selector.SelectOptionDict(
                                 value=INVERTER_MODEL_IVGM_TWENTY,
                                 label=f"{INVERTER_MODEL_IVGM_TWENTY} (3-phase, provisional)"),
+                            # 9600 baud per its protocol; read-only — no EMS control
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVAM_SIX,
+                                label=f"{INVERTER_MODEL_IVAM_SIX} (monitoring only, 9600 baud, provisional)"),
                             # Future models go here
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,

@@ -187,6 +187,29 @@ async def test_economic_mode_dropped_by_the_inverter_is_healed():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", [
+    const.INVERTER_MODEL_TREX_FIVE, const.INVERTER_MODEL_TREX_SIX, const.INVERTER_MODEL_TREX_TEN,
+    const.INVERTER_MODEL_TREX_TWENTY_FIVE, const.INVERTER_MODEL_TREX_FIFTY,
+    const.INVERTER_MODEL_IVGM_EIGHT, const.INVERTER_MODEL_IVGM_FIFTEEN,
+    const.INVERTER_MODEL_IVGM_TWENTY,
+])
+async def test_every_controllable_model_is_healed(model):
+    """The watchdog listed its models by hand — (T-REX-25, T-REX-50) and
+    (T-REX-5, T-REX-10) — so T-REX-6K and the whole IVGM family had no
+    self-heal at all.  It now branches on the control path."""
+    eco = model in const.ECO_TIMEOFUSE_MODELS
+    mode_key, economic = ("eco_timeofuse", 1) if eco else ("operating_mode", 2)
+    r = _replay(model, soc=50.0, start=day(NEXT, 1, 55))
+    r.coordinator.set_slot_overrides({"today": NIGHT_CHARGE, "tomorrow": {}})
+    await r.run_until(day(NEXT, 2, 30))
+    r.inverter.set(mode_key, 0)                  # dropped out between two polls
+    assert r.inverter.action() == "self_use"
+    await r.run_until(day(NEXT, 2, 40))
+    assert r.writes_after(mode_key, day(NEXT, 2, 29)) == [(day(NEXT, 2, 30), economic)]
+    assert r.inverter_actions(day(NEXT, 2, 30), day(NEXT, 2, 40)) == {"charge"}, r.timeline(1)
+
+
+@pytest.mark.asyncio
 async def test_a_charge_that_spans_midnight_keeps_charging():
     """T-REX-5/10 rule 1 carries a start/stop DATE, written as today's date on
     each transition.  A charge running at 23:59 has no transition at 00:00, so
@@ -804,3 +827,23 @@ async def test_a_solar_ev_runs_only_where_the_sun_covers_it():
     not_from_sun = sum(max(0.0, 0.6 + t.switched_kw - t.pv_kw) / 60.0 for t in on)
     assert not_from_sun < 0.5, f"{not_from_sun:.2f} kWh of the EV's energy not from the sun"
     assert max(r.hass.number_history.get("number.phoenix_current", [16])) <= 13
+
+
+# ---------------------------------------------------------------------------
+# A monitor-only inverter (IVAM6048P1G1) is never written
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_monitor_only_inverter_is_never_written():
+    """The IVAM's protocol defines no control registers.  Even with the EMS
+    switched on (the setup migration forces it off; the replay bypasses setup)
+    and safe power set to "on", a whole day passes without one write, and the
+    coordinator reports self-use instead of retrying a transition each poll."""
+    r = _replay(const.INVERTER_MODEL_IVAM_SIX,
+                options={**AUTO, "safe_power_management": "on", "max_amperage_per_phase": 10},
+                soc=30.0, start=day(D, 0), prices_for=DUCK, load_kw=lambda _t: 3.0,
+                pv_kw=SUN, forecast_kw=SUN)
+    await r.run_until(day(D, 23), step_s=300)
+    assert r.inverter.writes == []
+    assert r.coordinator._current_energy_state == "idle"
+    assert r.coordinator.battery_soc is not None        # but it IS read

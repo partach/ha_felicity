@@ -2,6 +2,40 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **New model: IVAM6048P1G1 (6 kW) — monitoring only, provisional.** Sensors
+  and the energy-flow card work; the EMS does not. Felicity's protocol document
+  for this inverter defines only read-only measurements and no settings, so the
+  integration never writes to it and keeps the EMS off. Choose 9600 baud. What
+  is still unverified (the power scale above all) is listed in
+  `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
+
+- **Download diagnostics works on slow or unreliable connections.** On a
+  flaky RS485 link the register read behind it could run for many minutes, and
+  the browser gave up with a network error. It now finishes within about half a
+  minute — registers it had no time for are listed as "not read" in the file —
+  and answers at once while the inverter is not responding.
+
+- **IVGM5048 / IVGM6048 / IVGM10048 owners: pick the T-REX-5K / 6K / 10K.**
+  Felicity's protocol document for these inverters has exactly the T-REX-5/10
+  register layout; the setup list now shows both names. (The IVGM 8K/15K/20K
+  are a different layout and keep their own entries.) The T-REX-5/6/10 register
+  maps are now checked against that document — every documented register
+  matched.
+- **New select values**: Operating Mode "Oil engine mode" and Economic Rule
+  "ECO mode" (value 3), which the inverter can report but the integration
+  showed as unknown.
+- **T-REX-6K and IVGM inverters now recover when they drop out of Economic
+  mode** during a charge or discharge (app, power blip). The recovery check
+  only covered the T-REX-5/10/25/50 before.
+- *Download diagnostics* on T-REX-5/6/10 reads every register in Felicity's
+  document, for checking open scale questions.
+
+- **The `ha_felicity.write_register` service works.** It failed with an
+  error on every call in every release that had it (it called a method that
+  had been moved). It now writes through the same path as the register's own
+  entity: give the value in the register's units, as the entity shows it
+  (e.g. `56` for 56 V), whole numbers only. Refused on monitoring-only models.
+
 - **Your real consumption pattern is used at last.** The hour-by-hour
   consumption profile behind the overnight reserve and the battery forecast
   was always flat (every hour the same), because the history it was read from

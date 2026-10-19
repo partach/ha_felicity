@@ -2,8 +2,9 @@
 
 Settings → Devices & services → Felicity → ⋮ → **Download diagnostics**
 returns one JSON file containing a fresh read of every register the model's
-map defines (for the IVGM family: every address its protocol document
-defines), with the RAW words, the decoded values, and physics cross-checks.
+map defines (for the IVGM family, T-REX-5/6/10 and IVAM: every address its
+protocol document defines), with the RAW words, the decoded values, and
+physics cross-checks.
 That file is what to share when checking a register map against hardware.
 
 Read-only: only function 3 (read holding registers) goes over the bus.  It
@@ -13,6 +14,8 @@ client slot and Home Assistant need not be stopped.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
@@ -21,7 +24,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from . import register_dump
-from .const import CONF_HOST, CONF_INVERTER_MODEL, DOMAIN, IVGM_MODELS, MODEL_REGISTRY
+from .const import (
+    CONF_HOST,
+    CONF_INVERTER_MODEL,
+    DOMAIN,
+    INVERTER_MODEL_IVAM_SIX,
+    IVGM_MODELS,
+    MODEL_REGISTRY,
+    OPERATING_MODE_MODELS,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 _TO_REDACT = {CONF_HOST}
 
@@ -61,10 +74,23 @@ async def _async_dump(hass: HomeAssistant, coordinator, model: str | None) -> di
     if model in IVGM_MODELS:
         documented = await hass.async_add_executor_job(
             register_dump.load_ivgm_documented_addresses)
+    elif model in OPERATING_MODE_MODELS:
+        # T-REX-5/6/10: every address of the IVGM5048/10048 document, so the
+        # unmapped settings and the scale questions (power-conversion
+        # registers) can be read off one dump.
+        documented = await hass.async_add_executor_job(
+            register_dump.load_trex_documented_addresses)
+    elif model == INVERTER_MODEL_IVAM_SIX:
+        # Includes the unmapped "inquiry - Day/Month/Year" block, so a dump
+        # can tell what those registers answer.
+        documented = await hass.async_add_executor_job(
+            register_dump.load_ivam_documented_addresses)
 
-    addresses = register_dump.map_addresses(register_map)
-    if documented:
-        addresses |= set(documented)
+    mapped = register_dump.map_addresses(register_map)
+    extra = (set(documented) - mapped) if documented else set()
+    # Mapped registers first: if the time budget runs out, the dump still has
+    # every register the integration actually uses.
+    reads = register_dump.plan_reads(mapped) + register_dump.plan_reads(extra)
 
     client, slave = coordinator.client, coordinator.slave_id
 
@@ -78,13 +104,30 @@ async def _async_dump(hass: HomeAssistant, coordinator, model: str | None) -> di
         return response.registers
 
     started = dt_util.now()
-    raw, failed = await register_dump.async_read_all(
-        read, register_dump.plan_reads(addresses))
+    paused_until = getattr(coordinator, "_read_backoff_until", 0)
+    if isinstance(paused_until, (int, float)) and paused_until > time.time():
+        # The inverter stopped answering and polling is paused (Known Issues
+        # 8b).  Every read would cost a full timeout; answer at once instead.
+        raw, failed = {}, {}
+        skipped = "polling paused: the inverter is not answering"
+    else:
+        raw, failed = await register_dump.async_read_all(read, reads)
+        skipped = None
+    duration = round((dt_util.now() - started).total_seconds(), 1)
+    cut = sum(1 for why in failed.values() if register_dump.BUDGET_EXHAUSTED in why)
+    _LOGGER.info(
+        "Diagnostics register dump: %d words read, %d failed, %d not read "
+        "(time budget %.0f s), in %.1f s%s",
+        len(raw), len(failed) - cut, cut, register_dump.DIAGNOSTICS_BUDGET_S,
+        duration, f" — {skipped}" if skipped else "")
     return register_dump.build_dump(
         model=model or "unknown", register_map=register_map, raw=raw, failed=failed,
         documented=documented,
         meta={"source": "Home Assistant diagnostics",
               "captured_at": started.isoformat(timespec="seconds"),
-              "duration_s": round((dt_util.now() - started).total_seconds(), 1),
+              "duration_s": duration,
+              "budget_s": register_dump.DIAGNOSTICS_BUDGET_S,
+              "not_read_budget_exhausted": cut,
+              "skipped": skipped,
               "slave": slave},
     )

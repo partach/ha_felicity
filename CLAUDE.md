@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **724**) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **818**: 816 pass + 2 documented skips) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -110,7 +110,7 @@ this rule exists to prevent — don't.
 
 ## Project Overview
 
-**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50** and the **IVGM family (8K / 15K / 20K, provisional)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
+**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50**, the **IVGM family (8K / 15K / 20K, provisional)** and the **IVAM6048P1G1 (monitoring only — no control registers, see below)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
 
 **Version**: see `custom_components/ha_felicity/manifest.json` — the only copy
 that matters.  A number written here goes stale the first time someone bumps the
@@ -141,6 +141,9 @@ custom_components/ha_felicity/
 ├── trex_fifty.py            # TREX-50 register map
 ├── ivgm.py                  # IVGM family map (8K + 3-phase, derived from ONE table)
 ├── ivgm_documented_registers.json # Frozen transcript of the IVGM protocol document
+├── ivam.py                  # IVAM6048P1G1 map — MONITOR-ONLY (telemetry; no control registers)
+├── ivam_documented_registers.json # Frozen transcript of the IVAM protocol document
+├── trex_documented_registers.json # Frozen transcript of the IVGM5048/10048 document = T-REX-5/6/10 layout
 ├── register_dump.py         # HA-free read-only register dump (diagnostics + tools/ivgm_dump.py)
 ├── diagnostics.py           # "Download diagnostics" → full register dump
 ├── date.py                  # Date entities
@@ -162,6 +165,9 @@ tests/
 │                            #   (custom_components/ha_felicity/ivgm_documented_registers.json)
 ├── test_power_scaling.py    # Per-model telemetry/setpoint scaling — measured, never inherited
 ├── test_card_contract.py    # The cards' name-based coupling to the register maps
+├── test_ivam_support.py     # IVAM: provenance vs its document; no write ever reaches the bus
+├── test_trex_documented_registers.py # T-REX-5/6/10 maps vs the IVGM5048/10048 document
+├── test_write_register_service.py    # the write_register service, through the real write path
 ├── day_replay.py            # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
 └── test_day_replay.py       # Replays: what actually reaches the inverter registers
 
@@ -470,6 +476,17 @@ state but the Economic-mode register reads off (`eco_timeofuse`!=1 on
 TREX-25/50, `operating_mode`!=2 on TREX-5/10), it re-applies the state.
 Idempotent (only fires when the register actually shows General).
 
+⚠️ **It branches on the control path (`ECO_TIMEOFUSE_MODELS` /
+`OPERATING_MODE_MODELS`) — fixed Oct 2026.**  It used to list its models by hand,
+`(TREX_25, TREX_50)` and `(TREX_5, TREX_10)`, with no else — so **T-REX-6K and
+the whole IVGM family had no self-heal at all**: the same "hand-listed model
+pair" failure `type_specific.py` was rid of, surviving in the coordinator.
+Found while checking the IVGM5048 document.  Pinned per model by
+`test_every_controllable_model_is_healed` (replay; the 4 models the old lists
+missed fail on the old code).  The replay harness now publishes telemetry only
+where a model's map has the register (`FakeInverter._publish`), so it runs every
+controllable model, not just T-REX-10/25.
+
 **It re-applies the FULL state, not just the mode (fixed Sept 2026).** The heal
 used to write only the operating mode.  But whatever knocked the inverter out
 of Economic mode can also have cleared `econ_rule_1_enable` and the rule's
@@ -691,7 +708,25 @@ being checked.
 ⚠️ **Read-only, and only documented addresses.**  Function 3 only; `plan_reads`
 never spans a gap (an undefined address can fault a whole batch).  A failed
 batch is retried register-by-register, giving up after 3 consecutive failures
-so a dead link can't hang the diagnostics download.  The decoder mirrors
+so a dead link can't hang the diagnostics download.
+
+⚠️ **"Download diagnostics" failed with a browser network error — FIXED
+(Oct 2026).**  The download is one HTTP request that answers only after the
+whole bus read, and the read's time budget was checked only *between batches*.
+After a failed batch the register-by-register retry ignored it, and on a flaky
+link the "3 consecutive failures" give-up never triggered (a success in between
+resets it) — one 60-register batch could cost 60 reads × ~20 s.  The browser
+waited, then reported a network error, with the file named after the
+config-entry id (the tell: no response headers ever arrived — a normal download
+is `ha_felicity-<entry>.json.txt`).  "Resume" cannot help: HA's signed download
+link expires after ~30 s and a retry re-runs the read.  Now: the deadline
+(`DIAGNOSTICS_BUDGET_S`, 25 s) is checked before **every** read, so the worst
+case is the budget plus one read's own timeout; mapped registers are read
+first, documented-only extras after; while polling is paused for a silent
+inverter (8b) the dump answers at once without touching the bus; the outcome is
+logged at INFO ("Diagnostics register dump: N words read …") and recorded in the
+file (`budget_s`, `not_read_budget_exhausted`, `skipped`).  Pinned by
+`test_a_flaky_link_cannot_run_past_the_time_budget` and two diagnostics tests.  The decoder mirrors
 `coordinator._apply_scaling`; `test_scaling_matches_the_coordinator` keeps the
 two from drifting.  Pair a dump with a photo of the inverter display taken at
 the same moment — that is how the enum values (gaps doc item 0) get confirmed.
@@ -839,6 +874,122 @@ and `tests/test_model_coverage.py` fails if any supported model is missing from
 exactly one control path, from `MODEL_REGISTRY`, from `INVERTER_MAX_POWER_KW`, or
 lacks the registers its own control path writes.  (Verified by removing IVGM from
 `ECO_TIMEOFUSE_MODELS`: two tests fail.)
+
+### IVAM6048P1G1 — MONITOR-ONLY (Oct 2026)
+
+Added from Felicity's *IVAM High-Frequency Inverter External Communication
+Protocol RS485* (v01, 2026-07-06; 9600 8N1, slave 1–31), frozen as
+`ivam_documented_registers.json`.  **The document has one register table and it
+is read-only telemetry** — no operating/economic mode, no time-of-use rule, no
+power limit.  So there is nothing for the EMS to drive, and the model is the
+first member of a third category, `const.MONITOR_ONLY_MODELS`:
+
+- `TypeSpecificHandler.async_write_registers` — the bottom of EVERY write path
+  (coordinator, number/select/time/date entities, a future write service) —
+  refuses on a monitor-only model, logs once, returns False.
+- The coordinator never calls `_transition_to_state` for it (reports `idle` /
+  self-use instead of warning "transition failed" every poll), and
+  `_transition_to_state` refuses too; safe power returns the Power Level
+  without throttling (there is no power register).
+- `__init__` forces `grid_mode = off` at setup; the Grid Mode select offers only
+  `off`; the strategy select is not created.  The EMS does not run, so flexible
+  loads do not either.
+- `type_specific` reads it through the shared keys (`bat1_soc`, `bat1_voltage`,
+  `grid_a_phase_power`, `grid_a_current`) and reports the mode "Monitoring only".
+
+**Why a third category, not "in neither control path":**
+`test_model_has_exactly_one_control_path` exists to catch a model someone forgot
+to plumb.  A declared absence keeps that test meaningful; an implicit one would
+make every future forgotten model look like a deliberate monitor-only install.
+The inverse is pinned too: a monitor-only map must contain **no** control
+register and no writable entity (`test_control_path_registers_exist_in_the_model_map`).
+
+⚠️ **Its telemetry sits at the IVGM / T-REX-25/50 addresses** (31 of 34 match —
+SOC 0x1138, PV1 0x1128, grid 0x1173 …), but 0x118C is *Smart Load power* (W)
+where the IVGM has *Micro-inverter total energy* — same block, not the same map.
+That match does **not** license borrowing their SETTING addresses: the
+addresses rule above applies, and `tests/test_ivam_support.py` fails on any
+address or name not in the IVAM document.
+
+⚠️ **The power scale is the document's (W) and unmeasured.**  The IVGM document
+also said W and was 10× off.  Monitor-only makes a wrong scale a wrong reading,
+not a wrong command; the diagnostics dump's physics checks (now including
+`Grid A` and `Load A`) settle it.  Open questions: `docs/IVAM_SUPPORT_GAPS.md`.
+
+Not mapped: the "inquiry – Day/Month/Year" registers (0x1260–0x1269,
+0x1294–0x1298) — undocumented period; in the transcript, so the dump reads them.
+
+The card contract exempts two keys on this model only, with reasons
+(`_ABSENT_ON` in `test_card_contract.py`): `loadpower_lineside` (no grid-side
+meter) and `battery_discharge_depth_on_grid_bms` (no BMS limit registers).  The
+replay harness models a monitor-only inverter (`FakeInverter.monitor_only`):
+`test_a_monitor_only_inverter_is_never_written` runs a day with the EMS and
+safe power ON and asserts zero writes.
+
+### T-REX-5/6/10 = IVGM5048 / IVGM6048 / IVGM10048 — documented (Oct 2026)
+
+Support sent *Inverter Communication Protocol — Series RS485*, **V02
+2025-09-30** (V01 2025-03-18; V02 adds only 0x21BF–0x21C5), titled for the
+**IVGM5048 / IVGM10048**; its machine-code register (0x21B5) also lists the
+**IVGM6048** (5048 = 101, 6048 = 401, 10048 = 201).  Same title as the IVGM-8K
+document, **different product and layout**: this one is the T-REX-5/10 layout
+(`operating_mode` 0x2103, `econ_rule_1_enable` 0x2178, telemetry from 0x1101,
+2400 baud), the 8K one the T-REX-25/50 layout.  Never borrow an address across
+the two because the titles match.
+
+It is frozen as `trex_documented_registers.json` (458 registers, the document's
+name/size/unit/remark; economic-rule rows carry `rule`, since the document names
+them only "Start time", "SOC" …).  `tests/test_trex_documented_registers.py`
+holds the T-REX-5/6/10 maps to it like the IVGM maps are held to theirs:
+every mapped word is documented, names match (spelling-normalised — the
+document writes "Convertion", "temperautre", "Operated mode"), every rule row
+belongs to its rule.  Result on first run: **all 250 documented addresses in
+`trex_ten.py` (178 in `trex_five.py`) carry the document's quantity** — the
+AI-generated map was right.  Exceptions, each with its reason in the test:
+`setting_data_sn` (0x1100) and six version words at 0xF83C–0xF841 are not in
+the document (it puts version IDs at 0xF80A–0xF80F — a dump will tell which
+answers); `min_cell_temperature` keeps its name where the document repeats
+"Maximum" (typo).  Mutation-checked: a rule-2 SOC moved to rule 3, a battery
+voltage typed one address on, a dropped select value and an invented address
+each fail.
+
+**Select values added** (the document enumerates them, our lists stopped at 2):
+`operating_mode` **3 = Oil engine (generator) mode** (5048 firmware 2203+,
+10048 firmware 207+) and `econ_rule_N_enable` **3 = ECO mode** — before, a
+register holding 3 rendered as an unknown option and the rule summary sensor as
+`Unknown(3)`.  The EMS never writes 3; while it is active the self-heal returns
+`operating_mode` to 2 (Economic), as for any other non-Economic value.
+
+**Setup dropdown** labels the entries `T-REX-5K-P1G01 / IVGM5048`,
+`T-REX-6KLP1G01 / IVGM6048`, `T-REX-10K-P3G01 / IVGM10048` — labels only, no
+new model ids, so existing entries are untouched.  **Download diagnostics** on
+these models now reads every documented address (`register_dump.
+load_trex_documented_addresses`), so the unmapped settings come along.
+
+**Open — scale questions, deliberately NOT changed** (the IVGM document was 10×
+wrong about power; change only with a dump): `line/load/bat_power_conversion`
+(0x1195–0x1199) are /10 in our maps, the document says W; `battery_capacity_
+secondary` (0x11B0) /10 vs the document's %; `econ_rule_N_power` is signed per
+the document (−rated..+rated W), unsigned in ours (harmless for the positive
+values we write).  ~150 settings registers stay unmapped on purpose — mostly
+grid-code protection; the candidates if ever wanted are zero-export mode/power
+(0x2176/0x2177), charging mode PV-only/PV+grid (0x21B8), max AC power (0x21B9).
+
+**`ha_felicity.write_register` service — FIXED (Oct 2026, maintainer: "keep the
+service via write_type_specific_register").**  The service called
+`coordinator.async_write_register`, which the coordinator lost on 2026-01-18
+(853c446) when the write logic moved to `TypeSpecificHandler`.  The service had
+been added a month earlier (f7e22cd / e9a2c68), and the first tag, v.0.8.1,
+already carried both — so it raised `AttributeError` in **every release that
+had it**.  Nothing caught it because nothing ran the handler.  It now calls
+`coordinator.TypeSpecificHandler.write_type_specific_register(key, int(value))`
+— the same path, scaling and whole-number rule as the register entities — so
+it also inherits the monitor-only refusal.  The value is in the register's
+engineering units (56 for 56 V), as `services.yaml` now says.
+`tests/test_write_register_service.py` drives the real handler from
+`__init__.py` against the real `TypeSpecificHandler` with a coordinator that is
+a **plain object**: a MagicMock answers any method name and would have hidden
+exactly this bug.
 
 `INVERTER_MAX_POWER_KW` in `const.py` maps each model to its max power.
 The power_level slider range and SOC trajectory calculations use this to
@@ -2238,7 +2389,8 @@ an open question.  The #209 reporter then read 8568 with raw pymodbus
 our layout — rule 1: Charge, 00:00–07:00 (`0`, `1792`), 1 Jan–31 Dec (`257`,
 `3103`), all days (`127`), 56.0 V (`560`), 60 %, 1000 W; rule 4: 19:30–22:00
 (`4894`, `5632`), 29 Sep (`2333`), 1500 W.  This matches the four ECO modes in
-the Felicity app.  The rest of `trex_five.py` is still unverified.
+the Felicity app.  ~~The rest of `trex_five.py` is still unverified.~~  It now
+has a document — see "T-REX-5/6/10 = IVGM5048/6048/10048" below.
 
 **The cause is the link, not the map or the integration.**  Same raw test,
 success per single attempt by read length: 9 registers ≈ 80 %, 18 ≈ 50–100 %,
@@ -3232,7 +3384,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**724 tests**). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**818 tests**: 816 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -3293,6 +3445,14 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
   they differ only in `INVERTER_MAX_POWER_KW`, and share every model group)
 - Setpoint power unit declared for every model (a model missing from
   `SETPOINT_POWER_UNIT_BY_MODEL` would silently under-command charge power)
+- T-REX-5/6/10 provenance (`test_trex_documented_registers.py`): every mapped
+  word in the IVGM5048/10048 document, names match it, rule rows in their rule,
+  select lists cover every documented value
+- Economic-mode self-heal on every controllable model (replay)
+- Monitor-only model (`test_ivam_support.py` + replay): IVAM addresses, names,
+  sizes and scales traced to its document; every write refused at the bottom of
+  the write path; a whole replayed day with the EMS and safe power ON writes
+  nothing
 - Card contract (`test_card_contract.py`): every model exposes an entity NAMED
   for each key the energy-flow card resolves, of the right device_class AND unit;
   the shortest-match rule picks the intended entity (not a same-suffixed

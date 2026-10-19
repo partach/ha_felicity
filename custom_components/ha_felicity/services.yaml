@@ -1,6 +1,6 @@
 write_register:
   name: Write Register
-  description: Write a raw value to a specific register on the Felicity inverter.
+  description: Write a value to a specific register on the Felicity inverter, through the same path as the register's own entity. Refused on monitoring-only models.
   target:
     entity:
       integration: ha_felicity
@@ -14,7 +14,7 @@ write_register:
         text:
     value:
       name: Value
-      description: Raw value to write (integer).
+      description: Whole-number value in the register's units, as its entity shows it (e.g. 56 for 56 V); the integration applies the register's scaling.
       required: true
       selector:
         number:

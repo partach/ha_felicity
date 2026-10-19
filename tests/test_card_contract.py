@@ -85,6 +85,25 @@ _REQUIRED = [
 #: Legitimately absent on models without a generator port (T-REX-5/6/10).
 _OPTIONAL = ["total_generator_active_power"]
 
+#: Card keys a specific model has NOTHING to measure for — with the reason.
+#: Kept per model and per key on purpose: a blanket "optional" would let the
+#: next model lose a tile silently, which is the failure this file exists for.
+#: An exempt key that the model DOES expose is still checked normally.
+_ABSENT_ON = {
+    const.INVERTER_MODEL_IVAM_SIX: {
+        # No grid-side meter in its protocol: the line-side "Home Load" is
+        # unmeasured (all its loads are on the inverter's load output, which
+        # the card's backup-load tile shows).
+        "loadpower_lineside": "no grid-side (CT) meter in the IVAM protocol",
+        # No BMS depth-of-discharge register; the card falls back to 20 %.
+        "battery_discharge_depth_on_grid_bms": "no BMS limit registers in the IVAM protocol",
+    },
+}
+
+
+def _required(model):
+    return [k for k in _REQUIRED if k not in _ABSENT_ON.get(model, {})]
+
 #: What each key must actually measure. Resolving to *an* entity is not enough —
 #: it has to be the right kind of quantity.
 _EXPECTED_KIND = {
@@ -111,6 +130,8 @@ def test_card_key_resolves_on_every_model(model, key):
     `pv_total_power` on the T-REX-10 is named "Total PV Power" and resolves
     fine — but *something* has to carry the name the card looks for.
     """
+    if key in _ABSENT_ON.get(model, {}) and key not in _name_slugs(model):
+        pytest.skip(f"{model} has no {key}: {_ABSENT_ON[model][key]}")
     slugs = _name_slugs(model)
     assert key in slugs, (
         f"{model} exposes no entity whose name slugifies to {key!r}, so the "
@@ -125,7 +146,8 @@ def test_card_key_resolves_to_the_right_kind_of_sensor(model, key):
     """A resolved entity of the wrong kind is worse than none at all."""
     info = _entry(model, key)
     if info is None:
-        assert key in _OPTIONAL, f"{model}: {key} missing (covered by the other test)"
+        assert key in _OPTIONAL or key in _ABSENT_ON.get(model, {}), (
+            f"{model}: {key} missing (covered by the other test)")
         return
     want_class, want_unit = _EXPECTED_KIND[key]
     assert info.get("device_class") == want_class, (
@@ -150,7 +172,7 @@ def test_shortest_match_wins_for_every_card_key(model):
     "SmartLoad Open Battery Voltage" as the battery voltage.
     """
     slugs = _name_slugs(model)
-    for key in _REQUIRED:
+    for key in _required(model):
         matches = [s for s in slugs if s == key or s.endswith(f"_{key}")]
         assert matches, f"{model}: {key} unresolvable"
         winner = min(matches, key=len)
