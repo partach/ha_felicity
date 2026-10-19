@@ -87,6 +87,15 @@ SLOW_POLL_FACTOR = 2
 # hours; fewer means the recorder was down and the day would bend the shape.
 CONSUMPTION_HISTORY_DAYS = 7
 MIN_HOURS_FOR_HISTORY_DAY = 20
+
+
+def _number(value) -> float | None:
+    """A real number from a recorder row field, else None (bool is not a number)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
 CONSUMPTION_BACKFILL_RETRY_S = 300
 
 # Reduce noise from pymodbus
@@ -1165,7 +1174,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             )).lower() in ("on", "true", "1"),
             flexible_loads=self._build_flex_load_configs(),
             ev_charge_strategy=str(opts.get("ev_charge_strategy", "smart")),
-            scheduler_engine=str(opts.get("scheduler_engine", "greedy")),
+            scheduler_engine=str(opts.get("scheduler_engine", "optimal")),
         )
 
         # What did the previous schedule predict the SOC would be at this slot?
@@ -1240,6 +1249,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             sunrise_hour=self.sunrise_hour,
             sunset_hour=self.sunset_hour,
             predicted_soc_pct=predicted_soc,
+            charging_now=self._current_energy_state == "charging",
         )
 
         # Skip recalc when inputs unchanged (#8).  Hashing the inputs lets
@@ -1263,7 +1273,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
             safe_power_kw,
             opts.get("ev_charge_strategy", "smart"),
-            opts.get("scheduler_engine", "greedy"),
+            opts.get("scheduler_engine", "optimal"),
+            # The exact planner decides per quarter-hour (also inside an
+            # hourly price slot) and holds the running step (charging_now).
+            now.minute // 15,
+            self._current_energy_state == "charging",
         ))
         if (input_hash == self._last_schedule_input_hash
                 and current_slot_idx == self._last_schedule_slot_idx):
@@ -1369,7 +1383,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Capture WHY when the MILP engine is selected but greedy is running.
         # The reason previously lived only in a one-off WARNING that has usually
         # rotated away by the time anyone asks "why does my card say fallback?".
-        if opts.get("scheduler_engine", "greedy") == "milp":
+        if opts.get("scheduler_engine", "optimal") == "milp":
             self.milp_status = _milp_status_snapshot()
         else:
             self.milp_status = None
@@ -2402,8 +2416,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     async def _query_hourly_from_history(self, entity_id: str, day) -> dict[str, float]:
         """Hourly consumption (kWh) for one LOCAL calendar day, from the recorder.
 
-        Returns {"<hour>": kWh} for each hour the recorder has statistics for;
-        {} when it has none or the query fails.
+        Returns {"<hour>": kWh} for each hour the recorder can account for;
+        {} when it has none or the query fails.  The query starts one hour
+        before the day so hour 0 has a baseline (see _hourly_from_statistics).
         """
         try:
             from homeassistant.components.recorder import get_instance
@@ -2414,7 +2429,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # Local midnight to local midnight (aware, so a DST day spans 23
             # or 25 hours).  The day used to be cut at UTC midnight, which put
             # 22:00-24:00 of the previous evening into this day's hours 0-1.
-            start = datetime.combine(day, datetime.min.time()).astimezone()
+            midnight = datetime.combine(day, datetime.min.time()).astimezone()
+            start = midnight - timedelta(hours=1)
             end = datetime.combine(day + timedelta(days=1), datetime.min.time()).astimezone()
 
             stats = await get_instance(self.hass).async_add_executor_job(
@@ -2427,26 +2443,58 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 # Ask the recorder for kWh: it converts from the statistic's
                 # own unit, so a Wh meter no longer depends on a guess.
                 {"energy": "kWh"},
-                {"change"},
+                {"change", "state"},
             )
-            return self._hourly_from_statistics(stats.get(entity_id) or [])
+            return self._hourly_from_statistics(
+                stats.get(entity_id) or [], day=day,
+                max_kwh_per_hour=self._max_household_kwh_per_hour())
         except Exception as err:
             _LOGGER.debug("Could not query hourly consumption history: %s", err)
             return {}
 
+    def _max_household_kwh_per_hour(self) -> float:
+        """The most energy the house can physically use in one hour (kWh).
+
+        Everything the house uses arrives through the grid connection or the
+        inverter, so neither can be exceeded: grid limit on three phases (the
+        most generous reading — a 1-phase inverter can sit on a 3-phase
+        connection) plus the inverter's rating.  Generous on purpose; it only
+        has to catch readings that cannot be consumption at all.
+        """
+        opts = self.config_entry.options
+        try:
+            amps = float(opts.get("max_amperage_per_phase", 16) or 16)
+        except (TypeError, ValueError):
+            amps = 16.0
+        inverter_kw = INVERTER_MAX_POWER_KW.get(self.inverter_model, 10.0)
+        return round(amps * 0.230 * 3 + inverter_kw, 1)
+
     @staticmethod
-    def _hourly_from_statistics(rows) -> dict[str, float]:
-        """Bin recorder statistics rows into local hours.
+    def _hourly_from_statistics(rows, day=None, max_kwh_per_hour=None) -> dict[str, float]:
+        """Hourly consumption from recorder statistics rows, by local hour.
 
         ``start`` is a float UTC timestamp in the recorder API this integration
         runs against (HA 2023.3+).  The code used to call ``.hour`` on it, which
         raised, the broad except swallowed it, and every install's hourly
-        profile silently fell back to FLAT — so the profile-aware reserve and
-        trajectory never saw a real profile.  A datetime is still accepted.
-        The bucket is the hour in local time, the same clock as the rest of the
-        coordinator (datetime.now()).
+        profile silently fell back to FLAT.  A datetime is still accepted.
+
+        **The hour's consumption is the difference between the counter's
+        END-OF-HOUR values** (the row's ``state``), not HA's ``change``.  HA's
+        change follows every intermediate state, and the inverter's day
+        counters glitch at their rollover (~04:05 CEST, issue #220): for one
+        poll they read the PREVIOUS day's total.  HA books that as consumption,
+        so the 04:00 hour carried a whole day — a 52 kWh hour on a 50 kWh/day
+        house, which the planner then spent at 04:00 (the SOC "dip") and
+        bought expensive evening grid to cover.  The end-of-hour value is not
+        touched by a one-poll glitch.  A counter that FELL during the hour was
+        reset in it, and the consumption is what it counted since the reset.
+
+        Falls back to ``change`` where a row (or the row before it) has no
+        state.  Any hour above ``max_kwh_per_hour`` — what the house can
+        physically draw — is not consumption and is left out.  ``day`` limits
+        the result to that date; earlier rows serve only as the baseline.
         """
-        hourly: dict[str, float] = {}
+        parsed = []
         for entry in rows:
             if not isinstance(entry, dict):
                 continue
@@ -2457,12 +2505,30 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 local = start.astimezone().replace(tzinfo=None) if start.tzinfo else start
             else:
                 continue
-            change = entry.get("change")
-            if not isinstance(change, (int, float)) or isinstance(change, bool) or change < 0:
+            parsed.append((local, _number(entry.get("change")), _number(entry.get("state"))))
+        parsed.sort(key=lambda r: r[0])
+
+        hourly: dict[str, float] = {}
+        prev_state = None
+        for local, change, state in parsed:
+            value = None
+            if state is not None and prev_state is not None:
+                delta = state - prev_state
+                # A fall is a reset during this hour: count what it counted since.
+                value = delta if delta >= -0.001 else state
+                value = max(value, 0.0)
+            elif change is not None and change >= 0:
+                value = change
+            prev_state = state
+            if day is not None and local.date() != day:
+                continue
+            if value is None:
+                continue
+            if max_kwh_per_hour is not None and value > max_kwh_per_hour:
                 continue
             key = str(local.hour)
             # The repeated hour of a DST fall-back day lands in one bucket.
-            hourly[key] = round(hourly.get(key, 0.0) + float(change), 3)
+            hourly[key] = round(hourly.get(key, 0.0) + float(value), 3)
         return hourly
 
     def _calculate_hourly_profile(self) -> None:
@@ -3537,8 +3603,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             _commit_opts = self.config_entry.options
                             charge_max_pct = _commit_opts.get("battery_charge_max_level", 100)
                             commit_grid_mode = _commit_opts.get("grid_mode", "off")
+                            # Not for the exact planner: starting a charge is
+                            # priced in its plan and a running charge carries on,
+                            # so it stops exactly when the plan has enough — this
+                            # hold would buy up to 15 min more than planned.
+                            planner_engine = str(self.scheduler_active).startswith("optimal")
                             if (self._current_energy_state == "charging"
                                     and desired_state == "idle"
+                                    and not planner_engine
                                     and commit_grid_mode in ("from_grid", "both")
                                     and battery_soc is not None
                                     and battery_soc < charge_max_pct

@@ -18,6 +18,7 @@ Tests cover:
 - Various slot granularities (24, 48, 96)
 """
 
+import dataclasses
 import importlib.util
 import math
 import os
@@ -5188,11 +5189,12 @@ class TestMILPStatusDiagnosis:
 class TestMILPScheduler:
     """Tests for the optional MILP scheduler (milp.py)."""
 
-    def test_default_engine_is_greedy(self):
-        """Greedy is the default engine (proven track record, no solver dep).
-        MILP is opt-in until the day-simulator harness validates it."""
+    def test_default_engine_is_the_exact_planner(self):
+        """The exact planner is the default (no solver dependency, exact for
+        from_grid — see tests/test_planner.py).  Greedy stays selectable and
+        still serves to_grid / both."""
         config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10)
-        assert config.scheduler_engine == "greedy"
+        assert config.scheduler_engine == "optimal"
 
     def test_milp_never_infeasible_extreme_drain(self):
         """MILP must stay feasible (not fall back) even when consumption would
@@ -5372,7 +5374,9 @@ class TestMILPScheduler:
                 f"Tomorrow sells should be expensive slots: {tmr_sells}"
 
     def test_milp_falls_back_when_solve_returns_none(self, monkeypatch):
-        """When the solver returns None, calculate_schedule uses greedy."""
+        """When the solver returns None, calculate_schedule falls back to the
+        exact planner (it needs no solver) in from_grid, and to greedy where
+        the planner does not apply (to_grid / both)."""
         monkeypatch.setattr(milp, "solve_schedule", lambda *a, **k: None)
         config = EMSConfig(
             grid_mode="from_grid",
@@ -5392,9 +5396,12 @@ class TestMILPScheduler:
             current_minute=0,
         )
         result = calculate_schedule(config, state)
-        # Greedy still produces a schedule (no MILP reason string).
+        # The fallback still produces a schedule (no MILP reason string).
         assert "MILP" not in result.schedule_reason
-        assert result.scheduler_active == "greedy_fallback"
+        assert result.scheduler_active == "optimal_fallback"
+        assert result.scheduled_slots
+        both = calculate_schedule(dataclasses.replace(config, grid_mode="both"), state)
+        assert both.scheduler_active == "greedy_fallback"
 
     def test_greedy_scheduler_active_field(self):
         """Greedy engine sets scheduler_active='greedy'."""
@@ -6114,7 +6121,12 @@ class TestSelfConsumptionFillsBattery:
     def test_self_consumption_never_charges_expensive(self):
         """CRITICAL: self-consumption tops off ONLY from cheap slots — it must
         never charge an expensive slot just to fill the battery.  An EMS
-        minimises cost above all."""
+        minimises cost above all.
+
+        The house uses 30 kWh today against 12 kWh usable, so energy IS
+        needed; it must come from the cheap morning.  (With a 10 kWh/day
+        house this used to assert a "top-off" too: the exact planner buys
+        no energy the house will not use before tomorrow's sun.)"""
         base = dict(
             grid_mode="from_grid",
             battery_capacity_kwh=60,
@@ -6122,7 +6134,7 @@ class TestSelfConsumptionFillsBattery:
             battery_charge_max_pct=100,
             safe_power_kw=15,
             inverter_max_power_kw=15,
-            consumption_est_kwh=10,
+            consumption_est_kwh=30,
             efficiency=0.90,
             optimization_priority="self_consumption",
         )

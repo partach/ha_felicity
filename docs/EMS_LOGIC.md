@@ -22,7 +22,38 @@ could merge unseen — and a test file that had stopped collecting entirely went
 unnoticed for weeks (see CLAUDE.md, "Test harness"). If you change scheduling
 behaviour, the simulator is the gate that decides whether you were right.
 
-1. **Engine default = greedy; MILP opt-in.** Greedy has a multi-month track
+0. **from_grid is planned EXACTLY (Oct 2026) — this overrides every
+   from_grid rule below that it contradicts.**  The default engine
+   `optimal` (`ems.plan_optimal_from_grid`) solves one cost model over the
+   whole horizon (now → end of the last day with prices) in 15-minute steps:
+   - the battery covers the house, PV fills it, PV beyond full is spilled,
+     below the discharge floor the house buys from the grid **at that step's
+     price**; a step may charge anything from nothing to a full step at the
+     Power Level (the coordinator re-plans while it runs and stops when the
+     plan has enough); grid energy stored loses (1 − efficiency); cycle cost
+     per stored kWh (≥ 0.05 for Battery Care);
+   - after the horizon the battery must carry the house from midnight to
+     sunrise; each kWh short costs the last known night's price; energy
+     beyond that is worth nothing;
+   - Self-Sufficiency: that night need × 1.25;  a reserve setting raises it
+     to `max(need, reserve)` (and checks tonight too) — never a per-step
+     hard floor;
+   - equal cost → charge as early and as much as possible.
+   **Expected behaviour, in plain words:** it buys only when that is cheaper
+   (after losses) than the grid energy it saves later, only at the cheapest
+   such moments, never what tomorrow's sun brings for free, and never "to
+   fill the battery".  A battery that lasts until a cheaper moment or the
+   sun **waits** — e.g. 81 % at 21:45 with tonight dearer than tomorrow buys
+   nothing tonight.  The greedy-specific rules below (deficit, reserve
+   target "at all times", unified slot pool, validation, re-shop, top-off
+   gate + horizon cap, today-first, spill relocation) describe the legacy
+   `greedy` engine and still apply to `to_grid` / `both`.
+   Checked by `tests/test_planner.py` against an independent model,
+   brute force, a second optimiser and an LP bound; see CLAUDE.md "The exact
+   planner".
+1. **Engine default = greedy; MILP opt-in.** *(Superseded for from_grid by
+   decision 0: the default is now `optimal`; greedy is "legacy"; a MILP
+   without a solver falls back to the exact planner.)* Greedy has a multi-month track
    record and no solver dependency. MILP is the joint 2-day optimiser but is
    validated per-scenario before it can become default again.
    **Selecting MILP is a request, not a guarantee** — when no LP solver is
@@ -426,7 +457,7 @@ Every 10 seconds, the coordinator gathers these inputs and feeds them to the sch
 | **Sunrise / sunset** | `sun.sun` (`next_rising` / `next_setting`) | Window of the synthetic PV curve |
 | **PV actual today** | Inverter register (`pv_day_cost_energy`) | kWh actually produced so far |
 | **Consumption estimate** | 7-day rolling average, or user-set fallback | Expected daily household consumption |
-| **Consumption hourly profile** | 7-day HA recorder hourly statistics (local days, kWh) | Per-hour average consumption pattern; rebuilt at startup |
+| **Consumption hourly profile** | 7-day HA recorder hourly statistics (local days, kWh): each hour = the difference of the counter's END-OF-HOUR values (a fall = a reset in that hour), never HA's `change` (which carries the counters' 04:05 rollover glitch — a whole day in the 04:00 hour); hours above what the house can physically draw are left out | Per-hour average consumption pattern; rebuilt at startup (heals polluted days) |
 | **Yesterday's deficit** | Stored from previous day | Carried-over shortfall (reset on grid_mode change) |
 
 ### Derived Values
@@ -517,6 +548,12 @@ This gives:
 ## 3. Mode: `from_grid` (Buy Only)
 
 **Goal**: Charge the battery from the grid at the cheapest possible prices, but only enough to survive overnight.
+
+> **Default engine (`optimal`): see decision 0 at the top** — the steps below
+> are the legacy `greedy` engine (`scheduler_engine = greedy`).  The exact
+> planner has no deficit, no slot selection and no validation pass: it
+> minimises the cost of the house's energy over the horizon directly, and
+> the outcomes those steps were approximating follow from that.
 
 ### Step 1: Calculate Energy Deficit
 
@@ -764,7 +801,7 @@ The schedule is recalculated periodically. Every 10 seconds, the coordinator:
 
 ### Skip-Recalc Optimization
 
-A hash of the schedule inputs (grid mode, SOC to 0.1%, today's and tomorrow's prices, today's and **tomorrow's** PV forecast, PV actual, yesterday's deficit, slot overrides, safe power, EV strategy, engine) is computed each cycle. When the hash and the current slot index are both unchanged from the previous cycle, the expensive schedule recalculation is skipped entirely. The hash resets on grid_mode changes, and the recalc always runs on a slot boundary.
+A hash of the schedule inputs (grid mode, SOC to 0.1%, today's and tomorrow's prices, today's and **tomorrow's** PV forecast, PV actual, yesterday's deficit, slot overrides, safe power, EV strategy, engine, **the quarter-hour of the clock and whether the inverter is charging** — the exact planner decides per quarter-hour, also inside an hourly price slot) is computed each cycle. When the hash and the current slot index are both unchanged from the previous cycle, the expensive schedule recalculation is skipped entirely. The hash resets on grid_mode changes, and the recalc always runs on a slot boundary.
 
 This is what makes the EMS react to new information as it arrives rather than on a fixed timer: tomorrow's prices publishing (~13:00), a revised solar forecast, or the SOC moving because an EV started charging all change the hash and trigger an immediate re-plan on the next 10 s tick. `pv_forecast_tomorrow` was added to the hash in Sept 2026 — it became a first-class input to *today's* plan when the self-consumption top-off gained the horizon-need cap (decision #15), so a front moving in must re-plan today immediately instead of waiting for the next slot boundary.
 
@@ -783,6 +820,8 @@ Users can manually override slot actions via the EMS card (click a slot to force
 ### Charge Execution
 
 When the current slot is a scheduled charge slot (or a charge override) the coordinator charges — there is no "defer for a cheaper later slot" check (removed June 2026; the optimiser already schedules only the cheapest slots it needs, see CLAUDE.md C3).
+
+**With the exact planner the plan itself decides when to stop.** It re-plans every poll, knows whether the inverter is charging (`EMSState.charging_now`), charges any amount up to a full step, and prices *starting* a charge (`OPTIMAL_START_COST_KWH`, ~1 ct) while a running charge continues at no such cost — so a charge stops when the plan has enough (also part-way through an hour on an hourly tariff) and never flickers off for the last minute of a quarter. The coordinator's 15-minute minimum charge commitment therefore applies to greedy / MILP only.
 
 **A full battery stays in charging for the rest of the slot.** Rule 1's SOC register (= max SOC) stops the inverter there and the house runs on grid, as the slot intended. Switching to idle instead would put the house back on the battery, drop it to 99.9 %, and re-arm the charge on the next poll — a full rule rewrite every poll. The same holds in manual price mode once charging. Entering charging still requires SOC below max.
 

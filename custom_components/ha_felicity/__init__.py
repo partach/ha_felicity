@@ -248,7 +248,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "flexible_load_1_voltage": 230,
         "flexible_load_1_default_current": 16,
         "ev_charge_strategy": "smart",
-        "scheduler_engine": "greedy",
+        "scheduler_engine": "optimal",
         "flexible_load_2_enabled": "off",
         "flexible_load_2_name": "",
         "flexible_load_2_switch_entity": "",
@@ -276,6 +276,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if updated_options.get("scheduler_engine") == "milp":
             updated_options["scheduler_engine"] = "greedy"
         updated_options["_scheduler_milp_reverted"] = True
+
+    # Engine default = the EXACT PLANNER (Oct 2026).  "greedy" was everyone's
+    # default, not a choice, so move it to "optimal" once (marker set).  A
+    # deliberate "milp" stays: it now falls back to the exact planner instead
+    # of greedy when no solver is installed.  Greedy remains selectable.
+    if not updated_options.get("_scheduler_optimal_migrated"):
+        if updated_options.get("scheduler_engine", "greedy") == "greedy":
+            updated_options["scheduler_engine"] = "optimal"
+        updated_options["_scheduler_optimal_migrated"] = True
 
     # A monitoring-only model (no documented control registers) cannot be
     # driven by the EMS: keep it off, whatever an option or a strategy preset

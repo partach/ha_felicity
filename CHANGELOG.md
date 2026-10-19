@@ -2,6 +2,31 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **New default planner: exact, for Save Money / Self-Sufficiency / Battery
+  Care.** Instead of a stack of rules (reserve deficit, cheapest-N slots,
+  top-off, horizon caps…) the plan is now the cheapest one there is for the
+  whole period with known prices, in quarter-hours. In plain words: it buys
+  only when that is cheaper (after the battery's losses) than the grid energy
+  it saves later, only at the cheapest moments, never what tomorrow's sun
+  brings for free, and never just to fill the battery; a battery that lasts
+  until a cheaper moment waits. Example from a real card: 81 % at 21:45 with
+  tonight dearer than tomorrow — it used to buy 7 slots at 0.34–0.36, now
+  nothing. On an hourly tariff it can buy part of an hour. Equal prices:
+  earliest first. No extra software needed (the MILP option still exists and
+  now falls back to this planner when no solver is installed; the old
+  planner stays selectable as "Greedy (legacy)"). Trader / sell modes are
+  unchanged. Checked by ~1,100 generated situations against independent
+  calculations (`tests/test_planner.py`), and the inverter follows it without
+  switching on and off: a charge stops when the plan has enough.
+- **The SOC "dip" at 04:00 is gone.** The consumption profile counted a
+  whole day of use in the 04:00 hour, every day (the inverter's day counter
+  briefly reports yesterday's total at ~04:05, and Home Assistant's
+  statistics count that). That made the night look like 50+ kWh, the 7-day
+  average twice the real one, and drove expensive evening buying. The
+  profile now uses the counter's end-of-hour values; existing installs heal
+  on the next restart.
+
+
 - **New model: IVAM6048P1G1 (6 kW) — monitoring only, provisional.** Sensors
   and the energy-flow card work; the EMS does not. Felicity's protocol document
   for this inverter defines only read-only measurements and no settings, so the

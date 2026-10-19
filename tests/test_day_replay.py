@@ -544,6 +544,61 @@ async def test_cheap_today_is_not_deferred_to_a_marginally_cheaper_tomorrow():
 
 
 # ---------------------------------------------------------------------------
+# The exact planner, executed (Oct 2026)
+# ---------------------------------------------------------------------------
+
+def _charge_key(model):
+    return _enable_key(model)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [TREX_10, TREX_25])
+async def test_the_planner_charges_in_blocks_never_toggling(model):
+    """A day and a half under the exact planner, re-planned every minute:
+    every charge is one block — never a flicker of a minute or two (the
+    first version dropped the last minute of every quarter, so the rule was
+    rewritten off and on every 15 min) — and it never buys the 0.40 peak."""
+    sunny_tomorrow = lambda t: SUN(t) if t.date() > D else 0.0
+    r = _replay(model, options={**AUTO, "daily_consumption_estimate": 24.0}, soc=30.0,
+                start=day(D, 9), prices_for=DUCK, load_kw=lambda _t: 1.0,
+                pv_kw=sunny_tomorrow, forecast_kw=sunny_tomorrow)
+    await r.run_until(day(NEXT, 12))
+    _chart(r, f"planner_blocks_{model[:9]}")
+
+    episodes = _episodes(r, _charge_key(model), day(D, 9))
+    assert 1 <= len(episodes) <= 3, (episodes, r.timeline(60))
+    for on, off in episodes:
+        if off is not None:
+            full = max(t.soc for t in r.ticks if on <= t.at <= off) >= 99.0
+            assert full or off - on >= timedelta(minutes=10), (episodes, r.timeline(15))
+    assert max(t.price for t in r.ticks if t.inverter == "charge") < 0.40
+    assert max(t.grid_kw for t in r.ticks if day(D, 18) <= t.at < day(D, 21)) <= 0.0
+
+
+@pytest.mark.asyncio
+async def test_an_hourly_tariff_charges_part_of_an_hour_and_stops():
+    """Hourly prices, a modest need: the planner buys part of the cheap hour
+    and the coordinator stops when the plan has enough — not at the end of
+    the hour, and without restarting."""
+    def hourly(d):
+        cheap = 0.10 - 0.01 * (d - D).days      # tomorrow's cheap hour is cheaper still
+        return [cheap if 13 <= h < 14 else (0.40 if 17 <= h < 22 else 0.25) for h in range(24)]
+    # 20 kWh at 30 %: 2 kWh above the floor against 4.8 kWh used (0.2 kW) until
+    # the next, cheaper, cheap hour (tomorrow 13:00; its prices are out at
+    # 13:00, and that hour can carry everything after it) — about 2.8 kWh
+    # short: some 40 minutes at 5 kW, not the hour.  (With tomorrow's hour
+    # EQUAL in price it rightly fills today: equal cost → earliest.)
+    r = _replay(options={**AUTO, "daily_consumption_estimate": 4.8}, soc=30.0,
+                start=day(D, 12, 50), prices_for=hourly, load_kw=lambda _t: 0.2)
+    await r.run_until(day(D, 16))
+    episodes = _episodes(r, "econ_rule_1_enable", day(D, 12, 50))
+    assert len(episodes) == 1, (episodes, r.timeline(5))
+    on, off = episodes[0]
+    assert on == day(D, 13), episodes
+    assert off is not None and off < day(D, 14), (episodes, r.timeline(5))
+
+
+# ---------------------------------------------------------------------------
 # Grid current protection with a flexible load running
 # ---------------------------------------------------------------------------
 

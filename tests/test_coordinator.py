@@ -792,9 +792,11 @@ class TestConsumptionProfileFromRecorder:
         coord = _make_coordinator()
         hourly = await coord._query_hourly_from_history("sensor.x", self.DAY.date())
         assert len(hourly) == 24
-        assert seen["start"] == self.DAY.astimezone()            # LOCAL midnight
+        # LOCAL midnight, one hour early: hour 0 needs the counter's value at 00:00
+        assert seen["start"] == self.DAY.astimezone() - timedelta(hours=1)
         assert seen["end"] == (self.DAY + timedelta(days=1)).astimezone()
         assert seen["units"] == {"energy": "kWh"}
+        assert seen["types"] == {"change", "state"}
 
     @pytest.mark.asyncio
     async def test_midnight_records_yesterday_from_the_recorder(self, monkeypatch):
@@ -840,6 +842,102 @@ class TestConsumptionProfileFromRecorder:
         coord._resolve_consumption_entity = lambda: "sensor.house_energy"
         await coord._backfill_consumption_history()
         assert coord._consumption_backfilled and len(calls) == 7
+
+    # -- issue #220 meets the profile: the 04:05 rollover glitch -------------
+    @staticmethod
+    def _recorder_rows(day, hourly_kwh, glitch=None, reset_at=(0, 0), prev_total=None,
+                       glitch_then_zero=False):
+        """What HA's recorder stores for a total_increasing DAY counter.
+
+        A state every 5 minutes; ``state`` is the hour's last value and
+        ``change`` follows every state with HA's reset rule (a fall below
+        0.9 x the previous value is a reset, and the new value counts in
+        full).  ``glitch=(h, m)`` makes the counter read ``prev_total`` for
+        that one poll — the inverter's rollover glitch (issue #220).
+        """
+        prev_total = prev_total if prev_total is not None else sum(hourly_kwh)
+        rows, counter, prev = [], prev_total, prev_total   # 23:00 the day before
+        rows.append({"start": (day - timedelta(hours=1)).timestamp(),
+                     "change": 0.0, "state": prev_total})
+        for h in range(24):
+            change, state = 0.0, None
+            for m in range(0, 60, 5):
+                if (h, m) == reset_at:
+                    counter = 0.0
+                counter += hourly_kwh[h] / 12
+                state = counter
+                if glitch is not None and (h, m) == glitch:
+                    state = prev_total
+                    if glitch_then_zero:
+                        counter = 0.0
+                change += state if state < 0.9 * prev else state - prev
+                prev = state
+            rows.append({"start": (day + timedelta(hours=h)).timestamp(),
+                         "change": round(change, 4), "state": round(state, 4)})
+        return rows
+
+    REAL = [1.6] * 7 + [2.5] * 10 + [2.0] * 7          # a ~50 kWh/day house
+
+    def test_ha_change_carries_the_glitch_and_the_state_does_not(self):
+        """The field case: HA's change gives the 04:00 hour a whole day."""
+        rows = self._recorder_rows(self.DAY, self.REAL, glitch=(4, 5))
+        assert sum(r["change"] for r in rows[1:]) > 2 * sum(self.REAL) - 1   # what HA sums
+        hourly = HA_FelicityCoordinator._hourly_from_statistics(rows, day=self.DAY.date())
+        assert len(hourly) == 24
+        assert hourly["4"] == pytest.approx(1.6, abs=0.01)
+        assert sum(hourly.values()) == pytest.approx(sum(self.REAL), abs=0.05)
+
+    @pytest.mark.parametrize("reset_at", [(0, 0), (1, 0), (4, 5)])
+    def test_a_reset_anywhere_in_the_day_counts_only_real_consumption(self, reset_at):
+        """The inverter's day resets at 01:00 CEST in summer (its RTC ignores
+        DST), at 00:00 in winter — and the glitch may drop it to 0 at 04:05."""
+        rows = self._recorder_rows(self.DAY, self.REAL, glitch=(4, 5), reset_at=reset_at,
+                                   glitch_then_zero=reset_at == (4, 5))
+        hourly = HA_FelicityCoordinator._hourly_from_statistics(rows, day=self.DAY.date())
+        assert len(hourly) == 24
+        assert max(hourly.values()) <= 2.6
+        assert sum(hourly.values()) == pytest.approx(sum(self.REAL), abs=0.5)
+
+    def test_an_hour_beyond_what_the_house_can_draw_is_left_out(self):
+        """No state to diff against: the change is all there is, and a 52 kWh
+        hour is not consumption on any connection."""
+        rows = [{"start": (self.DAY + timedelta(hours=h)).timestamp(),
+                 "change": 52.0 if h == 4 else 2.0} for h in range(24)]
+        hourly = HA_FelicityCoordinator._hourly_from_statistics(
+            rows, day=self.DAY.date(), max_kwh_per_hour=22.4)
+        assert "4" not in hourly and len(hourly) == 23
+
+    def test_the_physical_bound_follows_the_connection_and_the_inverter(self):
+        coord = _make_coordinator()
+        coord.config_entry.options = {"max_amperage_per_phase": 18}
+        coord.inverter_model = "TREX-10"
+        assert coord._max_household_kwh_per_hour() == pytest.approx(18 * 0.23 * 3 + 10, abs=0.1)
+
+    def test_the_hour_before_the_day_is_only_a_baseline(self):
+        rows = self._recorder_rows(self.DAY, self.REAL)
+        hourly = HA_FelicityCoordinator._hourly_from_statistics(rows, day=self.DAY.date())
+        assert set(hourly) == {str(h) for h in range(24)}
+
+    @pytest.mark.asyncio
+    async def test_a_week_of_glitched_statistics_gives_a_real_profile(self, monkeypatch):
+        """End to end through the backfill: the profile and the 7-day average
+        are the house's, not the house's plus one extra day per day."""
+        now = self.DAY + timedelta(days=1, hours=9)
+        rows = {}
+        for d in range(7):
+            day = self.DAY - timedelta(days=d)
+            rows[day.date()] = self._recorder_rows(day, self.REAL, glitch=(4, 5))
+        coord, _ = self._coord_with_recorder(rows, monkeypatch, now=now)
+
+        async def query(entity_id, day):
+            return coord._hourly_from_statistics(rows.get(day, []), day=day,
+                                                 max_kwh_per_hour=22.4)
+
+        coord._query_hourly_from_history = query
+        await coord._backfill_consumption_history()
+        assert coord._hourly_consumption_profile[4] == pytest.approx(1.6, abs=0.01)
+        assert max(coord._hourly_consumption_profile.values()) <= 2.5 + 0.01
+        assert coord.weekly_avg_consumption == pytest.approx(sum(self.REAL), abs=0.1)
 
     def test_a_flat_day_does_not_shape_a_real_profile(self):
         coord = _make_coordinator()
