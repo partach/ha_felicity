@@ -9,6 +9,12 @@
   is still unverified (the power scale above all) is listed in
   `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
 
+- **The `ha_felicity.write_register` service works.** It failed with an
+  error on every call in every release that had it (it called a method that
+  had been moved). It now writes through the same path as the register's own
+  entity: give the value in the register's units, as the entity shows it
+  (e.g. `56` for 56 V), whole numbers only. Refused on monitoring-only models.
+
 - **Your real consumption pattern is used at last.** The hour-by-hour
   consumption profile behind the overnight reserve and the battery forecast
   was always flat (every hour the same), because the history it was read from

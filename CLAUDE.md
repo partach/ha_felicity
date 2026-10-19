@@ -96,7 +96,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **766**: 764 pass + 2 documented skips) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **773**: 771 pass + 2 documented skips) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -894,11 +894,21 @@ replay harness models a monitor-only inverter (`FakeInverter.monitor_only`):
 `test_a_monitor_only_inverter_is_never_written` runs a day with the EMS and
 safe power ON and asserts zero writes.
 
-**Side find, NOT fixed:** the `ha_felicity.write_register` service in
-`__init__.py` calls `coordinator.async_write_register`, which does not exist
-(only `TypeSpecificHandler` has it) — the service raises `AttributeError` on any
-model.  Pre-existing; fixing it turns a raw register-write service on, which is
-the maintainer's call.
+**`ha_felicity.write_register` service — FIXED (Oct 2026, maintainer: "keep the
+service via write_type_specific_register").**  The service called
+`coordinator.async_write_register`, which the coordinator lost on 2026-01-18
+(853c446) when the write logic moved to `TypeSpecificHandler`.  The service had
+been added a month earlier (f7e22cd / e9a2c68), and the first tag, v.0.8.1,
+already carried both — so it raised `AttributeError` in **every release that
+had it**.  Nothing caught it because nothing ran the handler.  It now calls
+`coordinator.TypeSpecificHandler.write_type_specific_register(key, int(value))`
+— the same path, scaling and whole-number rule as the register entities — so
+it also inherits the monitor-only refusal.  The value is in the register's
+engineering units (56 for 56 V), as `services.yaml` now says.
+`tests/test_write_register_service.py` drives the real handler from
+`__init__.py` against the real `TypeSpecificHandler` with a coordinator that is
+a **plain object**: a MagicMock answers any method name and would have hidden
+exactly this bug.
 
 `INVERTER_MAX_POWER_KW` in `const.py` maps each model to its max power.
 The power_level slider range and SOC trajectory calculations use this to
@@ -3292,7 +3302,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**766 tests**: 764 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**773 tests**: 771 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

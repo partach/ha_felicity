@@ -402,7 +402,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             entity_ids = [entity_ids]
     
         key = call.data["key"]
-        value = call.data["value"]
+        # Whole numbers, like the register entities (HA_FelicityNumber writes
+        # int(value) — maintainer decision): the value is in the register's
+        # engineering units and the write path applies its scaling.
+        value = int(call.data["value"])
     
         for entity_id in entity_ids:
             entity_registry = er.async_get(hass)
@@ -412,7 +415,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 continue
     
             coordinator = hass.data[DOMAIN][ent.config_entry_id]
-            success = await coordinator.async_write_register(key, value)
+            # Through the same path as the register entities: per-model
+            # handling (TREX-5/10 vs ECO layout, IVGM's undefined registers,
+            # the monitor-only refusal) lives in write_type_specific_register.
+            # This called coordinator.async_write_register, which the
+            # coordinator lost when the write logic moved to TypeSpecificHandler
+            # (853c446, Jan 2026) — the service raised AttributeError in every
+            # release that shipped it.
+            success = await coordinator.TypeSpecificHandler.write_type_specific_register(key, value)
             if success:
                 _LOGGER.info("Wrote %s = %s to %s", key, value, entity_id)
                 await coordinator.async_request_refresh()
