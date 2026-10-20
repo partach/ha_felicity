@@ -1054,6 +1054,41 @@ SCENARIOS = [
         ),
     },
 
+    {
+        "name": "self_suff_81pct_night_tomorrow_cheaper",
+        "desc": "CUSTOMER CARD (19 Oct 2026, 21:45): 74 kWh at 81 %, Self-Sufficiency, "
+                "8 kW, tonight 0.33-0.36, tomorrow cheaper at midday and 24.5 kWh of sun. "
+                "The card showed 7 slots bought tonight at up to 0.358 and 36 tomorrow, and "
+                "the SOC line diving at 04:00 (that was a polluted consumption profile - "
+                "Known Issue 8l).  On the real profile: nothing tonight; tomorrow at most "
+                "an hour at the cheapest moment, topping up Self-Sufficiency's 25 % extra "
+                "for the night after it (all three engines agree on that).",
+        "config": dict(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=74.0, battery_discharge_min_pct=20,
+                       battery_charge_max_pct=100, efficiency=0.90,
+                       safe_power_kw=8.0, inverter_max_power_kw=10.0,
+                       consumption_est_kwh=38.5),
+        "state": dict(battery_soc_pct=81.0,
+                      slot_prices_today=[0.30] * 28 + [0.33] * 40 + [0.36] * 16 + [0.339] * 12,
+                      slot_prices_tomorrow=([0.33] * 24 + [0.30] * 16 + [0.27] * 24
+                                            + [0.40] * 20 + [0.36] * 12),
+                      pv_hourly_kwh=pv_bell(30.7, sunrise=8, sunset=18),
+                      pv_hourly_kwh_tomorrow=pv_bell(24.5, sunrise=8, sunset=18),
+                      consumption_hourly_kwh={h: v for h, v in enumerate(
+                          [1.6] * 7 + [2.5] * 10 + [2.0] * 7)},
+                      pv_actual_today_kwh=10.8, pv_forecast_today=30.7,
+                      pv_forecast_remaining=0.0, pv_forecast_tomorrow=24.5,
+                      current_hour=21, current_minute=45, sunrise_hour=8.0, sunset_hour=18.0),
+        "expect": lambda r, s: (
+            not r["charge_slots"]
+            and len(r.get("tomorrow_charge_slots", [])) <= 4
+            and all(s["state"]["slot_prices_tomorrow"][i] <= 0.27
+                    for i in r.get("tomorrow_charge_slots", [])),
+            (f"nothing tonight at 81 % (got {r['charge_slots']}); tomorrow at most the "
+             f"cheapest moment (got {r.get('tomorrow_charge_slots', [])})"),
+        ),
+    },
+
 ]
 
 

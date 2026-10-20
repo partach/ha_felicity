@@ -2,12 +2,58 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **New default planner: exact, for Save Money / Self-Sufficiency / Battery
+  Care.** Instead of a stack of rules (reserve deficit, cheapest-N slots,
+  top-off, horizon caps…) the plan is now the cheapest one there is for the
+  whole period with known prices, in quarter-hours. In plain words: it buys
+  only when that is cheaper (after the battery's losses) than the grid energy
+  it saves later, only at the cheapest moments, never what tomorrow's sun
+  brings for free, and never just to fill the battery; a battery that lasts
+  until a cheaper moment waits. Example from a real card: 81 % at 21:45 with
+  tonight dearer than tomorrow — it used to buy 7 slots at 0.34–0.36, now
+  nothing. On an hourly tariff it can buy part of an hour. Equal prices:
+  earliest first. No extra software needed (the MILP option still exists and
+  now falls back to this planner when no solver is installed; the old
+  planner stays selectable as "Greedy (legacy)"). Trader / sell modes are
+  unchanged. Checked by ~1,100 generated situations against independent
+  calculations (`tests/test_planner.py`), and the inverter follows it without
+  switching on and off: a charge stops when the plan has enough.
+- **The SOC "dip" at 04:00 is gone.** The consumption profile counted a
+  whole day of use in the 04:00 hour, every day (the inverter's day counter
+  briefly reports yesterday's total at ~04:05, and Home Assistant's
+  statistics count that). That made the night look like 50+ kWh, the 7-day
+  average twice the real one, and drove expensive evening buying. The
+  profile now uses the counter's end-of-hour values; existing installs heal
+  on the next restart.
+
+
 - **New model: IVAM6048P1G1 (6 kW) — monitoring only, provisional.** Sensors
   and the energy-flow card work; the EMS does not. Felicity's protocol document
   for this inverter defines only read-only measurements and no settings, so the
   integration never writes to it and keeps the EMS off. Choose 9600 baud. What
   is still unverified (the power scale above all) is listed in
   `docs/IVAM_SUPPORT_GAPS.md`; a *Download diagnostics* file settles it.
+
+- **Energy statistics no longer inflate** (issue #220, all models). The
+  inverter's day/month/year counters briefly report the previous period's
+  total around their reset, and occasional wrong readings slipped through;
+  Home Assistant counted each one as extra energy (sums 3–8.5× too high).
+  Impossible readings are now rejected before they are published — and before
+  the EMS uses them — and a Modbus reply that doesn't match its request is
+  discarded. Existing statistics stay as they are; correct them once in
+  Developer tools → Statistics if you want.
+- **No more "unknown" after a restart.** Sensors show their value straight
+  away, and energy totals keep their last value until the inverter answers.
+
+- **T-REX-10: corrected readings, checked against a real T-REX-10.** (The
+  T-REX-5/6K is unchanged until one is measured.)
+  "Linepowerconversion", "Batpowerconversion" and "Loadpowerconversion" showed
+  a tenth of the real power (e.g. 843 W instead of 8430 W); "Battery Capacity
+  secondary" showed 9 % instead of 94 %; the six firmware/hardware version
+  sensors read the wrong registers (65535, 5.23 …) and now show the real
+  versions. Long-term statistics of the three power sensors will show a step
+  at the update. Download diagnostics now also checks T-REX-5/6/10 readings against
+  each other (V × I against power, and registers that report the same thing).
 
 - **Download diagnostics works on slow or unreliable connections.** On a
   flaky RS485 link the register read behind it could run for many minutes, and
