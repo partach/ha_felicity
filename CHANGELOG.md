@@ -25,6 +25,16 @@
   average twice the real one, and drove expensive evening buying. The
   profile now uses the counter's end-of-hour values; existing installs heal
   on the next restart.
+- **…and this time also for the days already stored.** The first fix only
+  replaced a stored day when Home Assistant's statistics covered it, so the
+  old polluted days stayed (card: "Avg 96 kWh/d", "battery runs empty at
+  04:15"). Stored days are now cleaned on load: an hour no house can draw is
+  dropped and the day's total recalculated. The log says, once per start,
+  which days were rebuilt and which were not.
+- **The plan knows the battery cannot empty faster than the inverter.** The
+  house is fed through the inverter, so the battery side gives at most its
+  rating; above that the grid passes through. A 60 kWh battery behind a
+  10 kW inverter can no longer "run empty" in a quarter of an hour on paper.
 
 
 - **New model: IVAM6048P1G1 (6 kW) — monitoring only, provisional.** Sensors

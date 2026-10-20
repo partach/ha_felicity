@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import importlib.util as _ilu
+import logging
 import os
 import random
 import sys
@@ -118,6 +119,9 @@ def _make_coordinator(**overrides):
     coord._consumption_store_loaded = False
     coord._consumption_store_lock = asyncio.Lock()
     coord._daily_consumption_history = []
+    coord._hourly_consumption_history = []
+    coord._hourly_consumption_profile = {}
+    coord._history_query_error = None
     coord.weekly_avg_consumption = None
     return coord
 
@@ -831,6 +835,88 @@ class TestConsumptionProfileFromRecorder:
         # once only
         await coord._backfill_consumption_history()
         assert len(calls) == 7
+
+    # -- 20 Oct 2026: polluted days survived the parser fix ------------------
+    def _polluted_week(self, coord):
+        """Seven stored days as the change-based parser wrote them: a whole
+        day (~56 kWh) inside the 04:00 hour, and the daily total with it."""
+        for d in range(7):
+            ds = (self.DAY - timedelta(days=d)).strftime("%Y-%m-%d")
+            hours = {str(h): 1.6 for h in range(24)}
+            hours["4"] = 57.6
+            coord._hourly_consumption_history.append(
+                {"date": ds, "hours": hours, "source": "history"})
+            coord._daily_consumption_history.append(
+                {"date": ds, "kwh": round(sum(hours.values()), 2)})
+
+    @pytest.mark.asyncio
+    async def test_polluted_stored_days_are_cleaned_on_load(self):
+        """The card showed Avg 96 kWh/d and a 54.5 kWh night after the fix:
+        the backfill keeps a stored day whenever the recorder cannot account
+        for it, so the old polluted days were never replaced.  Loading the
+        store must clean them whatever the recorder says."""
+        coord = _make_coordinator()
+        source = MagicMock()
+        holder = _make_coordinator()
+        holder._hourly_consumption_history = []
+        holder._daily_consumption_history = []
+        self._polluted_week(holder)
+        source.async_load = AsyncMock(return_value={
+            "hourly_history": holder._hourly_consumption_history,
+            "daily_history": holder._daily_consumption_history,
+        })
+        _storage = sys.modules["homeassistant.helpers.storage"]
+        _storage.Store = lambda *a, **kw: source
+        coord._consumption_store_loaded = False
+        await coord._init_consumption_store()
+        assert coord._hourly_consumption_profile[4] == pytest.approx(1.6)
+        assert max(coord._hourly_consumption_profile.values()) == pytest.approx(1.6)
+        assert coord.weekly_avg_consumption == pytest.approx(38.4)
+        assert coord.consumption_profile_source == "history"
+
+    @pytest.mark.asyncio
+    async def test_a_polluted_day_the_recorder_cannot_replace_is_still_cleaned(
+            self, monkeypatch):
+        now = self.DAY + timedelta(days=1, hours=9)
+        coord, _ = self._coord_with_recorder({}, monkeypatch, now=now)  # no statistics
+        self._polluted_week(coord)
+        coord._sanitize_consumption_history()
+        coord._calculate_hourly_profile()
+        coord._calculate_weekly_avg()
+        await coord._backfill_consumption_history()
+        assert coord._hourly_consumption_profile[4] == pytest.approx(1.6)
+        assert coord.weekly_avg_consumption == pytest.approx(38.4)
+
+    def test_a_new_day_with_an_impossible_hour_is_stored_without_it(self):
+        coord = _make_coordinator()
+        coord._hourly_consumption_history = []
+        coord._daily_consumption_history = []
+        hours = {str(h): 2.0 for h in range(24)}
+        hours["4"] = 60.0
+        coord._store_consumption_day("2026-10-19", hours, "history")
+        assert "4" not in coord._hourly_consumption_history[0]["hours"]
+        assert coord._daily_consumption_history[0]["kwh"] == pytest.approx(48.0)
+        # The dropped hour is filled from the rest of the day, not zero.
+        assert coord._hourly_consumption_profile[4] == pytest.approx(2.0)
+
+    def test_an_hour_every_day_lost_gets_the_average_not_zero(self):
+        coord = _make_coordinator()
+        coord._hourly_consumption_history = [
+            {"date": "2026-10-19", "source": "history",
+             "hours": {str(h): float(h % 3 + 1) for h in range(24) if h != 4}}]
+        coord._calculate_hourly_profile()
+        known = [v for h, v in coord._hourly_consumption_profile.items() if h != 4]
+        assert coord._hourly_consumption_profile[4] == pytest.approx(sum(known) / 23, abs=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_backfill_reports_every_day(self, monkeypatch, caplog):
+        now = self.DAY + timedelta(days=1, hours=9)
+        rows = {self.DAY.date(): self._rows(self.DAY)}
+        coord, _ = self._coord_with_recorder(rows, monkeypatch, now=now)
+        with caplog.at_level(logging.INFO):
+            await coord._backfill_consumption_history()
+        line = [r.getMessage() for r in caplog.records if "Consumption profile from" in r.getMessage()]
+        assert line and "1 day(s) rebuilt" in line[0] and "(0 h)" in line[0], line
 
     @pytest.mark.asyncio
     async def test_backfill_retries_until_the_entity_resolves(self, monkeypatch):

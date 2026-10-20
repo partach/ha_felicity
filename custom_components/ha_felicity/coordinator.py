@@ -229,6 +229,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # the consumption entity can be resolved; retried every few minutes
         # until then.
         self._consumption_backfilled = False
+        self._history_query_error: str | None = None
         self._consumption_backfill_attempt_ts = 0.0
         self.consumption_entity_used: str | None = None
         self.self_consumption_reserve: float = 0.0
@@ -2110,10 +2111,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             data = await self._consumption_store.async_load()
             if data and "daily_history" in data:
                 self._daily_consumption_history = data["daily_history"][-7:]
-                self._calculate_weekly_avg()
             if data and "hourly_history" in data:
                 self._hourly_consumption_history = data["hourly_history"][-7:]
-                self._calculate_hourly_profile()
+            # Days stored by an earlier version can carry the #220 rollover
+            # glitch (a whole day booked into the 04:00 hour).  They are
+            # cleaned here, not only when the recorder backfill replaces them:
+            # the backfill keeps a stored day whenever the recorder cannot
+            # account for it, and that is exactly how a polluted day survived
+            # the fix that was meant to remove it.
+            self._sanitize_consumption_history()
+            self._calculate_weekly_avg()
+            self._calculate_hourly_profile()
             # Cycle counting + SOH (#13).  Persisted across restarts so we
             # can estimate battery wear from cumulative throughput.
             if data and "cycle_charged_kwh" in data:
@@ -2196,10 +2204,77 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                      "no hourly statistics — flat profile for this day)",
                      day_consumption, self.weekly_avg_consumption or 0)
 
+    def _clean_day_hours(self, hours: dict) -> tuple[dict[str, float], int]:
+        """One day's hours without the readings that cannot be consumption.
+
+        Returns (kept hours, number dropped).  An hour above what the house can
+        physically draw (_max_household_kwh_per_hour) or below zero is a meter
+        artefact — the inverter's rollover glitch put a whole day into one hour.
+        """
+        cap = self._max_household_kwh_per_hour()
+        kept: dict[str, float] = {}
+        dropped = 0
+        for h_str, kwh in (hours or {}).items():
+            value = _number(kwh)
+            try:
+                h = int(h_str)
+            except (TypeError, ValueError):
+                dropped += 1
+                continue
+            if value is None or value < 0 or value > cap or not 0 <= h <= 23:
+                dropped += 1
+                continue
+            kept[str(h)] = value
+        return kept, dropped
+
+    @staticmethod
+    def _day_total(hours: dict[str, float]) -> float:
+        """A day's total from its hours; hours that were dropped count as the
+        average of the ones that are left (they were not zero)."""
+        if not hours:
+            return 0.0
+        total = sum(hours.values())
+        return round(total * 24.0 / len(hours), 2) if len(hours) < 24 else round(total, 2)
+
+    def _sanitize_consumption_history(self) -> None:
+        """Drop impossible hours from the stored days and re-derive each
+        day's total from its cleaned hours, so a polluted day can neither
+        shape the profile nor inflate the 7-day average."""
+        cleaned = []
+        totals: dict[str, float] = {}
+        removed = 0
+        for entry in self._hourly_consumption_history:
+            if not isinstance(entry, dict) or not entry.get("date"):
+                continue
+            hours, dropped = self._clean_day_hours(entry.get("hours", {}))
+            removed += dropped
+            if not hours:
+                continue
+            cleaned.append({**entry, "hours": hours})
+            totals[entry["date"]] = self._day_total(hours)
+        self._hourly_consumption_history = cleaned
+        daily = []
+        for entry in self._daily_consumption_history:
+            if not isinstance(entry, dict) or not entry.get("date"):
+                daily.append(entry)        # not ours to judge — kept as stored
+                continue
+            kwh = totals.get(entry["date"], _number(entry.get("kwh")))
+            # A day total no house can reach (cap x 24 h) is a meter artefact too.
+            if kwh is None or kwh <= 0 or kwh > self._max_household_kwh_per_hour() * 24:
+                continue
+            daily.append({**entry, "kwh": kwh})
+        self._daily_consumption_history = daily
+        if removed:
+            _LOGGER.warning(
+                "Consumption history: removed %d impossible hourly reading(s) "
+                "(above %.1f kWh/h — the meter's rollover glitch, issue #220)",
+                removed, self._max_household_kwh_per_hour())
+
     def _store_consumption_day(self, day_str: str, hourly: dict[str, float],
                                source: str) -> None:
         """Put one day's hourly breakdown (and its total) into the histories."""
-        total = round(sum(hourly.values()), 2)
+        hourly, _ = self._clean_day_hours(hourly)
+        total = self._day_total(hourly)
         self._hourly_consumption_history = sorted(
             [e for e in self._hourly_consumption_history if e.get("date") != day_str]
             + [{"date": day_str, "hours": hourly, "source": source}],
@@ -2249,25 +2324,29 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.consumption_entity_used = entity_id
         today = datetime.now().date()
         filled = 0
+        kept: list[str] = []
+        self._history_query_error = None
         for back in range(CONSUMPTION_HISTORY_DAYS, 0, -1):
             day = today - timedelta(days=back)
             hourly = await self._query_hourly_from_history(entity_id, day)
             if len(hourly) >= MIN_HOURS_FOR_HISTORY_DAY:
                 self._store_consumption_day(day.strftime("%Y-%m-%d"), hourly, "history")
                 filled += 1
+            else:
+                kept.append(f"{day:%m-%d} ({len(hourly)} h)")
         if filled:
             await self._save_consumption_store()
-            _LOGGER.info(
-                "Consumption profile rebuilt from %d day(s) of recorder statistics "
-                "for %s (7-day avg: %.2f kWh)", filled, entity_id,
-                self.weekly_avg_consumption or 0,
-            )
-        else:
-            _LOGGER.info(
-                "No hourly recorder statistics for %s — the consumption profile "
-                "stays flat until the recorder has some (does the sensor have a "
-                "state_class?)", entity_id,
-            )
+        # One line that says what happened to every day — "partial" or a
+        # strange average on the card is otherwise impossible to explain.
+        _LOGGER.info(
+            "Consumption profile from %s: %d day(s) rebuilt from recorder "
+            "statistics; not enough statistics for %s%s; 7-day avg %.2f kWh, "
+            "profile source %s",
+            entity_id, filled, ", ".join(kept) or "none",
+            f" (query failed: {self._history_query_error})"
+            if self._history_query_error else "",
+            self.weekly_avg_consumption or 0, self.consumption_profile_source,
+        )
 
     @property
     def consumption_profile_source(self) -> str:
@@ -2450,6 +2529,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 max_kwh_per_hour=self._max_household_kwh_per_hour())
         except Exception as err:
             _LOGGER.debug("Could not query hourly consumption history: %s", err)
+            self._history_query_error = f"{type(err).__name__}: {err}"
             return {}
 
     def _max_household_kwh_per_hour(self) -> float:
@@ -2550,12 +2630,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     hour_totals[h].append(kwh)
 
         profile: dict[int, float] = {}
+        means = {h: sum(v) / len(v) for h, v in hour_totals.items() if v}
+        # An hour no stored day has a reading for (every one was dropped as
+        # impossible) is not an hour without consumption: it gets the average
+        # of the hours that are known.
+        fill = sum(means.values()) / len(means) if means else 0.0
         for h in range(24):
-            values = hour_totals[h]
-            if values:
-                profile[h] = round(sum(values) / len(values), 3)
-            else:
-                profile[h] = 0.0
+            profile[h] = round(means.get(h, fill), 3)
 
         self._hourly_consumption_profile = profile
         _LOGGER.debug("Hourly consumption profile: %s", profile)

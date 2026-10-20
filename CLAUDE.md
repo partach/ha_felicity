@@ -258,6 +258,15 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
   price** (passthrough) and a charge goes in on top.  Grid charging stops at
   max SOC (rule 1's SOC).  `battery_cycle_cost` (≥ 0.05 for `longevity`) is
   charged per stored kWh.
+- **The battery supplies at most the inverter's rating** (`_battery_share`:
+  `min(consumption, inverter_max_power_kw × step)`).  The house is fed
+  through the inverter; anything above the rating passes through from the
+  grid whatever the battery holds (a constant cost no decision changes, so
+  it is left out of `cost`).  Applied to every step and to the night need.
+  Without it a polluted profile hour drained a 60 kWh battery in one quarter
+  ("runs empty at tomorrow 04:15", 20 Oct 2026); with it nothing can empty
+  faster than the rating allows.  Invisible below the rating
+  (`test_below_the_inverter_rating_the_cap_changes_nothing`).
 - **After the horizon**: the battery must carry the house from midnight to
   sunrise (first PV hour of tomorrow's forecast, else HA's sun times, else
   07:00) — the old "survive the night".  Every kWh short then costs what the
@@ -3053,6 +3062,38 @@ last 7 days at startup, so existing installs heal on the first restart.
 Pinned by `TestConsumptionProfileFromRecorder` (glitch rows modelled with HA's
 own reset rule, resets at 00:00 / 01:00 / 04:05, the physical bound, end to
 end through the backfill; mutation-checked).
+
+**Follow-up, 20 Oct 2026 — the polluted days survived the fix.**  After
+updating, the card still showed "Avg 96.0 kWh/d", "96.3 kWh overnight need",
+"Consumption profile partial" and "Battery runs empty at tomorrow 04:15 —
+buying those 54.5 kWh live".  The backfill replaces a stored day only when
+the recorder returns ≥ 20 hours for it, and otherwise **keeps the stored day
+as it is** — so every day the old `change`-based parser had written (a whole
+day in the 04:00 hour, its daily total with it) stayed, and so did the 7-day
+average built from them.  Two fixes:
+1. **The store is cleaned, whatever the recorder says**
+   (`_sanitize_consumption_history`, on load and inside
+   `_store_consumption_day`): any hour above `_max_household_kwh_per_hour` or
+   below 0 is dropped, each day's total is re-derived from its cleaned hours
+   (dropped hours counted as the day's average, not zero), and a daily total
+   above 24 × the cap is dropped.  An hour that no stored day still has gets
+   the profile's average hour, not 0.  One WARNING says how many readings
+   were removed.
+2. **The planner cannot drain faster than the inverter** (see "The exact
+   planner"): a second, independent line of defence — the profile is an
+   input, and an input can be wrong in ways no cap anticipates.
+The backfill now logs ONE line per start naming what it rebuilt, which days
+it could not (with the hour count), any query error, the 7-day average and
+the profile source — "partial" on the card was otherwise unexplainable.
+Pinned by `test_polluted_stored_days_are_cleaned_on_load`,
+`test_a_polluted_day_the_recorder_cannot_replace_is_still_cleaned`,
+`test_a_new_day_with_an_impossible_hour_is_stored_without_it`,
+`test_an_hour_every_day_lost_gets_the_average_not_zero`,
+`test_backfill_reports_every_day` and
+`test_the_battery_never_drains_faster_than_the_inverter_delivers`
+(mutation-checked: removing the cap fails it).  **Lesson: a fix to how data
+is READ does nothing for data already STORED** — when a parser changes, ask
+what it wrote before, and clean that too.
 
 **Why the tests did not catch it** (answer to the report): the profile tests
 fed clean rows (they tested parsing, not data); every EMS test and scenario

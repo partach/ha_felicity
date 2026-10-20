@@ -178,6 +178,16 @@ def _limits(config: EMSConfig):
     return cap, floor, cmax, cycle
 
 
+def house(config: EMSConfig, st) -> float:
+    """What the battery side has to supply in a step: the house, but at most
+    the inverter's rating (above that the grid passes through, whatever the
+    battery holds — a constant cost no decision changes, left out of both
+    models)."""
+    if config.inverter_max_power_kw > 0:
+        return min(st.cons_kwh, config.inverter_max_power_kw * st.hours)
+    return st.cons_kwh
+
+
 def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
     """(cost, socs, bought_kwh) of a charging decision per step, continuously.
 
@@ -204,7 +214,7 @@ def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
             checkpoint = last_today, fixed
     for k, (st, want) in enumerate(zip(plan.horizon, charging)):
         p = st.price
-        x = s + st.pv_kwh - st.cons_kwh
+        x = s + st.pv_kwh - house(config, st)
         if x < floor:
             cost += p * (floor - x)
             x = floor
@@ -252,13 +262,13 @@ def lp_lower_bound(config, plan) -> float:
     n = len(plan.horizon)
     b = [pulp.LpVariable(f"b{k}", 0, st.grid_kwh) for k, st in enumerate(plan.horizon)]
     # The grid feeds at most the house (it may do so while the battery holds).
-    imp = [pulp.LpVariable(f"i{k}", 0, st.cons_kwh) for k, st in enumerate(plan.horizon)]
+    imp = [pulp.LpVariable(f"i{k}", 0, house(config, st)) for k, st in enumerate(plan.horizon)]
     spill = [pulp.LpVariable(f"x{k}", 0) for k in range(n)]
     soc = [pulp.LpVariable(f"s{k}", floor, cap) for k in range(n)]
     short = pulp.LpVariable("short", 0)
     prev = min(cap, max(floor, plan.start_kwh))
     for k, st in enumerate(plan.horizon):
-        m += soc[k] == prev + st.pv_kwh - st.cons_kwh + imp[k] - spill[k] + eff * b[k]
+        m += soc[k] == prev + st.pv_kwh - house(config, st) + imp[k] - spill[k] + eff * b[k]
         prev = soc[k]
     m += short >= plan.night_need_kwh - (prev - floor)
     m += (pulp.lpSum(st.price * (b[k] + imp[k]) + cycle * eff * b[k]
@@ -289,7 +299,7 @@ def fine_optimum(config, plan, points: int = 1200) -> float:
         return values[i] * (1 - t) + values[i + 1] * t
 
     def step(st, s, share):
-        x = s + st.pv_kwh - st.cons_kwh
+        x = s + st.pv_kwh - house(config, st)
         c = 0.0
         if x < floor:
             c += st.price * (floor - x)
@@ -570,7 +580,7 @@ def test_replan_inside_a_quarter_does_not_toggle(seed):
     soc = plan.start_kwh
     changes = []
     for minute in range(1, round(first.hours * 60)):
-        soc += (first.pv_kwh - first.cons_kwh) * per_min
+        soc += (first.pv_kwh - house(config, first)) * per_min
         if charging:
             soc += min(first.grid_kwh * per_min * config.efficiency, max(0.0, cmax - soc))
         soc = min(cap, max(floor, soc))
@@ -621,7 +631,7 @@ def test_physics_the_battery_stays_within_its_limits(seed):
         assert floor - 1e-6 <= soc <= cap + 1e-6
         if act:
             # Grid charging never lifts the battery above max SOC by itself.
-            assert soc <= max(cmax, prev + st.pv_kwh - st.cons_kwh) + 0.05 * cap / 100 + 0.05
+            assert soc <= max(cmax, prev + st.pv_kwh - house(config, st)) + 0.05 * cap / 100 + 0.05
         prev = soc
 
 
@@ -676,7 +686,7 @@ def test_paid_to_charge_it_charges_while_there_is_room(seed):
     for st, act, after in zip(plan.horizon, plan.charging, plan.planned_kwh):
         # The best-paid steps: nothing later pays more for the same room.
         if (st.price == lowest and st.grid_kwh * config.efficiency > 0.05
-                and soc + st.pv_kwh - st.cons_kwh < cmax - 0.2):
+                and soc + st.pv_kwh - house(config, st) < cmax - 0.2):
             assert act, (seed, st.idx, soc)
         soc = after
 
@@ -801,6 +811,43 @@ def test_customer_case_even_on_the_glitched_profile_tonight_is_not_bought():
     config, state = _customer_oct_19(glitched)
     result = ems.calculate_schedule(config, state)
     assert result.scheduled_slots == {}
+
+
+def test_the_battery_never_drains_faster_than_the_inverter_delivers():
+    """20 Oct 2026 card: 60 kWh at 100 %, "Battery runs empty at tomorrow
+    04:15" — the polluted profile put ~56 kWh into the 04:00 hour and the
+    plan drained the whole battery in it.  The house is fed through the
+    inverter, so the battery side supplies at most its rating per hour; the
+    rest passes through from the grid whatever the battery holds.  However
+    large an hour of the profile, no quarter may empty more than that."""
+    glitched = dict(REAL_PROFILE)
+    glitched[4] = 56.0
+    config, state = _customer_oct_19(glitched)
+    config = dataclasses.replace(config, battery_capacity_kwh=60.0,
+                                 battery_discharge_min_pct=25)
+    state = dataclasses.replace(state, battery_soc_pct=100.0)
+    plan = _plan(config, state)
+    prev = plan.start_kwh
+    for st, after, bought in zip(plan.horizon, plan.planned_kwh, plan.bought_kwh):
+        drained = prev + st.pv_kwh + bought * config.efficiency - after
+        assert drained <= config.inverter_max_power_kw * st.hours + 0.05, (st.day, st.start_h)
+        prev = after
+    result = ems.calculate_schedule(config, state)
+    assert "runs empty at tomorrow 04" not in result.schedule_reason, result.schedule_reason
+    # The card's line: never more than the inverter's rating per quarter.
+    traj = result.tomorrow_soc_trajectory
+    assert max(a - b for a, b in itertools.pairwise(traj)) <= 10.0 / 4 / 60 * 100 + 0.2
+
+
+def test_below_the_inverter_rating_the_cap_changes_nothing(monkeypatch):
+    """An ordinary house never reaches the rating, so it plans exactly as
+    without the cap."""
+    config, state = _customer_oct_19(REAL_PROFILE)
+    capped = _plan(config, state)
+    monkeypatch.setattr(ems, "_battery_share", lambda _c, cons, _h: cons)
+    uncapped = _plan(config, state)
+    assert capped.planned_kwh == uncapped.planned_kwh
+    assert capped.charging == uncapped.charging
 
 
 # ── engine wiring ───────────────────────────────────────────────────────────

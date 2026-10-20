@@ -2619,6 +2619,20 @@ def _hour_consumption(config: EMSConfig, state: EMSState, hour: int) -> float:
     return config.consumption_est_kwh / 24.0
 
 
+def _battery_share(config: EMSConfig, cons_kwh: float, hours: float) -> float:
+    """The part of a step's consumption the inverter can deliver (kWh).
+
+    The house is fed through the inverter, so it gets at most the inverter's
+    rating from PV and battery together; anything above that passes through
+    from the grid whatever the battery holds.  So the battery can never be
+    emptied faster than the rating — a 60 kWh battery behind a 10 kW inverter
+    takes at least six hours to drain, however large the load.
+    """
+    if config.inverter_max_power_kw > 0:
+        return min(cons_kwh, config.inverter_max_power_kw * hours)
+    return cons_kwh
+
+
 def _optimal_horizon(
     config: EMSConfig, state: EMSState, current_slot: int, pv_confidence: float,
 ) -> list[_PlanSlot]:
@@ -2688,7 +2702,8 @@ def _optimal_night_after(
     else:
         sunrise = 7
     sunrise = max(0, min(12, int(sunrise)))
-    need = sum(_hour_consumption(config, state, h) for h in range(sunrise))
+    need = sum(_battery_share(config, _hour_consumption(config, state, h), 1.0)
+               for h in range(sunrise))
     if config.optimization_priority == "self_consumption":
         need *= SELF_CONSUMPTION_RESERVE_BOOST
 
@@ -2750,7 +2765,7 @@ def plan_optimal_from_grid(
     nets: list[int] = []
     cum, prev = 0.0, 0
     for s in horizon:
-        cum += s.pv_kwh - s.cons_kwh
+        cum += s.pv_kwh - _battery_share(config, s.cons_kwh, s.hours)
         cur = round(cum / step)
         nets.append(cur - prev)
         prev = cur

@@ -26,7 +26,10 @@ behaviour, the simulator is the gate that decides whether you were right.
    from_grid rule below that it contradicts.**  The default engine
    `optimal` (`ems.plan_optimal_from_grid`) solves one cost model over the
    whole horizon (now → end of the last day with prices) in 15-minute steps:
-   - the battery covers the house, PV fills it, PV beyond full is spilled,
+   - the battery covers the house — **at most at the inverter's rating**; any
+     load above that passes through from the grid whatever the battery holds,
+     so a battery can never empty faster than the rating allows — PV fills
+     it, PV beyond full is spilled,
      below the discharge floor the house buys from the grid **at that step's
      price**; a step may charge anything from nothing to a full step at the
      Power Level (the coordinator re-plans while it runs and stops when the
@@ -241,6 +244,14 @@ behaviour, the simulator is the gate that decides whether you were right.
       last 7 days are rebuilt from the recorder once at startup.  A day needs
       ≥ 20 hours of statistics to count; once any real day exists, flat days
       no longer shape the profile.
+    - **An hour no house can draw is not consumption** — whether it comes
+      from the recorder or from what an earlier version STORED.  Any hour
+      above grid limit × 230 V × 3 + inverter rating is dropped on read, on
+      store and on loading the store; a day's total is re-derived from its
+      cleaned hours (a dropped hour counts as the day's average), and an hour
+      no stored day still has gets the profile's average, never 0.  (Oct 2026:
+      the stored days the old parser wrote kept a whole day in the 04:00
+      hour, because the backfill keeps any day the recorder cannot replace.)
     - **More forecast formats.** `wh_hours` (Forecast.Solar), `wh_period`
       (Open-Meteo Solar Forecast, any period length), `detailedHourly` /
       `detailedForecast` (Solcast lists, kW × period).  Offset-aware
