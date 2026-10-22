@@ -3267,9 +3267,16 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     # charge slots starting from the current slot.  The cheapest-slot optimizer
     # may schedule charge hours from now, leaving the battery critically low
     # in the meantime.  This ensures the inverter starts charging NOW.
+    #
+    # NOT for the exact planner: below the floor the inverter runs the house
+    # on the grid anyway, and the planner already prices that (and charges
+    # when charging is cheaper).  Forcing a charge on top bought at whatever
+    # the slot cost — 0.453 at the evening peak, 22 Oct 2026 — and, with SOC
+    # hovering a hair under the floor, flipped charge/idle every 1-3 minutes
+    # for hours, switching the EV charger with it each time.
     min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
-    urgent_added = 0
     if (current_kwh < min_kwh
+            and not result.scheduler_active.startswith("optimal")
             and config.grid_mode in ("from_grid", "both")
             and result.scheduled_slots is not None):
         effective_per_slot = config.safe_power_kw * (minutes_per_slot / 60.0) * config.efficiency
@@ -3282,7 +3289,6 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             if result.scheduled_slots.get(i) != "charge":
                 result.scheduled_slots[i] = "charge"
                 added += 1
-        urgent_added = added
         if added:
             _LOGGER.info(
                 "Urgent recovery: battery at %.1f kWh (min=%.1f), "
@@ -3299,11 +3305,11 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     else:
         result.status = "waiting"
 
-    # The exact planner's trajectory is authoritative for its own schedule;
-    # anything that changed the schedule afterwards (urgent recovery) gets the
-    # shared slot-level simulation.
+    # The exact planner's trajectory is authoritative for its own schedule
+    # (urgent recovery never touches it); when a post-step changed the
+    # schedule (the negative-price flags) the shared slot-level simulation runs.
     planner = result.scheduler_active.startswith("optimal")
-    planner_owns = planner and result.plan_trajectory_exact and not urgent_added
+    planner_owns = planner and result.plan_trajectory_exact
     result.plan_trajectory_exact = planner_owns
 
     # Compute authoritative SOC trajectory with the finalized schedule
