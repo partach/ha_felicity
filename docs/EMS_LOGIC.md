@@ -930,21 +930,26 @@ Monitors grid current per phase and adjusts inverter power to prevent overcurren
 
 | Priority | Action | Detail |
 |---|---|---|
-| **1st** | Battery power reduction | Above 80 % of the limit, lower the rule-1 power limit **in one step** to the level that brings the current back to 80 %: `ceil((current − 0.8 × limit) × 0.230 × phases)` kW off, never below 1 kW. Only while the battery is charging/discharging. |
+| **1st** | Battery power reduction | Above the limit, lower the rule-1 power limit **in one step** to the level that brings the current to 90 %: `ceil((current − 0.9 × limit) × 0.230 × phases)` kW off, never below 1 kW. Only while the battery is charging/discharging. |
 | **2nd** | EV charger current step-down | Only when the battery is at its 1 kW minimum (or idle) and the current is still above 95 %. One step per 10-second cycle. |
 | **3rd** | Binary load shedding | Turn off active flexible loads in shed-priority order — highest number sheds first (3 before 2 before 1). One load per cycle. |
 
+**Maintainer rule (23 Oct 2026): the rule-1 power limit stays at the user's Power Level and is written only when a phase is over the limit; it returns to the Power Level as soon as that fits.**
+
 | Grid Condition | Response |
 |---|---|
-| > 80% of max amperage | Cut the battery in one step to the level that brings the current to 80 % |
-| > 95% of max amperage, battery at its 1 kW minimum (or idle) | Step the EV down / shed a load |
-| 70–80% of max amperage | Hold (hysteresis) |
-| < 70% of max amperage | Recovery — restores by 1 kW (up to Power Level) |
-| Current = 0 | Jumps to full Power Level |
+| A phase > 100 % of max amperage, battery charging/discharging above 1 kW | Cut the battery in one step so the busiest phase lands at 90 % (`SAFE_POWER_TARGET`) |
+| A phase > 95 % of max amperage, battery at its 1 kW minimum (or idle) | Step the EV down / shed a load |
+| Below the Power Level, battery charging/discharging | Back to the Power Level in one write once the measured current plus the restored kW (`1000 / (230 × phases)` A per kW) stays ≤ 90 % — a shed load that fits returns first |
+| Below the Power Level, battery idle | Back to the Power Level (the limit does nothing in idle) |
+| Within 30 s of a cut | Nothing — the inverter is still ramping down, so the current read is from before (`SAFE_POWER_SETTLE_S`) |
+| Anything else | Nothing written |
+
+Before 23 Oct 2026 it cut from 80 % of the limit, aimed at 80 %, climbed back 1 kW per poll below 70 % (also in idle) and acted on readings taken before the inverter had followed the last write: on an 18 A install, 518 limit writes in an afternoon, the battery see-sawing 1 ↔ 8 kW.
 
 **A shed load stays off.** A load switched off by safe power is held off for at least 5 minutes, and after that it is switched back on only when the grid current on **its phase** plus the load's own current (`rated kW / (voltage × phases)`) stays under 95 % of the limit — its phase is *EV Charger Grid Phase* (`flexible_load_1_phase`, L1/L2/L3) for a one-phase load 1, and the **busiest** phase when that is `unknown` (the default), for a three-phase load, and for loads 2-3; otherwise it is re-checked every minute. The schedule cannot override the hold. (Before Oct 2026 the flex-load actuation, later in the same cycle, switched a shed load straight back on, so the shed never took effect and the battery reduction it replaced never happened: 18 A limit, 23–28 A measured.)
 
-Recovery runs in reverse: below 70 % of the limit, a shed load that fits comes back first, and only then is the battery power raised back toward the user's Power Level (1 kW per cycle).
+Recovery runs in reverse: a shed load that fits comes back first, and only then does the battery limit return to the user's Power Level (one write, once the full level fits).  In a charge slot with the EV on a tight connection that means the battery gets its Power Level back and the EV waits until it fits.
 
 **Why one step.** A battery kW is spread over the inverter's phases, so cutting 1 kW lowers each phase by `1000 / (230 × phases)` A (4.3 A on a 1-phase model, 1.45 A on a 3-phase one; phases per model in `const.INVERTER_PHASES`). Cutting exactly the excess in one write brings the current inside the limit on the next cycle; the old 2 kW-per-cycle staircase took ~40 s to come down from 8 kW, over the limit the whole time. Cut down, recover gently: the way back up stays +1 kW per cycle.
 

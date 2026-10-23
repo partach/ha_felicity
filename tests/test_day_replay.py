@@ -627,8 +627,11 @@ async def test_grid_current_limit_holds_while_an_ev_charges(model):
 
     settled = [t.max_amps for t in r.ticks if day(D, 12, 2) <= t.at < day(D, 13)]
     assert max(settled) <= 18.0, f"peak {max(settled)} A\n{r.timeline(5)}"
-    assert "charge" in r.inverter_actions(day(D, 12), day(D, 13))     # still charging, slower
-    assert r.coordinator.safe_max_power < 8
+    assert "charge" in r.inverter_actions(day(D, 12), day(D, 13))
+    # Maintainer rule (23 Oct 2026): once nothing is over the limit the rule-1
+    # power is back at the Power Level; the shed EV waits until it fits.
+    assert r.coordinator.safe_max_power == 8
+    assert r.hass.switch_on.get(EV) is False
 
 
 @pytest.mark.asyncio
@@ -695,9 +698,9 @@ async def test_battery_power_is_cut_before_any_load_is_shed():
 @pytest.mark.parametrize("model", [TREX_10, TREX_25])
 async def test_battery_power_is_cut_in_one_step(model):
     """Maintainer: cut the battery to the level the current needs in ONE write,
-    not 2 kW per poll.  30.6 A on L2 against a 25 A limit: the excess over 80 %
-    (10.6 A) times 230 V times three phases is 7.3 kW, so 8 kW drops straight
-    to the 1 kW minimum on the next poll — no 6/4/2 kW staircase in between."""
+    not 2 kW per poll.  30.6 A on L2 against a 25 A limit: the excess over the
+    90 % target (8.1 A) times 230 V times three phases is 5.6 kW, so 8 kW drops
+    straight to 2 kW on the next poll — no 6/4 kW staircase in between."""
     r = _replay(model, options={**AUTO, **EV_OPTIONS, "max_amperage_per_phase": 25}, soc=40.0,
                 start=day(D, 11, 55), prices_for=DUCK, load_kw=lambda _t: 2.0,
                 switched_loads={EV: 3.7})
@@ -707,7 +710,7 @@ async def test_battery_power_is_cut_in_one_step(model):
     cuts = [w for w in r.writes("econ_rule_1_power")
             if w.at > first.at and w.values[0] != first.values[0]]
     assert len(cuts) == 1, cuts
-    assert cuts[0].values[0] * 8 == first.values[0]            # 8 kW → 1 kW, unit-agnostic
+    assert cuts[0].values[0] * 4 == first.values[0]            # 8 kW → 2 kW, unit-agnostic
     assert (cuts[0].at - first.at).total_seconds() <= 10
     settled = [t.max_amps for t in r.ticks if t.at > cuts[0].at]
     assert max(settled) <= 25.0, f"peak {max(settled)} A\n{r.timeline(5)}"
@@ -942,3 +945,70 @@ async def test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled(
     assert "charge" not in r.inverter_actions(day(D, 19, 30), day(D, 23, 30)), r.timeline(10)
     assert _episodes(r, "econ_rule_1_enable", day(D, 19, 30)) == []
     assert not [c for c in calls if c[1] == "turn_on" and c[2] == EV], calls
+
+
+# ---------------------------------------------------------------------------
+# Safe power: the rule-1 limit swinging 1 <-> 8 kW (22-23 Oct 2026)
+# ---------------------------------------------------------------------------
+# Live install: 18 A, Power Level 8, house load mostly on L1.  The rule-1 power
+# history swung between 1000 and 8000 W for hours (518 writes after 12:00 on
+# 22 Oct).  Every charge was cut twice in two polls ("20.7 A — cutting to level
+# 3", 16 s later "19.5 A — cutting to level 1"): the second cut read a current
+# from before the inverter had followed the first.  Then +1 kW per poll on
+# stale low readings, cut again, and so on.  Maintainer rule (23 Oct): write
+# the limit ONLY when a phase is over it, and put it back to the Power Level
+# as soon as that fits.
+
+SAFE18 = {**AUTO, "power_level": 8, "max_amperage_per_phase": 18,
+          "daily_consumption_estimate": 12.0}
+
+
+def _l1_house(r):
+    """2.5 kW house: 0.5 kW spread, 2 kW on L1.  At 8 kW charge L1 reads
+    ~21 A; at 4 kW ~15.2 A (84 % of 18 A), and 8 kW would not fit back."""
+    r.load_kw = lambda _t: 0.5
+    r.l1_load_kw = lambda _t: 2.0
+    r.inverter.power_lag_s = 10.0
+    r.inverter.set("econ_rule_1_power", 8000)                 # the unit at rest: 8000 W
+    return r
+
+
+def _power_levels(r, t0):
+    return [(at, v // 1000) for at, v in r.writes_after("econ_rule_1_power", t0)]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_waits_for_the_inverter_before_cutting_again():
+    r = _l1_house(_replay(options=SAFE18, capacity_kwh=60.0, soc=50.0,
+                          start=day(D, 21, 29), prices_for=EVENING_PEAK))
+    r.coordinator.set_slot_overrides({"today": {slot(h, m): "charge" for h in (21, 22)
+                                                for m in (0, 15, 30, 45) if (h, m) >= (21, 30)},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 22, 30), step_s=16)
+    _chart(r, "safe_power_stale_reading")
+
+    levels = _power_levels(r, day(D, 21, 29))
+    assert [v for _, v in levels] == [8, 4], levels           # one cut, then nothing
+    late = [t.max_amps for t in r.ticks if t.at >= day(D, 21, 32)]
+    assert max(late) <= 18.0, f"peak {max(late)} A\n{levels}"
+    assert r.rule_driven(day(D, 21, 31), day(D, 22, 30))
+
+
+@pytest.mark.asyncio
+async def test_the_limit_is_written_only_when_a_phase_is_over_it():
+    """Two 15-minute charges with an idle spell between: per charge the limit is
+    cut once (L1 over 18 A) and put back to the Power Level once the battery
+    is idle — five writes in all (two are the charge transitions themselves),
+    where the old code wrote it on every poll that saw a low current."""
+    r = _l1_house(_replay(options=SAFE18, capacity_kwh=60.0, soc=50.0,
+                          start=day(D, 21, 29), prices_for=EVENING_PEAK))
+    r.coordinator.set_slot_overrides({"today": {slot(21, 30): "charge", slot(22, 0): "charge"},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 22, 15), step_s=16)
+    _chart(r, "safe_power_written_only_when_over")
+
+    levels = _power_levels(r, day(D, 21, 29))
+    assert [v for _, v in levels] == [8, 4, 8, 8, 4], levels
+    assert r.coordinator.safe_max_power == 4                  # still charging, L1 full
+    over = [t.at for t in r.ticks if t.max_amps > 18.0]
+    assert len(over) <= 4, over                               # two polls per charge start

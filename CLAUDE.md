@@ -1602,14 +1602,21 @@ in the UI.
 
 ## Safe Power Management (coordinator.py `_check_safe_power`, ~1307-1424)
 
-Monitors grid current per phase and adjusts inverter power:
+Monitors grid current per phase and adjusts inverter power.
+
+**Maintainer rule (23 Oct 2026): the rule-1 power stays at the user's Power
+Level and is written ONLY when a phase is over `max_amperage_per_phase`; it
+goes back to the Power Level as soon as that level fits again** (Known Issues
+8n).
 
 | Condition | Action |
 |---|---|
-| Current > 80% of max_amperage | Cut battery power in ONE step to what brings the current back to 80 % (`ceil(excess A × 0.230 × phases)` kW, min 1 kW) |
-| Current > 95% of max_amperage, battery at 1 kW minimum (or idle) | Step EV current down / shed loads |
-| Current < 70% of max_amperage | A shed load that fits returns first; otherwise recover battery by 1 kW (up to user limit) |
-| Current = 0 | Jump to user's Power Level |
+| A phase > 100 % of max_amperage, battery charging/discharging above 1 kW | Cut battery power in ONE step so the busiest phase lands at `SAFE_POWER_TARGET` (90 %): `ceil((I − 0.9·Imax) × 0.230 × phases)` kW, min 1 kW |
+| A phase > 95 % of max_amperage, battery at its 1 kW minimum (or idle) | Step EV current down / shed loads |
+| Below the Power Level, battery charging/discharging | Back to the Power Level in one write when `I + (level gap) × 1000/(230 × phases)` ≤ 90 %; a shed load that fits returns first |
+| Below the Power Level, battery idle | Back to the Power Level (the limit does nothing in idle; a charge that overloads a phase is cut once) |
+| Within `SAFE_POWER_SETTLE_S` (30 s) of a CUT | Nothing: the inverter is still ramping down, the reading is stale-high |
+| Anything else | Nothing written |
 
 **Order — battery power FIRST, flexible loads second (maintainer decision,
 Oct 2026).**  The rule-1 power limit is what tells the inverter how hard to
@@ -1625,13 +1632,13 @@ and Known Issues 8h (the protection was defeated whenever a flexible load ran).
 **One-step cut (maintainer decision, Oct 2026).**  The battery cut used to be
 2 kW per poll above 95 % and 1 kW above 80 %, so 8 kW took four polls (~40 s)
 to come down.  It now jumps straight to the level that brings the measured
-phase current back to 80 % of the limit: `cut = ceil((I − 0.8·Imax) × 0.230 kV
-× phases)` kW, never below 1 kW.  The battery's power is spread over the
+phase current back to 90 % of the limit (80 % until 23 Oct 2026): `cut =
+ceil((I − 0.9·Imax) × 0.230 kV × phases)` kW, never below 1 kW.  The battery's power is spread over the
 inverter's phases, so a kW cut lowers each phase by `1000 / (230 × phases)` A;
 `const.INVERTER_PHASES` declares the phase count per model (1 for T-REX-5/6 and
 IVGM-8K, 3 for the rest — `test_every_model_declares_its_phases` checks it
-against the model id).  Recovery stays at +1 kW per poll below 70 %, so the
-level climbs back gently; between 70 and 80 % nothing changes (hysteresis).
+against the model id).  ~~Recovery +1 kW per poll below 70 %~~ — replaced
+23 Oct 2026 by the one-write return to the Power Level once it fits (8n).
 
 ---
 
@@ -1838,7 +1845,7 @@ making all entities unavailable and taking the inverter out of eco mode.
 **Safe power priority chain** (in `_check_safe_power`) — **maintainer decision,
 Oct 2026: battery first**:
 1. Battery power reduction — one step, straight to the level the current needs
-   (above 80 %), while the battery is charging/discharging and above its 1 kW minimum
+   (only when a phase is over the limit; back to the Power Level once it fits — 8n), while the battery is charging/discharging and above its 1 kW minimum
 2. EV charger current step-down (one step per tick) — only once (1) cannot help
 3. Binary load shed (3=least important, shed first; 1=most important, shed last)
 
@@ -3151,6 +3158,53 @@ battery and shed the EV, and at 13:45 the plan ended the charge and switched
 the EV off with it although the owner had switched it on by hand at 10:38
 (flexible loads take over a manually started charger).  And the coordinator
 logs `grid_power=?` in every State decision line.
+
+### 8n. Safe power swung the rule-1 limit 1 ↔ 8 kW — FIXED (Oct 2026)
+
+Same install as 8m (18 A, Power Level 8, house load mostly on L1).  The
+Rule 1 Power history swung between 1000 and 8000 W for hours (22 Oct 20:00 →
+23 Oct ~10:00, again 13:40–15:40).  The 22 Oct log has 518 limit writes after
+12:00 (122 cuts, 386 "recovering" steps).
+
+**Maintainer rule (23 Oct 2026): "it only needs to be written if the amps on
+one of the phases is too high.  Else always leave at max setting by user."**
+`_check_safe_power` now:
+- cuts only when a phase is **over** `max_amperage_per_phase` (was: over
+  80 %), in one step aimed at `SAFE_POWER_TARGET` (90 %) of it;
+- puts the limit back to the **Power Level in one write** as soon as that
+  fits — while the battery runs, when the measured current plus the restored
+  kW (`1000 / (230 × phases)` A per kW per phase) stays ≤ 90 %; in idle at
+  once (the limit does nothing then).  No +1 kW-per-poll climb;
+- after a **cut**, waits `SAFE_POWER_SETTLE_S` (30 s) before acting on the
+  current again.  The inverter ramps, so the next poll still measures the old
+  power: "20.7 A — cutting to level 3", 16 s later "19.5 A — cutting to level
+  1", where level 3 was enough; on the way up the stale-low readings raised it
+  again, so a steady charge see-sawed 1 ↔ 4 kW.  A raise starts no wait (its
+  stale reading is low and cannot over-cut);
+- writes nothing otherwise.  A user Power Level change applies at once.
+
+Replay (`test_a_cut_waits_for_the_inverter_before_cutting_again`, 2 kW of house
+on L1, 8 kW charge for an hour, inverter lag 10 s, 16 s polls): old code
+**151** limit writes see-sawing 1–4 kW, new code **2** (8 → 4) and holds at
+4 kW, storing ~1 kWh more in the hour.
+`test_the_limit_is_written_only_when_a_phase_is_over_it`: two charges with an
+idle spell — one cut per charge, one return in idle, nothing else.  Both fail
+on the old code; the fake inverter gained `power_lag_s`.
+
+**Consequence to know:** a charge slot with the EV running on an 18 A
+connection — the battery is cut, then the EV is shed (battery at minimum),
+then the battery's Power Level fits again and returns; the EV waits until it
+fits (`test_grid_current_limit_holds_while_an_ev_charges` now asserts this).
+Before, the battery stayed throttled in the 70–80 % band.
+
+**What this did NOT cause:** the 22 Oct evening drop.  From 17:00 to 20:00
+the limit stayed at 8000 W and the battery was idle (no transition between
+13:45 and 20:10); the house drew 3.1 kW from it.  The swings from 20:10 to
+23:20 (where the log ends) were the urgent-recovery flip-flop (8m) — each
+forced charge spiked and was cut, each idle spell raised the limit again; the
+overnight ones most likely too (SOC at the floor), but there is no log for them.
+The 13:00–14:00 cuts were real protection (EV + 8 kW charge on 18 A; at 13:08
+the house put 2.4 kW on L3).
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /

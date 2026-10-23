@@ -98,6 +98,18 @@ def _number(value) -> float | None:
 
 CONSUMPTION_BACKFILL_RETRY_S = 300
 
+# Seconds safe power waits after CUTTING the rule-1 power limit before it acts
+# on the grid current again.  The inverter ramps to a new limit, so the next
+# poll still measures the old, higher power: 22 Oct 2026, "20.7 A — cutting to
+# level 3", 16 s later "19.5 A — cutting to level 1", where level 3 was enough.
+# (After a raise the stale reading is LOW, which cannot cause an over-cut, so
+# a raise starts no wait — a charge that overloads a phase is cut at once.)
+SAFE_POWER_SETTLE_S = 30
+# A cut aims the busiest phase at this share of max_amperage_per_phase, and the
+# Power Level returns once it would keep every phase under it: a margin for a
+# load that moves, without cutting before the limit is actually exceeded.
+SAFE_POWER_TARGET = 0.9
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -180,6 +192,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.avg_price: float | None = None
         self.price_threshold: float | None = None
         self.safe_max_power = 0 # used in setting rule 1 power checks toward max amperage
+        self._safe_power_cut_ts = 0.0  # when safe power last cut the rule-1 power
         self._last_known_max_amperage: float | None = None
         self.battery_soc: float | None = None  # resolved SOC (type-specific)
         # SOC history: {slot_index: soc_pct} for past slots today
@@ -2766,60 +2779,70 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 base_level = detected_level  # adopt the new higher (or lower) value
 
         # --- 5. Compute safe_level based on current grid draw ---
+        # Maintainer rule (23 Oct 2026): the rule-1 power stays at the user's
+        # Power Level and is written ONLY when a phase is over the limit; it
+        # goes back to the Power Level as soon as that level fits again.
+        # (The old 80 % / 70 % bands with +1 kW per poll rewrote it hundreds
+        # of times a day — 518 writes on 22 Oct — and kept the battery cut
+        # from 80 % of the limit.)
         safe_level = base_level
+        battery_active = self._current_energy_state in ("charging", "discharging")
+        settling = (not user_level_changed
+                    and time.time() - self._safe_power_cut_ts < SAFE_POWER_SETTLE_S)
+        phases = INVERTER_PHASES.get(self.inverter_model, 3)
+        amps_per_kw = 1.0 / (0.230 * phases)        # one battery kW, per phase
+        current = max_current or 0.0
 
-        if max_current is None or max_current == 0:
-            # No grid current — safe to use user's desired level
-            if base_level < user_level:
-                safe_level = user_level
-                _LOGGER.info("No grid current — recovering to user level %d (was %d)", user_level, base_level)
-            else:
-                _LOGGER.debug("No grid current — keeping current level %d", base_level)
-        elif max_current > max_amperage * 0.8:
+        if settling:
+            # The inverter is still moving down to the last cut: the current
+            # read now is from before it got there (22 Oct 2026:
+            # "20.7 A — cutting to level 3", 16 s later "19.5 A — to level 1").
+            _LOGGER.debug("Safe power: waiting for the inverter to follow level %d "
+                          "(%.1fA now)", base_level, current)
+        elif current > max_amperage and battery_active and base_level > 1:
             # ORDER (maintainer decision, Oct 2026): the battery power limit
-            # first — it is what tells the inverter how hard to charge — and
-            # flexible loads only when that is not enough: the battery is
-            # already at its 1 kW minimum (or idle, when the rule-1 power
-            # limit has no effect) and the current is still above 95 %.
-            battery_active = self._current_energy_state in ("charging", "discharging")
-            if battery_active and base_level > 1:
-                # ONE step (maintainer decision, Oct 2026): cut the battery by
-                # the power the excess current represents, aiming at 80 % of the
-                # limit — the band where nothing more happens — instead of 2 kW
-                # per poll (30 A on an 18 A limit took ~40 s to come down).
-                # A 3-phase inverter's cut is shared over its phases.
-                phases = INVERTER_PHASES.get(self.inverter_model, 3)
-                excess_a = max_current - max_amperage * 0.8
-                cut_kw = max(1, math.ceil(excess_a * 0.230 * phases))
-                safe_level = max(1, base_level - cut_kw)
-                _LOGGER.warning("High current %.1fA (max %.0fA) — cutting battery power "
-                                "%d kW to level %d", max_current, max_amperage,
-                                base_level - safe_level, safe_level)
-            elif max_current > max_amperage * 0.95:
-                try:
-                    load_shed = await self._safe_power_shed_loads(max_current, max_amperage)
-                except Exception as err:
-                    _LOGGER.error("Load shedding failed (non-fatal): %s", err)
-                    load_shed = False
-                if not load_shed:
-                    _LOGGER.warning(
-                        "High current %.1fA (max %.0fA) — battery power at its minimum "
-                        "and no flexible load left to shed", max_current, max_amperage)
-        elif max_current < max_amperage * 0.7:
-            # Recovery in reverse order: a shed load that fits again comes back
-            # (in _actuate_flex_loads) BEFORE the battery power is raised, so the
-            # battery does not take the room the load is waiting for.
-            new_level = min(user_level, base_level + 1)
-            if self._shed_load_waiting_to_fit(max_current, max_amperage):
-                _LOGGER.debug("Low current %.1fA — a shed load returns first; "
-                              "battery stays at level %d", max_current, base_level)
-            elif new_level > base_level:
-                safe_level = new_level
-                _LOGGER.info("Low current %.1fA — recovering to level %d", max_current, safe_level)
+            # first, in ONE step, to the level that brings the busiest phase
+            # to SAFE_POWER_TARGET of the limit; a 3-phase inverter's cut is
+            # shared over its phases.
+            excess_a = current - max_amperage * SAFE_POWER_TARGET
+            cut_kw = max(1, math.ceil(excess_a / amps_per_kw))
+            safe_level = max(1, base_level - cut_kw)
+            _LOGGER.warning("High current %.1fA (max %.0fA) — cutting battery power "
+                            "%d kW to level %d", current, max_amperage,
+                            base_level - safe_level, safe_level)
+        elif current > max_amperage * 0.95 and (not battery_active or base_level <= 1):
+            # Flexible loads only when the battery cannot help: it is at its
+            # 1 kW minimum, or idle (the rule-1 power limit then has no effect).
+            try:
+                load_shed = await self._safe_power_shed_loads(current, max_amperage)
+            except Exception as err:
+                _LOGGER.error("Load shedding failed (non-fatal): %s", err)
+                load_shed = False
+            if not load_shed:
+                _LOGGER.warning(
+                    "High current %.1fA (max %.0fA) — battery power at its minimum "
+                    "and no flexible load left to shed", current, max_amperage)
+        elif base_level < user_level:
+            # Back to the Power Level in one write once it fits.  While the
+            # battery runs, the busiest phase would carry the measured current
+            # plus the restored kW; in idle the battery is not on the grid, so
+            # the level simply returns (a charge that then overloads a phase
+            # is cut once).  A shed load that fits returns first.
+            fits = (not battery_active
+                    or current + (user_level - base_level) * amps_per_kw
+                    <= max_amperage * SAFE_POWER_TARGET)
+            if self._shed_load_waiting_to_fit(current, max_amperage):
+                _LOGGER.debug("Current %.1fA — a shed load returns first; "
+                              "battery stays at level %d", current, base_level)
+            elif fits:
+                safe_level = user_level
+                _LOGGER.info("Current %.1fA — Power Level %d fits again (was %d)",
+                             current, user_level, base_level)
             else:
-                _LOGGER.debug("Low current but already at user max %d", base_level)
+                _LOGGER.debug("Current %.1fA — Power Level %d would not fit; "
+                              "staying at %d", current, user_level, base_level)
         else:
-            _LOGGER.debug("Normal current %.1fA — maintaining level %d", max_current, base_level)
+            _LOGGER.debug("Current %.1fA — Power Level %d", current, base_level)
 
         # --- 6. Write if level changed OR user explicitly changed power_level ---
         if safe_level != base_level or user_level_changed:
@@ -2829,6 +2852,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                          " (user change)" if user_level_changed else "")
             try:
                 await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
+                if safe_level < base_level:
+                    self._safe_power_cut_ts = time.time()
                 self.safe_max_power = safe_level
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
