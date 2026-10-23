@@ -1608,8 +1608,9 @@ Monitors grid current per phase and adjusts inverter power:
 |---|---|
 | Current > 80% of max_amperage | Cut battery power in ONE step to what brings the current back to 80 % (`ceil(excess A × 0.230 × phases)` kW, min 1 kW) |
 | Current > 95% of max_amperage, battery at 1 kW minimum (or idle) | Step EV current down / shed loads |
-| Current < 70% of max_amperage | A shed load that fits returns first; otherwise recover battery by 1 kW (up to user limit) |
-| Current = 0 | Jump to user's Power Level |
+| Current < 70% of max_amperage | A shed load that fits returns first; otherwise recover battery by 1 kW (up to user limit) — **only while the battery charges/discharges** |
+| Current = 0 | Jump to user's Power Level — **only while the battery charges/discharges** |
+| Within `SAFE_POWER_SETTLE_S` (30 s) of a limit write | Nothing: the inverter is still ramping to it (Known Issues 8n) |
 
 **Order — battery power FIRST, flexible loads second (maintainer decision,
 Oct 2026).**  The rule-1 power limit is what tells the inverter how hard to
@@ -3151,6 +3152,50 @@ battery and shed the EV, and at 13:45 the plan ended the charge and switched
 the EV off with it although the owner had switched it on by hand at 10:38
 (flexible loads take over a manually started charger).  And the coordinator
 logs `grid_power=?` in every State decision line.
+
+### 8n. Safe power swung the rule-1 limit 1 ↔ 8 kW — FIXED (Oct 2026)
+
+Same install as 8m (18 A, Power Level 8, house load mostly on L1).  The
+Rule 1 Power history swung between 1000 and 8000 W for hours (22 Oct 20:00 →
+23 Oct ~10:00, again 13:40–15:40).  The 22 Oct log has 518 limit writes after
+12:00 (122 cuts, 386 "recovering" steps).  Two defects, both in
+`_check_safe_power`:
+
+1. **It acted on readings from before the inverter had followed.**  The
+   inverter ramps to a new limit, so the poll after a write still measures the
+   old power: "20.7 A — cutting to level 3", 16 s later "19.5 A — cutting to
+   level 1" — every charge in the log was cut twice, to the 1 kW minimum,
+   where 3 kW kept L1 at ~76 %.  The same on the way up (+1 kW per poll on a
+   stale low reading), so a steady charge see-sawed 1 ↔ 4 kW.  Fix: after a
+   write it waits `SAFE_POWER_SETTLE_S` (30 s) before acting on the current
+   again; a Power Level change by the user still applies at once.
+2. **It raised the limit while the battery was idle.**  The limit only acts
+   on grid charging/discharging; in idle the battery covers the house, the
+   grid reads ~0 A, and it climbed back to 8 kW (+1 per poll, or straight to 8
+   on "no grid current").  Every next charge then started at 8 kW, spiked over
+   the limit and was cut again.  Fix: recovery (both branches) only while the
+   battery charges or discharges; a charge starts at the last safe level and
+   climbs while the current allows.
+
+Replay (`test_a_cut_waits_for_the_inverter_before_cutting_again`, 2 kW of house
+on L1, 8 kW charge for an hour, inverter lag 10 s, 16 s polls): old code
+**151** limit writes see-sawing 1–4 kW, new code **2** writes (8 → 3) and
+holds at 3 kW.  `test_the_limit_is_not_raised_while_the_battery_is_idle`: no
+write in idle, the next charge stays under 18 A.  Both fail on the old code.
+The fake inverter gained `power_lag_s`.
+
+**What this did NOT cause:** the 22 Oct evening drop.  From 17:00 to 20:00
+the limit stayed at 8000 W and the battery was idle (no transition between
+13:45 and 20:10); the house drew 3.1 kW from it.  The swings from 20:10 to
+23:20 (where the log ends) were the urgent-recovery flip-flop (8m) — each
+forced charge spiked and was cut, each idle spell raised the limit again; the
+overnight ones most likely too (SOC at the floor), but there is no log for them.  The
+13:00–14:00 cuts were real protection (EV + 8 kW charge on 18 A; at 13:08 the
+house put 2.4 kW on L3, leaving room for ~2-3 kW of battery).
+
+**Left as is (maintainer's call):** cutting starts at **80 %** of
+`max_amperage_per_phase` and aims at 80 %, so on 18 A the battery is cut
+from 14.4 A, not 18 A.
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /

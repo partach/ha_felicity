@@ -177,6 +177,12 @@ class FakeInverter:
         self.efficiency = efficiency
         self.self_use_floor_pct = self_use_floor_pct
         self.honour_rule_dates = honour_rule_dates
+        # Seconds a new rule-1 power limit takes to reach the battery.  A real
+        # inverter ramps, so the poll right after a write still measures the
+        # old power (22 Oct 2026 log: cut to 3 kW, 16 s later still 19.5 A).
+        self.power_lag_s = 0.0
+        self._power_written_at: datetime | None = None
+        self._power_before_kw = 0.0
         self.memory: dict[int, int] = {}
         self.writes: list[Write] = []
         self.connected = True
@@ -260,6 +266,10 @@ class FakeInverter:
         return _Response([self.memory.get(address + i, 0) for i in range(count)])
 
     async def write_registers(self, address, values, device_id=1):
+        power = self.register_map.get("econ_rule_1_power")
+        if power is not None and address == power["address"]:
+            self._power_before_kw = self.rule_power_kw()
+            self._power_written_at = self.clock.now
         for i, word in enumerate(values):
             self.memory[address + i] = int(word) & 0xFFFF
         self.writes.append(Write(self.clock.now, self._by_address.get(address, hex(address)),
@@ -318,6 +328,9 @@ class FakeInverter:
         return "self_use"
 
     def rule_power_kw(self) -> float:
+        if (self.power_lag_s and self._power_written_at is not None
+                and (self.clock.now - self._power_written_at).total_seconds() < self.power_lag_s):
+            return self._power_before_kw
         power = self.get("econ_rule_1_power") or 0
         unit_w = self.model in const.SETPOINT_WATT_MODELS
         return power / 1000.0 if unit_w else float(power)

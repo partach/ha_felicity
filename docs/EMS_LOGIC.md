@@ -939,8 +939,11 @@ Monitors grid current per phase and adjusts inverter power to prevent overcurren
 | > 80% of max amperage | Cut the battery in one step to the level that brings the current to 80 % |
 | > 95% of max amperage, battery at its 1 kW minimum (or idle) | Step the EV down / shed a load |
 | 70–80% of max amperage | Hold (hysteresis) |
-| < 70% of max amperage | Recovery — restores by 1 kW (up to Power Level) |
-| Current = 0 | Jumps to full Power Level |
+| < 70% of max amperage | Recovery — restores by 1 kW (up to Power Level), **only while the battery charges or discharges** |
+| Current = 0 | Jumps to full Power Level, **only while the battery charges or discharges** |
+| Within 30 s of a limit write | Nothing — the inverter is still moving to the new limit (`SAFE_POWER_SETTLE_S`) |
+
+**In idle the limit is left where it is** (Oct 2026).  The rule-1 power limit acts only on grid charging/discharging, so a current read in idle says nothing about what a charge would add.  Raising it in idle meant every next charge started at full Power Level, spiked over the limit and was cut again; a charge now starts at the last safe level and climbs 1 kW at a time while the current allows.  **After a write, safe power waits `SAFE_POWER_SETTLE_S` (30 s)** before it acts on the current again: the inverter ramps, so the next poll still measures the old power, and acting on it cut a second time (8 → 3 → 1 kW where 3 was enough) and raised a second time on the way up — a 1 ↔ 4 kW see-saw.  The user changing Power Level is applied at once.
 
 **A shed load stays off.** A load switched off by safe power is held off for at least 5 minutes, and after that it is switched back on only when the grid current on **its phase** plus the load's own current (`rated kW / (voltage × phases)`) stays under 95 % of the limit — its phase is *EV Charger Grid Phase* (`flexible_load_1_phase`, L1/L2/L3) for a one-phase load 1, and the **busiest** phase when that is `unknown` (the default), for a three-phase load, and for loads 2-3; otherwise it is re-checked every minute. The schedule cannot override the hold. (Before Oct 2026 the flex-load actuation, later in the same cycle, switched a shed load straight back on, so the shed never took effect and the battery reduction it replaced never happened: 18 A limit, 23–28 A measured.)
 

@@ -98,6 +98,12 @@ def _number(value) -> float | None:
 
 CONSUMPTION_BACKFILL_RETRY_S = 300
 
+# Seconds safe power waits after writing a rule-1 power limit before it acts on
+# the grid current again.  The inverter ramps to a new limit, so the next poll
+# still measures the old power: 22 Oct 2026, "20.7 A — cutting to level 3",
+# 16 s later "19.5 A — cutting to level 1", where level 3 was enough.
+SAFE_POWER_SETTLE_S = 30
+
 # Reduce noise from pymodbus
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
@@ -180,6 +186,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self.avg_price: float | None = None
         self.price_threshold: float | None = None
         self.safe_max_power = 0 # used in setting rule 1 power checks toward max amperage
+        self._safe_power_written_ts = 0.0  # when safe power last wrote the rule-1 power
         self._last_known_max_amperage: float | None = None
         self.battery_soc: float | None = None  # resolved SOC (type-specific)
         # SOC history: {slot_index: soc_pct} for past slots today
@@ -2767,10 +2774,26 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
         # --- 5. Compute safe_level based on current grid draw ---
         safe_level = base_level
+        # The rule-1 power limit acts only while the battery charges or
+        # discharges; in idle the measured current says nothing about what a
+        # charge would add.  Raising it then only meant every next charge
+        # started at full power, spiked over the limit and was cut again —
+        # the 1 <-> 8 kW swing of 22-23 Oct 2026.  A charge now starts at the
+        # last safe level and climbs from there while the current allows.
+        battery_active = self._current_energy_state in ("charging", "discharging")
+        settling = (not user_level_changed
+                    and time.time() - self._safe_power_written_ts < SAFE_POWER_SETTLE_S)
 
-        if max_current is None or max_current == 0:
+        if settling:
+            # The inverter is still moving to the last limit written: the
+            # current read now is from before it got there.
+            _LOGGER.debug("Safe power: waiting for the inverter to follow level %d "
+                          "(%.1fA now)", base_level, max_current or 0.0)
+        elif max_current is None or max_current == 0:
             # No grid current — safe to use user's desired level
-            if base_level < user_level:
+            if not battery_active:
+                _LOGGER.debug("No grid current, battery idle — keeping level %d", base_level)
+            elif base_level < user_level:
                 safe_level = user_level
                 _LOGGER.info("No grid current — recovering to user level %d (was %d)", user_level, base_level)
             else:
@@ -2781,7 +2804,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # flexible loads only when that is not enough: the battery is
             # already at its 1 kW minimum (or idle, when the rule-1 power
             # limit has no effect) and the current is still above 95 %.
-            battery_active = self._current_energy_state in ("charging", "discharging")
             if battery_active and base_level > 1:
                 # ONE step (maintainer decision, Oct 2026): cut the battery by
                 # the power the excess current represents, aiming at 80 % of the
@@ -2810,7 +2832,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # (in _actuate_flex_loads) BEFORE the battery power is raised, so the
             # battery does not take the room the load is waiting for.
             new_level = min(user_level, base_level + 1)
-            if self._shed_load_waiting_to_fit(max_current, max_amperage):
+            if not battery_active:
+                _LOGGER.debug("Low current %.1fA, battery idle — keeping level %d",
+                              max_current, base_level)
+            elif self._shed_load_waiting_to_fit(max_current, max_amperage):
                 _LOGGER.debug("Low current %.1fA — a shed load returns first; "
                               "battery stays at level %d", max_current, base_level)
             elif new_level > base_level:
@@ -2830,6 +2855,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             try:
                 await self.TypeSpecificHandler.write_type_specific_register("econ_rule_1_power", target_watts)
                 self.safe_max_power = safe_level
+                self._safe_power_written_ts = time.time()
             except Exception as err:
                 _LOGGER.error("Failed to write power limit: %s", err)
                 # Don't update internal state on failure → retry next cycle

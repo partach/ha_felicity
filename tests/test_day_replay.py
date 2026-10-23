@@ -942,3 +942,66 @@ async def test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled(
     assert "charge" not in r.inverter_actions(day(D, 19, 30), day(D, 23, 30)), r.timeline(10)
     assert _episodes(r, "econ_rule_1_enable", day(D, 19, 30)) == []
     assert not [c for c in calls if c[1] == "turn_on" and c[2] == EV], calls
+
+
+# ---------------------------------------------------------------------------
+# Safe power: the rule-1 limit swinging 1 <-> 8 kW (22-23 Oct 2026)
+# ---------------------------------------------------------------------------
+# Live install: 18 A, Power Level 8, house load mostly on L1.  The rule-1 power
+# history swung between 1000 and 8000 W for hours.  In the log every charge
+# started at 8 kW and was cut twice in two polls ("20.7 A — cutting to level 3",
+# 16 s later "19.5 A — cutting to level 1"): the second cut read a current from
+# before the inverter had followed the first, so it went to the 1 kW minimum
+# where level 3 (L1 ~76 %) was enough.  And in every idle spell the limit
+# climbed back to 8 kW (+1 per poll, or straight to 8 on "no grid current"),
+# although in idle the limit does nothing — so the next charge spiked again.
+
+SAFE18 = {**AUTO, "power_level": 8, "max_amperage_per_phase": 18,
+          "daily_consumption_estimate": 12.0}
+
+
+def _l1_house(r):
+    """2.5 kW house: 0.5 kW spread, 2 kW on L1.  At 8 kW charge L1 reads
+    ~21 A; at 3 kW ~13.8 A (76 % of 18 A — the band where nothing changes)."""
+    r.load_kw = lambda _t: 0.5
+    r.l1_load_kw = lambda _t: 2.0
+    r.inverter.power_lag_s = 10.0
+    r.inverter.set("econ_rule_1_power", 8000)                 # the unit at rest: 8000 W
+    return r
+
+
+def _power_levels(r, t0):
+    return [(at, v // 1000) for at, v in r.writes_after("econ_rule_1_power", t0)]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_waits_for_the_inverter_before_cutting_again():
+    r = _l1_house(_replay(options=SAFE18, capacity_kwh=60.0, soc=50.0,
+                          start=day(D, 21, 29), prices_for=EVENING_PEAK))
+    r.coordinator.set_slot_overrides({"today": {slot(h, m): "charge" for h in (21, 22)
+                                                for m in (0, 15, 30, 45) if (h, m) >= (21, 30)},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 22, 30), step_s=16)
+    _chart(r, "safe_power_stale_reading")
+
+    levels = _power_levels(r, day(D, 21, 29))
+    assert levels, r.timeline(2)
+    assert min(v for _, v in levels) == 3, levels             # not the 1 kW minimum
+    late = [t.max_amps for t in r.ticks if t.at >= day(D, 21, 32)]
+    assert max(late) <= 18.0, f"peak {max(late)} A\n{levels}"
+    assert r.rule_driven(day(D, 21, 31), day(D, 22, 30))
+
+
+@pytest.mark.asyncio
+async def test_the_limit_is_not_raised_while_the_battery_is_idle():
+    r = _l1_house(_replay(options=SAFE18, capacity_kwh=60.0, soc=50.0,
+                          start=day(D, 21, 29), prices_for=EVENING_PEAK))
+    r.coordinator.set_slot_overrides({"today": {slot(21, 30): "charge", slot(22, 0): "charge"},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 22, 15), step_s=16)
+    _chart(r, "safe_power_idle_recovery")
+
+    idle = [lv for at, lv in _power_levels(r, day(D, 21, 46)) if at < day(D, 22)]
+    assert idle == [], idle                                   # nothing written in idle
+    second = [t.max_amps for t in r.ticks if day(D, 22) <= t.at < day(D, 22, 15)]
+    assert max(second) <= 18.0, (max(second), _power_levels(r, day(D, 21, 29)))
