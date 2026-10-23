@@ -112,7 +112,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **2229**: 2227 pass + 2 documented skips; ~16 min, most of it `test_planner.py` and the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **2240**: 2238 pass + 2 documented skips; ~16 min, most of it `test_planner.py` and the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -171,7 +171,7 @@ custom_components/ha_felicity/
 tests/
 ├── conftest.py              # Shared HA-free bootstrap: stubs HA/pymodbus, loads the
 │                            #   REAL const.py (never a hand-typed replica — see below)
-├── test_ems.py              # 289 tests for the pure EMS algorithm
+├── test_ems.py              # 292 tests for the pure EMS algorithm
 ├── test_planner.py          # The exact planner held to the RULES: independent
 │                            #   simulation, brute force, 2nd optimiser, LP bound,
 │                            #   monotonicity, re-plan consistency (1,373 cases)
@@ -307,13 +307,13 @@ fine enough that the smallest charging step spans ≥ 20 points); per step the
 best amount is a **sliding-window minimum** (linear prices), so O(states) per
 step.  Net PV − load per step is rounded with the error carried, so totals are
 exact.  ~40-120 ms per plan on a PC, no dependency, deterministic.  Its own
-SOC path is the card's trajectory (`plan_trajectory_exact`); urgent recovery
-or the negative-price flags (post-added) fall back to the slot simulation.
+SOC path is the card's trajectory (`plan_trajectory_exact`); the
+negative-price flags (post-added) fall back to the slot simulation.
 
 **Post-steps kept**: `charge_to_full_on_negative_price` adds every p<0 slot;
 `discharge_to_make_room_for_negative_price` adds `_select_discharges_for_pv_headroom`;
-urgent recovery below the floor; flex-load overlay.  NOT run for it:
-`_reduce_charge_spill` (it can only undo an optimum).
+flex-load overlay.  NOT run for it: `_reduce_charge_spill` (it can only undo
+an optimum) and **urgent recovery** (Known Issues 8m).
 
 **Tests — `tests/test_planner.py` (1,373 cases, seeded; the id is the seed).**
 It contains its own continuous simulation of the model and checks the plan
@@ -2262,7 +2262,8 @@ Forward-simulates SOC through every slot.  Drops violations:
   Best-improvement-first, so the LAST redundant slot moves past the peak and
   the earliest stays put.  Runs before urgent recovery (forced immediate slots
   never move).  Pinned by `TestSpillReduction` (both engines).
-- **Urgent recovery**: if SOC < discharge_min, force immediate charge slots.
+- **Urgent recovery** (greedy / MILP only): if SOC < discharge_min, force
+  immediate charge slots.  Not under the exact planner — Known Issues 8m.
 - **SOC trajectory**: `_compute_scheduled_soc_trajectory` for today.
 - **Tomorrow schedule**: MILP provides it directly; greedy runs
   `_compute_tomorrow_schedule` reconstruction.
@@ -3104,6 +3105,53 @@ planner, even on the glitched profile, prices the 04:30 shortfall at the night
 price and does not buy at 0.34 tonight
 (`test_customer_case_even_on_the_glitched_profile_tonight_is_not_bought`).
 
+### 8m. Urgent recovery bought the evening peak and toggled at the floor — FIXED (Oct 2026)
+
+Maintainer's install, 22 Oct 2026 (60 kWh, floor 25 % = 15.0 kWh,
+Self-Sufficiency, T-REX-10, 18 A, Phoenix EV charger as flexible load 1).
+The house drew 3.1 kW from 17:00 to 20:00 (EV and heat pump at 0 W) and
+emptied the battery to the floor; the inverter's self-use let it read
+**14.8 kWh**.  At 20:10:57 the log said "Urgent recovery: battery at 14.8 kWh
+(min=15.0), forced 1 immediate charge slot(s)" — a charge at **0.453 €/kWh**.
+A few tenths of a kWh later SOC was back at 15.0, the rule no longer applied,
+the plan went idle, the house drained it, and so on: CHARGING/IDLE every 1-3
+minutes until past 23:20, each charge also switching the EV charger on (the
+flex overlay runs loads in charge slots) — 64 `turn_on`s — and each charge
+tripping safe power (18.5-19.4 A).
+
+Cause: the urgent-recovery post-step (force a charge in the current slot
+whenever SOC < discharge_min, whatever the price) still ran after the exact
+planner.  Below the floor the inverter runs the house on the grid anyway, and
+the planner already prices that — a forced charge is a special-case rule the
+cost model does not contain, so it could only make the plan dearer, and its
+on/off threshold sat exactly where a battery at the floor hovers.  Fix:
+`calculate_schedule` skips urgent recovery when `scheduler_active` starts with
+`optimal`; greedy / MILP keep it.  The planner still charges below the floor
+when that is cheaper than buying live.
+
+Pinned by `TestNoUrgentRecoveryUnderThePlanner` (test_ems; 2 of 3 fail on the
+old code), `test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled`
+(replay: the old code made **65** charge episodes in 19:30-23:30, the field
+log 64 EV switch-ons; now none) and the `low_soc_urgent_recovery` scenario
+(the planner's expectation is now "no forced charge at the 0.30 evening").
+
+**Why ~2,200 tests missed it:** the planner tests stop at
+`plan_optimal_from_grid` — they never see the post-steps `calculate_schedule`
+applies afterwards; `TestUrgentRecoveryCharge` and the simulator scenario
+asserted the forced charge as *correct* (written for greedy, never re-judged
+when the planner became the default); and the replay's fake inverter stopped
+exactly at its own 10 % self-use floor, below every replay's EMS floor and
+never reached, so no replay ever sat a hair under the floor.  The new replay
+sets `inverter.self_use_floor_pct` just under the EMS floor, as on the real
+unit.
+
+**Seen in the same data, not changed here:** at 13:00 a planned charge
+(0.241) with the EV running pushed the grid to 26.6 A; safe power cut the
+battery and shed the EV, and at 13:45 the plan ended the charge and switched
+the EV off with it although the owner had switched it on by hand at 10:38
+(flexible loads take over a manually started charger).  And the coordinator
+logs `grid_power=?` in every State decision line.
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -3683,7 +3731,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**2229 tests**: 2227 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (289) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**2240 tests**: 2238 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

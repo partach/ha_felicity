@@ -3516,6 +3516,77 @@ class TestUrgentRecoveryCharge:
         )
 
 
+class TestNoUrgentRecoveryUnderThePlanner:
+    """22 Oct 2026, live install (60 kWh, floor 25 %, Self-Sufficiency): at
+    20:10 the battery read 14.8 kWh against a 15.0 floor and urgent recovery
+    forced a charge at 0.453 — the evening peak.  With SOC hovering a hair
+    under the floor it then flipped charge/idle every 1-3 minutes until past
+    23:00, switching the EV charger on and off 64 times.
+
+    Below the floor the inverter feeds the house from the grid anyway, and the
+    exact planner prices that; a forced charge on top is a rule the cost model
+    does not contain.  Under the planner, being below the floor charges only
+    when the planner finds it cheaper.  (Greedy and MILP keep urgent recovery
+    — TestUrgentRecoveryCharge.)"""
+
+    @staticmethod
+    def _evening(soc_pct, now_price=0.453):
+        def today(i):
+            h = i / 4
+            if h >= 20:
+                return now_price if i == 80 else 0.43
+            return 0.25
+        tomorrow = [0.25 if i < 28 else (0.23 if 48 <= i < 56 else 0.30) for i in range(96)]
+        config = default_config(
+            scheduler_engine="optimal", grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
+            consumption_est_kwh=30.0, safe_power_kw=8.0, inverter_max_power_kw=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=soc_pct,
+            slot_prices_today=[today(i) for i in range(96)],
+            slot_prices_tomorrow=tomorrow,
+            pv_hourly_kwh=make_pv_hourly(12.5), pv_forecast_today=12.5,
+            pv_forecast_remaining=0.0, pv_actual_today_kwh=17.9,
+            pv_forecast_tomorrow=4.8,
+            current_hour=20, current_minute=10,
+        )
+        return config, state
+
+    def test_a_hair_under_the_floor_does_not_buy_the_evening_peak(self):
+        config, state = self._evening(14.8 / 60 * 100)
+        result = calculate_schedule(config, state)
+        assert result.scheduler_active == "optimal"
+        assert result.scheduled_slots.get(80) != "charge", sorted(result.scheduled_slots)
+        assert not any(i >= 80 for i in result.scheduled_slots), sorted(result.scheduled_slots)
+
+    def test_the_same_inputs_give_the_same_plan_either_side_of_the_floor(self):
+        """The flip-flop: 14.8 kWh charged, 15.0 kWh did not.  Now a 0.2 kWh
+        difference in SOC no longer changes what the inverter does tonight."""
+        below = calculate_schedule(*self._evening(14.8 / 60 * 100))
+        above = calculate_schedule(*self._evening(15.0 / 60 * 100))
+        tonight = lambda r: {i for i, a in r.scheduled_slots.items() if i >= 80 and a == "charge"}
+        assert tonight(below) == tonight(above) == set()
+
+    def test_below_the_floor_it_still_charges_when_that_is_cheaper(self):
+        """A cheap slot now and a dear evening ahead: the planner buys on its
+        own — no forced rule needed."""
+        config = default_config(
+            scheduler_engine="optimal", grid_mode="from_grid",
+            battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
+            consumption_est_kwh=30.0, safe_power_kw=8.0, inverter_max_power_kw=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=20.0,
+            slot_prices_today=[0.05 if 56 <= i < 64 else 0.45 for i in range(96)],
+            pv_hourly_kwh={}, pv_forecast_today=0.0, pv_forecast_remaining=0.0,
+            pv_actual_today_kwh=0.0, current_hour=14,
+        )
+        result = calculate_schedule(config, state)
+        assert result.scheduled_slots.get(56) == "charge", sorted(result.scheduled_slots)
+
+
 class TestBothModeFullCharge:
     """Both mode should charge to full capacity when profitable pairs exist."""
 

@@ -902,3 +902,43 @@ async def test_a_monitor_only_inverter_is_never_written():
     assert r.inverter.writes == []
     assert r.coordinator._current_energy_state == "idle"
     assert r.coordinator.battery_soc is not None        # but it IS read
+
+
+# ---------------------------------------------------------------------------
+# A battery a hair under the floor at the evening peak (22 Oct 2026)
+# ---------------------------------------------------------------------------
+
+def EVENING_PEAK(d):
+    """0.25 most of the day, 0.43-0.45 from 17:00 to midnight."""
+    return [0.45 if 68 <= i < 84 else (0.43 if i >= 84 else 0.25) for i in range(96)]
+
+
+@pytest.mark.asyncio
+async def test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled():
+    """Live install, 22 Oct 2026: the house (3 kW) emptied the battery to its
+    25 % floor at 20:10, and the inverter's self-use let it read 14.8 kWh of
+    a 15.0 kWh floor.  Urgent recovery then forced a charge at 0.453; a few
+    tenths of a kWh later it no longer applied — idle, drain, charge again —
+    every 1-3 minutes until past 23:00, switching the EV charger with it 64
+    times.  Below the floor the house runs on the grid whatever the EMS does;
+    the planner prices that and has nothing to buy at the peak."""
+    r = _replay(options={**AUTO, **EV_OPTIONS, "battery_discharge_min_level": 25,
+                         "daily_consumption_estimate": 30.0},
+                capacity_kwh=60.0, soc=26.0, start=day(D, 19, 30),
+                prices_for=EVENING_PEAK, load_kw=lambda _t: 3.0,
+                switched_loads={EV: 3.7})
+    r.inverter.self_use_floor_pct = 24.5     # the inverter's own floor sits just under the EMS's
+    calls = []
+    real = r.hass._service_call
+
+    async def record(domain, service, data=None, **kw):
+        calls.append((r.clock.now, service, (data or {}).get("entity_id")))
+        await real(domain, service, data, **kw)
+    r.hass.services.async_call = record
+    await r.run_until(day(D, 23, 30))
+    _chart(r, "under_the_floor_at_the_peak")
+
+    assert min(t.soc for t in r.ticks) < 25.0          # the situation of the report
+    assert "charge" not in r.inverter_actions(day(D, 19, 30), day(D, 23, 30)), r.timeline(10)
+    assert _episodes(r, "econ_rule_1_enable", day(D, 19, 30)) == []
+    assert not [c for c in calls if c[1] == "turn_on" and c[2] == EV], calls

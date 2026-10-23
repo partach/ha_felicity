@@ -41,7 +41,14 @@ behaviour, the simulator is the gate that decides whether you were right.
    - Self-Sufficiency: that night need × 1.25;  a reserve setting raises it
      to `max(need, reserve)` (and checks tonight too) — never a per-step
      hard floor;
-   - equal cost → charge as early and as much as possible.
+   - equal cost → charge as early and as much as possible;
+   - **below the floor nothing is forced** (22 Oct 2026): the house already
+     runs on the grid there, and the plan charges only when that is cheaper
+     than buying the same kWh live.  Greedy / MILP keep *urgent recovery*
+     (force a charge in the current slot whenever SOC < discharge_min);
+     under the planner it bought the 0.453 evening peak and flipped
+     charge/idle every 1-3 minutes for three hours with SOC a hair under the
+     floor, switching the EV charger with it.
    **Expected behaviour, in plain words:** it buys only when that is cheaper
    (after losses) than the grid energy it saves later, only at the cheapest
    such moments, never what tomorrow's sun brings for free, and never "to

@@ -388,7 +388,11 @@ SCENARIOS = [
 
     {
         "name": "low_soc_urgent_recovery",
-        "desc": "from_grid, SOC BELOW discharge_min: urgent recovery must force immediate charging.",
+        "desc": "from_grid, SOC BELOW discharge_min.  Greedy / MILP: urgent recovery forces "
+                "immediate charging.  The exact planner has no such rule (22 Oct 2026: it bought "
+                "the 0.453 evening peak and flipped charge/idle at the floor for hours) — below "
+                "the floor the house runs on the grid, so it buys at the dear 0.30 evening only "
+                "if that were cheaper than buying the same kWh live; it is not.",
         "config": dict(grid_mode="from_grid", optimization_priority="cost",
                        battery_capacity_kwh=10.0, battery_discharge_min_pct=20,
                        battery_charge_max_pct=100, efficiency=0.90,
@@ -399,8 +403,10 @@ SCENARIOS = [
                       pv_forecast_today=0.0, pv_forecast_remaining=0.0,
                       current_hour=18, current_minute=0),
         "expect": lambda r, s: (
-            len(r["charge_slots"]) > 0,
-            f"forces charging below min (got {len(r['charge_slots'])})",
+            (r["charge_slots"] == []) if r["engine"] == "optimal" else len(r["charge_slots"]) > 0,
+            (f"planner: no forced charge at the 0.30 evening (got {r['charge_slots']})"
+             if r["engine"] == "optimal"
+             else f"forces charging below min (got {len(r['charge_slots'])})"),
         ),
     },
 
