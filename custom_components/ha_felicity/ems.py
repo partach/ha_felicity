@@ -201,6 +201,12 @@ class EMSState:
     # hourly breakdown; None keeps the legacy 06:00-20:00 window.
     sunrise_hour: float | None = None
     sunset_hour: float | None = None
+    # What a kWh from the grid typically costs this week (€/kWh): the mean of
+    # the last days' prices, kept by the coordinator.  The exact planner values
+    # energy left in the battery beyond the night's need at this price after
+    # the round-trip loss, so a day clearly cheaper than the week fills the
+    # battery; None (no history yet) keeps that energy worth nothing.
+    price_reference_eur_kwh: float | None = None
 
 
 @dataclass
@@ -2599,6 +2605,9 @@ class OptimalPlan:
     start_kwh: float = 0.0
     night_need_kwh: float = 0.0     # what the battery must hold at the horizon end
     night_price: float = 0.0        # what a kWh short then costs
+    store_value: float = 0.0        # what a kWh held beyond the night need is worth
+    price_reference: float = 0.0    # this week's typical grid price it came from
+    store_cap_kwh: float = 0.0      # how much beyond the need the next day can use
     tonight_price: float = 0.0      # what a kWh short of a user reserve tonight costs
     sunrise_hour: int = 7
     cost: float = 0.0               # expected cost of the plan (incl. the night after)
@@ -2795,8 +2804,47 @@ def plan_optimal_from_grid(
     def _short(target_units: float, i: int, price: float) -> float:
         return price * max(0.0, target_units - i) * step
 
+    # Energy beyond the night's need is used on the days after the horizon,
+    # whose prices are unknown: it is worth what the grid typically costs this
+    # week, after the round-trip loss (stored × eff on the way in, × eff again
+    # on the way out — the same bar as the MILP's terminal value and the old
+    # top-off gate, eff² × mean).  So a day clearly cheaper than the week
+    # fills the battery, and an ordinary day buys only for the night.
+    # Only up to what the next day can use: its consumption after sunrise
+    # less the sun expected then (tomorrow's forecast — the best guess for
+    # the day after too — trusted at _TOMORROW_PV_TRUST).  A kWh bought for
+    # a day the sun covers is spilled, not used.
+    store_value = 0.0
+    store_cap = 0.0
+    if state.price_reference_eur_kwh is not None and state.price_reference_eur_kwh > 0:
+        day_use = sum(_battery_share(config, _hour_consumption(config, state, h), 1.0)
+                      for h in range(sunrise, 24))
+        sun = _TOMORROW_PV_TRUST * max(0.0, state.pv_forecast_tomorrow or 0.0)
+        store_cap = max(0.0, day_use - min(sun, day_use))
+        store_value = state.price_reference_eur_kwh * eff
+        plan.price_reference = state.price_reference_eur_kwh
+        # The night after the horizon is not priced yet either; it was
+        # guessed from the last known night.  That guess is not allowed below
+        # the week's value: a kWh the night needs must never be worth less
+        # than one kept for the day after (else Self-Sufficiency or a higher
+        # reserve would buy LESS), and a cheap Sunday's night says little
+        # about Monday's.
+        night_price = max(night_price, store_value)
+        plan.night_price = night_price
+        if store_cap <= 0:
+            store_value = 0.0
+    plan.store_value = store_value
+    plan.store_cap_kwh = store_cap
     need_i = need / step
-    terminal = [_short(need_i, i, night_price) for i in range(top + 1)]
+    cap_i = store_cap / step
+
+    def _stored(i: float) -> float:
+        # What the next day still has to buy at that price (a constant
+        # offset of the credit for what is held: same decisions, but a
+        # bigger house can never look cheaper).
+        return store_value * (cap_i - min(cap_i, max(0.0, i - need_i))) * step
+
+    terminal = [_short(need_i, i, night_price) + _stored(i) for i in range(top + 1)]
     # Two tables: the value from here on when the previous step was idle
     # (starting a charge costs OPTIMAL_SWITCH_COST) and when it was charging.
     value_idle, value_run = terminal, terminal
@@ -2898,7 +2946,7 @@ def plan_optimal_from_grid(
             j = x
             if checkpoint is not None and checkpoint[0] == k:
                 total += _short(checkpoint[1], j, checkpoint[2])
-        total += _short(need_i, j, night_price)
+        total += _short(need_i, j, night_price) + _stored(j)
         return bought, acts, socs, imports, total
 
     plan.bought_kwh, plan.charging, plan.planned_kwh, plan.plan_import_kwh, _ = _walk(True)
@@ -2979,6 +3027,11 @@ def _explain_optimal(plan: OptimalPlan, config: EMSConfig, current_kwh: float) -
     why = ""
     if first_empty is not None:
         why = f"; without them the battery runs empty at {_slot_clock(horizon[first_empty])}"
+    floor = cap * config.battery_discharge_min_pct / 100.0
+    if (plan.store_value > 0 and plan.planned_kwh
+            and plan.planned_kwh[-1] - floor > plan.night_need_kwh + 0.1):
+        why += (f"; stores cheap energy for the coming days "
+                f"(this week's average {plan.price_reference:.3f}/kWh)")
     span = (f"{min(prices):.3f}" if max(prices) - min(prices) < 0.0005
             else f"{min(prices):.3f}–{max(prices):.3f}")
     return (f"Charging {' + '.join(parts)} slot(s) at {span}/kWh{why} "

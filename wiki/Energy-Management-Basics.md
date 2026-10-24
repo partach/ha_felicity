@@ -35,7 +35,8 @@ The planner solves one cost model exactly, in 15-minute steps, from now to the e
 - Below the **discharge floor** the house runs on the grid at that moment's price.
 - In each step the battery may take any amount from nothing up to the **Power Level** (less what the PV already uses of the inverter's rating). Stored grid energy loses `1 − efficiency`. **Battery Cycle Cost** (at least 0.05 €/kWh for Battery Care) is charged per stored kWh.
 - The battery can never supply the house faster than the inverter's rating.
-- **After the horizon**, the battery must carry the house from midnight to sunrise. Each kWh short is priced at that night's grid price. Energy beyond that has no value — so the planner never buys just to "fill the battery".
+- **After the horizon**, the battery must carry the house from midnight to sunrise. Each kWh short is priced at that night's grid price.
+- **This week's price**: the integration remembers the average price of each of the last 7 days. Energy kept for the next day (as much as that day will use beyond its sun) is worth this week's average price after losses. So the **cheapest day of the week fills the battery** — grid energy is stored when it costs less than about 81 % (efficiency²) of the week's average — while an ordinary day buys only what the night needs. The weekly price needs 3 days of history; at startup it is rebuilt from Home Assistant's long-term statistics of your price entity when those exist.
 - Starting a charge costs a tiny amount (0.05 kWh worth), so the plan never starts the inverter for a sliver and never flips on/off between two nearly equal prices.
 - Equal cost → charge as early and as much as possible.
 
@@ -46,7 +47,7 @@ What follows from that, without any extra rule:
 - Today vs tomorrow is decided by tonight's real grid price.
 - On an hourly tariff it can buy part of an hour; the coordinator stops as soon as the plan has what it needs.
 
-The card's reason line tells you what the plan decided, e.g. *"Charging 3 today slot(s) at 0.081–0.094/kWh; without them the battery runs empty at 19:15 (saves ~1.20)"* or *"Battery runs empty at 20:00 — buying those 6.3 kWh live (up to 0.450/kWh) is cheaper than charging earlier after losses"*.
+The card's reason line tells you what the plan decided, e.g. *"Charging 3 today slot(s) at 0.081–0.094/kWh; without them the battery runs empty at 19:15 (saves ~1.20)"* or *"Battery runs empty at 20:00 — buying those 6.3 kWh live (up to 0.450/kWh) is cheaper than charging earlier after losses"*. When it fills the battery for the coming days it adds *"stores cheap energy for the coming days (this week's average 0.255/kWh)"*.
 
 ### Below the floor
 

@@ -123,6 +123,7 @@ def _make_coordinator(**overrides):
     coord._hourly_consumption_profile = {}
     coord._history_query_error = None
     coord.weekly_avg_consumption = None
+    coord._daily_price_history = []
     return coord
 
 
@@ -1046,6 +1047,138 @@ def amsterdam(monkeypatch):
     yield
     monkeypatch.undo()
     _time.tzset()
+
+
+class TestWeeklyPriceMemory:
+    """The coordinator keeps each day's mean price so the planner knows this
+    week's typical price (EMSState.price_reference_eur_kwh) and fills the
+    battery on the cheapest day of the week.  Persisted with the consumption
+    history; rebuilt from the price entity's recorder statistics at startup.
+    """
+
+    NOW = datetime(2026, 10, 24, 20, 30)  # noqa: DTZ001 - naive local, a Saturday
+
+    def _coord(self, monkeypatch, history=None):
+        coord = _make_coordinator()
+        coord._daily_price_history = list(history or [])
+        coord._price_backfilled = False
+        coord.nordpool_entity = "sensor.nordpool"
+        coord._consumption_store = MagicMock()
+        coord._consumption_store.async_save = AsyncMock()
+        coord._cycle_charged_kwh = coord._cycle_discharged_kwh = 0.0
+        coord._battery_soh_factor = 1.0
+        fixed = self.NOW
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+
+        monkeypatch.setattr(coordinator_mod, "datetime", _Clock)
+        return coord
+
+    @staticmethod
+    def _days(*means, end=NOW):
+        return [{"date": (end - timedelta(days=len(means) - 1 - i)).strftime("%Y-%m-%d"),
+                 "mean": m} for i, m in enumerate(means)]
+
+    def test_no_reference_before_three_days(self, monkeypatch):
+        coord = self._coord(monkeypatch, self._days(0.30, 0.28))
+        assert coord.price_reference is None
+        coord._daily_price_history = self._days(0.30, 0.28, 0.20)
+        assert coord.price_reference == pytest.approx(0.26)
+
+    def test_only_the_last_seven_days_count(self, monkeypatch):
+        old = [{"date": "2026-10-10", "mean": 5.0}, {"date": "2026-10-17", "mean": 5.0}]
+        coord = self._coord(monkeypatch, old + self._days(0.30, 0.20, 0.10))
+        assert coord.price_reference == pytest.approx(0.20)
+
+    def test_today_is_recorded_once_and_updated_when_prices_change(self, monkeypatch):
+        coord = self._coord(monkeypatch)
+        coord.slot_prices_today = [0.10] * 48 + [0.30] * 48
+        assert coord._record_daily_prices() is True
+        assert coord._record_daily_prices() is False          # unchanged: no save
+        assert coord._daily_price_history == [{"date": "2026-10-24", "mean": 0.2}]
+        coord.slot_prices_today = [0.40] * 96
+        assert coord._record_daily_prices() is True
+        assert coord._daily_price_history == [{"date": "2026-10-24", "mean": 0.4}]
+
+    @pytest.mark.asyncio
+    async def test_history_is_saved_with_the_consumption_store(self, monkeypatch):
+        coord = self._coord(monkeypatch, self._days(0.3, 0.2, 0.1))
+        await coord._save_consumption_store()
+        saved = coord._consumption_store.async_save.call_args[0][0]
+        assert saved["price_history"] == coord._daily_price_history
+
+    @pytest.mark.asyncio
+    async def test_history_is_loaded_and_junk_dropped(self, monkeypatch):
+        coord = self._coord(monkeypatch)
+        stored = self._days(0.3, 0.2, 0.1) + [{"date": "x"}, "junk"]
+        store = MagicMock()
+        store.async_load = AsyncMock(return_value={"price_history": stored})
+        storage = MagicMock()
+        storage.Store.return_value = store
+        monkeypatch.setitem(sys.modules, "homeassistant.helpers.storage", storage)
+        coord._consumption_store_loaded = False
+        coord._sanitize_consumption_history = lambda: None
+        coord._calculate_hourly_profile = lambda: None
+        coord._calculate_weekly_avg = lambda: None
+        await coord._init_consumption_store()
+        assert coord._daily_price_history == self._days(0.3, 0.2, 0.1)
+
+    def _recorder(self, monkeypatch, rows, seen=None):
+        def statistics_during_period(hass, start, end, ids, period, units, types):
+            if seen is not None:
+                seen.update(start=start, end=end, types=types, ids=ids)
+            return {"sensor.nordpool": rows}
+
+        rec = MagicMock()
+        rec.get_instance.return_value.async_add_executor_job = (
+            lambda fn, *a: asyncio.sleep(0, result=fn(*a)))
+        stats_mod = MagicMock()
+        stats_mod.statistics_during_period = statistics_during_period
+        monkeypatch.setitem(sys.modules, "homeassistant.components.recorder", rec)
+        monkeypatch.setitem(sys.modules, "homeassistant.components.recorder.statistics", stats_mod)
+
+    @staticmethod
+    def _hours(day, price, hours=24):
+        return [{"start": (day + timedelta(hours=h)).timestamp(), "mean": price}
+                for h in range(hours)]
+
+    @pytest.mark.asyncio
+    async def test_backfill_rebuilds_the_past_days_from_the_recorder(self, monkeypatch, caplog):
+        coord = self._coord(monkeypatch)
+        midnight = self.NOW.replace(hour=0, minute=0)
+        rows = (self._hours(midnight - timedelta(days=3), 0.30)
+                + self._hours(midnight - timedelta(days=2), 0.26)
+                + self._hours(midnight - timedelta(days=1), 0.22, hours=12))  # too few hours
+        seen = {}
+        self._recorder(monkeypatch, rows, seen)
+        coord.slot_prices_today = [0.10] * 96
+        coord._record_daily_prices()
+        with caplog.at_level(logging.INFO):
+            await coord._backfill_price_history()
+        assert seen["types"] == {"mean"} and seen["ids"] == {"sensor.nordpool"}
+        assert [e["date"] for e in coord._daily_price_history] == [
+            "2026-10-21", "2026-10-22", "2026-10-24"]
+        assert coord.price_reference == pytest.approx((0.30 + 0.26 + 0.10) / 3)
+        coord._consumption_store.async_save.assert_awaited()
+        line = [r.getMessage() for r in caplog.records if "Price history from" in r.getMessage()]
+        assert line and "2 day(s) rebuilt" in line[0], line
+        # once only
+        seen.clear()
+        await coord._backfill_price_history()
+        assert not seen
+
+    @pytest.mark.asyncio
+    async def test_backfill_without_statistics_changes_nothing(self, monkeypatch, caplog):
+        coord = self._coord(monkeypatch, self._days(0.3))
+        self._recorder(monkeypatch, [])
+        with caplog.at_level(logging.INFO):
+            await coord._backfill_price_history()
+        assert coord._daily_price_history == self._days(0.3)
+        assert coord.price_reference is None
+        assert any("needs 3 days" in r.getMessage() for r in caplog.records)
 
 
 class TestForecastParsing:

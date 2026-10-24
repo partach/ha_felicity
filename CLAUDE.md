@@ -112,7 +112,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **2244**: 2242 pass + 2 documented skips; ~16 min, most of it `test_planner.py` and the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **2255**: 2253 pass + 2 documented skips; ~16 min, most of it `test_planner.py` and the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -270,10 +270,21 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
 - **After the horizon**: the battery must carry the house from midnight to
   sunrise (first PV hour of tomorrow's forecast, else HA's sun times, else
   07:00) — the old "survive the night".  Every kWh short then costs what the
-  same night hours cost on the last day with known prices.  Energy beyond
-  that need is worth nothing — that single fact is what stops "fill the
-  battery" buying.  Only the night counts, deliberately: before the horizon
-  ends the next day's prices are published and the next plan buys for it.
+  same night hours cost on the last day with known prices.  Without a
+  weekly price, energy beyond that need is worth nothing — that is what
+  stops "fill the battery" buying.
+- **The week's price (24 Oct 2026, Known Issues 8o)**: once the coordinator
+  knows 3+ days of prices, `EMSState.price_reference_eur_kwh` (mean of the
+  last 7 daily means) sets `store_value = reference × eff`.  What the NEXT
+  day can use beyond the night need (`store_cap_kwh` = its consumption after
+  sunrise − 0.8 × tomorrow's forecast) and the battery does not hold costs
+  `store_value` per kWh; the unknown night after the horizon is priced at no
+  less than `store_value`.  So grid energy is stored for later when
+  `price < reference × eff²` (the MILP's terminal bar) — the cheapest day of
+  the week fills the battery, an ordinary day buys only for the night, a
+  sunny next day caps it at nothing.  Keeping the night ≥ the stored value
+  is what keeps Self-Sufficiency / a higher reserve buying at least as much
+  as Save Money (`test_priorities_order_the_amount_bought`).
 - `self_consumption`: that night need × 1.25 (the old boost, in one place).
 - `reserve_target_pct`: raises the night need to `max(need, fixed − floor)`,
   and with tomorrow in the horizon also tonight (a midnight checkpoint priced
@@ -332,7 +343,16 @@ customer case.  **When a report comes in, add it here as a situation.**
 **Known limits** (deliberate, documented):
 - The battery is modelled as covering the house even during a charge step
   (as every trajectory in ems.py does); physically the grid feeds the house
-  then.  The difference is the loss on that load, ~a cent per step.
+  then.  The difference is the loss on that load, ~a cent per step —
+  **but with a weekly price (8o) it can flip a decision**: near the floor
+  charging then mostly replaces the house's lossless passthrough, so an
+  emptier battery can buy less than a fuller one when house load is close
+  to the Power Level (`test_monotone_a_fuller_battery_never_buys_more`
+  checks "buys no more" only without a weekly price; cost stays checked).
+  A fix was tried (24 Oct 2026: grid feeds the house for the charged share
+  of a step) and reverted: rounding the per-step move to the lattice broke
+  re-plan consistency (`test_replan_*`).  Doing it right needs the move
+  priced exactly without carried rounding that depends on the horizon start.
 - No "hold" action (grid feeds the house, battery neither charges nor
   discharges) below max SOC: rule 1 cannot express it today.  The LP bound
   in the tests shows what it would save.
@@ -3221,6 +3241,52 @@ overnight ones most likely too (SOC at the floor), but there is no log for them.
 The 13:00–14:00 cuts were real protection (EV + 8 kW charge on 18 A; at 13:08
 the house put 2.4 kW on L3).
 
+### 8o. The cheapest day of the week bought only for the night — FIXED (24 Oct 2026)
+
+Maintainer's card, Saturday 20:30 (60 kWh at 89 %, Self-Sufficiency): Sunday
+the cheapest day of the week and falling all day, yet "Battery (89%) lasts
+until the end of tomorrow — no grid charging needed", and the EV (smart) got
+no slot either — it runs in the battery's charge slots and in grid-fed cheap
+slots, and with no battery charge there are none.  Maintainer: "home battery
+always first.  But if you are so cautious and not charging the home battery,
+the car battery never gets a chance … keep track of the weekly cost and
+charge at the cheapest part of the week".
+
+Cause: the exact planner valued nothing beyond the night after its horizon,
+and on Saturday evening Monday's prices are unknown.  So Sunday's 0.10 could
+never be stored for Monday's ~0.25.  (MILP would not have helped: its
+terminal reward is capped at the reserve, Optional MILP section.)
+
+Fix (see "The week's price" under The exact planner):
+- `coordinator._record_daily_prices` keeps each day's mean price
+  (`_daily_price_history`, persisted in the consumption store as
+  `price_history`); `_backfill_price_history` rebuilds the past days once at
+  startup from the price entity's hourly recorder statistics (`mean`; only
+  where the entity has a state class — one INFO line says what it found);
+  `price_reference` = mean of the last 7 days' means once 3 are known.
+  Passed as `EMSState.price_reference_eur_kwh`, in the skip-recalc hash, and
+  shown as `input_sources.price_reference` / `price_history_days`.
+- `plan_optimal_from_grid`: next-day shortfall priced at `reference × eff`
+  (capped by what the next day can use after its sun), the unknown night
+  never below that.  The reason line adds "stores cheap energy for the
+  coming days (this week's average …)".
+- Battery first stays: the EV overlay is unchanged; it simply finds charge
+  slots now.
+
+Replay `test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follows`:
+Saturday 21:00 plan books 35 Sunday slots (62 kWh) instead of 13, the EV in
+each; Sunday ends ≥ 95 % with the car charged 5 h+, only while the battery
+charges.  Unit: `TestWeeklyPriceReference` (an ordinary 0.22 day against a
+0.25 week still buys only for the night), coordinator:
+`TestWeeklyPriceMemory`; `test_planner.py`'s independent model, LP bound and
+fine optimiser carry the same terminal cost, and half its situations now
+draw a weekly price.
+
+**Known limit:** a sunny next day caps the stored energy via tomorrow's
+forecast; when the horizon already includes tomorrow, tomorrow's forecast
+stands in for the day after.  The weekly price is greedy/MILP-blind (only
+the exact planner uses it).
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -3800,7 +3866,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**2244 tests**: 2242 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**2255 tests**: 2253 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

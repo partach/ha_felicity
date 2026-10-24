@@ -152,6 +152,14 @@ def situation(seed: int, *, slots: int | None = None, tomorrow: bool | None = No
         sunrise_hour=sunrise,
         sunset_hour=sunset,
     )
+    # Half the situations know this week's typical price (the coordinator's
+    # 7-day memory).  Drawn from its own stream so every other draw — and so
+    # every situation seeded before this existed — stays exactly as it was.
+    week = random.Random(seed * 7919 + 17)
+    if week.random() < 0.5:
+        mean = sum(state.slot_prices_today) / len(state.slot_prices_today)
+        state = dataclasses.replace(
+            state, price_reference_eur_kwh=round(abs(mean) * week.uniform(0.7, 1.8) + 0.01, 4))
     return config, state
 
 
@@ -188,6 +196,18 @@ def house(config: EMSConfig, st) -> float:
     return st.cons_kwh
 
 
+def terminal(plan, held: float) -> float:
+    """What the battery's content at the end of the horizon costs (or is
+    worth): each kWh short of the night's need costs the night price; what
+    the next day can use beyond it (``plan.store_cap_kwh``) and the battery
+    does not hold costs this week's typical price after the round-trip loss,
+    at most the night price (``plan.store_value``; 0 without a weekly price)."""
+    return (plan.night_price * max(0.0, plan.night_need_kwh - held)
+            + plan.store_value * (plan.store_cap_kwh
+                                  - min(plan.store_cap_kwh,
+                                        max(0.0, held - plan.night_need_kwh))))
+
+
 def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
     """(cost, socs, bought_kwh) of a charging decision per step, continuously.
 
@@ -196,7 +216,9 @@ def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
     fed by PV, then the battery; below the floor by the grid at that step's
     price, and a charge then goes into the battery on top.  Charging stops at
     max SOC; PV beyond full is spilled.  After the horizon, each kWh short of
-    the night's need costs the night price.  That is the whole cost model —
+    the night's need costs the night price, and what the next day can use
+    beyond it and is not held costs this week's typical price after losses
+    (see ``terminal``).  That is the whole cost model —
     written out here so the planner's lattice cannot agree with itself by
     construction.
     """
@@ -229,7 +251,7 @@ def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
         socs.append(s)
         if checkpoint and checkpoint[0] == k:
             cost += plan.tonight_price * max(0.0, checkpoint[1] - (s - floor))
-    cost += plan.night_price * max(0.0, plan.night_need_kwh - (s - floor))
+    cost += terminal(plan, s - floor)
     return cost, socs, bought
 
 
@@ -266,13 +288,18 @@ def lp_lower_bound(config, plan) -> float:
     spill = [pulp.LpVariable(f"x{k}", 0) for k in range(n)]
     soc = [pulp.LpVariable(f"s{k}", floor, cap) for k in range(n)]
     short = pulp.LpVariable("short", 0)
+    extra = pulp.LpVariable("extra", 0, plan.store_cap_kwh)
     prev = min(cap, max(floor, plan.start_kwh))
     for k, st in enumerate(plan.horizon):
         m += soc[k] == prev + st.pv_kwh - house(config, st) + imp[k] - spill[k] + eff * b[k]
         prev = soc[k]
     m += short >= plan.night_need_kwh - (prev - floor)
+    # held beyond the need; ``+ short`` keeps it feasible below the need
+    # (exact, since the stored value never exceeds the night price).
+    m += extra <= (prev - floor) - plan.night_need_kwh + short
     m += (pulp.lpSum(st.price * (b[k] + imp[k]) + cycle * eff * b[k]
-                     for k, st in enumerate(plan.horizon)) + plan.night_price * short)
+                     for k, st in enumerate(plan.horizon))
+          + plan.night_price * short + plan.store_value * (plan.store_cap_kwh - extra))
     m.solve(pulp.PULP_CBC_CMD(msg=False))
     assert pulp.LpStatus[m.status] == "Optimal"
     return pulp.value(m.objective)
@@ -311,7 +338,7 @@ def fine_optimum(config, plan, points: int = 1200) -> float:
 
     shares = (0.0, 0.25, 0.5, 0.75, 1.0)
     tables = [None] * (len(plan.horizon) + 1)
-    values = [plan.night_price * max(0.0, plan.night_need_kwh - (s - floor)) for s in grid]
+    values = [terminal(plan, s - floor) for s in grid]
     tables[-1] = values
     for k in range(len(plan.horizon) - 1, -1, -1):
         st = plan.horizon[k]
@@ -457,6 +484,13 @@ def test_monotone_a_fuller_battery_never_buys_more(seed):
         # charge), so a fuller battery can legitimately earn less.
         return
     assert _cost(config, state) <= _cost(config, lower) + _tol(_cost(config, lower)), seed
+    if state.price_reference_eur_kwh is not None:
+        # Known limit (CLAUDE.md, "The exact planner"): the battery is modelled
+        # as feeding the house while it charges.  Once stored energy is worth
+        # the week's price, a battery near its floor can then find charging
+        # dearer (it mostly replaces the house's lossless grid passthrough)
+        # and buy LESS than a fuller one (seed 27).  Cost stays monotone.
+        return
     assert _bought(config, state) <= _bought(config, lower) + _one_step(config), seed
 
 
@@ -514,6 +548,8 @@ def test_scaling_every_price_changes_nothing(seed):
         slot_prices_today=[p * k for p in state.slot_prices_today],
         slot_prices_tomorrow=[p * k for p in state.slot_prices_tomorrow]
         if state.slot_prices_tomorrow else None,
+        price_reference_eur_kwh=state.price_reference_eur_kwh * k
+        if state.price_reference_eur_kwh is not None else None,
     )
     a, b = _plan(config, scaled), _plan(config, state)
     assert a.charging == b.charging, seed

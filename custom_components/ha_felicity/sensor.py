@@ -259,6 +259,10 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "consumption_profile_days": len(getattr(coord, "_hourly_consumption_history", []) or []),
             "consumption_entity": getattr(coord, "consumption_entity_used", None),
             "milp_solver": milp.get("solver") if isinstance(milp, dict) else None,
+            # This week's typical price (None until 3 days are known) — what
+            # the planner values energy kept beyond the night at.
+            "price_reference": getattr(coord, "price_reference", None),
+            "price_history_days": len(getattr(coord, "_daily_price_history", []) or []),
         }
 
     def _build_flex_load_attr(self) -> list[dict]:
