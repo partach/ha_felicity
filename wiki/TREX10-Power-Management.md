@@ -1,68 +1,49 @@
-# TREX-5/10K Power Management
+# TREX-5/6/10K Power Management
 
-Register-level details for safe power management on TREX-5 and TREX-10K models. For the algorithm overview, see [Power Management Basics](Power-Management-Basics).
+Register-level details for safe power management on TREX-5K, TREX-6K and TREX-10K models. For the algorithm overview, see [Power Management Basics](Power-Management-Basics).
 
 ## Grid Current Registers
-
-The safe power system monitors grid current on all three phases:
 
 | Register | Address | Index | Unit | Description |
 |---|---|---|---|---|
 | `ac_input_current` | 4362 | 1 (/10) | A | Phase 1 (L1) grid current |
-| `ac_input_current_l2` | 4385 | 1 (/10) | A | Phase 2 (L2) grid current |
-| `ac_input_current_l3` | 4389 | 1 (/10) | A | Phase 3 (L3) grid current |
+| `ac_input_current_l2` | 4385 | 1 (/10) | A | Phase 2 (L2) grid current — T-REX-10K only |
+| `ac_input_current_l3` | 4389 | 1 (/10) | A | Phase 3 (L3) grid current — T-REX-10K only |
 
-Index 1 means the raw register value is divided by 10 to get the actual amperage (e.g., register value 163 = 16.3A). Values are signed.
+Index 1 means the raw register value is divided by 10 (e.g. 163 = 16.3A). The T-REX-5K/6K are single-phase and have only L1.
 
-## Response Tiers
+## The Rule
 
-Every 10 seconds, the coordinator reads all three phase currents and compares the highest to `max_amperage_per_phase`:
+Every poll the highest phase current is compared to `max_amperage_per_phase`:
 
 | Condition | Response |
 |---|---|
-| Any phase > 95% of max | Emergency: reduce/shed 2 kW |
-| Any phase > 80% of max | Caution: reduce/shed 1 kW |
-| All phases < 70% of max | Recovery: restore 1 kW |
-| All phase currents = 0 | Jump to full Power Level |
+| A phase over the limit, battery charging/discharging above 1 kW | Cut the Rule 1 power in one step so the busiest phase lands at 90 % |
+| A phase over 95 %, battery at 1 kW (or idle) | Step the EV current down / shed a load |
+| Power Level fits again while the battery runs | Back to the Power Level in one write |
+| Battery idle (EMS on) | Nothing written — the next charge/discharge starts at the Power Level |
+| Within 30 s of a cut | Nothing (the inverter is still ramping down) |
+| Otherwise | Nothing written |
+
+One kW of battery moves each phase by about **1.45 A on the T-REX-10K** (three phases) and **4.35 A on the T-REX-5K/6K** (one phase); the cut is sized with that.
 
 ## Power Register
 
-When safe power management adjusts the power level, it writes to:
-
 | Register | Address | Unit | Description |
 |---|---|---|---|
-| `econ_rule_1_power` | 8576 | **Watts** | Charge/discharge power limit |
+| `econ_rule_1_power` | 8576 | **Watts** | Grid charge/discharge power limit |
 
-For example, reducing from 5 kW to 3 kW writes `3000` to this register.
+Cutting from 8 kW to 4 kW writes `4000`; returning to the Power Level writes e.g. `8000`.
 
 ## Load Shedding Priority Chain
 
-When flexible loads are configured, the system reduces load before touching battery power:
-
-| Priority | Action | Register/Method |
+| Priority | Action | Method |
 |---|---|---|
-| 1st | EV charger current step-down | Via `number.set_value` or `select.select_option` on the configured current entity |
-| 2nd | Binary load shedding | Via `switch.turn_off` on configured switch entities (highest shed priority first) |
-| 3rd | Battery power reduction | Writes reduced wattage to `econ_rule_1_power` |
+| 1st | Battery power reduction | Writes the reduced wattage to `econ_rule_1_power` |
+| 2nd | EV charger current step-down | `number.set_value` or `select.select_option` on the configured current entity |
+| 3rd | Binary load shedding | `switch.turn_off` on configured switch entities (highest shed priority first) |
 
-### EV Current Stepping
-
-The EV charger (load slot 1) uses configurable current steps. Each safe-power cycle reduces by one step:
-
-**Example steps**: 6, 10, 13, 16, 20, 25A
-
-If the charger is at 20A and overcurrent is detected, first cycle drops to 16A, next to 13A, etc. During recovery, steps increase in reverse.
-
-### Binary Load Shedding
-
-Loads 1-3 each have a shed priority (1-3). Higher numbers are shed first:
-- Priority 3 shed before priority 2, priority 2 before priority 1
-- One load is shed per cycle
-- Recovery restores in reverse order (lowest priority number first)
-
-### EV Boost Protection
-
-During an active EV Boost override, safe power can still step down the EV charger current but will never fully turn off the charger. The user explicitly requested urgent charging.
+A shed load is held off for 5 minutes and returns only when it fits on its phase (see [Power Management Basics](Power-Management-Basics)). During an EV Boost the charger current can be stepped down but the charger is never switched off.
 
 ## Grid Power Register
 
@@ -76,9 +57,9 @@ Used by the anti-conflict guard to detect grid import during discharge:
 
 | Import Level | Behavior |
 |---|---|
-| 200-2000W sustained 2+ cycles (~20s) | Suppress discharge |
+| 200-2000W for 2+ polls | Suppress discharge |
 | > 2000W | Suppress immediately |
-| After suppression ends | 60-second cooldown before re-evaluation |
+| After a suppression | Discharge held off for 5 minutes, then one retry |
 
 ## Safe Power Configuration
 
@@ -86,8 +67,9 @@ Used by the anti-conflict guard to detect grid import during discharge:
 |---|---|---|---|
 | `safe_power_management` | auto / on / off | auto | `auto`: active when grid_mode is not off |
 | `max_amperage_per_phase` | 10-63A | 16 | Match to your main breaker rating |
-| `power_level` | 1-5 kW (TREX-5) / 1-10 kW (TREX-10) | 5 | Target power and recovery ceiling |
+| `power_level` | 1-5 kW (T-REX-5) / 1-6 kW (T-REX-6) / 1-10 kW (T-REX-10) | 5 | The Rule 1 power the battery normally runs at |
+| `flexible_load_1_phase` | unknown / L1 / L2 / L3 | unknown | The phase a one-phase EV charger is on (T-REX-10K) |
 
 ## External Change Detection
 
-The coordinator detects when the user adjusts power via the inverter's own app or panel. If the register value differs from the last value the integration wrote, it updates its internal tracking to prevent fighting with the user's manual adjustment.
+If the Rule 1 power register is changed outside the integration (inverter app or panel), the integration adopts the new value. Under the rule above it then puts it back to your Power Level when that fits — change the **Power Level** setting instead if you want a different level.
