@@ -2767,8 +2767,17 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._last_max_grid_current = max_current
         phase_currents = self.TypeSpecificHandler.determine_phase_currents(new_data)
         self._last_phase_currents = phase_currents if isinstance(phase_currents, list) else None
+        # With the EMS off (safe_power_management "on") the integration does
+        # not know what the inverter's own rules are doing: treat the battery
+        # as running, as before.
+        battery_active = (grid_mode == "off"
+                          or self._current_energy_state in ("charging", "discharging"))
         # This is the key: use the freshly read register value from new_data!
-        applied_kwatts = self.TypeSpecificHandler.determine_rule_power(new_data) # works in kW
+        # Only while the battery runs: in idle the register may hold what the
+        # idle transition itself wrote (0 on TREX-25/50/IVGM), which is not a
+        # change made in the app.
+        applied_kwatts = (self.TypeSpecificHandler.determine_rule_power(new_data)
+                          if battery_active else None)  # works in kW
         if applied_kwatts is not None:
             detected_level = max(1, min(user_level, applied_kwatts))
             if abs(detected_level - base_level) >= 1:
@@ -2786,12 +2795,32 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # of times a day — 518 writes on 22 Oct — and kept the battery cut
         # from 80 % of the limit.)
         safe_level = base_level
-        battery_active = self._current_energy_state in ("charging", "discharging")
         settling = (not user_level_changed
                     and time.time() - self._safe_power_cut_ts < SAFE_POWER_SETTLE_S)
         phases = INVERTER_PHASES.get(self.inverter_model, 3)
         amps_per_kw = 1.0 / (0.230 * phases)        # one battery kW, per phase
         current = max_current or 0.0
+
+        if not battery_active:
+            # Idle: the rule-1 power limit acts only on grid charging and
+            # discharging, so it is left alone — no write.  The next charge or
+            # discharge transition writes the Power Level with its own writes
+            # (and is cut once if a phase then goes over the limit).  Writing
+            # it here undid the 0 the TREX-25/50/IVGM idle transition writes on
+            # purpose, one poll later, with a false "external change" log.
+            # Flexible loads can still be shed: the battery cannot help now.
+            if current > max_amperage * 0.95:
+                try:
+                    load_shed = await self._safe_power_shed_loads(current, max_amperage)
+                except Exception as err:
+                    _LOGGER.error("Load shedding failed (non-fatal): %s", err)
+                    load_shed = False
+                if not load_shed:
+                    _LOGGER.warning(
+                        "High current %.1fA (max %.0fA) — battery idle and no "
+                        "flexible load left to shed", current, max_amperage)
+            self.safe_max_power = user_level
+            return user_level
 
         if settling:
             # The inverter is still moving down to the last cut: the current
@@ -2799,7 +2828,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # "20.7 A — cutting to level 3", 16 s later "19.5 A — to level 1").
             _LOGGER.debug("Safe power: waiting for the inverter to follow level %d "
                           "(%.1fA now)", base_level, current)
-        elif current > max_amperage and battery_active and base_level > 1:
+        elif current > max_amperage and base_level > 1:
             # ORDER (maintainer decision, Oct 2026): the battery power limit
             # first, in ONE step, to the level that brings the busiest phase
             # to SAFE_POWER_TARGET of the limit; a 3-phase inverter's cut is
@@ -2810,9 +2839,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("High current %.1fA (max %.0fA) — cutting battery power "
                             "%d kW to level %d", current, max_amperage,
                             base_level - safe_level, safe_level)
-        elif current > max_amperage * 0.95 and (not battery_active or base_level <= 1):
+        elif current > max_amperage * 0.95 and base_level <= 1:
             # Flexible loads only when the battery cannot help: it is at its
-            # 1 kW minimum, or idle (the rule-1 power limit then has no effect).
+            # 1 kW minimum (idle is handled above).
             try:
                 load_shed = await self._safe_power_shed_loads(current, max_amperage)
             except Exception as err:
@@ -2823,13 +2852,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     "High current %.1fA (max %.0fA) — battery power at its minimum "
                     "and no flexible load left to shed", current, max_amperage)
         elif base_level < user_level:
-            # Back to the Power Level in one write once it fits.  While the
-            # battery runs, the busiest phase would carry the measured current
-            # plus the restored kW; in idle the battery is not on the grid, so
-            # the level simply returns (a charge that then overloads a phase
-            # is cut once).  A shed load that fits returns first.
-            fits = (not battery_active
-                    or current + (user_level - base_level) * amps_per_kw
+            # Back to the Power Level in one write once it fits: the busiest
+            # phase would carry the measured current plus the restored kW.  A
+            # shed load that fits returns first.
+            fits = (current + (user_level - base_level) * amps_per_kw
                     <= max_amperage * SAFE_POWER_TARGET)
             if self._shed_load_waiting_to_fit(current, max_amperage):
                 _LOGGER.debug("Current %.1fA — a shed load returns first; "

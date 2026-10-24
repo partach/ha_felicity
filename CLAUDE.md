@@ -1614,7 +1614,7 @@ goes back to the Power Level as soon as that level fits again** (Known Issues
 | A phase > 100 % of max_amperage, battery charging/discharging above 1 kW | Cut battery power in ONE step so the busiest phase lands at `SAFE_POWER_TARGET` (90 %): `ceil((I − 0.9·Imax) × 0.230 × phases)` kW, min 1 kW |
 | A phase > 95 % of max_amperage, battery at its 1 kW minimum (or idle) | Step EV current down / shed loads |
 | Below the Power Level, battery charging/discharging | Back to the Power Level in one write when `I + (level gap) × 1000/(230 × phases)` ≤ 90 %; a shed load that fits returns first |
-| Below the Power Level, battery idle | Back to the Power Level (the limit does nothing in idle; a charge that overloads a phase is cut once) |
+| Battery idle (EMS on) | **Nothing written** — no sync, no restore; loads may still be shed above 95 %.  The next charge/discharge transition writes the Power Level (24 Oct 2026, 8n) |
 | Within `SAFE_POWER_SETTLE_S` (30 s) of a CUT | Nothing: the inverter is still ramping down, the reading is stale-high |
 | Anything else | Nothing written |
 
@@ -3173,8 +3173,21 @@ one of the phases is too high.  Else always leave at max setting by user."**
   80 %), in one step aimed at `SAFE_POWER_TARGET` (90 %) of it;
 - puts the limit back to the **Power Level in one write** as soon as that
   fits — while the battery runs, when the measured current plus the restored
-  kW (`1000 / (230 × phases)` A per kW per phase) stays ≤ 90 %; in idle at
-  once (the limit does nothing then).  No +1 kW-per-poll climb;
+  kW (`1000 / (230 × phases)` A per kW per phase) stays ≤ 90 %.  No +1
+  kW-per-poll climb;
+- **leaves the register alone while the battery is idle** (24 Oct 2026) —
+  no write, no "external change" sync; `safe_max_power` resets internally to
+  the Power Level, so the next charge/discharge transition writes that.  The
+  TREX-25/50/IVGM idle transition writes `econ_rule_1_power = 0` on purpose
+  (a stop-gap against the inverter acting on the rule while idle —
+  `eco_timeofuse` stays 1); safe power read it back one poll later as
+  "External change detected … (likely via app)" and wrote the Power Level
+  again, every idle transition (also before 23 Oct).  "Idle" counts only
+  while the EMS drives the inverter: with `grid_mode = off` and
+  `safe_power_management = on` the inverter's own rules may be charging, so
+  the battery is treated as running (cut and restore as above).  That case
+  had **no battery cut at all since `a2ef7f0`** (battery-first gated the cut
+  on the EMS state, always idle there) — only load shedding;
 - after a **cut**, waits `SAFE_POWER_SETTLE_S` (30 s) before acting on the
   current again.  The inverter ramps, so the next poll still measures the old
   power: "20.7 A — cutting to level 3", 16 s later "19.5 A — cutting to level
@@ -3188,8 +3201,10 @@ on L1, 8 kW charge for an hour, inverter lag 10 s, 16 s polls): old code
 **151** limit writes see-sawing 1–4 kW, new code **2** (8 → 4) and holds at
 4 kW, storing ~1 kWh more in the hour.
 `test_the_limit_is_written_only_when_a_phase_is_over_it`: two charges with an
-idle spell — one cut per charge, one return in idle, nothing else.  Both fail
-on the old code; the fake inverter gained `power_lag_s`.
+idle spell — each starts at the Power Level, one cut per charge, nothing in
+idle.  `test_the_idle_zero_on_eco_models_is_kept_and_the_next_charge_runs_at_power_level`
+(TREX-25) and `test_safe_power_on_with_the_ems_off_still_cuts`.  All fail on
+the old code; the fake inverter gained `power_lag_s`.
 
 **Consequence to know:** a charge slot with the EV running on an 18 A
 connection — the battery is cut, then the EV is shed (battery at minimum),

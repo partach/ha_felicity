@@ -20,7 +20,8 @@ Every poll the highest phase current is compared to `max_amperage_per_phase`:
 |---|---|
 | A phase over the limit, battery charging/discharging above 1 kW | Cut the Rule 1 power in one step so the busiest phase lands at 90 % |
 | A phase over 95 %, battery at 1 kW (or idle) | Step the EV current down / shed a load |
-| Power Level fits again (or battery idle) | Back to the Power Level in one write |
+| Power Level fits again while the battery runs | Back to the Power Level in one write |
+| Battery idle (EMS on) | Nothing written — the next charge/discharge starts at the Power Level |
 | Within 30 s of a cut | Nothing (the inverter is still ramping down) |
 | Otherwise | Nothing written |
 

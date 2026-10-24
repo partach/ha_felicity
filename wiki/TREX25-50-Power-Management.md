@@ -26,7 +26,8 @@ The same rule applies to every model. Every poll the highest phase current is co
 |---|---|
 | A phase over the limit, battery charging/discharging above 1 kW | Cut the Rule 1 power in one step so the busiest phase lands at 90 % |
 | A phase over 95 %, battery at 1 kW (or idle) | Step the EV current down / shed a load |
-| Power Level fits again (or battery idle) | Back to the Power Level in one write |
+| Power Level fits again while the battery runs | Back to the Power Level in one write |
+| Battery idle (EMS on) | Nothing written — the next charge/discharge starts at the Power Level |
 | Within 30 s of a cut | Nothing (the inverter is still ramping down) |
 | Otherwise | Nothing written |
 
@@ -40,7 +41,7 @@ On a three-phase inverter 1 kW of battery moves each phase by about 1.45 A; on t
 
 The integration works in watts internally and converts per model.
 
-**TREX-25/50 note:** going idle writes `econ_rule_1_power = 0` (part of the idle state, see [TREX25/50 Energy Management](TREX25-50-Energy-Management)). Safe power then puts it back to your Power Level on the next poll, because nothing is over the limit.
+**TREX-25/50 / IVGM note:** going idle writes `econ_rule_1_power = 0` on purpose (part of the idle state, see [TREX25/50 Energy Management](TREX25-50-Energy-Management)). Safe power leaves it at 0 while the battery is idle; the next charge or discharge writes your Power Level again.
 
 ## Load Shedding Priority Chain
 

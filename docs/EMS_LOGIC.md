@@ -941,9 +941,11 @@ Monitors grid current per phase and adjusts inverter power to prevent overcurren
 | A phase > 100 % of max amperage, battery charging/discharging above 1 kW | Cut the battery in one step so the busiest phase lands at 90 % (`SAFE_POWER_TARGET`) |
 | A phase > 95 % of max amperage, battery at its 1 kW minimum (or idle) | Step the EV down / shed a load |
 | Below the Power Level, battery charging/discharging | Back to the Power Level in one write once the measured current plus the restored kW (`1000 / (230 × phases)` A per kW) stays ≤ 90 % — a shed load that fits returns first |
-| Below the Power Level, battery idle | Back to the Power Level (the limit does nothing in idle) |
+| Battery idle (EMS on) | **Nothing written** — the limit does nothing in idle; the next charge/discharge transition writes the Power Level.  (The TREX-25/50/IVGM idle transition's deliberate `econ_rule_1_power = 0` stays.)  Loads may still be shed above 95 %. |
 | Within 30 s of a cut | Nothing — the inverter is still ramping down, so the current read is from before (`SAFE_POWER_SETTLE_S`) |
 | Anything else | Nothing written |
+
+With `grid_mode = off` and `safe_power_management = on` the EMS state is always idle while the inverter's own rules may be charging, so there the battery is treated as running: cut and return as above.
 
 Before 23 Oct 2026 it cut from 80 % of the limit, aimed at 80 %, climbed back 1 kW per poll below 70 % (also in idle) and acted on readings taken before the inverter had followed the last write: on an 18 A install, 518 limit writes in an afternoon, the battery see-sawing 1 ↔ 8 kW.
 

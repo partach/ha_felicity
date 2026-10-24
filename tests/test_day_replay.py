@@ -996,10 +996,10 @@ async def test_a_cut_waits_for_the_inverter_before_cutting_again():
 
 @pytest.mark.asyncio
 async def test_the_limit_is_written_only_when_a_phase_is_over_it():
-    """Two 15-minute charges with an idle spell between: per charge the limit is
-    cut once (L1 over 18 A) and put back to the Power Level once the battery
-    is idle — five writes in all (two are the charge transitions themselves),
-    where the old code wrote it on every poll that saw a low current."""
+    """Two 15-minute charges with an idle spell between: each charge starts at
+    the Power Level (written by the charge transition itself) and is cut once
+    (L1 over 18 A); in idle nothing is written — four writes in all, where the
+    old code wrote it on every poll that saw a low current."""
     r = _l1_house(_replay(options=SAFE18, capacity_kwh=60.0, soc=50.0,
                           start=day(D, 21, 29), prices_for=EVENING_PEAK))
     r.coordinator.set_slot_overrides({"today": {slot(21, 30): "charge", slot(22, 0): "charge"},
@@ -1008,7 +1008,51 @@ async def test_the_limit_is_written_only_when_a_phase_is_over_it():
     _chart(r, "safe_power_written_only_when_over")
 
     levels = _power_levels(r, day(D, 21, 29))
-    assert [v for _, v in levels] == [8, 4, 8, 8, 4], levels
+    assert [v for _, v in levels] == [8, 4, 8, 4], levels
+    assert not [at for at, _ in levels if day(D, 21, 46) <= at < day(D, 22)], levels
     assert r.coordinator.safe_max_power == 4                  # still charging, L1 full
     over = [t.at for t in r.ticks if t.max_amps > 18.0]
     assert len(over) <= 4, over                               # two polls per charge start
+
+
+@pytest.mark.asyncio
+async def test_the_idle_zero_on_eco_models_is_kept_and_the_next_charge_runs_at_power_level():
+    """TREX-25/50/IVGM: going idle writes Rule 1 power 0 on purpose (a guard
+    against the inverter acting on the rule while idle).  Safe power used to
+    read that 0 back on the next poll as an "external change (likely via
+    app)" and write the Power Level again 16 s later.  Now it leaves the
+    register alone in idle, and the next charge starts at the Power Level."""
+    r = _replay(TREX_25, options={**AUTO, "power_level": 8, "max_amperage_per_phase": 25,
+                                  "daily_consumption_estimate": 12.0},
+                capacity_kwh=60.0, soc=50.0, start=day(D, 21, 29),
+                prices_for=EVENING_PEAK, load_kw=lambda _t: 1.0)
+    r.inverter.set("econ_rule_1_power", 8)                     # kW on TREX-25
+    r.coordinator.set_slot_overrides({"today": {slot(21, 30): "charge", slot(22, 0): "charge"},
+                                      "tomorrow": {}})
+    await r.run_until(day(D, 22, 10), step_s=16)
+
+    writes = r.writes_after("econ_rule_1_power", day(D, 21, 29))
+    idle = [(at, v) for at, v in writes if day(D, 21, 45) <= at < day(D, 22)]
+    assert [v for _, v in idle] == [0], writes                # the idle transition's 0, nothing after
+    assert r.inverter.get("econ_rule_1_power") == 8           # the 22:00 charge at Power Level
+    assert "charge" in r.inverter_actions(day(D, 22), day(D, 22, 10))
+
+
+@pytest.mark.asyncio
+async def test_safe_power_on_with_the_ems_off_still_cuts():
+    """safe_power_management "on" with grid_mode off protects the grid while the
+    inverter's OWN rules charge: the EMS state is idle then, but the idle
+    skip must not switch the protection off."""
+    r = _replay(options={"grid_mode": "off", "price_mode": "auto", "power_level": 8,
+                         "max_amperage_per_phase": 18, "safe_power_management": "on"},
+                capacity_kwh=60.0, soc=50.0, start=day(D, 21, 29), prices_for=EVENING_PEAK)
+    _l1_house(r)
+    # The user's own rule 1 charges at 8 kW, outside the EMS.
+    r.inverter.set("operating_mode", 2)
+    r.inverter.set("econ_rule_1_soc", 100)
+    r.inverter.set("econ_rule_1_voltage", 58)
+    r.inverter.set("econ_rule_1_enable", 1)
+    await r.run_until(day(D, 21, 40), step_s=16)
+
+    assert "charge" in r.inverter_actions(day(D, 21, 29), day(D, 21, 40)), r.timeline(2)
+    assert [v for _, v in _power_levels(r, day(D, 21, 29))] == [4], _power_levels(r, day(D, 21, 29))

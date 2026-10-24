@@ -22,7 +22,7 @@ The HA_Felicity integration includes power management ("Safe Power") to prevent 
 | **A phase over the limit**, battery charging/discharging above 1 kW | Cut the battery power **in one step** so the busiest phase lands at 90 % of the limit |
 | **A phase over 95 %**, battery already at its 1 kW minimum (or idle) | Step the EV charger current down, or switch off a flexible load |
 | Battery below the Power Level and **the full Power Level fits again** (busiest phase + the restored power stays ≤ 90 %) | Back to the Power Level in one write |
-| Battery idle and below the Power Level | Back to the Power Level (the limit has no effect while idle) |
+| Battery idle | **Nothing written** — the limit has no effect while idle. The next charge or discharge starts at your Power Level. |
 | Within **30 s of a cut** | Nothing — the inverter is still ramping down, so the current it reports is from before the cut |
 | Anything else | Nothing is written |
 
@@ -68,20 +68,23 @@ During an active EV Boost (one-press +1h override), Safe Power can still step do
 EVERY POLL
   │
   ▼
+Battery idle (EMS on)? ──yes──▶ write nothing
+  │ no                          (shed a load only if a phase is over 95 %)
+  ▼
 Within 30 s of a cut? ──yes──▶ wait (reading is stale)
   │ no
   ▼
-A phase over the limit and battery charging/discharging above 1 kW?
+A phase over the limit and battery above 1 kW?
   │ yes ──▶ cut battery in one step to 90 % of the limit
   │ no
   ▼
-A phase over 95 % and battery at 1 kW / idle?
+A phase over 95 % and battery at 1 kW?
   │ yes ──▶ step EV current down, or shed a load
   │ no
   ▼
 Battery below Power Level?
   │ yes ──▶ a shed load that fits returns first;
-  │         otherwise back to Power Level if it fits (or the battery is idle)
+  │         otherwise back to Power Level if it fits
   │ no
   ▼
 Nothing written
@@ -107,7 +110,7 @@ Power management runs alongside the energy plan:
 
 - The **plan** always assumes your Power Level — a temporary cut does not make the planner book extra slots. If a cut lasts, the battery falls behind its plan and the next re-plan books what is missing.
 - **From Grid**: a cut slows charging. **To Grid**: a cut slows selling.
-- **Off mode**: Safe Power is still active if set to `on`.
+- **Off mode**: Safe Power is still active if set to `on`. The EMS then does not know what your own inverter rules are doing, so the battery is treated as running: cut when a phase is over the limit, back to the Power Level when it fits.
 
 ## Implementation Details
 
