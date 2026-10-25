@@ -3587,6 +3587,59 @@ class TestNoUrgentRecoveryUnderThePlanner:
         assert result.scheduled_slots.get(56) == "charge", sorted(result.scheduled_slots)
 
 
+class TestWeeklyPriceReference:
+    """24 Oct 2026, live install (60 kWh at 89 % on Saturday evening,
+    Self-Sufficiency): Sunday was the cheapest day of the week, ~0.10 until
+    17:00, yet the card said "Battery (89%) lasts until the end of tomorrow —
+    no grid charging needed".  The planner valued nothing beyond the night
+    after its horizon, so it could not see that Sunday's energy would displace
+    Monday's dearer grid — and with no battery charge the EV got no cheap slot
+    either.  With this week's typical price as the value of energy held beyond
+    the night's need (after the round-trip loss), a day clearly cheaper than
+    the week fills the battery; an ordinary day still buys only for the night."""
+
+    @staticmethod
+    def _saturday(tomorrow_price, reference):
+        today = [0.22 if i < 68 else 0.30 for i in range(96)]          # Saturday
+        tomorrow = [tomorrow_price if i < 68 else 0.27 for i in range(96)]
+        config = default_config(
+            scheduler_engine="optimal", grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
+            consumption_est_kwh=33.7, safe_power_kw=8.0, inverter_max_power_kw=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=89.0, slot_prices_today=today, slot_prices_tomorrow=tomorrow,
+            pv_hourly_kwh=make_pv_hourly(21.7), pv_forecast_today=28.7,
+            pv_forecast_remaining=0.0, pv_actual_today_kwh=21.7,
+            pv_forecast_tomorrow=10.2, current_hour=20, current_minute=30,
+            price_reference_eur_kwh=reference,
+        )
+        return config, state
+
+    def test_without_a_weekly_price_the_cheap_sunday_buys_nothing(self):
+        result = calculate_schedule(*self._saturday(0.10, None))
+        assert not result.tomorrow_scheduled_slots, result.tomorrow_scheduled_slots
+
+    def test_the_cheapest_day_of_the_week_fills_the_battery(self):
+        result = calculate_schedule(*self._saturday(0.10, 0.25))
+        bought = sorted(result.tomorrow_scheduled_slots)
+        assert bought, result.schedule_reason
+        assert all(i < 68 for i in bought), bought                        # only the cheap part
+        assert "this week's average" in result.schedule_reason, result.schedule_reason
+        # Sunday ends holding the night's need plus what Monday can use
+        # (~72 %); without the week's price it ends at ~42 %.
+        assert result.tomorrow_soc_trajectory[-1] >= 70.0, result.tomorrow_soc_trajectory
+        without = calculate_schedule(*self._saturday(0.10, None))
+        assert without.tomorrow_soc_trajectory[-1] < 50.0, without.tomorrow_soc_trajectory
+
+    def test_an_ordinary_day_still_buys_only_for_the_night(self):
+        """0.22 against a week of 0.25: 0.22 / 0.9 = 0.244 per stored kWh,
+        while a stored kWh delivers only 0.25 × 0.9 = 0.225 later — not worth it."""
+        result = calculate_schedule(*self._saturday(0.22, 0.25))
+        assert not result.tomorrow_scheduled_slots, result.tomorrow_scheduled_slots
+
+
 class TestBothModeFullCharge:
     """Both mode should charge to full capacity when profitable pairs exist."""
 

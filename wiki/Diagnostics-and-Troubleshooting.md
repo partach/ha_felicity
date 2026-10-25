@@ -42,6 +42,8 @@ What usually fixes it: RS485 wiring and termination, and the gateway settings. S
 | Banner **Rule 1 window** warning | A planned action falls outside the inverter's Rule 1 time window or weekdays. Set *Rule 1 Time Window* / *Rule 1 Weekday* to `auto`, or widen the window yourself. |
 | Reason *"Battery runs empty at … — buying those kWh live is cheaper"* | The planner checked charging earlier and it costs more after losses than buying at that moment. |
 | **Grid charge limit** / **Rule 1 power** chip below your Power Level, chip red | Safe Power has cut the battery because a phase is over your limit. It returns to the Power Level when that fits again. |
+| Reason *"… stores cheap energy for the coming days (this week's average …)"* | Today or tomorrow is clearly cheaper than this week's average: the battery is filled for the days after (see [Energy Management Basics](Energy-Management-Basics)). |
+| Engine chip **Greedy (fallback)** / **Optimal (fallback)** | You selected MILP but no solver could run — see *MILP will not load* below. |
 | THRESHOLD figure that does not change | Known issue: in auto mode the threshold shows the dearest price of the last plan that bought something. |
 
 ## "Why didn't it charge?" checklist
@@ -52,6 +54,17 @@ What usually fixes it: RS485 wiring and termination, and the gateway settings. S
 4. **Rule 1 window** banner — the inverter ignores a rule outside its window.
 5. History of `energy_state` and the **Rule 1 Power** entity: was it charging, and at what power? A low Rule 1 power means Safe Power cut it (see [Power Management Basics](Power-Management-Basics)).
 6. Is your installed version the latest release? HACS installs releases (tags), not the newest code on GitHub.
+7. `schedule_status` → `input_sources.price_reference`: this week's average price. Empty for the first 3 days after an update unless HA's statistics of your price entity could rebuild it — until then a cheap day only buys for the night.
+
+## MILP will not load
+
+The default engine (**Optimal**) needs nothing extra and handles From Grid. MILP is optional and needs a solver program, which Home Assistant does not ship:
+
+1. Look at `schedule_status` → `milp_status` (or hover the engine chip): `reason` and `tried` say which solvers were looked for and why each was rejected, e.g. `PULP_CBC_CMD(absent)`.
+2. Run the probe inside Home Assistant's own Python. HACS installs only the integration, so copy `tools/check_milp.py` from the repository to your `/config` folder, then from the *Terminal & SSH* add-on (protection mode off): `docker exec -it homeassistant python3 /config/check_milp.py`. It prints what is missing and the fix.
+3. Install a solver into that same Python: `docker exec -it homeassistant pip install 'pulp[highs]'` (pure wheels, works on ARM) or `'pulp[cbc]'`, then restart Home Assistant. A Home Assistant update recreates the container and removes packages installed by hand, so repeat after updates.
+
+The usual cause is a Python or CPU for which PuLP publishes no bundled CBC binary (e.g. a brand-new Python version, or ARM). MILP then falls back to the Optimal planner automatically, so nothing breaks.
 
 ## Energy statistics jumped
 

@@ -888,6 +888,78 @@ async def test_a_solar_ev_runs_only_where_the_sun_covers_it():
 
 
 # ---------------------------------------------------------------------------
+# The cheapest day of the week (24 Oct 2026)
+# ---------------------------------------------------------------------------
+
+SAT = date(2026, 10, 24)
+
+
+def WEEK(d):
+    """Weekdays 0.24, 0.30 in the evening; Sunday the cheapest day of the
+    week, falling all day from 0.14 to 0.10."""
+    if d.weekday() == 6:
+        return [round(0.14 - 0.0004 * i, 4) for i in range(96)]
+    return [0.30 if 68 <= i < 88 else 0.24 for i in range(96)]
+
+
+def _weekend(weekly_price: float | None):
+    r = _replay(options={**ROOMY, "ev_charge_strategy": "smart", "power_level": 8,
+                         "optimization_priority": "self_consumption",
+                         "battery_discharge_min_level": 25,
+                         "daily_consumption_estimate": 48},
+                soc=50.0, start=day(SAT, 20, 30), prices_for=WEEK, capacity_kwh=60.0,
+                load_kw=lambda _t: 2.0, switched_loads={EV: 3.7})
+    if weekly_price is not None:      # what the coordinator remembered of the week
+        r.coordinator._daily_price_history = [
+            {"date": (SAT - timedelta(days=k)).isoformat(), "mean": weekly_price}
+            for k in range(1, 6)]
+    return r
+
+
+def _planned_tomorrow(r):
+    c = r.coordinator
+    battery = {s for s, a in c._tomorrow_scheduled_slots.items() if a == "charge"}
+    ev = {s for d in (c._flex_load_scheduled_tomorrow or {}).values()
+          for s, on in d.items() if on}
+    return battery, ev
+
+
+@pytest.mark.asyncio
+async def test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follows():
+    """Maintainer, 24 Oct 2026: Saturday evening, Sunday the cheapest day of
+    the week — yet the plan bought only what the night needed, and with the
+    battery not charging the EV got no slots either ("if you are so cautious
+    and not charging the home battery, the car battery never gets a chance").
+
+    Energy beyond the night's need was worth nothing to the planner: Monday's
+    prices are unknown on Saturday.  It is now worth this week's typical price
+    after the round-trip loss, so a day clearly cheaper than the week fills
+    the battery — and the EV (smart) runs in the battery's charge slots, the
+    battery first."""
+    without = _weekend(None)
+    await without.run_until(day(SAT, 21), step_s=300)
+    r = _weekend(0.255)
+    await r.run_until(day(SAT, 21), step_s=300)
+
+    battery, ev = _planned_tomorrow(r)
+    battery_before, _ = _planned_tomorrow(without)
+    assert len(battery) >= 30 > 2 * len(battery_before), (len(battery), len(battery_before))
+    assert ev == battery, "the EV is planned in the battery's charge slots"
+    assert "this week's average 0.255" in r.coordinator.schedule_reason
+
+    sun = SAT + timedelta(days=1)
+    await r.run_until(day(sun + timedelta(days=1), 0, 5), step_s=300)
+    _chart(r, "cheapest_day_of_the_week")
+    sunday = [t for t in r.ticks if t.at.date() == sun]
+    assert r.soc_at(day(sun, 23, 55)) >= 95
+    ev_on = [t for t in sunday if t.switched_kw > 0]
+    assert len(ev_on) * 5 / 60 >= 5, "the car charges on the cheap day"
+    # Battery first: the car only runs while the battery charges from the grid.
+    assert all(t.inverter in ("charge", "hold") for t in ev_on), \
+        sorted({(t.at.strftime("%H:%M"), t.inverter) for t in ev_on if t.inverter not in ("charge", "hold")})
+
+
+# ---------------------------------------------------------------------------
 # A monitor-only inverter (IVAM6048P1G1) is never written
 # ---------------------------------------------------------------------------
 

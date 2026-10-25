@@ -88,6 +88,12 @@ SLOW_POLL_FACTOR = 2
 CONSUMPTION_HISTORY_DAYS = 7
 MIN_HOURS_FOR_HISTORY_DAY = 20
 
+# Daily mean grid prices: this week's typical price, at which the exact
+# planner values energy kept in the battery beyond the night (so the cheapest
+# day of the week fills it).  Needs a few days before it means anything.
+PRICE_HISTORY_DAYS = 7
+MIN_PRICE_HISTORY_DAYS = 3
+
 
 def _number(value) -> float | None:
     """A real number from a recorder row field, else None (bool is not a number)."""
@@ -243,6 +249,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # until then.
         self._consumption_backfilled = False
         self._history_query_error: str | None = None
+        # Daily mean price per day ([{date, mean}]), persisted with the
+        # consumption history; rebuilt from the recorder once at startup.
+        self._daily_price_history: list = []
+        self._price_backfilled = False
         self._consumption_backfill_attempt_ts = 0.0
         self.consumption_entity_used: str | None = None
         self.self_consumption_reserve: float = 0.0
@@ -1264,6 +1274,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             sunset_hour=self.sunset_hour,
             predicted_soc_pct=predicted_soc,
             charging_now=self._current_energy_state == "charging",
+            price_reference_eur_kwh=self.price_reference,
         )
 
         # Skip recalc when inputs unchanged (#8).  Hashing the inputs lets
@@ -1292,6 +1303,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             # hourly price slot) and holds the running step (charging_now).
             now.minute // 15,
             self._current_energy_state == "charging",
+            self.price_reference,
         ))
         if (input_hash == self._last_schedule_input_hash
                 and current_slot_idx == self._last_schedule_slot_idx):
@@ -2126,6 +2138,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 self._daily_consumption_history = data["daily_history"][-7:]
             if data and "hourly_history" in data:
                 self._hourly_consumption_history = data["hourly_history"][-7:]
+            if data and isinstance(data.get("price_history"), list):
+                self._daily_price_history = [
+                    e for e in data["price_history"]
+                    if isinstance(e, dict) and _number(e.get("mean")) is not None
+                ][-PRICE_HISTORY_DAYS:]
             # Days stored by an earlier version can carry the #220 rollover
             # glitch (a whole day booked into the 04:00 hour).  They are
             # cleaned here, not only when the recorder backfill replaces them:
@@ -2307,6 +2324,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             await self._consumption_store.async_save({
                 "daily_history": self._daily_consumption_history,
                 "hourly_history": self._hourly_consumption_history,
+                "price_history": self._daily_price_history,
                 "cycle_charged_kwh": round(self._cycle_charged_kwh, 3),
                 "cycle_discharged_kwh": round(self._cycle_discharged_kwh, 3),
                 "battery_soh_factor": round(self._battery_soh_factor, 4),
@@ -2359,6 +2377,100 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             f" (query failed: {self._history_query_error})"
             if self._history_query_error else "",
             self.weekly_avg_consumption or 0, self.consumption_profile_source,
+        )
+
+    def _record_daily_prices(self) -> bool:
+        """Remember today's mean price.  True when the history changed."""
+        prices = [p for p in (self.slot_prices_today or []) if _number(p) is not None]
+        if not prices:
+            return False
+        day = datetime.now().strftime("%Y-%m-%d")
+        mean = round(sum(prices) / len(prices), 5)
+        if any(e.get("date") == day and e.get("mean") == mean
+               for e in self._daily_price_history):
+            return False
+        self._daily_price_history = sorted(
+            [e for e in self._daily_price_history if e.get("date") != day]
+            + [{"date": day, "mean": mean}],
+            key=lambda e: e.get("date", ""),
+        )[-PRICE_HISTORY_DAYS:]
+        return True
+
+    @property
+    def price_reference(self) -> float | None:
+        """This week's typical grid price: the mean of the daily mean prices
+        of the last PRICE_HISTORY_DAYS days (today included).  None until
+        MIN_PRICE_HISTORY_DAYS days are known — the planner then values energy
+        beyond the night at nothing, as before."""
+        oldest = (datetime.now().date()
+                  - timedelta(days=PRICE_HISTORY_DAYS - 1)).strftime("%Y-%m-%d")
+        means = [e["mean"] for e in self._daily_price_history
+                 if e.get("date", "") >= oldest]
+        if len(means) < MIN_PRICE_HISTORY_DAYS:
+            return None
+        return round(sum(means) / len(means), 5)
+
+    async def _backfill_price_history(self) -> None:
+        """Rebuild the past days' mean prices from the recorder, once.
+
+        Without it the weekly price would take MIN_PRICE_HISTORY_DAYS days to
+        appear after an update.  Uses the price entity's hourly long-term
+        statistics ("mean"), which exist when the entity has a state class;
+        a day counts when the recorder has MIN_HOURS_FOR_HISTORY_DAY hours of
+        it.  Days already stored are kept.
+        """
+        if self._price_backfilled or not self.nordpool_entity:
+            return
+        self._price_backfilled = True
+        today = datetime.now().date()
+        known = {e.get("date") for e in self._daily_price_history}
+        days = [today - timedelta(days=back) for back in range(PRICE_HISTORY_DAYS - 1, 0, -1)]
+        days = [d for d in days if d.strftime("%Y-%m-%d") not in known]
+        if not days:
+            return
+        error = None
+        added = 0
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+            start = datetime.combine(days[0], datetime.min.time()).astimezone()
+            end = datetime.combine(today, datetime.min.time()).astimezone()
+            stats = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period, self.hass, start, end,
+                {self.nordpool_entity}, "hour", None, {"mean"},
+            )
+            by_day: dict[str, list[float]] = {}
+            for row in stats.get(self.nordpool_entity) or []:
+                mean = _number(row.get("mean"))
+                ts = _number(row.get("start"))
+                if mean is None or ts is None:
+                    continue
+                key = datetime.fromtimestamp(ts, UTC).astimezone().strftime("%Y-%m-%d")
+                by_day.setdefault(key, []).append(mean)
+            for day in days:
+                key = day.strftime("%Y-%m-%d")
+                hours = by_day.get(key, [])
+                if len(hours) >= MIN_HOURS_FOR_HISTORY_DAY:
+                    self._daily_price_history.append(
+                        {"date": key, "mean": round(sum(hours) / len(hours), 5)})
+                    added += 1
+        except Exception as err:
+            error = f"{type(err).__name__}: {err}"
+        if added:
+            self._daily_price_history = sorted(
+                self._daily_price_history, key=lambda e: e.get("date", ""),
+            )[-PRICE_HISTORY_DAYS:]
+            await self._save_consumption_store()
+        _LOGGER.info(
+            "Price history from %s: %d day(s) rebuilt from recorder statistics%s; "
+            "%d day(s) known, weekly price %s",
+            self.nordpool_entity, added,
+            f" (query failed: {error})" if error else "",
+            len(self._daily_price_history),
+            f"{self.price_reference:.4f}" if self.price_reference is not None
+            else f"not yet (needs {MIN_PRICE_HISTORY_DAYS} days)",
         )
 
     @property
@@ -3554,6 +3666,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             # Initialize consumption store on first run
                             await self._init_consumption_store()
                             await self._backfill_consumption_history()
+                            await self._backfill_price_history()
 
                             # Midnight bookkeeping (once per day change)
                             now = datetime.now()
@@ -3595,6 +3708,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             # Normal cycle: retrieve data, calculate, determine state
                             self._retrieve_slot_prices(price_state)
+                            if self._record_daily_prices():
+                                await self._save_consumption_store()
                             self._retrieve_pv_forecast()
 
                             battery_soc = self.TypeSpecificHandler.determine_battery_soc(new_data)

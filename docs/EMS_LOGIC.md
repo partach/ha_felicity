@@ -36,8 +36,16 @@ behaviour, the simulator is the gate that decides whether you were right.
      plan has enough); grid energy stored loses (1 − efficiency); cycle cost
      per stored kWh (≥ 0.05 for Battery Care);
    - after the horizon the battery must carry the house from midnight to
-     sunrise; each kWh short costs the last known night's price; energy
-     beyond that is worth nothing;
+     sunrise; each kWh short costs the last known night's price;
+   - **this week's price** (24 Oct 2026): with 3+ days of price history the
+     coordinator passes the mean of the last 7 daily means.  Energy the next
+     day can use beyond the night (its consumption after sunrise − 0.8 ×
+     tomorrow's forecast) is worth that price × efficiency, and the unknown
+     night is never priced below it.  So grid energy is stored when
+     `price < weekly × eff²`: the cheapest day of the week fills the battery
+     (and the EV, which runs in its charge slots), an ordinary day buys only
+     for the night.  Without history: energy beyond the night is worth
+     nothing, as before;
    - Self-Sufficiency: that night need × 1.25;  a reserve setting raises it
      to `max(need, reserve)` (and checks tonight too) — never a per-step
      hard floor;
