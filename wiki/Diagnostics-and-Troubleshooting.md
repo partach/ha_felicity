@@ -58,13 +58,13 @@ What usually fixes it: RS485 wiring and termination, and the gateway settings. S
 
 ## MILP will not load
 
-The default engine (**Optimal**) needs nothing extra and handles From Grid. MILP is optional and needs a solver program, which Home Assistant does not ship:
+The default engine (**Optimal**) needs nothing extra and is the better one for From Grid (Save Money, Self-Sufficiency, Battery Care): it is exact, and it uses this week's prices, which MILP does not. MILP is worth choosing for **Trader** (To Grid / Both).
 
-1. Look at `schedule_status` → `milp_status` (or hover the engine chip): `reason` and `tried` say which solvers were looked for and why each was rejected, e.g. `PULP_CBC_CMD(absent)`.
-2. Run the probe inside Home Assistant's own Python. HACS installs only the integration, so copy `tools/check_milp.py` from the repository to your `/config` folder, then from the *Terminal & SSH* add-on (protection mode off): `docker exec -it homeassistant python3 /config/check_milp.py`. It prints what is missing and the fix.
-3. Install a solver into that same Python: `docker exec -it homeassistant pip install 'pulp[highs]'` (pure wheels, works on ARM) or `'pulp[cbc]'`, then restart Home Assistant. A Home Assistant update recreates the container and removes packages installed by hand, so repeat after updates.
+MILP needs an LP solver program. On **Home Assistant OS** pulp's bundled CBC cannot run: it is built for glibc, and the Home Assistant container is Alpine (musl) — the file is there, starting it fails with *"No such file or directory"*. `pulp[cbc]` installs the same kind of build. **HiGHS** (`highspy`) has musl wheels and runs inside Python.
 
-The usual cause is a Python or CPU for which PuLP publishes no bundled CBC binary (e.g. a brand-new Python version, or ARM). MILP then falls back to the Optimal planner automatically, so nothing breaks.
+1. Select **MILP** as the scheduler engine and **restart Home Assistant once**. While the engine is MILP, the integration installs HiGHS at startup through Home Assistant's own installer — again after every Home Assistant update, which replaces the container and drops hand-installed packages. A failed install only logs a warning; the exact planner then runs.
+2. Check: hover the engine chip on the card, or `schedule_status` → `milp_status`: `state: active`, `solver: HiGHS`. A broken bundled CBC shows in `tried` as `PULP_CBC_CMD(broken: …)` and is skipped.
+3. Still not running? The log line *"Could not install the HiGHS solver"* says why (e.g. no wheel for a 32-bit ARM board). By hand, from the *Advanced SSH & Web Terminal* add-on (protection mode off): `docker exec -it homeassistant pip install highspy`, then restart. `tools/check_milp.py` (copy it to `/config`, run `docker exec -it homeassistant python3 /config/check_milp.py`) prints a verdict.
 
 ## Energy statistics jumped
 

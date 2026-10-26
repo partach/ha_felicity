@@ -109,6 +109,39 @@ The overlay only lets the car ride along with the battery, the sun or negative p
 - If the need cannot be met before the deadline, every possible slot is booked and the card says how much is short.
 - It applies whatever the EV Charge Strategy, in auto price mode. EV Boost still overrides it.
 
+#### How much to enter — and two cars on one charger
+
+Enter what the **car plugged in now** still needs, measured at the wall: `(target % − current %) × the car's usable battery ÷ 0.9` (about 10 % charging loss). Examples:
+
+| Car | Now → target | Enter |
+|---|---|---|
+| Hybrid, 12 kWh usable | 20 % → 100 % | 12 × 0.8 / 0.9 ≈ **11 kWh** |
+| Full EV, 50 kWh usable | 40 % → 80 % | 50 × 0.4 / 0.9 ≈ **22 kWh** |
+
+The need belongs to the charger, not to a car: when you swap cars, enter the new car's need (setting a new value restarts the count). The integration counts the set current × voltage × phases while the charger is switched on — a car that draws less than that (many hybrids stop at ~3.3 kW) is counted a little high, so add a little, or let an automation set it.
+
+If your cars report their state of charge in Home Assistant, an automation can set the need when a car is plugged in — e.g.:
+
+```yaml
+automation:
+  - alias: "EV need when the hybrid is plugged in"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.hybrid_charging_cable_connected
+        to: "on"
+    action:
+      - service: number.set_value
+        target: { entity_id: number.felicity_inverter_ev_energy_needed }
+        data:
+          value: >
+            {{ ((100 - states('sensor.hybrid_battery_level') | float(0)) / 100 * 12 / 0.9) | round(0) }}
+      - service: time.set_value
+        target: { entity_id: time.felicity_inverter_ev_ready_by }
+        data: { time: "07:00:00" }
+```
+
+Make a second one for the other car (its own SOC sensor, `50` instead of `12`, its own target). Two cars cannot charge at once on one charger; the need is always the car that is plugged in.
+
 ---
 
 ## How does current stepping work? (EV charger)

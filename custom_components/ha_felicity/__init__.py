@@ -377,6 +377,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:
         _LOGGER.debug("Could not resolve integration version: %s", err)
 
+    # MILP needs an LP solver that runs here; make sure HiGHS is there before
+    # the first plan (pulp looks for it once, when it is first imported).
+    if updated_options.get("scheduler_engine") == "milp":
+        await async_ensure_lp_solver(hass)
+
     # First refresh
     await coordinator.async_config_entry_first_refresh()
 
@@ -499,6 +504,39 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+# The LP solver the MILP engine installs for itself.  pulp's bundled CBC is a
+# glibc binary that cannot start in Home Assistant OS's Alpine (musl)
+# container, and `pulp[cbc]` (cbcbox) ships glibc builds only; HiGHS has musl
+# wheels and runs in-process.  It is NOT a manifest requirement: a failed
+# install there would stop the whole integration loading on a platform
+# without a wheel, for a solver only the opt-in MILP engine uses.
+HIGHS_REQUIREMENT = "highspy>=1.7.0"
+
+
+async def async_ensure_lp_solver(hass: HomeAssistant) -> bool:
+    """Install HiGHS for the MILP engine when it is missing, through Home
+    Assistant's own requirement installer (an HA update replaces the
+    container, so a hand-installed package does not last; this puts it back on
+    the next start).  Never raises: without it the exact planner runs."""
+    import importlib
+    import importlib.util
+
+    if await hass.async_add_executor_job(importlib.util.find_spec, "highspy") is not None:
+        return True
+    try:
+        from homeassistant.requirements import async_process_requirements
+
+        await async_process_requirements(hass, f"{DOMAIN} MILP solver", [HIGHS_REQUIREMENT])
+        await hass.async_add_executor_job(importlib.invalidate_caches)
+    except Exception as err:
+        _LOGGER.warning(
+            "Could not install the HiGHS solver (%s) for the MILP engine: %s — "
+            "the exact planner runs instead", HIGHS_REQUIREMENT, err)
+        return False
+    _LOGGER.info("Installed the HiGHS solver (%s) for the MILP engine", HIGHS_REQUIREMENT)
+    return True
+
+
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update — only reload when structural options change.
 
@@ -530,6 +568,13 @@ async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     # Save current options for next comparison
     coordinator._last_options = new_opts
+
+    if new_opts.get("scheduler_engine") == "milp" and old_opts.get("scheduler_engine") != "milp":
+        # Switched to MILP while running: install its solver now; pulp only
+        # sees a newly installed HiGHS after a restart.
+        if await async_ensure_lp_solver(hass):
+            _LOGGER.info("MILP selected — restart Home Assistant once if the engine "
+                         "chip still shows a fallback")
 
     if structural_changed:
         _LOGGER.info("Structural option changed — reloading integration")
