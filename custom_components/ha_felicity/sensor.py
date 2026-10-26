@@ -234,6 +234,7 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             "flex_load_configs": self._build_flex_load_attr(),
             "ev_boost_active": self.coordinator.ev_boost_active,
             "ev_boost_remaining_min": self.coordinator.ev_boost_remaining_min,
+            "ev_need": self._build_ev_need_attr(),
             "integration_version": self.coordinator.integration_version,
         }
 
@@ -263,6 +264,27 @@ class HA_FelicityScheduleStatusSensor(CoordinatorEntity, SensorEntity):
             # the planner values energy kept beyond the night at.
             "price_reference": getattr(coord, "price_reference", None),
             "price_history_days": len(getattr(coord, "_daily_price_history", []) or []),
+        }
+
+    def _build_ev_need_attr(self) -> dict | None:
+        """The EV's own need for the card: what is asked, what went in, and
+        the plan (ems.ScheduleResult.ev_need).  None when no need is set."""
+        coord = self.coordinator
+        opts = coord.config_entry.options
+        try:
+            asked = float(opts.get("ev_need_kwh", 0) or 0)
+        except (TypeError, ValueError):
+            asked = 0.0
+        if asked <= 0:
+            return None
+        plan = dict(getattr(coord, "ev_need", {}) or {})
+        return {
+            "asked_kwh": asked,
+            "remaining_kwh": round(coord.ev_need_remaining_kwh, 2),
+            "ready_by": opts.get("ev_ready_by", "07:00"),
+            "hold_slots": sorted(getattr(coord, "_ev_hold_slots", set())),
+            "hold_slots_tomorrow": sorted(getattr(coord, "_ev_hold_slots_tomorrow", set())),
+            **plan,
         }
 
     def _build_flex_load_attr(self) -> list[dict]:

@@ -1095,6 +1095,40 @@ SCENARIOS = [
         ),
     },
 
+    {
+        "name": "ev_need_weeknight_full_battery",
+        "desc": "MAINTAINER (26 Oct 2026): the car needs charging a few times a week; with a "
+                "comfortable home battery the Smart EV used to get no slot at all.  The EV's own "
+                "need, 12 kWh by 07:00, on the maintainer's settings (60 kWh at 90 %, floor 45 %, "
+                "8 kW, 18 A, a 16 A one-phase charger): the car takes the cheapest night "
+                "(0.16, then 0.20) before 07:00, never beside a battery charge (8 kW + 16 A does "
+                "not fit 18 A), and the battery is held in its slots.",
+        "config": dict(grid_mode="from_grid", optimization_priority="cost",
+                       battery_capacity_kwh=60.0, battery_discharge_min_pct=45,
+                       battery_charge_max_pct=100, efficiency=0.95,
+                       battery_cycle_cost_eur_kwh=0.05, safe_power_kw=8.0,
+                       inverter_max_power_kw=10.0, consumption_est_kwh=32.0,
+                       grid_limit_a=18.0, inverter_phases=3,
+                       flexible_loads=[ev_charger(kw=3.7, amps=16)], ev_charge_strategy="smart"),
+        "state": dict(battery_soc_pct=90.0,
+                      slot_prices_today=[0.30] * 72 + [0.33] * 24,
+                      slot_prices_tomorrow=[0.20] * 8 + [0.16] * 8 + [0.20] * 12 + [0.30] * 68,
+                      pv_hourly_kwh=pv_bell(11.0, sunrise=8, sunset=18),
+                      pv_hourly_kwh_tomorrow=pv_bell(19.0, sunrise=8, sunset=18),
+                      pv_actual_today_kwh=11.0, pv_forecast_today=11.0,
+                      pv_forecast_remaining=0.0, pv_forecast_tomorrow=19.0,
+                      current_hour=20, current_minute=0, sunrise_hour=8.0, sunset_hour=18.0,
+                      ev_need_kwh=12.0, ev_deadline_h=31.0),
+        "expect": lambda r, s: (
+            len(set((r.get("tomorrow_load_slots") or {}).get(0, {})) & set(range(28))) >= 13
+            and not set((r.get("tomorrow_load_slots") or {}).get(0, {}))
+            & set(r.get("tomorrow_charge_slots", []))
+            and all(s["state"]["slot_prices_tomorrow"][i] <= 0.20
+                    for i in (r.get("tomorrow_load_slots") or {}).get(0, {}) if i < 28),
+            (f"EV in {sorted((r.get('tomorrow_load_slots') or {}).get(0, {}))} before 07:00 at "
+             f"<= 0.20, none beside the battery's {r.get('tomorrow_charge_slots', [])}"),
+        ),
+    },
 ]
 
 

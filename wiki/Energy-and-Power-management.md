@@ -55,7 +55,7 @@ After the last day with known prices, the battery is expected to carry the house
 Energy the sun will deliver has no value to buy. The planner sees the PV forecast (scaled by how well today's forecast is holding up) and never buys what PV will fill.
 
 ### Flexible Loads
-Up to 3 controllable loads (EV charger, boiler, pool pump) can be scheduled during cheap/negative-price/PV-surplus hours. See [FLEXIBLE_LOADS.md](https://github.com/partach/ha_felicity/blob/main/FLEXIBLE_LOADS.md).
+Up to 3 controllable loads (EV charger, boiler, pool pump) can be scheduled during cheap/negative-price/PV-surplus hours. The EV charger can also be given its own need — **EV Energy Needed** by **EV Ready By** — which the EMS books in the cheapest moments before that time, the home battery first and held (not drained into the car) while the car charges. See [FLEXIBLE_LOADS.md](https://github.com/partach/ha_felicity/blob/main/FLEXIBLE_LOADS.md).
 
 ### Safe Power
 Monitors grid current per phase. The Rule 1 power stays at your **Power Level** and is lowered only when a phase is over **Max Amperage Per Phase**. Priority chain: battery power first, then EV charger current step-down, then load shedding. See [Power Management Basics](Power-Management-Basics).

@@ -1049,6 +1049,112 @@ def amsterdam(monkeypatch):
     _time.tzset()
 
 
+class TestEVNeedCoordinator:
+    """The EV need (options ev_need_kwh / ev_ready_by): the deadline, what has
+    gone into the car, clearing a need that is met, and holding the battery
+    while the car charges for it."""
+
+    NOW = datetime(2026, 10, 26, 20, 0)  # noqa: DTZ001 - naive local, as the coordinator
+
+    def _coord(self, monkeypatch, options=None):
+        coord = _make_coordinator()
+        coord.config_entry.options = {
+            "flexible_load_1_enabled": "on", "flexible_load_1_switch_entity": "switch.ev",
+            "flexible_load_1_current_entity": "select.ev_current",
+            "flexible_load_1_current_steps": "6 A,10 A,13 A,16 A,20 A",
+            "flexible_load_1_default_current": 16, "flexible_load_1_phases": 1,
+            **(options or {})}
+        coord._ev_need_target_kwh = 0.0
+        coord._ev_need_delivered_kwh = 0.0
+        coord._ev_need_last_ts = None
+        coord._flex_load_states = {}
+        coord._flex_load_current_step = None
+        coord._ev_boost_until_ts = 0.0
+        coord._ev_boost_store = MagicMock()
+        coord._ev_boost_store.async_save = AsyncMock()
+        coord.hass.async_create_task = MagicMock(side_effect=lambda c: c.close())
+        fixed = self.NOW
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+
+        monkeypatch.setattr(coordinator_mod, "datetime", _Clock)
+        return coord
+
+    def test_steps_typed_with_units_are_read(self, monkeypatch):
+        """'6 A,10 A,…' used to parse as no steps at all — current stepping off."""
+        coord = self._coord(monkeypatch)
+        (load,) = coord._build_flex_load_configs()
+        assert load.current_steps == [6, 10, 13, 16, 20]
+
+    @pytest.mark.parametrize("ready, expected", [("07:00", 31.0), ("21:30", 21.5),
+                                                 ("20:00", 44.0)])
+    def test_deadline_is_the_next_ready_by(self, monkeypatch, ready, expected):
+        coord = self._coord(monkeypatch, {"ev_need_kwh": 10, "ev_ready_by": ready})
+        assert coord._ev_deadline_h(self.NOW) == expected
+
+    def test_no_need_no_deadline(self, monkeypatch):
+        coord = self._coord(monkeypatch, {"ev_need_kwh": 0})
+        assert coord._ev_deadline_h(self.NOW) is None and coord.ev_need_remaining_kwh == 0
+
+    def test_energy_into_the_car_counts_down_and_a_met_need_clears(self, monkeypatch):
+        coord = self._coord(monkeypatch, {"ev_need_kwh": 2})
+        loads = coord._build_flex_load_configs()
+        clock = [1000.0]
+        monkeypatch.setattr(coordinator_mod.time, "time", lambda: clock[0])
+        coord._track_ev_need(loads)                    # a new need: starts counting
+        assert coord.ev_need_remaining_kwh == 2
+        coord._flex_load_states[0] = True
+        coord._flex_load_current_step = 16             # 16 A x 230 V = 3.68 kW
+        for _ in range(12):                            # 12 x 5 min = 1 h → 3.68 kWh
+            clock[0] += 300
+            coord._track_ev_need(loads)
+            if coord.config_entry.options.get("ev_need_kwh") == 0:
+                break
+        update = coord.hass.config_entries.async_update_entry
+        assert update.called
+        assert update.call_args.kwargs["options"]["ev_need_kwh"] == 0
+
+    def test_a_charger_that_is_off_delivers_nothing(self, monkeypatch):
+        coord = self._coord(monkeypatch, {"ev_need_kwh": 5})
+        loads = coord._build_flex_load_configs()
+        clock = [1000.0]
+        monkeypatch.setattr(coordinator_mod.time, "time", lambda: clock[0])
+        coord._track_ev_need(loads)
+        clock[0] += 3600
+        coord._track_ev_need(loads)
+        assert coord.ev_need_remaining_kwh == 5
+
+    @pytest.mark.asyncio
+    async def test_holding_is_a_charge_rule_at_the_current_soc(self, monkeypatch):
+        coord = self._coord(monkeypatch, {"grid_mode": "from_grid",
+                                          "battery_discharge_min_level": 45})
+        coord._current_energy_state = "idle"
+        coord._reserve_target_pct = 0.0
+        coord.safe_max_power = 8
+        coord.battery_soc = 72.6
+        coord.current_price = coord.price_threshold = None
+        coord.TypeSpecificHandler = MagicMock()
+        coord.TypeSpecificHandler.write_type_specific_register = AsyncMock(return_value=True)
+        assert await coord._transition_to_state("holding") is True
+        writes = {c.args[0]: c.args[1] for c in
+                  coord.TypeSpecificHandler.write_type_specific_register.await_args_list}
+        assert writes["econ_rule_1_enable"] == 1 and writes["econ_rule_1_soc"] == 72
+        assert writes["econ_rule_1_power"] == 1000
+
+    def test_a_hold_slot_holds_in_auto_mode(self, monkeypatch):
+        coord = self._coord(monkeypatch, {"grid_mode": "from_grid", "price_mode": "auto"})
+        coord._current_energy_state = "idle"
+        coord.slot_prices_today = [0.2] * 96
+        coord.scheduled_slots = {10: "charge"}
+        coord._ev_hold_slots = {80}
+        assert coord._determine_energy_state(60.0) == "holding"
+        coord._ev_hold_slots = set()
+        assert coord._determine_energy_state(60.0) == "idle"
+
+
 class TestWeeklyPriceMemory:
     """The coordinator keeps each day's mean price so the planner knows this
     week's typical price (EMSState.price_reference_eur_kwh) and fills the

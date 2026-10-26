@@ -960,6 +960,60 @@ async def test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follow
 
 
 # ---------------------------------------------------------------------------
+# The EV's own need: 12 kWh by 07:00 (26 Oct 2026)
+# ---------------------------------------------------------------------------
+
+def WEEKNIGHT(d):
+    """Sunday evening 0.30-0.33; Monday night 0.20 with 0.16 from 02:00 to 04:00."""
+    if d == NEED_MON:
+        return [0.20] * 8 + [0.16] * 8 + [0.20] * 12 + [0.30] * 68
+    return [0.30] * 72 + [0.33] * 24
+
+
+NEED_SUN = date(2026, 10, 25)
+NEED_MON = NEED_SUN + timedelta(days=1)
+NEED_OPTIONS = {**AUTO, **EV_OPTIONS,
+                "flexible_load_1_current_entity": "number.phoenix_current",
+                "flexible_load_1_current_steps": "6 A,10 A,13 A,16 A,20 A",
+                "flexible_load_1_default_current": 16, "power_level": 8,
+                "max_amperage_per_phase": 18, "battery_discharge_min_level": 45,
+                "daily_consumption_estimate": 32, "battery_cycle_cost_eur_kwh": 0.05,
+                "efficiency_factor": 0.95, "ev_need_kwh": 12, "ev_ready_by": "07:00"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("soc", [90.0, 55.0])
+async def test_an_ev_need_is_met_by_morning_without_draining_the_battery(soc):
+    """Maintainer: the car needs charging a few times a week, the home battery
+    first.  12 kWh by 07:00 on the maintainer's settings (60 kWh, floor 45 %,
+    8 kW, 18 A, a 16 A one-phase Phoenix with steps typed as "6 A,…").
+
+    Full battery: the car takes the cheapest night.  Battery at 55 %: the
+    battery takes the cheapest night and the car what fits around it — never
+    beside a battery charge (8 kW + 16 A does not fit 18 A).  Either way the
+    battery is HELD while the car charges (the grid feeds house and car), the
+    18 A limit holds, and the need clears itself when met."""
+    r = _replay(options=NEED_OPTIONS, soc=soc, start=day(NEED_SUN, 20),
+                prices_for=WEEKNIGHT, capacity_kwh=60.0, load_kw=lambda _t: 1.3,
+                switched_loads={EV: 3.7}, current_entities={EV: "number.phoenix_current"})
+    await r.run_until(day(NEED_MON, 8), step_s=60)
+    _chart(r, f"ev_need_weeknight_{int(soc)}")
+
+    ev_on = [t for t in r.ticks if t.switched_kw > 0 and t.at < day(NEED_MON, 7)]
+    delivered = sum(t.switched_kw for t in ev_on) / 60.0
+    assert delivered >= 11.5, f"{delivered:.1f} kWh into the car"
+    assert r.entry.options.get("ev_need_kwh") == 0, "a met need clears itself"
+    assert {t.inverter for t in ev_on} == {"hold"}, \
+        sorted({(t.at.strftime("%H:%M"), t.inverter) for t in ev_on if t.inverter != "hold"})
+    assert max(t.max_amps for t in r.ticks) <= 18.0
+    assert not [t for t in r.ticks if t.switched_kw > 0 and t.state == "charging"]
+    if soc == 90.0:
+        assert max(t.price for t in ev_on) <= 0.20
+    else:
+        assert r.soc_at(day(NEED_MON, 7)) >= 80, "the battery still filled first"
+
+
+# ---------------------------------------------------------------------------
 # A monitor-only inverter (IVAM6048P1G1) is never written
 # ---------------------------------------------------------------------------
 

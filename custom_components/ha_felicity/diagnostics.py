@@ -60,10 +60,47 @@ async def async_get_config_entry_diagnostics(
     result["last_poll"] = dict(coordinator.data or {})
     result["milp_status"] = getattr(coordinator, "milp_status", None)
     result["poll_stats"] = getattr(coordinator, "poll_stats", None)
+    result["planner"] = _planner_snapshot(coordinator)
     result["read_groups"] = [
         f"{g['start']}/{g['count']}" for g in getattr(coordinator, "_address_groups", [])]
     result["register_dump"] = await _async_dump(hass, coordinator, model)
     return result
+
+
+def _planner_snapshot(coordinator) -> dict:
+    """What the EMS was fed and what it decided, at this moment.  "Why did it
+    (not) charge?" cannot be answered from registers: it needs the prices, the
+    week's price, the consumption profile and the plan."""
+    def get(name, default=None):
+        try:
+            value = getattr(coordinator, name, default)
+            return value() if callable(value) else value
+        except Exception as err:  # a snapshot must never fail the download
+            return f"error: {err}"
+
+    return {
+        "energy_state": get("_current_energy_state"),
+        "scheduler_active": get("scheduler_active"),
+        "schedule_status": get("schedule_status"),
+        "schedule_reason": get("schedule_reason"),
+        "scheduled_slots": get("scheduled_slots"),
+        "tomorrow_scheduled_slots": get("_tomorrow_scheduled_slots"),
+        "soc_trajectory": get("_backend_soc_trajectory"),
+        "price_reference": get("price_reference"),
+        "price_history": get("_daily_price_history"),
+        "slot_prices_today": get("slot_prices_today"),
+        "slot_prices_tomorrow": get("slot_prices_tomorrow"),
+        "consumption_profile_source": get("consumption_profile_source"),
+        "consumption_hourly_profile": get("_hourly_consumption_profile"),
+        "weekly_avg_consumption": get("weekly_avg_consumption"),
+        "pv_forecast_today": get("pv_forecast_today"),
+        "pv_forecast_tomorrow": get("pv_forecast_tomorrow"),
+        "reserve_target_pct": get("_reserve_target_pct"),
+        "ev_need": get("ev_need"),
+        "ev_need_remaining_kwh": get("ev_need_remaining_kwh"),
+        "ev_hold_slots": sorted(get("_ev_hold_slots", set()) or []),
+        "flex_load_slots": get("_flex_load_scheduled"),
+    }
 
 
 async def _async_dump(hass: HomeAssistant, coordinator, model: str | None) -> dict:

@@ -858,7 +858,10 @@ When the current slot is a scheduled charge slot (or a charge override) the coor
 | charging | 1 | `battery_charge_max_level` (e.g., 100%) | `voltage_level` (e.g., 58V) | `safe_max_power` (W) |
 | discharging (manual) | 2 | `battery_discharge_min_level` (e.g., 20%) | `discharge_min_voltage` (e.g., 50V) | `safe_max_power` (W) |
 | discharging (auto) | 2 | `reserve_target_pct` (e.g., 70%) | `discharge_min_voltage` (e.g., 50V) | `safe_max_power` (W) |
+| holding (EV need) | 1 | current SOC (≥ discharge min) | `voltage_level` | 1000 W |
 | idle | 0 | *(not written)* | *(not written)* | *(not written)* |
+
+`holding` holds the battery while the EV charges for its need: a charge rule whose SOC the battery already has does not charge, and in its window the grid feeds the house.  Safe power treats it as idle (writes nothing).
 
 In auto mode, the inverter's SOC floor register is set to the computed `reserve_target_pct` rather than `discharge_min_level`. This means the inverter hardware itself enforces the same floor the schedule was planned around, even if the coordinator's polling cycle is delayed.
 
@@ -979,6 +982,10 @@ Up to 3 controllable loads (EV charger, boiler, pool pump) can be managed by the
 - **PV-surplus slots that fit the load (Oct 2026).** The surplus per slot is the forecast PV × today's confidence minus the house's **hourly profile** (flat average only without one), and a slot counts for a load only when it covers that load's **minimum power** — the lowest current step of a stepped charger, else its running power (default current / rated kW).  It used to be `pv_hour > consumption_est/24` for every load: on #218's install the EV ran 16 A from 07–08 h to 18–19 h and took 35 % of its energy from the battery.  Tomorrow's overlay uses the forecast as given (today's confidence says nothing about tomorrow).
 
 **Planned current.** For a charger with current steps, `ScheduleResult.load_currents` gives the planned amps per slot: in a slot it runs for the sun alone, the highest step the surplus covers (capped at its default current); otherwise its default current.  The coordinator sets it when the charger switches on and once per slot after that; raising it must leave the measured current on its phase under 95 % of the limit (the same test a shed load's return uses), and within a slot safe power's step-down has the last word.
+
+**Battery first on the grid connection (Oct 2026).** With the grid limit known (`EMSConfig.grid_limit_a` = `max_amperage_per_phase`), the EV joins a battery charge slot only at a current step that fits beside the battery at 90 % of the limit (`_ev_room_beside_charge_a`: battery A per phase = Power Level / (230 × inverter phases)).  Otherwise safe power cuts the battery and sheds the car in the same slot.
+
+**The EV's own need (Oct 2026, `_plan_ev_need`).**  `EMSState.ev_need_kwh` into the car before `ev_deadline_h` (hours after today's midnight): every slot from now to the deadline with a known price is a candidate, hours not priced yet stand in at the week's price (else the mean of the known prices); cheapest first, equal prices earliest, until the need is covered.  A battery charge slot qualifies only where the car fits beside it, a sell slot never.  The car's slots where the battery does not charge become `hold_slots`: the coordinator's `holding` state (rule 1 charge at the current SOC, 1 kW) — the grid feeds house and car, the battery is not drained into the car.  Applies whatever `ev_charge_strategy`, on top of the overlay; `result.ev_need` reports planned / waiting-for-prices / short.  The coordinator counts what goes in (set current × V × phases while the switch is on) and clears `ev_need_kwh` when met.  Manual override charges also take the Smart EV where it fits (`add_ev_to_override_charges`).
 
 **Still additive.** The battery plan and `soc_trajectory` do not include the load.  With the fit rule a solar run no longer drains the battery, and the cheap-slot rule keeps a cheap run on the grid, so the remaining gap is a load running in a charge slot alongside the battery (both from the grid — the grid-current budget is safe power's, at run time).  Not done: a live guard that switches a solar-only charger off when the battery feeds it — it needs a battery-power reading whose sign and scale are verified per model.
 

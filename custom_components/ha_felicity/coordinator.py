@@ -348,6 +348,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # first actuation, because the store is async and __init__ is not.
         self._ev_boost_store = None
         self._ev_boost_restored: bool = False
+        # The EV's own need (options ev_need_kwh / ev_ready_by): what was asked
+        # and how much has gone into the car since — persisted with the boost.
+        self._ev_need_target_kwh: float = 0.0
+        self._ev_need_delivered_kwh: float = 0.0
+        self._ev_need_last_ts: float | None = None
+        self._ev_hold_slots: set[int] = set()
+        self._ev_hold_slots_tomorrow: set[int] = set()
+        self.ev_need: dict = {}
 
     @property
     def pv_actual_today_kwh(self) -> float | None:
@@ -609,7 +617,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             "reserve target %.1f%% (discharge_min=%.1f%%)",
                             battery_soc, self._reserve_target_pct, discharge_min,
                         )
-                return "idle"
+                return self._hold_or_idle()
+            if self.slot_prices_today:
+                return self._hold_or_idle()
             # Auto mode fallback when no slot data yet
             _LOGGER.debug("Auto mode: no slot data available, returning idle")
             return "idle"
@@ -651,6 +661,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if grid_mode in ("to_grid", "both") and self.current_price > (self.price_threshold + margin) and battery_soc > discharge_min:
             return "discharging"
 
+        return "idle"
+
+    def _hold_or_idle(self) -> str:
+        """No battery action in this slot: hold the battery when the EV
+        charges for its need here (the grid, not the battery, feeds the house
+        and the car), else idle.  Independent of whether the plan has any
+        battery slots at all — a plan without one still has the car's."""
+        slot_idx = self._current_slot_index()
+        if slot_idx is not None and slot_idx in self._ev_hold_slots:
+            return "holding"
         return "idle"
 
     def set_slot_overrides(self, overrides: dict) -> None:
@@ -1199,6 +1219,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             flexible_loads=self._build_flex_load_configs(),
             ev_charge_strategy=str(opts.get("ev_charge_strategy", "smart")),
             scheduler_engine=str(opts.get("scheduler_engine", "optimal")),
+            grid_limit_a=float(opts.get("max_amperage_per_phase", 16) or 0),
+            inverter_phases=INVERTER_PHASES.get(self.inverter_model, 3),
         )
 
         # What did the previous schedule predict the SOC would be at this slot?
@@ -1275,6 +1297,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             predicted_soc_pct=predicted_soc,
             charging_now=self._current_energy_state == "charging",
             price_reference_eur_kwh=self.price_reference,
+            ev_need_kwh=self.ev_need_remaining_kwh,
+            ev_deadline_h=self._ev_deadline_h(now),
         )
 
         # Skip recalc when inputs unchanged (#8).  Hashing the inputs lets
@@ -1304,6 +1328,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             now.minute // 15,
             self._current_energy_state == "charging",
             self.price_reference,
+            round(self.ev_need_remaining_kwh, 1),
+            self._ev_deadline_h(now),
         ))
         if (input_hash == self._last_schedule_input_hash
                 and current_slot_idx == self._last_schedule_slot_idx):
@@ -1383,6 +1409,11 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(
                     "Manual overrides: gave up %d EMS slot(s) to keep the plan "
                     "within battery bounds: %s", len(dropped_ems), dropped_ems)
+            # The Smart EV joins override charges as it joins planned ones.
+            ems_module.add_ev_to_override_charges(
+                config, result.load_slots, result.load_currents,
+                [int(k) for k, v in today_overrides.items()
+                 if v == "charge" and self.scheduled_slots.get(int(k)) == "charge"])
         self.cheap_slots_remaining = result.cheap_slots_remaining
         self.grid_energy_planned = result.grid_energy_planned
         self.self_consumption_reserve = result.self_consumption_reserve
@@ -1454,6 +1485,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         self._flex_load_scheduled = result.load_slots
         self._flex_load_currents = result.load_currents or {}
         self._flex_load_scheduled_tomorrow = result.tomorrow_load_slots
+        self._ev_hold_slots = set(result.hold_slots)
+        self._ev_hold_slots_tomorrow = set(result.tomorrow_hold_slots)
+        self.ev_need = dict(result.ev_need)
 
         if result.price_threshold is not None:
             self.price_threshold = result.price_threshold
@@ -1626,9 +1660,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if not enabled:
                 continue
             steps_str = opts.get(f"{prefix}current_steps", "") if n == 1 else ""
+            # "6,10,16" or "6 A,10 A,16 A": the number in each item.  Only
+            # bare digits used to count, so a list typed with units silently
+            # switched current stepping off.
             steps = []
-            if steps_str:
-                steps = [int(s.strip()) for s in str(steps_str).split(",") if s.strip().isdigit()]
+            for item in str(steps_str or "").split(","):
+                digits = "".join(ch for ch in item if ch.isdigit())
+                if digits:
+                    steps.append(int(digits))
             loads.append(ems_module.FlexibleLoadConfig(
                 enabled=True,
                 name=opts.get(f"{prefix}name", "") or f"Load {n}",
@@ -1683,12 +1722,15 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
     def _persist_ev_boost(self) -> None:
         """Save the boost's end time (wall-clock, so it means something after
-        a reboot).  Best effort: a boost that cannot be saved still runs."""
-        until = self._ev_boost_until_ts
+        a reboot) and the EV need's progress.  Best effort: a boost that cannot
+        be saved still runs."""
+        data = {"until": self._ev_boost_until_ts,
+                "need_target_kwh": round(self._ev_need_target_kwh, 3),
+                "need_delivered_kwh": round(self._ev_need_delivered_kwh, 3)}
 
         async def _save() -> None:
             try:
-                await self._boost_store().async_save({"until": until})
+                await self._boost_store().async_save(data)
             except Exception as err:
                 _LOGGER.debug("EV boost not persisted: %s", err)
         try:
@@ -1706,6 +1748,13 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.debug("EV boost not restored: %s", err)
             return
+        if isinstance(data, dict):
+            target = data.get("need_target_kwh")
+            delivered = data.get("need_delivered_kwh")
+            if (isinstance(target, (int, float)) and isinstance(delivered, (int, float))
+                    and target == self._ev_need_option_kwh()):
+                self._ev_need_target_kwh = float(target)
+                self._ev_need_delivered_kwh = float(delivered)
         until = data.get("until") if isinstance(data, dict) else None
         if isinstance(until, (int, float)) and not isinstance(until, bool) \
                 and until > time.time() and until > self._ev_boost_until_ts:
@@ -1713,6 +1762,77 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self._ev_boost_max_applied = False
             _LOGGER.info("EV Boost restored after restart: %d min remaining",
                          int((until - time.time()) / 60))
+
+    # -- the EV's own need: X kWh by HH:MM ------------------------------------
+
+    def _ev_need_option_kwh(self) -> float:
+        try:
+            return max(0.0, float(self.config_entry.options.get("ev_need_kwh", 0) or 0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @property
+    def ev_need_remaining_kwh(self) -> float:
+        """What the car still needs: the asked amount less what went in since."""
+        target = self._ev_need_option_kwh()
+        if target != self._ev_need_target_kwh:
+            return target                      # a new need, not counted yet
+        return max(0.0, target - self._ev_need_delivered_kwh)
+
+    def _ev_deadline_h(self, now: datetime) -> float | None:
+        """The next "ready by" time, in hours after today's midnight (a time
+        already past today means tomorrow).  None without a need."""
+        if self._ev_need_option_kwh() <= 0:
+            return None
+        raw = str(self.config_entry.options.get("ev_ready_by", "07:00") or "07:00")
+        try:
+            hh, mm = (int(x) for x in raw.split(":")[:2])
+        except ValueError:
+            hh, mm = 7, 0
+        ready = hh + mm / 60.0
+        now_h = now.hour + now.minute / 60.0
+        return ready if ready > now_h + 1e-6 else ready + 24.0
+
+    def _track_ev_need(self, loads) -> None:
+        """Count the energy going into the car against the need; clear the
+        need once it is met.
+
+        The energy is ESTIMATED from what was commanded: while the charger's
+        switch is on, its current step (else its default current) × voltage ×
+        phases.  A car that is full or not plugged in still counts — the need
+        then ends early, which is the safe direction (no car charging is
+        forced by a need that was not real).
+        """
+        target = self._ev_need_option_kwh()
+        now_ts = time.time()
+        last, self._ev_need_last_ts = self._ev_need_last_ts, now_ts
+        if target != self._ev_need_target_kwh:
+            _LOGGER.info("EV need set: %.1f kWh by %s", target,
+                         self.config_entry.options.get("ev_ready_by", "07:00"))
+            self._ev_need_target_kwh = target
+            self._ev_need_delivered_kwh = 0.0
+            self._persist_ev_boost()
+            return
+        if target <= 0 or last is None:
+            return
+        found = next(((i, ld) for i, ld in enumerate(loads) if ld.is_ev_charger), None)
+        if found is None or not self._flex_load_states.get(found[0], False):
+            return
+        ev = found[1]
+        amps = self._flex_load_current_step or ev.default_current
+        dt_h = max(0.0, min(now_ts - last, 300.0)) / 3600.0
+        before = self._ev_need_delivered_kwh
+        self._ev_need_delivered_kwh += ev.power_at_current(amps) * dt_h
+        if self._ev_need_delivered_kwh >= target - 0.05:
+            _LOGGER.info("EV need met: %.1f kWh delivered — need cleared",
+                         self._ev_need_delivered_kwh)
+            self._ev_need_target_kwh = 0.0
+            self._ev_need_delivered_kwh = 0.0
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, options={**self.config_entry.options, "ev_need_kwh": 0})
+            self._persist_ev_boost()
+        elif int(self._ev_need_delivered_kwh) != int(before):
+            self._persist_ev_boost()           # once per kWh
 
     def _seed_flex_load_states(self, loads) -> None:
         """Learn each load's real on/off state the first time it is seen.
@@ -1746,6 +1866,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         loads = self._build_flex_load_configs()
         await self._restore_ev_boost()
         self._seed_flex_load_states(loads)
+        self._track_ev_need(loads)
         ev_boost = self.ev_boost_active
 
         # EV Boost override: force EV charger (first EV-capable load) on at max
@@ -3021,17 +3142,27 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # and on TREX-25/50/IVGM wrote system_mode, zero-export, peak-shaving
         # and rule-1 power registers, on installs that had never enabled the EMS.
         if (opts.get("grid_mode", "off") == "off"
-                and self._current_energy_state not in ("charging", "discharging")):
+                and self._current_energy_state not in ("charging", "discharging", "holding")):
             _LOGGER.debug("grid_mode is off — not writing state %s to the inverter", new_state)
             return True
         now = datetime.now()
         date_16bit = (now.month << 8) | now.day
         voltage_level = int(
             opts.get("voltage_level", 58)
-            if new_state == "charging"
+            if new_state in ("charging", "holding")
             else opts.get("discharge_min_voltage", 50)
         )
-        if new_state == "charging":
+        rule_power_w = round(self.safe_max_power * 1000)
+        if new_state == "holding":
+            # A charge rule whose SOC is where the battery already is: the
+            # inverter does not charge, and in the rule's window the grid feeds
+            # the house (as when a charge has reached its SOC) — so the battery
+            # is not drained into the EV.  Its power is the 1 kW minimum, so a
+            # dip below the SOC is topped up gently, beside the EV.
+            soc_limit = max(int(opts.get("battery_discharge_min_level", 20)),
+                            int(self.battery_soc or 0))
+            rule_power_w = 1000
+        elif new_state == "charging":
             soc_limit = int(opts.get("battery_charge_max_level", 100))
         elif new_state == "discharging" and opts.get("price_mode", "manual") == "auto" and self._reserve_target_pct > 0:
             # In auto mode, use the computed reserve target as the inverter
@@ -3046,7 +3177,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         else:
             soc_limit = int(opts.get("battery_discharge_min_level", 20))
 
-        enable_value = {"charging": 1, "discharging": 2, "idle": 0}[new_state]
+        enable_value = {"charging": 1, "holding": 1, "discharging": 2, "idle": 0}[new_state]
 
         _LOGGER.info(
             "Energy state → %s | Price: %.4f | Threshold: %.4f | SOC limit: %d%% | Voltage: %dV",
@@ -3093,7 +3224,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 ("econ_rule_1_start_day", date_16bit),
                 ("econ_rule_1_stop_day", date_16bit),
                 ("econ_rule_1_voltage", voltage_level),
-                ("econ_rule_1_power", round(self.safe_max_power * 1000)),
+                ("econ_rule_1_power", rule_power_w),
             ]:
                 ok = await self.TypeSpecificHandler.write_type_specific_register(reg, val)
                 if not ok:
@@ -3111,7 +3242,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         Found by the day-replay harness.  (No-op on models without the date
         registers: type_specific ignores them there.)
         """
-        if self._current_energy_state not in ("charging", "discharging"):
+        if self._current_energy_state not in ("charging", "discharging", "holding"):
             return
         now = datetime.now()
         date_16bit = (now.month << 8) | now.day
@@ -3201,7 +3332,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
           - TREX-5/10:  `operating_mode` (2 = Economic, 0 = General,
                         1 = Backup)
         """
-        if self._current_energy_state not in ("charging", "discharging"):
+        if self._current_energy_state not in ("charging", "discharging", "holding"):
             return
         # Judge the register by THIS poll's read.  self.data is the previous
         # poll — read before the transition that switched Economic mode on —
@@ -3212,7 +3343,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         if not data:
             return
 
-        enable_value = {"charging": 1, "discharging": 2}[self._current_energy_state]
+        enable_value = {"charging": 1, "holding": 1, "discharging": 2}[self._current_energy_state]
 
         # By control path, not by a hand-listed model pair: the pair lists
         # left T-REX-6K and every IVGM model with no self-heal at all.

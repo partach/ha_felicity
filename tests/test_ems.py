@@ -3640,6 +3640,126 @@ class TestWeeklyPriceReference:
         assert not result.tomorrow_scheduled_slots, result.tomorrow_scheduled_slots
 
 
+class TestEVNeed:
+    """The EV's own need: X kWh into the car by a time (options ev_need_kwh /
+    ev_ready_by).  Maintainer, 26 Oct 2026: "you need to charge your electric
+    car a few times a week" — with a comfortable home battery the Smart EV got
+    no slot at all, because it only rode along with the battery's charging.
+
+    Cheapest moments before the deadline, the home battery first: in a slot
+    where the battery charges from the grid the EV runs only at a current
+    that fits beside it under the grid limit; in its other slots the battery
+    is held, so it is not drained into the car."""
+
+    TODAY = [0.30] * 72 + [0.33] * 24
+    TOMORROW = [0.20] * 8 + [0.16] * 8 + [0.20] * 12 + [0.30] * 68
+
+    @staticmethod
+    def _ev():
+        return FlexibleLoadConfig(
+            enabled=True, name="EV", switch_entity="switch.ev", rated_power_kw=3.7,
+            current_entity="select.ev_current", current_steps=[6, 10, 13, 16, 20],
+            phases=1, voltage=230, default_current=16)
+
+    def _run(self, *, limit=18.0, soc=50.0, need=12.0, deadline=31.0, tomorrow=TOMORROW,
+             ref=None, hour=20, strategy="smart"):
+        cfg = default_config(
+            scheduler_engine="optimal", safe_power_kw=8.0, inverter_max_power_kw=10.0,
+            grid_limit_a=limit, inverter_phases=3, flexible_loads=[self._ev()],
+            battery_cycle_cost_eur_kwh=0.05, battery_discharge_min_pct=45.0,
+            efficiency=0.95, ev_charge_strategy=strategy)
+        st = default_state(
+            battery_soc_pct=soc, slot_prices_today=self.TODAY, slot_prices_tomorrow=tomorrow,
+            pv_hourly_kwh=make_pv_hourly(11.0), pv_forecast_today=11.0,
+            pv_forecast_remaining=0.0, pv_actual_today_kwh=11.0, pv_forecast_tomorrow=19.0,
+            current_hour=hour, current_minute=0, ev_need_kwh=need, ev_deadline_h=deadline,
+            price_reference_eur_kwh=ref)
+        return calculate_schedule(cfg, st)
+
+    @staticmethod
+    def _charge(slots):
+        return {i for i, a in slots.items() if a == "charge"}
+
+    def test_no_need_plans_nothing_extra(self):
+        r = self._run(need=0.0, soc=90.0)
+        assert r.ev_need == {} and not r.hold_slots and not r.tomorrow_hold_slots
+
+    def test_a_full_battery_leaves_the_cheapest_night_to_the_car(self):
+        r = self._run(soc=90.0)
+        assert not self._charge(r.tomorrow_scheduled_slots)
+        ev = set(r.ev_need["slots_tomorrow"])
+        assert set(range(8, 16)) <= ev                         # all of the 0.16
+        assert r.ev_need["planned_kwh"] >= 12.0 and r.ev_need["short_kwh"] == 0
+        assert max(TestEVNeed.TOMORROW[i] for i in ev) <= 0.20
+        assert ev == r.tomorrow_hold_slots                     # battery held, not drained
+        assert set(r.tomorrow_load_slots[0]) >= ev
+        assert all(i < 28 for i in ev)                         # before 07:00
+
+    def test_battery_first_the_car_is_not_squeezed_beside_a_battery_charge(self):
+        """18 A, battery charging at 8 kW (11.6 A a phase): a 16 A car does not
+        fit beside it — not even at 6 A under the 90 % margin — so the
+        battery keeps the 0.16 and the car takes the 0.20 hours."""
+        r = self._run(soc=50.0)
+        battery = self._charge(r.tomorrow_scheduled_slots)
+        assert set(range(8, 16)) <= battery
+        ev = set(r.ev_need["slots_tomorrow"])
+        assert not ev & battery
+        assert r.ev_need["planned_kwh"] >= 12.0
+        assert ev == r.tomorrow_hold_slots
+
+    def test_on_a_bigger_connection_the_car_charges_beside_the_battery(self):
+        r = self._run(soc=50.0, limit=32.0)
+        battery = self._charge(r.tomorrow_scheduled_slots)
+        ev = set(r.ev_need["slots_tomorrow"])
+        assert set(range(8, 16)) <= ev & battery
+        assert not (r.tomorrow_hold_slots & battery)           # no hold where it charges
+        assert all(r.tomorrow_load_currents[0][i] == 16 for i in ev)
+
+    def test_prices_not_out_yet_wait_when_today_is_dearer_than_the_week(self):
+        r = self._run(soc=90.0, tomorrow=None, ref=0.25, hour=10)
+        assert r.ev_need["planned_kwh"] == 0 and r.ev_need["waiting_kwh"] >= 12.0
+        assert not r.hold_slots and not r.load_slots.get(0)
+
+    def test_prices_not_out_yet_book_today_when_it_is_cheaper_than_the_week(self):
+        r = self._run(soc=90.0, tomorrow=None, ref=0.40, hour=10)
+        assert r.ev_need["planned_kwh"] >= 12.0
+        battery = self._charge(r.scheduled_slots)
+        assert r.ev_need["slots_today"] and not set(r.ev_need["slots_today"]) & battery
+
+    def test_a_need_that_cannot_be_met_takes_every_slot_and_says_so(self):
+        r = self._run(soc=90.0, need=50.0, deadline=23.0)       # 3 h left today
+        assert r.ev_need["short_kwh"] > 30
+        assert set(r.ev_need["slots_today"]) == set(range(80, 92))
+
+    def test_the_need_applies_whatever_the_strategy(self):
+        r = self._run(soc=90.0, strategy="solar_only")
+        assert r.ev_need["planned_kwh"] >= 12.0
+
+    def test_smart_ev_joins_a_battery_charge_only_where_it_fits(self):
+        """The overlay ran the Smart EV in every battery charge slot; on 18 A
+        safe power then cut the battery and shed the car — neither job done."""
+        tight = self._run(soc=50.0, need=0.0)
+        battery = self._charge(tight.tomorrow_scheduled_slots)
+        assert battery and not battery & set(tight.tomorrow_load_slots.get(0, {}))
+        roomy = self._run(soc=50.0, need=0.0, limit=32.0)
+        assert self._charge(roomy.tomorrow_scheduled_slots) <= set(roomy.tomorrow_load_slots[0])
+
+    def test_unknown_limit_keeps_the_old_overlay(self):
+        r = self._run(soc=50.0, need=0.0, limit=0.0)
+        assert self._charge(r.tomorrow_scheduled_slots) <= set(r.tomorrow_load_slots[0])
+
+    def test_override_charges_get_the_smart_ev_where_it_fits(self):
+        cfg = default_config(flexible_loads=[self._ev()], safe_power_kw=8.0,
+                             grid_limit_a=32.0, inverter_phases=3)
+        slots, currents = {}, {}
+        assert ems.add_ev_to_override_charges(cfg, slots, currents, [8, 9]) == [8, 9]
+        assert slots == {0: {8: True, 9: True}} and currents == {0: {8: 16, 9: 16}}
+        cfg.grid_limit_a = 18.0
+        assert ems.add_ev_to_override_charges(cfg, {}, {}, [8, 9]) == []
+        cfg.grid_limit_a, cfg.ev_charge_strategy = 32.0, "solar_only"
+        assert ems.add_ev_to_override_charges(cfg, {}, {}, [8, 9]) == []
+
+
 class TestBothModeFullCharge:
     """Both mode should charge to full capacity when profitable pairs exist."""
 

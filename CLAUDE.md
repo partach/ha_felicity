@@ -112,7 +112,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **2255**: 2253 pass + 2 documented skips; ~16 min, most of it `test_planner.py` and the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **2277**: 2275 pass + 2 documented skips; ~16 min, most of it `test_planner.py` and the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -595,7 +595,14 @@ the time the coordinator sees it, charging now is the correct action.
 |---|---|---|---|---|
 | charging | 1 | voltage_level (default 58V) | charge_max (default 100%) | safe_max_power (W) |
 | discharging | 2 | discharge_min_voltage (default 50V) | discharge floor (see below) | safe_max_power (W) |
+| holding | 1 | current SOC (≥ discharge min) | voltage_level | 1000 W |
 | idle | 0 | *(not written)* | *(not written)* | *(not written)* |
+
+`holding` (Oct 2026, Known Issues 8p): the EV charges for its own need and
+the battery must not feed it — a charge rule at the SOC the battery already
+has does not charge, and the grid feeds the house (the same "hold" a full
+battery under a charge rule has; unconfirmed at partial SOC on hardware).
+Self-heal and the midnight restamp cover it; safe power treats it as idle.
 
 **Economic-mode atomicity (all models)**: the inverter only obeys Rule 1
 when it's in "Economic mode".  The register differs by model: TREX-25/50 use
@@ -1833,6 +1840,11 @@ during (Oct 2026, issue #218 — see Known Issues 10 / 8j):
   is charging there or planned at its floor (`grid_fed_slots`).  A cheap slot
   the battery is not charging in would be served by the battery (self-use).
 - Negative-price slots
+- **The EV's own need** (Oct 2026, 8p): "EV Energy Needed" by "EV Ready By",
+  planned by `_plan_ev_need` in the cheapest slots before the deadline, the
+  battery first and HELD in the car's slots (state `holding`).  A battery
+  charge slot takes the EV only at a current that fits beside the battery
+  under the grid limit — for the overlay's charge-slot reason too.
 - PV-surplus slots that FIT the load: `_flex_pv_surplus_kw` = forecast PV ×
   today's confidence − the hourly consumption PROFILE, and the slot counts only
   when that covers the load's `min_power_kw` (lowest current step, else its
@@ -2082,6 +2094,9 @@ traces each setting from `config_entry.options` through to its consumers.
 | `scheduler_engine` | `scheduler_engine` | — | — | — | optimal (default) / greedy / milp; ems.py dispatches |
 | `ev_charge_strategy` | `ev_charge_strategy` | ✅ | ✅ | ✅ | Applied in flex-load overlay (runs after every engine) |
 | `flexible_load_*` | `flexible_loads` | ✅ | ✅ | ✅ | Applied in flex-load overlay (runs after every engine) |
+| `ev_need_kwh` / `ev_ready_by` | `EMSState.ev_need_kwh` / `ev_deadline_h` | ✅ | ✅ | ✅ | The EV's own need, `_plan_ev_need` after every engine (8p); remaining = asked − delivered |
+| `max_amperage_per_phase` | `grid_limit_a` | ✅ | ✅ | ✅ | Also used at plan time: the EV joins a battery charge only where it fits (8p) |
+| n/a | `inverter_phases` | ✅ | ✅ | ✅ | From INVERTER_PHASES[model] |
 | n/a | `yesterday_deficit_kwh` | implicit | ✅ | implicit | current_kwh already reflects yesterday's shortfall |
 | n/a | `inverter_max_power_kw` | ✅ | ✅ | ✅ | From INVERTER_MAX_POWER_KW[model], not a user setting |
 
@@ -3287,6 +3302,66 @@ forecast; when the horizon already includes tomorrow, tomorrow's forecast
 stands in for the day after.  The weekly price is greedy/MILP-blind (only
 the exact planner uses it).
 
+### 8p. The car never got a slot; an EV need ("X kWh by HH:MM") — ADDED (26 Oct 2026)
+
+Maintainer's card, Monday 14:30 (60 kWh at 83 %, floor 45 %, 18 A, 16 A
+one-phase Phoenix): 0/1 loads active, no EV slots today or tomorrow —
+"you need to charge your electric car a few times a week … what is best
+here?"  The Smart EV only ever rode along (battery charge slots, grid-fed
+cheap slots, sun, negative prices), so a comfortable battery meant no car.
+Maintainer: "home battery always first"; chose "kWh plus ready-by time".
+
+**Design** (ems.py, single source of truth):
+- `_plan_ev_need`: `EMSState.ev_need_kwh` before `ev_deadline_h`; cheapest
+  known slots first (equal → earliest); hours whose prices are not out
+  stand in at the week's price (`price_reference_eur_kwh`, else the mean of
+  the known prices) — cheaper-looking unknown hours make it wait for them.
+- **Battery first**: a battery charge slot takes the car only at a step that
+  fits beside the battery at 90 % of `grid_limit_a`
+  (`_ev_room_beside_charge_a` / `_ev_amps_that_fit`); a sell slot never.
+  The overlay got the same rule for the Smart EV's "battery charge slot"
+  reason — on 18 A / 8 kW it used to run there and be shed by safe power.
+- **Hold**: the car's other slots are `hold_slots` → coordinator state
+  `holding` (rule 1 charge at the current SOC, 1 kW).  Without it the
+  battery fed the car in self-use.
+- `result.ev_need` (planned / waiting for prices / short) → `schedule_status.ev_need`
+  → a line under the EV in the card's Flexible Loads panel.
+- `add_ev_to_override_charges`: manual override charges get the Smart EV
+  too (the overlay ran before the merge and never saw them).
+
+**Coordinator**: options `ev_need_kwh` (number "EV Energy Needed") and
+`ev_ready_by` (time "EV Ready By", `time.HA_FelicityOptionTime`);
+`_track_ev_need` estimates what goes in (set current × V × phases while the
+switch is on — a charger on without a car still counts, the safe
+direction), persists it with the boost store, and clears the option when
+met.  Remaining need and deadline are in the skip-recalc hash.
+
+**Found on the way:** `flexible_load_1_current_steps` typed with units
+("6 A,10 A,…" — the maintainer's own config) parsed as NO steps, so current
+stepping had been off; any digits per item now count.  And Download
+diagnostics now carries a `planner` snapshot (prices, week's price and
+history, profile, plan, reason, EV need) — the 26 Oct question "why no
+charge last night?" could not be answered from registers alone.
+
+**First replay run caught**: `holding` was only returned when the plan had
+at least one battery slot — once the battery stopped charging, a hold slot
+fell through to "no slot data" → idle, the battery fed the car, its SOC
+fell, the plan put the battery charge back: charge/idle every few minutes.
+`_hold_or_idle` now decides independently.
+
+Pinned by `TestEVNeed` (test_ems), `TestEVNeedCoordinator` (test_coordinator),
+`test_an_ev_need_is_met_by_morning_without_draining_the_battery` (replay,
+battery at 90 % and 55 %; mutation-checked: no hold → both fail) and the
+`ev_need_weeknight_full_battery` scenario.
+
+**Known limits / open:** the battery plan does not model the holds (the
+battery ends fuller than planned; the next re-plan uses the real SOC); the
+battery's own buying — incl. storing for the coming days at the week's
+price — comes before the car, so with a half-empty battery the car can land
+in dearer slots (55 % replay: 20 min at 0.33 before the cheap night);
+manual price mode does not plan the need; the delivered energy is an
+estimate (no charger power entity yet).
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -3866,7 +3941,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**2255 tests**: 2253 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**2277 tests**: 2275 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

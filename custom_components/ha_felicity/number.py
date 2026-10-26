@@ -269,6 +269,21 @@ async def async_setup_entry(
         ),
     ])
 
+    # The EV's own need: this many kWh into the car by "EV Ready By" (time
+    # entity).  The EMS books the cheapest moments for it, the home battery
+    # first; it counts down as the car charges and clears itself when met.
+    ev_need = HA_FelicityInternalNumber(
+        coordinator, entry,
+        option_key="ev_need_kwh",
+        name="EV Energy Needed",
+        min_val=0, max_val=100, step=1,
+        unit="kWh", icon="mdi:car-electric",
+        default_value=0,
+        requires_option="flexible_load_1_current_entity",
+    )
+    ev_need._attr_entity_category = None      # a control, not a setting
+    entities.append(ev_need)
+
     # Tie all entities to the device
     for entity in entities:
         entity._attr_device_info = device_info

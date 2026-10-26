@@ -2534,6 +2534,7 @@ class FelicityEMSCard extends LitElement {
   _renderFlexLoads(configs) {
     if (!configs || configs.length === 0) return html``;
     const evBoost = this._getAttr("schedule_status", "ev_boost_active") || false;
+    const evNeed = this._getAttr("schedule_status", "ev_need");
     const totalActive = configs.reduce((a, c) => a + (c.active_power_kw || 0), 0);
     const anyOn = configs.some((c) => c.on);
 
@@ -2573,6 +2574,7 @@ class FelicityEMSCard extends LitElement {
                   ${c.is_ev && c.on && c.current_a != null ? html`
                     <div class="load-sub">${c.current_a} A · ${c.phases}φ · ${c.voltage} V</div>
                   ` : ''}
+                  ${c.is_ev && evNeed ? this._renderEvNeed(evNeed) : ''}
                 </div>
                 <div class="load-prio ${pi.cls}"
                   title="Order loads are switched off when grid current is too high">
@@ -2585,6 +2587,20 @@ class FelicityEMSCard extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  // The EV's own need (schedule_status.ev_need): what is still needed by when,
+  // and how the plan covers it.  The battery is held in the car's slots.
+  _renderEvNeed(n) {
+    const slots = (n.slots_today || []).length + (n.slots_tomorrow || []).length;
+    const parts = [`${this._fmt(n.remaining_kwh, 1)} of ${this._fmt(n.asked_kwh, 0)} kWh by ${n.ready_by}`];
+    if (slots) parts.push(`${slots} slot${slots === 1 ? "" : "s"} planned (up to ${this._fmt(n.max_price, 3)})`);
+    if (n.waiting_kwh > 0.05) parts.push(`${this._fmt(n.waiting_kwh, 1)} kWh waits for tomorrow's prices`);
+    const short = n.short_kwh > 0.05;
+    if (short) parts.push(`${this._fmt(n.short_kwh, 1)} kWh short`);
+    return html`<div class="load-need ${short ? 'short' : ''}"
+      title="The cheapest moments before the deadline; the home battery first, and held while the car charges">
+      <ha-icon icon="mdi:car-clock"></ha-icon> ${parts.join(" · ")}</div>`;
   }
 
   // Live preview: update local override and redraw immediately
@@ -2897,6 +2913,10 @@ class FelicityEMSCard extends LitElement {
       .badge.charging { background: #4CAF50; color: #fff; }
       .badge.discharging { background: #FF9800; color: #fff; }
       .badge.idle { background: var(--secondary-background-color); color: var(--secondary-text-color); }
+      .badge.holding { background: #26A69A; color: #fff; }
+      .load-need { font-size: 11px; color: var(--secondary-text-color); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+      .load-need ha-icon { --mdc-icon-size: 14px; color: #00BCD4; }
+      .load-need.short { color: #FF9800; }
       .badge.unknown { background: var(--secondary-background-color); color: var(--secondary-text-color); }
       .badge.schedule-active { background: #2196F3; color: #fff; }
       .badge.schedule-waiting { background: #607D8B; color: #fff; }

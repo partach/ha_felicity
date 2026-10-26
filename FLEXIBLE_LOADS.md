@@ -68,10 +68,12 @@ After assigning a switch entity, these configuration entities become available o
 
 | Entity | Type | Range | Default | Description |
 |---|---|---|---|---|
-| **Current Steps** | Text | — | *(empty)* | Comma-separated list of available charging currents your charger supports, in Amps. Example: `6,10,13,16,20,25`. The integration uses this list to step the current up or down. |
+| **Current Steps** | Text | — | *(empty)* | Comma-separated list of available charging currents your charger supports, in Amps. Example: `6,10,13,16,20,25` (units are fine: `6 A,10 A,16 A`). The integration uses this list to step the current up or down. |
 | **Phases** | Number | 1 – 3 | 1 | Number of phases the charger uses. Together with voltage, this determines the power at each current step: `power = amps × voltage × phases / 1000`. |
 | **Voltage** | Number | 110 – 400 V | 230 | Supply voltage at the charger. |
 | **Default Current** | Number | 6 – 32 A | 16 | The current the integration sets when it turns the charger on during a scheduled slot. |
+| **EV Energy Needed** | Number | 0 – 100 kWh | 0 | What the car needs, see *The car's own need* below. Counts down as the car charges and goes back to 0 when met. |
+| **EV Ready By** | Time | — | 07:00 | When the car must have it. A time already past today means tomorrow. |
 
 ---
 
@@ -93,6 +95,19 @@ When the slot ends (or none of the above conditions are met), the integration tu
 Load scheduling is calculated **after** the battery schedule. Loads do not affect the battery plan — they are additive consumption. The battery will charge in the same slots regardless of whether loads are on.
 
 This means: if electricity is cheap, both the battery charges **and** your loads run. Maximum benefit from the same cheap window.
+
+**The home battery comes first.** An EV joins a battery charge slot only at a current that fits beside the battery under your *Max Amperage Per Phase* (90 % of it, like Safe Power). On an 18 A connection with an 8 kW Power Level the battery alone takes ~11.6 A per phase, so a 16 A one-phase charger is not planned there at all — otherwise Safe Power would cut the battery and then shed the car, and neither would charge properly.
+
+### The car's own need — "X kWh by HH:MM"
+
+The overlay only lets the car ride along with the battery, the sun or negative prices. With a comfortable battery that can mean no slot for the car at all. Set **EV Energy Needed** (kWh into the car) and **EV Ready By** and the EMS plans the car itself, on top of everything above:
+
+- It books the **cheapest moments before the deadline**. If tomorrow's prices are not published yet, it compares today's prices with this week's average: when today is dearer it waits for tomorrow's prices, otherwise it books today.
+- **The battery first**: the car gets a slot where the battery charges only if it fits beside it (see above), and never one where the battery sells.
+- **The battery is held while the car charges for its need**: the integration sets a Rule 1 charge at the battery's current SOC (energy state **holding**), so the grid — not the battery — feeds the house and the car. The battery is not drained into the car.
+- **It counts down** while the charger is on (estimated from the set current × voltage × phases — a charger that is on without a car still counts) and resets **EV Energy Needed** to 0 when the need is met.
+- If the need cannot be met before the deadline, every possible slot is booked and the card says how much is short.
+- It applies whatever the EV Charge Strategy, in auto price mode. EV Boost still overrides it.
 
 ---
 
@@ -158,8 +173,9 @@ When at least one load is configured:
 - **"loads"** entry in the chart legend.
 - **"N/M loads active"** in the stats row (e.g., "2/3 loads active" means 2 out of 3 configured loads are currently on).
 - **EV Boost banner** (when active) with countdown timer above the chart.
+- **The car's need** under the EV charger in the Flexible Loads panel: *"8.4 of 12 kWh by 07:00 · 10 slots planned (up to 0.200)"*, plus how much waits for tomorrow's prices or is short.
 
-Load schedule data (`flex_load_schedule`, `flex_load_states`, `flex_load_configs`) is available in the `schedule_status` sensor attributes for use in automations.
+Load schedule data (`flex_load_schedule`, `flex_load_states`, `flex_load_configs`, `ev_need`) is available in the `schedule_status` sensor attributes for use in automations.
 
 ---
 

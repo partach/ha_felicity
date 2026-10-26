@@ -151,6 +151,11 @@ class EMSConfig:
     # the MILP first and silently falls back to greedy on any failure
     # (pulp missing, infeasible, timeout).
     scheduler_engine: str = "optimal"
+    # The grid connection's limit per phase (A; 0 = not known) and the
+    # inverter's phase count.  An EV is planned beside a battery charge only
+    # where both fit under the limit — the battery first.
+    grid_limit_a: float = 0.0
+    inverter_phases: int = 3
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -207,6 +212,10 @@ class EMSState:
     # the round-trip loss, so a day clearly cheaper than the week fills the
     # battery; None (no history yet) keeps that energy worth nothing.
     price_reference_eur_kwh: float | None = None
+    # What the EV still needs (kWh into the car) and by when, in hours after
+    # today's midnight (31.0 = tomorrow 07:00).  0 / None: no need set.
+    ev_need_kwh: float = 0.0
+    ev_deadline_h: float | None = None
 
 
 @dataclass
@@ -236,6 +245,13 @@ class ScheduleResult:
     # forecast surplus; elsewhere its default current.
     load_currents: dict[int, dict[int, int]] = field(default_factory=dict)
     tomorrow_load_currents: dict[int, dict[int, int]] = field(default_factory=dict)
+    # Slots where the battery is held (neither charged nor discharged; the
+    # grid feeds the house) because the EV charges for its need there — so
+    # the home battery is never drained into the car.
+    hold_slots: set[int] = field(default_factory=set)
+    tomorrow_hold_slots: set[int] = field(default_factory=set)
+    # The EV need's plan, for the card (empty when no need is set).
+    ev_need: dict = field(default_factory=dict)
     # True when soc_trajectory / tomorrow_soc_trajectory already come from the
     # exact planner's own simulation of exactly this schedule.
     plan_trajectory_exact: bool = False
@@ -1430,6 +1446,182 @@ def _select_discharges_for_pv_headroom(
     return discharge
 
 
+# Safe power aims a phase at 90 % of the limit (coordinator.SAFE_POWER_TARGET);
+# the EV is planned against the same margin.
+EV_PLAN_LIMIT_SHARE = 0.9
+
+
+def _ev_room_beside_charge_a(config: EMSConfig) -> float | None:
+    """Current per phase left for an EV while the battery charges from the
+    grid at the Power Level, or None when the grid limit is not known.
+
+    The battery's power is spread over the inverter's phases; a one-phase EV
+    sits on one of them.  The house is not in it (unknown per phase) — that
+    is what the 10 % margin is for.
+    """
+    if config.grid_limit_a <= 0:
+        return None
+    battery_a = config.safe_power_kw * 1000.0 / (230.0 * max(1, config.inverter_phases))
+    return EV_PLAN_LIMIT_SHARE * config.grid_limit_a - battery_a
+
+
+def _ev_amps_that_fit(load: FlexibleLoadConfig, room_a: float | None) -> int | None:
+    """The highest current the EV may run at under ``room_a`` amps per phase:
+    its default current or the step below that fits; None when not even its
+    lowest step fits.  ``room_a`` None means no limit is known."""
+    normal = load.nearest_step_at_or_below(load.default_current) or load.default_current
+    if room_a is None:
+        return normal
+    steps = sorted(load.current_steps) or [normal]
+    fitting = [a for a in steps if a <= normal and a <= room_a + 1e-9]
+    return max(fitting) if fitting else None
+
+
+def _plan_ev_need(
+    config: EMSConfig,
+    state: EMSState,
+    result: ScheduleResult,
+    current_slot: int,
+) -> None:
+    """Plan the EV's own need: ``state.ev_need_kwh`` into the car before
+    ``state.ev_deadline_h``, in the cheapest moments — the battery first.
+
+    Candidates are every slot from now to the deadline whose price is known.
+    Hours before the deadline whose prices are not published yet stand in at
+    this week's typical price (else the mean of the known prices): if they
+    look cheaper, the plan waits for them; when their prices arrive the next
+    plan books them for real.  Cheapest first, equal prices earliest.
+
+    Battery first: a slot where the battery charges from the grid takes the
+    EV only at a current that fits beside it under the grid limit, and a slot
+    where the battery sells never.  In the EV's other slots the battery is
+    HELD (``hold_slots``) — the grid feeds the house and the car, the battery
+    is not drained into the car.
+
+    Fills ``result.load_slots`` / ``load_currents`` (and tomorrow's), the hold
+    slots and ``result.ev_need`` for the card.
+    """
+    need = state.ev_need_kwh or 0.0
+    deadline = state.ev_deadline_h
+    found = next(((i, ld) for i, ld in enumerate(config.flexible_loads)
+                  if ld.enabled and ld.switch_entity and ld.is_ev_charger), None)
+    if found is None or need <= 0.05 or deadline is None:
+        return
+    ev_idx, ev = found
+    now_h = state.current_hour + state.current_minute / 60.0
+    room = _ev_room_beside_charge_a(config)
+    days = [(0, state.slot_prices_today or [], result.scheduled_slots, current_slot)]
+    if state.slot_prices_tomorrow:
+        days.append((1, state.slot_prices_tomorrow, result.tomorrow_scheduled_slots, 0))
+
+    # (price, start_h, day, slot, amps, kWh) — day None: not priced yet
+    candidates: list[tuple] = []
+    known_end = 0.0
+    known_prices: list[float] = []
+    for day, prices, plan, first in days:
+        n = len(prices)
+        if n == 0:
+            continue
+        slot_h = 24.0 / n
+        known_end = day * 24.0 + 24.0
+        known_prices += [p for p in prices if p is not None]
+        for i in range(first, n):
+            t0 = max(day * 24.0 + i * slot_h, now_h)
+            t1 = min(day * 24.0 + (i + 1) * slot_h, deadline)
+            if t1 - t0 <= 1e-6 or prices[i] is None:
+                continue
+            action = plan.get(i)
+            if action == "discharge":
+                continue
+            amps = _ev_amps_that_fit(ev, room if action == "charge" else (
+                None if room is None else EV_PLAN_LIMIT_SHARE * config.grid_limit_a))
+            if amps is None:
+                continue
+            kwh = ev.power_at_current(amps) * (t1 - t0)
+            candidates.append((prices[i], t0, day, i, amps, kwh))
+    unknown_h = deadline - max(known_end, now_h)
+    if unknown_h > 1e-6:
+        ref = state.price_reference_eur_kwh
+        if ref is None:
+            ref = sum(known_prices) / len(known_prices) if known_prices else 0.0
+        amps = _ev_amps_that_fit(ev, None if room is None
+                                 else EV_PLAN_LIMIT_SHARE * config.grid_limit_a)
+        if amps is not None:
+            candidates.append((ref, max(known_end, now_h), None, None, amps,
+                               ev.power_at_current(amps) * unknown_h))
+
+    planned = waiting = 0.0
+    chosen = []
+    for price, _t0, day, i, amps, kwh in sorted(candidates, key=lambda c: (c[0], c[1])):
+        if planned + waiting >= need - 1e-6:
+            break
+        if day is None:
+            waiting += min(kwh, need - planned - waiting)
+            continue
+        chosen.append((day, i, amps, price))
+        planned += kwh
+
+    for day, i, amps, _price in chosen:
+        slots = result.load_slots if day == 0 else result.tomorrow_load_slots
+        currents = result.load_currents if day == 0 else result.tomorrow_load_currents
+        plan = result.scheduled_slots if day == 0 else result.tomorrow_scheduled_slots
+        slots.setdefault(ev_idx, {})[i] = True
+        if ev.current_steps:
+            currents.setdefault(ev_idx, {})[i] = amps
+        if plan.get(i) != "charge":
+            (result.hold_slots if day == 0 else result.tomorrow_hold_slots).add(i)
+
+    short = max(0.0, need - planned - waiting)
+    result.ev_need = {
+        "need_kwh": round(need, 2),
+        "deadline_h": round(deadline, 2),
+        "planned_kwh": round(min(planned, need), 2),
+        "waiting_kwh": round(waiting, 2),
+        "short_kwh": round(short, 2),
+        "slots_today": sorted(i for d, i, _a, _p in chosen if d == 0),
+        "slots_tomorrow": sorted(i for d, i, _a, _p in chosen if d == 1),
+        "max_price": round(max((p for *_x, p in chosen), default=0.0), 4),
+    }
+    _LOGGER.debug("EV need %.1f kWh by %.2f h: %.1f planned in %d slot(s), %.1f "
+                  "waiting for prices, %.1f short", need, deadline, planned,
+                  len(chosen), waiting, short)
+
+
+def add_ev_to_override_charges(
+    config: EMSConfig,
+    load_slots: dict[int, dict[int, bool]],
+    load_currents: dict[int, dict[int, int]],
+    charge_slots: list[int],
+) -> list[int]:
+    """Give manual override charge slots the Smart EV a planned charge slot gets.
+
+    Overrides are merged by the coordinator AFTER calculate_schedule, so the
+    overlay never saw them: a night charged by hand left the car off.  Same
+    rule as the overlay — the EV joins only at a current that fits beside the
+    battery under the grid limit.  Mutates ``load_slots`` / ``load_currents``
+    and returns the slots added.
+    """
+    if config.ev_charge_strategy != "smart":
+        return []
+    found = next(((i, ld) for i, ld in enumerate(config.flexible_loads)
+                  if ld.enabled and ld.switch_entity and ld.is_ev_charger), None)
+    if found is None:
+        return []
+    ev_idx, ev = found
+    amps = _ev_amps_that_fit(ev, _ev_room_beside_charge_a(config))
+    if amps is None:
+        return []
+    added = []
+    for slot in charge_slots:
+        if slot in load_slots.get(ev_idx, {}):
+            continue
+        load_slots.setdefault(ev_idx, {})[slot] = True
+        if ev.current_steps:
+            load_currents.setdefault(ev_idx, {})[slot] = amps
+        added.append(slot)
+    return added
+
+
 def _schedule_flexible_loads(
     loads: list[FlexibleLoadConfig],
     remaining: list[tuple[int, float]],
@@ -1440,6 +1632,7 @@ def _schedule_flexible_loads(
     pv_surplus_kw: dict[int, float] | None = None,
     currents_out: dict[int, dict[int, int]] | None = None,
     grid_fed_slots: set[int] | None = None,
+    room_beside_charge_a: float | None = None,
 ) -> dict[int, dict[int, bool]]:
     """Schedule flexible loads into cheap or PV-surplus slots.
 
@@ -1467,6 +1660,12 @@ def _schedule_flexible_loads(
     floor.  In any other slot the inverter runs in self-use, so a load switched
     on for a cheap price is served by the battery instead and the cheap price is
     never paid — the battery is, and refilled later at a round-trip loss.
+
+    ``room_beside_charge_a``, when given, is the current per phase left for an
+    EV in a slot where the battery charges from the grid (see
+    _ev_room_beside_charge_a).  The battery comes first: the EV joins a charge
+    slot only at a current step that fits there — otherwise safe power cuts
+    the battery and then sheds the EV, and the slot does neither job well.
 
     ``currents_out``, when given, receives the planned current per slot for
     each charger with current steps: in a slot it runs for the sun alone, the
@@ -1513,9 +1712,18 @@ def _schedule_flexible_loads(
             else:  # smart
                 active = is_cheap or is_pv_surplus or is_negative or already_charging
 
+            fit_amps = None
+            if (active and load.is_ev_charger and already_charging
+                    and room_beside_charge_a is not None and strategy != "always_on"):
+                fit_amps = _ev_amps_that_fit(load, room_beside_charge_a)
+                if fit_amps is None and not (is_pv_surplus or is_negative):
+                    active = False
+
             if active:
                 load_schedule[slot_idx] = True
-                if stepped:
+                if fit_amps is not None and stepped:
+                    load_currents[slot_idx] = fit_amps
+                elif stepped:
                     default = load.nearest_step_at_or_below(load.default_current) or load.default_current
                     amps = default
                     solar_only_reason = (
@@ -3431,6 +3639,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
         traj = result.soc_trajectory or []
         grid_fed |= {i for i, _ in remaining
                      if i < len(traj) and traj[i] is not None and traj[i] <= floor_pct}
+        room_beside_charge = _ev_room_beside_charge_a(config)
         result.load_slots = _schedule_flexible_loads(
             config.flexible_loads,
             remaining,
@@ -3440,6 +3649,7 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             pv_surplus_kw=pv_surplus_kw,
             currents_out=result.load_currents,
             grid_fed_slots=grid_fed,
+            room_beside_charge_a=room_beside_charge,
         )
 
         # Tomorrow's flex load schedule (same strategy, tomorrow's data).
@@ -3472,7 +3682,11 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
                 pv_surplus_kw=tmr_surplus_kw,
                 currents_out=result.tomorrow_load_currents,
                 grid_fed_slots=tmr_grid_fed,
+                room_beside_charge_a=room_beside_charge,
             )
+
+        # The EV's own need (kWh by a time), on top of the overlay above.
+        _plan_ev_need(config, state, result, current_slot)
 
     return result
 
