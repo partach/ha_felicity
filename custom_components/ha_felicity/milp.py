@@ -67,6 +67,14 @@ _MILP_DISABLED_REASON = ""
 _MILP_SOLVER_NAME = ""      # solver actually used, e.g. "PULP_CBC_CMD"
 _MILP_LAST_ERROR = ""       # most recent non-fatal failure (infeasible, timeout…)
 _MILP_SOLVERS_TRIED: list[str] = []   # probe results from the last _pick_solver
+# Solvers that passed .available() but whose program would not start (name →
+# why).  pulp's bundled CBC is a glibc binary: inside Home Assistant OS's
+# Alpine (musl) container the file exists and is executable, so .available()
+# says yes, and starting it fails with "No such file or directory" (the
+# missing glibc loader).  Such a solver is skipped from then on, and the next
+# one (HiGHS, which runs in-process) is tried — it used to switch MILP off for
+# the whole session even with a working solver installed.
+_BROKEN_SOLVERS: dict[str, str] = {}
 
 
 def milp_status() -> dict[str, Any]:
@@ -120,6 +128,9 @@ def _pick_solver(pulp):
     tried: list[str] = []
 
     def _try(name: str, **kw):
+        if name in _BROKEN_SOLVERS:
+            tried.append(f"{name}(broken: {_BROKEN_SOLVERS[name]})")
+            return None
         cls = getattr(pulp, name, None)
         if cls is None:
             # Not even present in this pulp build.  PULP_CBC_CMD is deprecated
@@ -166,10 +177,10 @@ def _pick_solver(pulp):
 
     _MILP_SOLVERS_TRIED = tried
     _LOGGER.warning(
-        "MILP found no usable LP solver. Probed: %s. Install one with "
-        "`pip install pulp[cbc]` (CBC) or `pip install pulp[highs]` (HiGHS) "
-        "in the Home Assistant environment, then restart HA. "
-        "Greedy is fully functional in the meantime.",
+        "MILP found no usable LP solver. Probed: %s. Install HiGHS with "
+        "`pip install highspy` in the Home Assistant environment (on Home "
+        "Assistant OS the integration does this itself while the engine is "
+        "MILP), then restart HA.  The exact planner runs in the meantime.",
         ", ".join(tried) or "nothing",
     )
     return None
@@ -471,16 +482,26 @@ def _solve(
         + pulp.lpSum(early * k * c[k] for k in range(K))                   # charge earlier (tie-break)
     )
 
-    solver = _pick_solver(pulp)
-    if solver is None:
-        # No usable LP solver on this platform — structural, so the caller
-        # disables MILP for the session (one warning, greedy runs).  Reuse the
-        # FileNotFoundError path in solve_schedule for the flag + message.
-        raise FileNotFoundError(
-            "no available LP solver — pulp's bundled CBC binary is missing and "
-            "no system CBC (COIN_CMD) was found"
-        )
-    prob.solve(solver)
+    while True:
+        solver = _pick_solver(pulp)
+        if solver is None:
+            # No usable LP solver on this platform — structural, so the caller
+            # disables MILP for the session (one warning, the planner runs).
+            # Reuse the FileNotFoundError path in solve_schedule for the flag.
+            raise FileNotFoundError(
+                "no LP solver that runs here — tried "
+                + (", ".join(_MILP_SOLVERS_TRIED) or "nothing")
+                + "; install HiGHS: pip install highspy"
+            )
+        try:
+            prob.solve(solver)
+            break
+        except (FileNotFoundError, PermissionError, OSError) as err:
+            # Its program would not start (see _BROKEN_SOLVERS): skip it and
+            # try the next one.  Each failure removes a candidate, so this ends.
+            _BROKEN_SOLVERS[_MILP_SOLVER_NAME] = f"{type(err).__name__}: {err}"
+            _LOGGER.warning("MILP solver %s will not start here (%s) — trying the next",
+                            _MILP_SOLVER_NAME, err)
 
     status = pulp.LpStatus[prob.status]
     if status != "Optimal":

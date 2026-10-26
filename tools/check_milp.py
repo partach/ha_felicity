@@ -22,10 +22,11 @@ import platform
 import sys
 
 FIX_CBC = (
-    "    pip install 'pulp[cbc]'        # CBC via the cbcbox package\n"
-    "  or\n"
-    "    pip install 'pulp[highs]'      # HiGHS — pure pip wheel, no system libs\n"
-    "  then RESTART Home Assistant (the solver is re-checked only at startup)."
+    "    pip install highspy            # HiGHS — runs in-process, musl + glibc wheels\n"
+    "  then RESTART Home Assistant (the solver is re-checked only at startup).\n"
+    "  On Home Assistant OS the integration installs HiGHS itself at startup\n"
+    "  while the engine is MILP.  CBC (pulp's bundled binary or 'pulp[cbc]')\n"
+    "  is built for glibc and cannot start in HA OS's Alpine (musl) container."
 )
 
 

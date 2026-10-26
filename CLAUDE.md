@@ -602,6 +602,26 @@ ARM. `_pick_solver` already probes `HiGHS`/`HiGHS_CMD` after the two CBC
 variants — HiGHS is a pure pip wheel (`pip install pulp[highs]`), so it is the
 easiest solver to add inside an HA container.
 
+**MILP on Home Assistant OS (Oct 2026, maintainer's diagnostics: HA OS 18.3,
+Python 3.14, x86_64, `state: disabled`, `tried: []`).**  The bundled CBC is a
+glibc binary; HA's container is Alpine (musl).  The file exists and is
+executable, so `PULP_CBC_CMD.available()` says yes, and starting it fails with
+`FileNotFoundError` (the missing glibc loader).  That used to disable MILP for
+the session WITHOUT trying another solver — so installing one changed nothing.
+Now `_solve` marks such a solver broken (`_BROKEN_SOLVERS`, shown in `tried`
+as `NAME(broken: …)`) and takes the next.  `pulp[cbc]` (cbcbox) ships glibc
+builds only — same failure; HiGHS (`highspy`) has musl wheels (cp314
+musllinux x86_64/aarch64 on PyPI) and runs in-process.  While the engine is
+`milp`, `__init__.async_ensure_lp_solver` installs `highspy` at setup through
+HA's own requirement installer (before the first refresh — pulp detects HiGHS
+once, at import), so it survives HA updates that replace the container.
+Deliberately NOT a manifest requirement: a failed install there stops the
+integration loading (no wheel on 32-bit ARM).  Pinned by
+`test_a_solver_that_will_not_start_is_skipped_for_the_next` (test_ems) and
+`tests/test_milp_solver_install.py`.  **Recommendation stays: `optimal` for
+from_grid** — it is exact and uses the week's price, which MILP does not; MILP
+is for to_grid / both.
+
 **Diagnosing "Greedy (fallback)"** (`milp.milp_status()`): the engine can fail
 four distinct ways — pulp missing, no runnable solver, the solver binary absent
 despite `.available()`, or a non-Optimal solve. Each logged ONE warning and then

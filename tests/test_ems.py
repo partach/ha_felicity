@@ -5296,6 +5296,40 @@ class TestMILPStatusDiagnosis:
             f"probed {probes['n']}× — the permanent-disable flag is not holding"
         )
 
+    def test_a_solver_that_will_not_start_is_skipped_for_the_next(self, monkeypatch):
+        """Home Assistant OS, Python 3.14 (maintainer's diagnostics, 26 Oct
+        2026): pulp's bundled CBC is a glibc binary in a musl container — the
+        file exists, so .available() says yes, and starting it fails with
+        FileNotFoundError.  That switched MILP off for the session even with
+        a working solver installed (``tried: []``).  Now it is marked broken
+        and the next solver runs."""
+        pulp = pytest.importorskip("pulp")
+        mod = self._fresh_milp()
+        bundled = pulp.PULP_CBC_CMD.pulp_cbc_path
+
+        def wont_start(self, lp, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory", bundled)
+
+        class SystemCbc(pulp.COIN_CMD):          # stands in for the next solver
+            def __init__(self, **kw):
+                super().__init__(path=bundled, **kw)
+
+        monkeypatch.setattr(pulp.PULP_CBC_CMD, "actualSolve", wont_start)
+        monkeypatch.setattr(pulp, "COIN_CMD", SystemCbc)
+        out = mod.solve_schedule(
+            EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10,
+                      safe_power_kw=5, scheduler_engine="milp"),
+            EMSState(battery_soc_pct=30.0, slot_prices_today=[0.1] * 24,
+                     pv_hourly_kwh={}, current_hour=0),
+            remaining=[(i, 0.1) for i in range(24)],
+            current_kwh=3.0, num_slots=24, current_slot=0,
+            minutes_per_slot=60.0, reserve_target=5.0, pv_confidence=1.0,
+        )
+        assert out is not None
+        st = mod.milp_status()
+        assert st["state"] == "active" and st["solver"] == "COIN_CMD", st
+        assert any(t.startswith("PULP_CBC_CMD(broken") for t in st["tried"]), st
+
     def test_reports_active_and_names_the_solver(self):
         """A healthy run must report which solver is doing the work."""
         pytest.importorskip("pulp")
