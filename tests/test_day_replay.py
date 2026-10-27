@@ -909,6 +909,11 @@ def _weekend(weekly_price: float | None):
                          "daily_consumption_estimate": 48},
                 soc=50.0, start=day(SAT, 20, 30), prices_for=WEEK, capacity_kwh=60.0,
                 load_kw=lambda _t: 2.0, switched_loads={EV: 3.7})
+    # The inverter's own self-use floor sits just under the EMS's (as on the
+    # real unit, see the 22 Oct test below) — at the harness default of 10 %
+    # Sunday's house would drain 9 kWh the planner, which starts a battery
+    # below the floor at the floor, does not know is missing.
+    r.inverter.self_use_floor_pct = 24.5
     if weekly_price is not None:      # what the coordinator remembered of the week
         r.coordinator._daily_price_history = [
             {"date": (SAT - timedelta(days=k)).isoformat(), "mean": weekly_price}
@@ -943,7 +948,12 @@ async def test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follow
 
     battery, ev = _planned_tomorrow(r)
     battery_before, _ = _planned_tomorrow(without)
-    assert len(battery) >= 30 > 2 * len(battery_before), (len(battery), len(battery_before))
+    assert len(battery) > 2 * len(battery_before), (len(battery), len(battery_before))
+    # Saturday's plan already fills the battery by Sunday night; without the
+    # week's price it bought only for Sunday's night.
+    full = r.coordinator._backend_soc_trajectory_tomorrow[-1]
+    night_only = without.coordinator._backend_soc_trajectory_tomorrow[-1]
+    assert full >= 95 > night_only + 30, (full, night_only)
     assert ev == battery, "the EV is planned in the battery's charge slots"
     assert "this week's average 0.255" in r.coordinator.schedule_reason
 

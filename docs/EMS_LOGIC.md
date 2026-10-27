@@ -31,10 +31,27 @@ behaviour, the simulator is the gate that decides whether you were right.
      so a battery can never empty faster than the rating allows — PV fills
      it, PV beyond full is spilled,
      below the discharge floor the house buys from the grid **at that step's
-     price**; a step may charge anything from nothing to a full step at the
-     Power Level (the coordinator re-plans while it runs and stops when the
-     plan has enough); grid energy stored loses (1 − efficiency); cycle cost
-     per stored kWh (≥ 0.05 for Battery Care);
+     price**; a step may charge for any share of it, from nothing to the
+     whole step at the Power Level (the coordinator re-plans while it runs
+     and stops when the plan has enough); grid energy stored loses
+     (1 − efficiency); cycle cost per stored grid kWh (≥ 0.05 for Battery
+     Care);
+   - **while rule 1 charges, the house runs on the grid** (26 Oct 2026):
+     charging for a share f of a step stores f × grid × eff AND keeps
+     f × the house's draw on the battery (after PV) off it, for
+     f × (grid + draw) kWh bought.  So a charge step above the floor is also
+     a *hold*: with the house drawing much more than the Power Level it
+     costs barely more than the price per kWh it keeps, and a cheap-ish hour
+     may hold the battery for a dearer night; between equal prices it
+     charges where the house would otherwise draw on the battery, not where
+     PV already feeds it; at the floor a charge is pure storage at
+     price / eff.  The charge comes first in its step (what the coordinator
+     does);
+   - starting a charge costs ~1 ct (0.05 kWh at the horizon's mean price);
+     only a charge still running at the end of its step continues free — a
+     whole step runs on, a part of a step either stops (the next charge is a
+     new start) or starts late and runs on.  No sliver of a charge can keep
+     the inverter on through dear hours to dodge the start;
    - after the horizon the battery must carry the house from midnight to
      sunrise; each kWh short costs the last known night's price;
    - **this week's price** (24 Oct 2026): with 3+ days of price history the
@@ -67,8 +84,10 @@ behaviour, the simulator is the gate that decides whether you were right.
    gate + horizon cap, today-first, spill relocation) describe the legacy
    `greedy` engine and still apply to `to_grid` / `both`.
    Checked by `tests/test_planner.py` against an independent model,
-   brute force, a second optimiser and an LP bound; see CLAUDE.md "The exact
-   planner".
+   brute force, a second optimiser and an LP bound; a fuller battery never
+   costs more nor buys more grid energy on the meter (into the battery it
+   may rightly buy more: it can hold where an empty one already runs on
+   passthrough); see CLAUDE.md "The exact planner".
 1. **Engine default = greedy; MILP opt-in.** *(Superseded for from_grid by
    decision 0: the default is now `optimal`; greedy is "legacy"; a MILP
    without a solver falls back to the exact planner.)* Greedy has a multi-month track
