@@ -22,7 +22,7 @@ With **Grid Mode = off** nothing is written, also not at startup.
 
 | Register | Address | Range | Unit | Description |
 |---|---|---|---|---|
-| `econ_rule_1_enable` | 8568 | 0 / 1 / 2 (3) | — | 0 = off, 1 = charge, 2 = discharge (3 = ECO mode, never written by the EMS) |
+| `econ_rule_1_enable` | 8568 | 0 / 1 / 2 (3) | — | 0 = off, 1 = charge, 2 = discharge (3 = ECO mode, shown in the Felicity app as "AC Couple"; never written by the EMS) |
 | `econ_rule_1_start_time` | 8569 | 00:00-23:59 | HH:MM | Rule 1 time window start |
 | `econ_rule_1_stop_time` | 8570 | 00:00-23:59 | HH:MM | Rule 1 time window end (firmware uses 23:59 for all-day) |
 | `econ_rule_1_start_day` | 8571 | — | date | Start date (written by the integration) |
