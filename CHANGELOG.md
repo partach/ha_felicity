@@ -80,6 +80,10 @@
 - **New select values**: Operating Mode "Oil engine mode" and Economic Rule
   "ECO mode" (value 3), which the inverter can report but the integration
   showed as unknown.
+- **T-REX-10: Economic Rule value 3 is now labelled "ECO mode (AC Couple)"**
+  — the Felicity app calls the same setting "AC Couple" / "Para AC"
+  (discussion #230). Only the name changed; an automation that selects the
+  option by its text "ECO mode" needs the new text. T-REX-5/6K keep "ECO mode".
 - **T-REX-6K and IVGM inverters now recover when they drop out of Economic
   mode** during a charge or discharge (app, power blip). The recovery check
   only covered the T-REX-5/10/25/50 before.

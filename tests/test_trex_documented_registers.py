@@ -190,15 +190,35 @@ def test_rule_enable_offers_every_documented_value(model, rule):
     assert set(documented) == {0, 1, 2, 3}, documented
     info = _registers(model)[f"econ_rule_{rule}_enable"]
     assert info["address"] == address
-    assert info["options"] == ["Disabled", "Charge", "Discharge", "ECO mode"]
+    assert info["options"] == ["Disabled", "Charge", "Discharge", _VALUE_THREE[model]]
+
+
+#: What value 3 of a rule's enable is called.  The document says "ECO Mode";
+#: on a T-REX-10K-P3G01 the Felicity app shows that value as "AC Couple"
+#: (discussion #230: rules 1-2 set to AC Couple in the app, raw 3 at 0x2178 /
+#: 0x2181 in the owner's diagnostics dump on 1.3.13 — "Unknown" on 1.3.12,
+#: which stopped at Discharge).  The T-REX-5/6K's app is unchecked, so its
+#: label stays the document's.
+_VALUE_THREE = {
+    const.INVERTER_MODEL_TREX_TEN: "ECO mode (AC Couple)",
+    const.INVERTER_MODEL_TREX_FIVE: "ECO mode",
+    const.INVERTER_MODEL_TREX_SIX: "ECO mode",
+}
+
+
+def test_every_t_rex_5_6_10_names_value_three():
+    assert set(_VALUE_THREE) == set(_MODELS)
 
 
 @pytest.mark.parametrize("model", _MODELS)
 def test_rule_summary_names_value_three(model):
     """The combined rule sensor printed "Unknown(3)" for the ECO-mode value."""
     calc = const.MODEL_REGISTRY[model]["combined"]["econ_rule_1"]["calc"]
-    assert calc(3, 0, 0, 0, 0, 0, 0, 0, 0)["enabled"] == "ECO mode"
+    assert calc(3, 0, 0, 0, 0, 0, 0, 0, 0)["enabled"] == _VALUE_THREE[model]
     assert calc(4, 0, 0, 0, 0, 0, 0, 0, 0)["enabled"] == "Unknown(4)"
+    for rule in (2, 3, 4):
+        calc = const.MODEL_REGISTRY[model]["combined"][f"econ_rule_{rule}"]["calc"]
+        assert calc(3, 0, 0, 0, 0, 0, 0, 0, 0)["enabled"] == _VALUE_THREE[model]
 
 
 def test_the_document_names_the_models_these_entries_cover():

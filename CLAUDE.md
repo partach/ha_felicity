@@ -112,7 +112,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **2256**: 2254 pass + 2 documented skips; ~36 min serial (was ~16 before the house-on-grid planner), most of it `test_planner.py` and the replays; `pip install pytest-xdist` and `-n 4` runs `test_planner.py` in ~5 min) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **2257**: 2255 pass + 2 documented skips; ~36 min serial (was ~16 before the house-on-grid planner), most of it `test_planner.py` and the replays; `pip install pytest-xdist` and `-n 4` runs `test_planner.py` in ~5 min) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1150,6 +1150,14 @@ each fail.
 register holding 3 rendered as an unknown option and the rule summary sensor as
 `Unknown(3)`.  The EMS never writes 3; while it is active the self-heal returns
 `operating_mode` to 2 (Economic), as for any other non-Economic value.
+**On the T-REX-10, rule value 3 is labelled "ECO mode (AC Couple)"** (Oct
+2026, maintainer): the Felicity app shows that value as "AC Couple" / "Para
+AC" — discussion #230, a T-REX-10K-P3G01 with rules 1-2 set to AC Couple in
+the app read raw 3 at 0x2178 / 0x2181 in its diagnostics dump.  A label only
+(the select writes the option's position).  T-REX-5/6K keep the document's
+"ECO mode" until someone checks their app (`_VALUE_THREE` in
+`test_trex_documented_registers.py`).  If AC Couple is wanted with the EMS on,
+use rules 2-4: the EMS rewrites rule 1's enable on every transition.
 
 **Setup dropdown** labels the entries `T-REX-5K-P1G01 / IVGM5048`,
 `T-REX-6KLP1G01 / IVGM6048`, `T-REX-10K-P3G01 / IVGM10048` — labels only, no
@@ -3917,7 +3925,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**2256 tests**: 2254 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**2257 tests**: 2255 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
