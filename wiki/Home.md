@@ -6,7 +6,7 @@ Felicity inverter Home Assistant integration for easy setup and use of the devic
 
 - No YAML configuration required
 - Full Energy Management System (EMS) with automatic charge/discharge scheduling based on electricity prices
-- **Exact cost planner** (default engine) — buys only when that is cheaper, after losses, than the grid energy it replaces later
+- Keeps the battery above Min SOC and through the night, buying in the cheapest slots; fills it on the cheapest day of the week
 - Two-day optimization — uses tomorrow's prices when available
 - Solar-first approach — never buys what the sun will deliver for free
 - Consumption profile learned from your own Home Assistant history (7 days, per hour)

@@ -1050,8 +1050,8 @@ def amsterdam(monkeypatch):
 
 
 class TestWeeklyPriceMemory:
-    """The coordinator keeps each day's mean price so the planner knows this
-    week's typical price (EMSState.price_reference_eur_kwh) and fills the
+    """The coordinator keeps each day's mean price so greedy and MILP know this
+    week's typical price (EMSState.price_reference_eur_kwh) and fill the
     battery on the cheapest day of the week.  Persisted with the consumption
     history; rebuilt from the price entity's recorder statistics at startup.
     """

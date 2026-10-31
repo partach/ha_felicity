@@ -100,7 +100,7 @@ On `manual` the integration leaves your values alone. A scheduled action outside
 | T-REX-6K | 6 kW | 1 |
 | T-REX-10K | 10 kW | 3 |
 
-The planner caps grid charge power when PV is active, and assumes the battery can never feed the house faster than the rating:
+The EMS caps grid charge power when PV is active:
 
 ```
 grid_kw = min(power_level_kw, inverter_max_power_kw - pv_kw)

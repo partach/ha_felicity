@@ -248,7 +248,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "flexible_load_1_voltage": 230,
         "flexible_load_1_default_current": 16,
         "ev_charge_strategy": "smart",
-        "scheduler_engine": "optimal",
+        "scheduler_engine": "greedy",
         "flexible_load_2_enabled": "off",
         "flexible_load_2_name": "",
         "flexible_load_2_switch_entity": "",
@@ -277,14 +277,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             updated_options["scheduler_engine"] = "greedy"
         updated_options["_scheduler_milp_reverted"] = True
 
-    # Engine default = the EXACT PLANNER (Oct 2026).  "greedy" was everyone's
-    # default, not a choice, so move it to "optimal" once (marker set).  A
-    # deliberate "milp" stays: it now falls back to the exact planner instead
-    # of greedy when no solver is installed.  Greedy remains selectable.
-    if not updated_options.get("_scheduler_optimal_migrated"):
-        if updated_options.get("scheduler_engine", "greedy") == "greedy":
-            updated_options["scheduler_engine"] = "optimal"
-        updated_options["_scheduler_optimal_migrated"] = True
+    # The exact planner ("optimal", 19-31 Oct 2026) was REMOVED at the
+    # maintainer's request (31 Oct 2026): two engines, greedy (default) and
+    # MILP.  Anyone on "optimal" — or with an unknown value — goes to greedy.
+    if updated_options.get("scheduler_engine") not in ("greedy", "milp"):
+        updated_options["scheduler_engine"] = "greedy"
+    updated_options.pop("_scheduler_optimal_migrated", None)
 
     # A monitoring-only model (no documented control registers) cannot be
     # driven by the EMS: keep it off, whatever an option or a strategy preset
@@ -376,6 +374,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator.integration_version = str(integration.version)
     except Exception as err:
         _LOGGER.debug("Could not resolve integration version: %s", err)
+
+    # MILP needs an LP solver that runs here; make sure HiGHS is there before
+    # the first plan (pulp looks for it once, when it is first imported).
+    if updated_options.get("scheduler_engine") == "milp":
+        await async_ensure_lp_solver(hass)
 
     # First refresh
     await coordinator.async_config_entry_first_refresh()
@@ -499,6 +502,39 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+# The LP solver the MILP engine installs for itself.  pulp's bundled CBC is a
+# glibc binary that cannot start in Home Assistant OS's Alpine (musl)
+# container, and `pulp[cbc]` (cbcbox) ships glibc builds only; HiGHS has musl
+# wheels and runs in-process.  It is NOT a manifest requirement: a failed
+# install there would stop the whole integration loading on a platform
+# without a wheel, for a solver only the opt-in MILP engine uses.
+HIGHS_REQUIREMENT = "highspy>=1.7.0"
+
+
+async def async_ensure_lp_solver(hass: HomeAssistant) -> bool:
+    """Install HiGHS for the MILP engine when it is missing, through Home
+    Assistant's own requirement installer (an HA update replaces the
+    container, so a hand-installed package does not last; this puts it back on
+    the next start).  Never raises: without it greedy runs."""
+    import importlib
+    import importlib.util
+
+    if await hass.async_add_executor_job(importlib.util.find_spec, "highspy") is not None:
+        return True
+    try:
+        from homeassistant.requirements import async_process_requirements
+
+        await async_process_requirements(hass, f"{DOMAIN} MILP solver", [HIGHS_REQUIREMENT])
+        await hass.async_add_executor_job(importlib.invalidate_caches)
+    except Exception as err:
+        _LOGGER.warning(
+            "Could not install the HiGHS solver (%s) for the MILP engine: %s — "
+            "greedy runs instead", HIGHS_REQUIREMENT, err)
+        return False
+    _LOGGER.info("Installed the HiGHS solver (%s) for the MILP engine", HIGHS_REQUIREMENT)
+    return True
+
+
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update — only reload when structural options change.
 
@@ -530,6 +566,13 @@ async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
     # Save current options for next comparison
     coordinator._last_options = new_opts
+
+    if new_opts.get("scheduler_engine") == "milp" and old_opts.get("scheduler_engine") != "milp":
+        # Switched to MILP while running: install its solver now; pulp only
+        # sees a newly installed HiGHS after a restart.
+        if await async_ensure_lp_solver(hass):
+            _LOGGER.info("MILP selected — restart Home Assistant once if the engine "
+                         "chip still shows a fallback")
 
     if structural_changed:
         _LOGGER.info("Structural option changed — reloading integration")

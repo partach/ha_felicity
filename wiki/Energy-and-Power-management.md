@@ -7,7 +7,7 @@ The HA_Felicity integration provides intelligent energy and power management for
 ## Table of Contents
 
 ### Energy Management
-- [Energy Management Basics](Energy-Management-Basics) — Algorithm overview: modes, the planner, reserve, advanced settings
+- [Energy Management Basics](Energy-Management-Basics) — Algorithm overview: modes, engines, reserve, advanced settings
 - [TREX10 Energy Management](TREX10-Energy-Management) — Register-level details for TREX-5/6/10K models
 - [TREX25/50 Energy Management](TREX25-50-Energy-Management) — Register-level details for TREX-25/50K (and IVGM) models
 
@@ -41,18 +41,18 @@ The four grid modes:
 
 Two price modes are available:
 - **Manual**: A price threshold (level 1-10) determines when to charge/sell.
-- **Auto**: The scheduler plans the whole horizon (today, plus tomorrow once its prices are out). In From Grid the **exact planner** works out the cheapest plan; To Grid and Both use the greedy selector.
+- **Auto**: The scheduler plans the whole horizon (today, plus tomorrow once its prices are out) with the selected engine — greedy (default) or MILP.
 
 ## Key Concepts
 
-### Buy only what saves money
-The planner does not fill the battery for its own sake. It buys a kWh only when that kWh, after charging losses, is cheaper than the grid energy the house would otherwise buy later. A battery that lasts until a cheaper moment or until the sun simply waits.
+### Survive the night, in the cheapest slots
+The EMS keeps the battery above Min SOC and through the night (the **reserve target**: Min SOC + what the night needs) and buys that energy in the cheapest known slots. It does not fill the battery for its own sake; beyond the reserve it buys only for Self-Sufficiency's top-off or on a day clearly cheaper than this week's average.
 
-### Survive the night
-After the last day with known prices, the battery is expected to carry the house from midnight to sunrise. A kWh short then is priced at that night's grid price — that is what makes the planner charge ahead of the night when the night is dearer.
+### At Min SOC the house runs on the grid
+That is the inverter's own behaviour at its minimum. The EMS never forces a charge at the current price because the battery is low; the gap is bought back in the cheapest slots.
 
 ### Solar-First
-Energy the sun will deliver has no value to buy. The planner sees the PV forecast (scaled by how well today's forecast is holding up) and never buys what PV will fill.
+Energy the sun will deliver has no value to buy. The plan uses the PV forecast (scaled by how well today's forecast is holding up) and does not buy what PV will fill.
 
 ### Flexible Loads
 Up to 3 controllable loads (EV charger, boiler, pool pump) can be scheduled during cheap/negative-price/PV-surplus hours. See [FLEXIBLE_LOADS.md](https://github.com/partach/ha_felicity/blob/main/FLEXIBLE_LOADS.md).

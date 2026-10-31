@@ -67,6 +67,14 @@ _MILP_DISABLED_REASON = ""
 _MILP_SOLVER_NAME = ""      # solver actually used, e.g. "PULP_CBC_CMD"
 _MILP_LAST_ERROR = ""       # most recent non-fatal failure (infeasible, timeout…)
 _MILP_SOLVERS_TRIED: list[str] = []   # probe results from the last _pick_solver
+# Solvers that passed .available() but whose program would not start (name →
+# why).  pulp's bundled CBC is a glibc binary: inside Home Assistant OS's
+# Alpine (musl) container the file exists and is executable, so .available()
+# says yes, and starting it fails with "No such file or directory" (the
+# missing glibc loader).  Such a solver is skipped from then on, and the next
+# one (HiGHS, which runs in-process) is tried — it used to switch MILP off for
+# the whole session even with a working solver installed.
+_BROKEN_SOLVERS: dict[str, str] = {}
 
 
 def milp_status() -> dict[str, Any]:
@@ -120,6 +128,9 @@ def _pick_solver(pulp):
     tried: list[str] = []
 
     def _try(name: str, **kw):
+        if name in _BROKEN_SOLVERS:
+            tried.append(f"{name}(broken: {_BROKEN_SOLVERS[name]})")
+            return None
         cls = getattr(pulp, name, None)
         if cls is None:
             # Not even present in this pulp build.  PULP_CBC_CMD is deprecated
@@ -166,10 +177,10 @@ def _pick_solver(pulp):
 
     _MILP_SOLVERS_TRIED = tried
     _LOGGER.warning(
-        "MILP found no usable LP solver. Probed: %s. Install one with "
-        "`pip install pulp[cbc]` (CBC) or `pip install pulp[highs]` (HiGHS) "
-        "in the Home Assistant environment, then restart HA. "
-        "Greedy is fully functional in the meantime.",
+        "MILP found no usable LP solver. Probed: %s. Install HiGHS with "
+        "`pip install highspy` in the Home Assistant environment (on Home "
+        "Assistant OS the integration does this itself while the engine is "
+        "MILP), then restart HA.  Greedy runs in the meantime.",
         ", ".join(tried) or "nothing",
     )
     return None
@@ -186,6 +197,9 @@ def solve_schedule(
     minutes_per_slot: float,
     reserve_target: float,
     pv_confidence: float,
+    store_value: float = 0.0,
+    store_cap_kwh: float = 0.0,
+    sunrise: tuple[int, int] | None = None,
 ) -> tuple[dict[int, str], dict[int, str]] | None:
     """Solve the EMS schedule as a MILP.
 
@@ -222,6 +236,9 @@ def solve_schedule(
             minutes_per_slot=minutes_per_slot,
             reserve_target=reserve_target,
             pv_confidence=pv_confidence,
+            store_value=store_value,
+            store_cap_kwh=store_cap_kwh,
+            sunrise=sunrise,
         )
     except FileNotFoundError as err:
         # The CBC solver binary is missing / unrunnable on this platform
@@ -256,6 +273,9 @@ def _solve(
     minutes_per_slot: float,
     reserve_target: float,
     pv_confidence: float,
+    store_value: float = 0.0,
+    store_cap_kwh: float = 0.0,
+    sunrise: tuple[int, int] | None = None,
 ) -> dict[int, str] | None:
     global _MILP_LAST_ERROR
 
@@ -293,6 +313,7 @@ def _solve(
             horizon.append({
                 "day": day,
                 "slot": idx,
+                "hour": hour,
                 "price": price,
                 "net": pv_slot - load,          # natural SOC delta
                 "charge_cap": grid_kw * slot_hours,  # grid-side kWh if charging
@@ -334,7 +355,27 @@ def _solve(
     # naturally stops at the SOC floor.  Round-trip efficiency loss makes
     # charging and discharging the same slot never optimal, so no binary
     # "exclusive" variable is needed — this stays a fast, robust LP.
-    c, d, spill, soc, imp = {}, {}, {}, {}, {}
+    # At Min SOC the house runs on the GRID, at that slot's price (maintainer,
+    # 31 Oct 2026: "if the minimum SOC is reached but the price is high, you
+    # do not charge the battery extra — the house runs on grid").  The
+    # inverter does exactly that at its own minimum.  Modelled with one binary
+    # per hour, z = "the battery is at its floor": then the grid may feed the
+    # house (imp[k], up to what the house draws beyond PV, paid at the slot
+    # price) and the battery ends the hour at or below Min SOC; without it the
+    # battery feeds the house and stays at or above Min SOC.  The
+    # binary is what stops the plan "parking" a fuller battery while the grid
+    # feeds the house — the inverter's self-use cannot do that.
+    #
+    # Until Oct 2026 imp[k] was a feasibility slack at 5x the dearest price,
+    # i.e. Min SOC was defended at ANY price: a battery reaching it at the
+    # 0.30 evening was charged at 0.30 rather than run the house on the grid
+    # until the 0.05 night — MILP's own "urgent recovery".
+    #
+    # A battery ALREADY below Min SOC starts where it is (soc_lo) and stays
+    # there with the house on the grid until the plan buys the gap back, in
+    # the cheapest slots (the soft reserve below pulls it up).
+    soc_lo = max(0.0, min(soc_min, current_kwh))
+    c, d, spill, soc, imp, z, zk = {}, {}, {}, {}, {}, {}, {}
     for k, h in enumerate(horizon):
         price = h["price"]
         charge_ub = h["charge_cap"] if allow_charge else 0.0
@@ -349,23 +390,30 @@ def _solve(
         c[k] = pulp.LpVariable(f"c_{k}", lowBound=0, upBound=charge_ub)
         d[k] = pulp.LpVariable(f"d_{k}", lowBound=0, upBound=discharge_ub)
         spill[k] = pulp.LpVariable(f"spill_{k}", lowBound=0)
-        soc[k] = pulp.LpVariable(f"soc_{k}", lowBound=soc_min, upBound=soc_max)
-        # Emergency feasibility slack — physically, grid passthrough keeps the
-        # battery from dropping below soc_min (the house draws from grid when
-        # the battery is empty).  Without it the SOC dynamics can be
-        # INFEASIBLE: when consumption drains the battery faster than charging
-        # can offset (e.g. to_grid mode where charging is disallowed, or a very
-        # high-consumption slot), `soc[k] == prev + net + ... ` cannot satisfy
-        # `soc[k] >= soc_min`, and the whole MILP collapses to greedy.  imp[k]
-        # absorbs exactly that deficit.  It carries a high penalty so it's 0 in
-        # every normal case (no behavioural change / parity preserved) and only
-        # activates to keep the LP feasible.
-        imp[k] = pulp.LpVariable(f"imp_{k}", lowBound=0)
+        soc[k] = pulp.LpVariable(f"soc_{k}", lowBound=soc_lo, upBound=max(soc_max, soc_lo))
+        drain = max(0.0, -h["net"])        # what the house draws beyond PV
+        imp[k] = pulp.LpVariable(f"imp_{k}", lowBound=0, upBound=drain)
+        # One binary per HOUR (the four quarters of an hour share it): the
+        # solve stays well under a second on a small CPU, where one per
+        # quarter took seconds.
+        zkey = (h["day"], int((h["slot"] * minutes_per_slot) // 60))
+        if zkey not in z:
+            z[zkey] = pulp.LpVariable(f"floor_{zkey[0]}_{zkey[1]}", cat="Binary")
+        zk[k] = z[zkey]
 
     # SOC dynamics.  soc[k] is the level at the *end* of slot k.
     prev = current_kwh
+    span = max(soc_max, soc_lo) - soc_lo
     for k in range(K):
         prob += soc[k] == prev + horizon[k]["net"] + eff * c[k] - d[k] - spill[k] + imp[k]
+        drain = max(0.0, -horizon[k]["net"])
+        prob += imp[k] <= drain * zk[k]                                 # grid only at the floor
+        prob += soc[k] >= soc_min - (soc_min - soc_lo) * zk[k]          # else at/above Min SOC
+        if k == K - 1 or zk[k + 1] is not zk[k]:
+            # ... and an hour with the grid feeding the house ends at/below
+            # Min SOC (checked at the hour's end, so the battery may reach the
+            # floor during that hour).
+            prob += soc[k] <= soc_min + span * (1 - zk[k])
         prev = soc[k]
 
     # Reserve constraints are SOFT (slack + penalty), never hard.  A hard
@@ -388,37 +436,27 @@ def _solve(
     prob += soc[K - 1] + end_short >= reserve_clamped
     reserve_shortfalls.append(end_short)
 
-    # Midnight boundary: when the horizon spans today+tomorrow, push the
-    # battery toward reserve_target by end of today.  Without this the solver
-    # defers all charging to cheaper tomorrow slots, the battery drains
-    # overnight, and on the next day it defers again — "tomorrow never comes."
+    # Self-Sufficiency: the battery carries the house until SUNRISE
+    # (maintainer, 31 Oct 2026).  The new day must not start with an empty
+    # battery — above all on a sunny day, whose PV only arrives after sunrise.
+    # So from midnight until the next sunrise (`sunrise` = (day, hour), from
+    # ems._next_sunrise) the grid feeding the house costs the reserve penalty
+    # instead of the slot price: the solver buys what those hours need, in
+    # the cheapest slots before them — tonight's or the night's own.
     #
-    # SELF-CONSUMPTION ONLY.  The full-reserve-by-midnight demand is the
-    # self-sufficiency contract ("battery full tonight").  In cost/longevity
-    # mode it is economically WRONG whenever tonight's prices exceed
-    # tomorrow's: with the battery low in an expensive evening and cheap
-    # night slots right after midnight, the penalty (5× max price) forced the
-    # solver to stuff the 0.30 evening slots to hit the reserve by 00:00 —
-    # while the 0.05 slots two hours later would fill the same reserve for 6×
-    # less (real case: low-SOC recovery at 18:00 charged 3 expensive slots;
-    # greedy correctly charged 1 + cheap after midnight).  Cost mode instead
-    # relies on: the per-slot `soc >= soc_min` floor (hard, with the imp[k]
-    # passthrough slack) for survival — which still forces SOME today
-    # charging when the battery would otherwise cross the hardware floor —
-    # and the end-of-horizon reserve for tomorrow-night coverage.  This
-    # mirrors greedy, where cost mode may defer to a cheaper tomorrow
-    # (test_cost_mode_may_defer_to_tomorrow) and only self_consumption forces
-    # today-first (TestSelfSufficiencyTodayFirst).
-    if config.optimization_priority == "self_consumption":
-        midnight_k = None
-        for k in range(K):
-            if horizon[k]["day"] == "tomorrow":
-                midnight_k = k
-                break
-        if midnight_k is not None and midnight_k > 0:
-            mid_short = pulp.LpVariable("reserve_short_mid", lowBound=0)
-            prob += soc[midnight_k - 1] + mid_short >= reserve_clamped
-            reserve_shortfalls.append(mid_short)
+    # Until 31 Oct 2026 this was a checkpoint `soc[midnight] >= reserve`, which
+    # bought the evening peak ahead of a cheaper night (0.43 tonight, ~0.53
+    # after the losses, for energy the house used before midnight where the
+    # grid would have cost 0.43).  The checkpoint was SELF-CONSUMPTION ONLY,
+    # and so is this: Save Money / Battery Care may run the house on the grid
+    # at the floor whenever that is cheaper (cost mode relies on the
+    # end-of-horizon reserve for the night after).
+    carry = set()
+    if config.optimization_priority == "self_consumption" and sunrise is not None:
+        sr_day, sr_hour = sunrise
+        sr_name = "today" if sr_day == 0 else "tomorrow"
+        carry = {k for k in range(K)
+                 if horizon[k]["day"] == sr_name and horizon[k]["hour"] < sr_hour}
 
     # Value energy left in the battery at the horizon end so the solver
     # doesn't pointlessly dump it at the last positive price.  Reference:
@@ -452,6 +490,17 @@ def _solve(
     reward_soc = pulp.LpVariable("reward_soc", lowBound=0, upBound=reserve_clamped)
     prob += reward_soc <= soc[K - 1]
 
+    # The week's price memory (ems._store_for_coming_days): energy ABOVE the
+    # reserve, up to what the next day can use after its sun, is worth this
+    # week's grid price after the loss.  So the solver stores energy for the
+    # coming days only from slots cheaper than the week, after the round-trip
+    # loss — the cheapest day of the week fills the battery, an ordinary day
+    # does not.  0 without a weekly price (no change).
+    reward_store = pulp.LpVariable(
+        "reward_store", lowBound=0,
+        upBound=max(0.0, min(store_cap_kwh, soc_max - reserve_clamped)) if store_value > 0 else 0.0)
+    prob += reward_store <= soc[K - 1] + end_short - reserve_clamped
+
     # Earliness preference: when several slots share the SAME price, charge the
     # EARLIER one.  The cost objective is indifferent between equal-price slots,
     # so the solver would otherwise pick arbitrarily (often the latest, right
@@ -467,20 +516,32 @@ def _solve(
         + pulp.lpSum(cycle_cost * d[k] for k in range(K))                  # wear
         - terminal_value * reward_soc                                      # leftover value (≤ reserve)
         + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
-        + pulp.lpSum(reserve_penalty * imp[k] for k in range(K))           # feasibility slack
+        + pulp.lpSum((reserve_penalty if k in carry else horizon[k]["price"]) * imp[k]
+                     for k in range(K))                                    # house on the grid at the floor
+        - store_value * reward_store                                       # week's price: energy for the coming days
         + pulp.lpSum(early * k * c[k] for k in range(K))                   # charge earlier (tie-break)
     )
 
-    solver = _pick_solver(pulp)
-    if solver is None:
-        # No usable LP solver on this platform — structural, so the caller
-        # disables MILP for the session (one warning, greedy runs).  Reuse the
-        # FileNotFoundError path in solve_schedule for the flag + message.
-        raise FileNotFoundError(
-            "no available LP solver — pulp's bundled CBC binary is missing and "
-            "no system CBC (COIN_CMD) was found"
-        )
-    prob.solve(solver)
+    while True:
+        solver = _pick_solver(pulp)
+        if solver is None:
+            # No usable LP solver on this platform — structural, so the caller
+            # disables MILP for the session (one warning, greedy runs).
+            # Reuse the FileNotFoundError path in solve_schedule for the flag.
+            raise FileNotFoundError(
+                "no LP solver that runs here — tried "
+                + (", ".join(_MILP_SOLVERS_TRIED) or "nothing")
+                + "; install HiGHS: pip install highspy"
+            )
+        try:
+            prob.solve(solver)
+            break
+        except (FileNotFoundError, PermissionError, OSError) as err:
+            # Its program would not start (see _BROKEN_SOLVERS): skip it and
+            # try the next one.  Each failure removes a candidate, so this ends.
+            _BROKEN_SOLVERS[_MILP_SOLVER_NAME] = f"{type(err).__name__}: {err}"
+            _LOGGER.warning("MILP solver %s will not start here (%s) — trying the next",
+                            _MILP_SOLVER_NAME, err)
 
     status = pulp.LpStatus[prob.status]
     if status != "Optimal":

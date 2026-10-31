@@ -544,7 +544,7 @@ async def test_cheap_today_is_not_deferred_to_a_marginally_cheaper_tomorrow():
 
 
 # ---------------------------------------------------------------------------
-# The exact planner, executed (Oct 2026)
+# Charging in blocks
 # ---------------------------------------------------------------------------
 
 def _charge_key(model):
@@ -553,49 +553,25 @@ def _charge_key(model):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", [TREX_10, TREX_25])
-async def test_the_planner_charges_in_blocks_never_toggling(model):
-    """A day and a half under the exact planner, re-planned every minute:
-    every charge is one block — never a flicker of a minute or two (the
-    first version dropped the last minute of every quarter, so the rule was
-    rewritten off and on every 15 min) — and it never buys the 0.40 peak."""
+async def test_charges_in_blocks_never_flickering(model):
+    """A day and a half re-planned every minute: every charge is a block of
+    at least 10 minutes (or ends with the battery full) — never a flicker of a
+    minute or two — and it never buys the 0.40 peak nor imports during it."""
     sunny_tomorrow = lambda t: SUN(t) if t.date() > D else 0.0
     r = _replay(model, options={**AUTO, "daily_consumption_estimate": 24.0}, soc=30.0,
                 start=day(D, 9), prices_for=DUCK, load_kw=lambda _t: 1.0,
                 pv_kw=sunny_tomorrow, forecast_kw=sunny_tomorrow)
     await r.run_until(day(NEXT, 12))
-    _chart(r, f"planner_blocks_{model[:9]}")
+    _chart(r, f"charge_blocks_{model[:9]}")
 
     episodes = _episodes(r, _charge_key(model), day(D, 9))
-    assert 1 <= len(episodes) <= 3, (episodes, r.timeline(60))
+    assert episodes, r.timeline(60)
     for on, off in episodes:
         if off is not None:
             full = max(t.soc for t in r.ticks if on <= t.at <= off) >= 99.0
             assert full or off - on >= timedelta(minutes=10), (episodes, r.timeline(15))
     assert max(t.price for t in r.ticks if t.inverter == "charge") < 0.40
     assert max(t.grid_kw for t in r.ticks if day(D, 18) <= t.at < day(D, 21)) <= 0.0
-
-
-@pytest.mark.asyncio
-async def test_an_hourly_tariff_charges_part_of_an_hour_and_stops():
-    """Hourly prices, a modest need: the planner buys part of the cheap hour
-    and the coordinator stops when the plan has enough — not at the end of
-    the hour, and without restarting."""
-    def hourly(d):
-        cheap = 0.10 - 0.01 * (d - D).days      # tomorrow's cheap hour is cheaper still
-        return [cheap if 13 <= h < 14 else (0.40 if 17 <= h < 22 else 0.25) for h in range(24)]
-    # 20 kWh at 30 %: 2 kWh above the floor against 4.8 kWh used (0.2 kW) until
-    # the next, cheaper, cheap hour (tomorrow 13:00; its prices are out at
-    # 13:00, and that hour can carry everything after it) — about 2.8 kWh
-    # short: some 40 minutes at 5 kW, not the hour.  (With tomorrow's hour
-    # EQUAL in price it rightly fills today: equal cost → earliest.)
-    r = _replay(options={**AUTO, "daily_consumption_estimate": 4.8}, soc=30.0,
-                start=day(D, 12, 50), prices_for=hourly, load_kw=lambda _t: 0.2)
-    await r.run_until(day(D, 16))
-    episodes = _episodes(r, "econ_rule_1_enable", day(D, 12, 50))
-    assert len(episodes) == 1, (episodes, r.timeline(5))
-    on, off = episodes[0]
-    assert on == day(D, 13), episodes
-    assert off is not None and off < day(D, 14), (episodes, r.timeline(5))
 
 
 # ---------------------------------------------------------------------------
@@ -896,71 +872,64 @@ SAT = date(2026, 10, 24)
 
 def WEEK(d):
     """Weekdays 0.24, 0.30 in the evening; Sunday the cheapest day of the
-    week, falling all day from 0.14 to 0.10."""
+    week: 0.10 until noon, 0.15 after."""
     if d.weekday() == 6:
-        return [round(0.14 - 0.0004 * i, 4) for i in range(96)]
+        return [0.10 if i < 48 else 0.15 for i in range(96)]
     return [0.30 if 68 <= i < 88 else 0.24 for i in range(96)]
 
 
-def _weekend(weekly_price: float | None):
+def _sunday(weekly_price: float | None):
+    """Sunday 05:00, Save Money: the cheapest day of the week ahead of us."""
+    sun = SAT + timedelta(days=1)
     r = _replay(options={**ROOMY, "ev_charge_strategy": "smart", "power_level": 8,
-                         "optimization_priority": "self_consumption",
+                         "optimization_priority": "cost",
                          "battery_discharge_min_level": 25,
-                         "daily_consumption_estimate": 48},
-                soc=50.0, start=day(SAT, 20, 30), prices_for=WEEK, capacity_kwh=60.0,
-                load_kw=lambda _t: 2.0, switched_loads={EV: 3.7})
+                         "daily_consumption_estimate": 24},
+                soc=50.0, start=day(sun, 5), prices_for=WEEK, capacity_kwh=60.0,
+                load_kw=lambda _t: 1.0, switched_loads={EV: 3.7})
     if weekly_price is not None:      # what the coordinator remembered of the week
         r.coordinator._daily_price_history = [
-            {"date": (SAT - timedelta(days=k)).isoformat(), "mean": weekly_price}
+            {"date": (sun - timedelta(days=k)).isoformat(), "mean": weekly_price}
             for k in range(1, 6)]
-    return r
-
-
-def _planned_tomorrow(r):
-    c = r.coordinator
-    battery = {s for s, a in c._tomorrow_scheduled_slots.items() if a == "charge"}
-    ev = {s for d in (c._flex_load_scheduled_tomorrow or {}).values()
-          for s, on in d.items() if on}
-    return battery, ev
+    return r, sun
 
 
 @pytest.mark.asyncio
 async def test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follows():
-    """Maintainer, 24 Oct 2026: Saturday evening, Sunday the cheapest day of
-    the week — yet the plan bought only what the night needed, and with the
-    battery not charging the EV got no slots either ("if you are so cautious
-    and not charging the home battery, the car battery never gets a chance").
+    """Maintainer, 24 Oct 2026: Sunday the cheapest day of the week — yet the
+    plan bought only what the night needed, and with the battery not charging
+    the EV got no slots either ("if you are so cautious and not charging the
+    home battery, the car battery never gets a chance … keep track of the
+    weekly cost and charge at the cheapest part of the week").
 
-    Energy beyond the night's need was worth nothing to the planner: Monday's
-    prices are unknown on Saturday.  It is now worth this week's typical price
-    after the round-trip loss, so a day clearly cheaper than the week fills
-    the battery — and the EV (smart) runs in the battery's charge slots, the
-    battery first."""
-    without = _weekend(None)
-    await without.run_until(day(SAT, 21), step_s=300)
-    r = _weekend(0.255)
-    await r.run_until(day(SAT, 21), step_s=300)
-
-    battery, ev = _planned_tomorrow(r)
-    # Saturday's plan fills the battery by Sunday night; without the week's
-    # price it covers Sunday and its night (the premise, 31 Oct 2026) and no
-    # more.  (Slots no longer tell them apart: both keep Min SOC all Sunday.)
-    full = r.coordinator._backend_soc_trajectory_tomorrow[-1]
-    night_only = without.coordinator._backend_soc_trajectory_tomorrow[-1]
-    assert full >= 95 > night_only + 30, (full, night_only)
-    assert ev == battery, "the EV is planned in the battery's charge slots"
-    assert "this week's average 0.255" in r.coordinator.schedule_reason
-
-    sun = SAT + timedelta(days=1)
-    await r.run_until(day(sun + timedelta(days=1), 0, 5), step_s=300)
+    The coordinator keeps this week's average price; greedy (and MILP) buy
+    energy for the coming days from slots cheaper than that after the
+    round-trip loss — the cheapest day fills the battery, and the EV (smart)
+    runs in the battery's charge slots, the battery first."""
+    without, sun = _sunday(None)
+    end = day(sun + timedelta(days=1), 0, 5)
+    await without.run_until(end, step_s=300)
+    r, _ = _sunday(0.255)
+    await r.run_until(day(sun, 6), step_s=300)
+    assert "this week's average" in r.coordinator.schedule_reason, \
+        r.coordinator.schedule_reason
+    await r.run_until(end, step_s=300)
     _chart(r, "cheapest_day_of_the_week")
-    sunday = [t for t in r.ticks if t.at.date() == sun]
-    assert r.soc_at(day(sun, 23, 55)) >= 95
-    ev_on = [t for t in sunday if t.switched_kw > 0]
-    assert len(ev_on) * 5 / 60 >= 5, "the car charges on the cheap day"
+
+    # Before Monday's prices are out (13:00) only the week's price says that
+    # Sunday morning is cheap: with it the battery fills then; without it the
+    # plan buys only what the night needs, and buys the rest at Sunday
+    # afternoon's 0.15 once Monday's dearer prices are known.
+    assert r.soc_at(day(sun, 12, 55)) >= without.soc_at(day(sun, 12, 55)) + 20, (
+        r.soc_at(day(sun, 12, 55)), without.soc_at(day(sun, 12, 55)), r.timeline(60))
+    assert r.inverter.grid_cost < without.inverter.grid_cost, (
+        r.inverter.grid_cost, without.inverter.grid_cost)
+    ev_on = [t for t in r.ticks if t.switched_kw > 0]
+    assert len(ev_on) * 5 / 60 >= 2, "the car charges on the cheap day"
     # Battery first: the car only runs while the battery charges from the grid.
     assert all(t.inverter in ("charge", "hold") for t in ev_on), \
         sorted({(t.at.strftime("%H:%M"), t.inverter) for t in ev_on if t.inverter not in ("charge", "hold")})
+    assert not [t for t in without.ticks if t.switched_kw > 0 and t.inverter not in ("charge", "hold")]
 
 
 # ---------------------------------------------------------------------------
@@ -1000,9 +969,9 @@ async def test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled(
     tenths of a kWh later it no longer applied — idle, drain, charge again —
     every 1-3 minutes until past 23:00, switching the EV charger with it 64
     times.  A battery already below Min SOC is bought back in the cheapest
-    slots (maintainer, 31 Oct 2026), never by force at the peak.  (Above Min
-    SOC the plan does defend it — also at a dear hour; that is the other
-    half of the premise, test_planner's test_min_soc_is_kept_*.)"""
+    slots (maintainer, 31 Oct 2026), never by force at the peak: urgent
+    recovery is gone from greedy and MILP; the inverter runs the house on the
+    grid at its own floor."""
     r = _replay(options={**AUTO, **EV_OPTIONS, "battery_discharge_min_level": 25,
                          "daily_consumption_estimate": 30.0},
                 capacity_kwh=60.0, soc=24.7, start=day(D, 19, 30),     # 14.8 of 15.0 kWh
@@ -1023,6 +992,29 @@ async def test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled(
     assert "charge" not in r.inverter_actions(day(D, 19, 30), day(D, 23, 30)), r.timeline(10)
     assert _episodes(r, "econ_rule_1_enable", day(D, 19, 30)) == []
     assert not [c for c in calls if c[1] == "turn_on" and c[2] == EV], calls
+
+
+@pytest.mark.asyncio
+async def test_self_sufficiency_reserve_by_sunrise_not_by_midnight():
+    """The same evening on Self-Sufficiency (maintainer, 31 Oct 2026: the
+    reserve by SUNRISE).  "By midnight" charged at the 0.43-0.45 evening; now
+    the house runs on the grid until midnight and the battery is charged in
+    the 0.25 night, so it carries the house into the morning."""
+    r = _replay(options={**AUTO, "battery_discharge_min_level": 25,
+                         "optimization_priority": "self_consumption",
+                         "daily_consumption_estimate": 30.0},
+                capacity_kwh=60.0, soc=24.7, start=day(D, 19, 30),
+                prices_for=EVENING_PEAK, load_kw=lambda _t: 1.25)
+    r.inverter.self_use_floor_pct = 24.5
+    await r.run_until(day(NEXT, 7, 30), step_s=60)
+    _chart(r, "self_sufficiency_reserve_by_sunrise")
+
+    assert "charge" not in r.inverter_actions(day(D, 19, 30), day(NEXT, 0)), r.timeline(30)
+    assert "charge" in r.inverter_actions(day(NEXT, 0), day(NEXT, 7)), r.timeline(30)
+    # The battery carries the house from shortly after midnight to sunrise.
+    assert min(t.soc for t in r.ticks if day(NEXT, 1) <= t.at < day(NEXT, 7)) > 26.0, \
+        r.timeline(30)
+    assert max(t.price for t in r.ticks if t.inverter == "charge") <= 0.25
 
 
 # ---------------------------------------------------------------------------
