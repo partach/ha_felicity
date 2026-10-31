@@ -208,58 +208,25 @@ def terminal(plan, held: float) -> float:
                                         max(0.0, held - plan.night_need_kwh))))
 
 
-def step_physics(config: EMSConfig, st, s: float, share: float):
-    """(cost, SOC after, grid kWh into the battery, grid kWh on the meter) of
-    one step that charges for ``share`` (0..1) of its length.
-
-    The house is fed by PV, then the battery; below the floor by the grid at
-    the step's price.  While rule 1 charges, the inverter feeds the house
-    from the grid: for the share it charges, the battery takes the Power
-    Level × efficiency plus any PV beyond the house, and the house's draw on
-    it (after PV) comes from the grid instead.  It charges first, so the
-    house then draws on what was stored.  Grid charging never lifts the
-    battery above max SOC; PV beyond full is spilled."""
-    cap, floor, cmax, cycle = _limits(config)
-    eff = config.efficiency
-    p = st.price
-    xv = s + st.pv_kwh - house(config, st)          # idle, before the floor
-    draw = max(0.0, house(config, st) - st.pv_kwh)
-    rise = st.grid_kwh * eff + draw                 # a whole step lifts it this much more
-    f = min(1.0, max(0.0, share))
-    if rise > 1e-12 and st.grid_kwh > 1e-12:
-        f = min(f, max(0.0, cmax - xv) / rise)
-    else:
-        f = 0.0
-    if f <= 0.0:
-        x = min(cap, max(floor, xv))
-        through = max(0.0, floor - xv)
-        return p * through, x, 0.0, through
-    x = xv + f * rise
-    through = max(0.0, floor - x)                   # drained back below the floor
-    x = min(cap, max(floor, x))
-    b = f * st.grid_kwh
-    meter = f * (st.grid_kwh + draw) + through
-    return p * meter + cycle * b * eff, x, b, meter
-
-
 def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
-    """(cost, socs, bought_kwh, meter_kwh) of a charging decision per step,
-    continuously: grid kWh into the battery, and all grid kWh bought (the
-    battery, the house while charging, the house below the floor).
+    """(cost, socs, bought_kwh) of a charging decision per step, continuously.
 
     ``charging`` per step is either a bool (charge the whole step at the
-    Power Level) or a float (grid kWh to take into the battery in that
-    step).  One step's physics is ``step_physics``.  After the horizon, each
-    kWh short of the night's need costs the night price, and what the next
-    day can use beyond it and is not held costs this week's typical price
-    after losses (see ``terminal``).  That is the whole cost model —
+    Power Level) or a float (grid kWh to take in that step).  The house is
+    fed by PV, then the battery; below the floor by the grid at that step's
+    price, and a charge then goes into the battery on top.  Charging stops at
+    max SOC; PV beyond full is spilled.  After the horizon, each kWh short of
+    the night's need costs the night price, and what the next day can use
+    beyond it and is not held costs this week's typical price after losses
+    (see ``terminal``).  That is the whole cost model —
     written out here so the planner's lattice cannot agree with itself by
     construction.
     """
-    cap, floor, cmax, _ = _limits(config)
+    cap, floor, cmax, cycle = _limits(config)
+    eff = config.efficiency
     s = plan.start_kwh if start_kwh is None else start_kwh
     s = min(cap, max(floor, s))
-    cost = bought = meter = 0.0
+    cost = bought = 0.0
     socs = []
     checkpoint = None
     if config.reserve_target_pct > 0 and any(st.day == 1 for st in plan.horizon):
@@ -268,19 +235,24 @@ def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
         if last_today is not None:
             checkpoint = last_today, fixed
     for k, (st, want) in enumerate(zip(plan.horizon, charging)):
-        if want is True or want is False:
-            share = 1.0 if want else 0.0
-        else:
-            share = float(want) / st.grid_kwh if st.grid_kwh > 1e-12 else 0.0
-        c, s, b, m = step_physics(config, st, s, share)
-        cost += c
-        bought += b
-        meter += m
+        p = st.price
+        x = s + st.pv_kwh - house(config, st)
+        if x < floor:
+            cost += p * (floor - x)
+            x = floor
+        x = min(cap, x)
+        amount = st.grid_kwh if want is True else (0.0 if want is False else float(want))
+        b = min(amount, st.grid_kwh, max(0.0, cmax - x) / eff)
+        if b > 0:
+            x += b * eff
+            cost += p * b + cycle * b * eff
+            bought += b
+        s = x
         socs.append(s)
         if checkpoint and checkpoint[0] == k:
             cost += plan.tonight_price * max(0.0, checkpoint[1] - (s - floor))
     cost += terminal(plan, s - floor)
-    return cost, socs, bought, meter
+    return cost, socs, bought
 
 
 def brute_force(config, plan) -> float:
@@ -300,13 +272,10 @@ def brute_force(config, plan) -> float:
 def lp_lower_bound(config, plan) -> float:
     """A linear program (pulp) that is strictly MORE permissive than the
     model: the grid may feed the house whenever it likes, i.e. the battery
-    may also "hold" at no loss.  In the model the grid feeds the house only
-    while rule 1 charges (and below the floor), and then never more than
-    the house draws — a special case of this, so no real plan can be
-    cheaper, and a plan below this bound means the simulation itself is
-    broken.  (What a free "hold" would save is visible here too — the
-    inverter's charge rule cannot hold without charging today.)  Only for
-    charge_max = 100 %."""
+    may also "hold" at no loss.  No real plan can be cheaper, so a plan below
+    this bound means the simulation itself is broken.  (How much "hold" would
+    save is visible here too — the inverter's charge rule cannot hold below
+    max SOC today.)  Only for charge_max = 100 %."""
     pulp = pytest.importorskip("pulp")
     cap, floor, cmax, cycle = _limits(config)
     assert cmax >= cap - 1e-9
@@ -341,7 +310,8 @@ def fine_optimum(config, plan, points: int = 1200) -> float:
     on a finer grid, with each step allowed nothing, a quarter, half,
     three quarters or all of its charge — its decisions then SIMULATED, so
     the cost is a real plan's cost."""
-    cap, floor, _, _ = _limits(config)
+    cap, floor, cmax, cycle = _limits(config)
+    eff = config.efficiency
     d = (cap - floor) / points
     grid = [floor + i * d for i in range(points + 1)]
 
@@ -356,7 +326,15 @@ def fine_optimum(config, plan, points: int = 1200) -> float:
         return values[i] * (1 - t) + values[i + 1] * t
 
     def step(st, s, share):
-        return step_physics(config, st, s, share)[:3]
+        x = s + st.pv_kwh - house(config, st)
+        c = 0.0
+        if x < floor:
+            c += st.price * (floor - x)
+            x = floor
+        x = min(cap, x)
+        b = min(st.grid_kwh * share, max(0.0, cmax - x) / eff)
+        x += b * eff
+        return c + st.price * b + cycle * b * eff, x, b
 
     shares = (0.0, 0.25, 0.5, 0.75, 1.0)
     tables = [None] * (len(plan.horizon) + 1)
@@ -386,7 +364,7 @@ def test_rule_1_never_buy_when_buying_nothing_is_as_cheap(seed):
     config, state = situation(seed)
     plan = _plan(config, state)
     cost = simulate(config, plan, plan.bought_kwh)[0]
-    nothing = simulate(config, plan, [False] * len(plan.horizon))[0]
+    nothing, _, _ = simulate(config, plan, [False] * len(plan.horizon))
     assert cost <= nothing + _tol(nothing), (seed, cost, nothing)
 
 
@@ -478,11 +456,6 @@ def _bought(config, state) -> float:
     return simulate(config, plan, plan.bought_kwh)[2]
 
 
-def _meter(config, state) -> float:
-    plan = _plan(config, state)
-    return simulate(config, plan, plan.bought_kwh)[3]
-
-
 def _cost(config, state) -> float:
     plan = _plan(config, state)
     return simulate(config, plan, plan.bought_kwh)[0]
@@ -503,12 +476,6 @@ def _priced(state) -> bool:
 
 @pytest.mark.parametrize("seed", range(60))
 def test_monotone_a_fuller_battery_never_buys_more(seed):
-    """Counted on the meter: every grid kWh bought.  (Not "into the battery":
-    a battery above its floor can hold while the house runs on the grid —
-    a charge step then mostly keeps the house off the battery, nearly
-    lossless — while one at its floor gets that for free as passthrough and
-    is left with lossy storage only.  So the fuller battery rightly puts
-    more into the battery and buys less in all — seed 23.)"""
     config, state = situation(seed)
     lower = dataclasses.replace(state, battery_soc_pct=max(
         config.battery_discharge_min_pct, state.battery_soc_pct - 15))
@@ -517,7 +484,14 @@ def test_monotone_a_fuller_battery_never_buys_more(seed):
         # charge), so a fuller battery can legitimately earn less.
         return
     assert _cost(config, state) <= _cost(config, lower) + _tol(_cost(config, lower)), seed
-    assert _meter(config, state) <= _meter(config, lower) + _one_step(config), seed
+    if state.price_reference_eur_kwh is not None:
+        # Known limit (CLAUDE.md, "The exact planner"): the battery is modelled
+        # as feeding the house while it charges.  Once stored energy is worth
+        # the week's price, a battery near its floor can then find charging
+        # dearer (it mostly replaces the house's lossless grid passthrough)
+        # and buy LESS than a fuller one (seed 27).  Cost stays monotone.
+        return
+    assert _bought(config, state) <= _bought(config, lower) + _one_step(config), seed
 
 
 @pytest.mark.parametrize("seed", range(60))
@@ -614,10 +588,7 @@ def test_replan_after_following_the_plan_keeps_its_decisions(seed):
             break
         decided_next = plan.charging[1]
         soc = plan.planned_kwh[0]
-        # A charge that stops inside its quarter (the coordinator's re-plan
-        # drops the slot once the plan has what it needs) is off when the
-        # next quarter starts.
-        state = dataclasses.replace(_advance(state, 15), charging_now=plan.runs_on[0],
+        state = dataclasses.replace(_advance(state, 15), charging_now=plan.charging[0],
                                     battery_soc_pct=soc / config.battery_capacity_kwh * 100.0)
         plan = _plan(config, state)
         assert plan.charging[0] == decided_next, (
@@ -645,13 +616,9 @@ def test_replan_inside_a_quarter_does_not_toggle(seed):
     soc = plan.start_kwh
     changes = []
     for minute in range(1, round(first.hours * 60)):
-        net = (first.pv_kwh - house(config, first)) * per_min
+        soc += (first.pv_kwh - house(config, first)) * per_min
         if charging:
-            # The house runs on the grid while rule 1 charges.
-            soc += max(0.0, net)
             soc += min(first.grid_kwh * per_min * config.efficiency, max(0.0, cmax - soc))
-        else:
-            soc += net
         soc = min(cap, max(floor, soc))
         now = dataclasses.replace(_advance(state, minute), charging_now=charging,
                                   battery_soc_pct=soc / config.battery_capacity_kwh * 100.0)
@@ -819,32 +786,6 @@ def test_an_hourly_tariff_buys_a_quarter_not_the_whole_hour():
     bought = simulate(config, plan, plan.bought_kwh)[2]
     assert 3.0 <= bought <= 4.6, bought               # what the evening needs, at 0.15
     assert all(st.price == 0.15 for st, a in zip(plan.horizon, plan.charging) if a)
-
-
-def test_a_charge_keeps_the_house_off_the_battery():
-    """While rule 1 charges, the inverter feeds the house from the grid.  A
-    4 kW house, 2 kW Power Level, 0.25 now and 0.28 later: storing alone
-    would cost 0.25 / 0.85 = 0.294 and not pay, but each charging quarter
-    also keeps the house's 1 kWh off the battery, so the battery ends higher
-    at 0.25 × 1.5 / 1.425 = 0.263 per kWh — it holds for the dearer hours."""
-    config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10,
-                       battery_discharge_min_pct=20, safe_power_kw=2,
-                       inverter_max_power_kw=10, consumption_est_kwh=96,
-                       efficiency=0.85, scheduler_engine="optimal")
-    prices = [0.28] * 68 + [0.25] * 8 + [0.28] * 20
-    state = EMSState(battery_soc_pct=60, slot_prices_today=prices, pv_hourly_kwh={},
-                     current_hour=17, current_minute=0,
-                     consumption_hourly_kwh={h: 4.0 for h in range(24)})
-    plan = _plan(config, state)
-    assert 0.25 / config.efficiency > 0.28            # storage alone does not pay
-    held = [st for st, a in zip(plan.horizon, plan.charging) if a]
-    assert held and all(st.price == 0.25 for st in held), [st.price for st in held]
-    # A whole charging quarter: the battery gains the Power Level × eff and
-    # loses nothing to the house.
-    first = plan.planned_kwh[0] - plan.start_kwh
-    assert abs(first - 2 * 0.25 * config.efficiency) < 0.02, first
-    cost = simulate(config, plan, plan.bought_kwh)[0]
-    assert cost < simulate(config, plan, [False] * len(plan.horizon))[0] - 0.05
 
 
 # ── the reports that made this ─────────────────────────────────────────────

@@ -112,7 +112,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **2257**: 2255 pass + 2 documented skips; ~36 min serial (was ~16 before the house-on-grid planner), most of it `test_planner.py` and the replays; `pip install pytest-xdist` and `-n 4` runs `test_planner.py` in ~5 min) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **2255**: 2253 pass + 2 documented skips; ~16 min, most of it `test_planner.py` and the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -174,7 +174,7 @@ tests/
 ├── test_ems.py              # 292 tests for the pure EMS algorithm
 ├── test_planner.py          # The exact planner held to the RULES: independent
 │                            #   simulation, brute force, 2nd optimiser, LP bound,
-│                            #   monotonicity, re-plan consistency (1,376 cases)
+│                            #   monotonicity, re-plan consistency (1,373 cases)
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
@@ -247,41 +247,17 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
 - **Horizon**: now → the end of the last day with prices (today, or today +
   tomorrow once tomorrow's are out, ~13:00).
 - **Steps of 15 minutes** (or the price slot, if shorter), the first one from
-  now to the next boundary.  In each step the inverter charges for any share
-  f of it, from nothing to the whole step at the Power Level
-  (`G = min(power, inverter_max − PV)` per hour).  The coordinator re-plans
-  every poll while a step runs, so it stops the moment the plan has what it
-  needs — which is why a partial step is executable, and why an hourly
-  tariff buys three quarters instead of a whole hour.
+  now to the next boundary.  In each step the battery takes any amount from
+  nothing to a full step at the Power Level (`min(power, inverter_max − PV)`,
+  stored × efficiency).  The coordinator re-plans every poll while a step
+  runs, so it stops the moment the plan has what it needs — which is why a
+  partial step is executable, and why an hourly tariff buys three quarters
+  instead of a whole hour.
 - The battery covers the house; PV fills it; PV beyond full is spilled;
   below the discharge floor the house runs on the grid **at that step's
-  price** (passthrough).  Grid charging stops at max SOC (rule 1's SOC).
-  `battery_cycle_cost` (≥ 0.05 for `longevity`) is charged per stored grid
-  kWh.
-- **While rule 1 charges, the house runs on the grid (26 Oct 2026).**  A
-  charge for a share f of a step stores `f × G × eff` AND keeps `f × D` off
-  the battery (D = the house's draw on the battery after PV), for
-  `f × (G + D)` kWh bought.  Linear in where the battery ends, so the DP
-  stays exact: one price per unit the battery ends higher,
-  `p × (G + D) / (G × eff + D)`, from the physical amounts — identical steps
-  cost exactly the same per unit.  The charge comes first, so a battery near
-  the floor draws back what was stored (below the floor: passthrough).
-  Consequences: above the floor a charge step is also a **hold** — when the
-  house draws much more than the Power Level it costs barely more than the
-  price (×1.03-1.05), so a cheap-ish hour holds the battery for a dearer
-  night; a charge where the house draws on the battery beats one where PV
-  already feeds it (an equal-price afternoon over noon); at the floor
-  charging is pure storage at `p / eff` again.  Before this the battery was
-  modelled as feeding the house during a charge, which made an emptier
-  battery buy less than a fuller one once stored energy had a weekly value
-  (seed 27).
-  **Lattice**: a whole step lifts the battery `round((G × eff + D) / step)`
-  points above its idle end — rounded per step, NOT carried, and added to
-  the step's carried net, which every step applies whatever it decides.
-  (24 Oct 2026 attempt, reverted: the whole step ended at "start + G × eff"
-  ignoring the step's rounded net, so each charging step dropped its share
-  of the carried rounding — the DP picked steps by their rounding, and a
-  re-plan from a different start rounded differently.)
+  price** (passthrough) and a charge goes in on top.  Grid charging stops at
+  max SOC (rule 1's SOC).  `battery_cycle_cost` (≥ 0.05 for `longevity`) is
+  charged per stored kWh.
 - **The battery supplies at most the inverter's rating** (`_battery_share`:
   `min(consumption, inverter_max_power_kw × step)`).  The house is fed
   through the inverter; anything above the rating passes through from the
@@ -322,20 +298,10 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
   found by the replay, pinned by `test_replan_inside_a_quarter_does_not_toggle`.)
 - **Starting a charge costs `OPTIMAL_START_COST_KWH` (0.05 kWh at the
   horizon's mean price, ~1 ct)** — part of the cost model, solved with a
-  second value table (charge off / still running at the end of the previous
-  step).  A plan re-made every poll then cannot start the inverter for a
-  sliver, nor stop and restart it over rounding between two near-equal
-  prices.  **Only a charge still running at a step's end continues free**
-  (26 Oct 2026): a whole step runs on; a partial step either comes first
-  and stops (the next charge is a new start) or **starts late** (a start,
-  then running into the next step).  Before, any charging step counted as
-  running, so one-lattice-point "slivers" kept a charge alive through
-  dear hours to dodge the start cost — and the coordinator executes such a
-  slot as a real charge.  Without "start late", a re-plan inside a quarter
-  could do what the plan at its start could not express ("charge the tail
-  of this quarter and carry on"), and switched on mid-quarter.
-  `OptimalPlan.runs_on` says per step whether the charge is still on at its
-  end.  The coordinator passes `EMSState.charging_now`, and
+  second value table (previous step idle / charging).  A plan re-made every
+  poll then cannot start the inverter for a sliver, nor stop and restart it
+  over rounding between two near-equal prices; a running charge continues
+  at no such cost.  The coordinator passes `EMSState.charging_now`, and
   `now.minute // 15` plus the charging state are in the skip-recalc hash so
   a new quarter (also inside an hourly price slot) re-plans.  A quantity of
   energy, not euros, so scaling every price still changes nothing.
@@ -350,10 +316,8 @@ earliest; no "today-first" override needed.
 **Solver**: backward induction over SOC on a lattice (`OPTIMAL_MIN/MAX_STATES`,
 fine enough that the smallest charging step spans ≥ 20 points); per step the
 best amount is a **sliding-window minimum** (linear prices), so O(states) per
-step (two windows: a part that stops, a part that starts late).  Net PV −
-load per step is rounded with the error carried, so totals are exact.
-Median ~110 ms per plan on a PC, p90 ~310 ms (~1.8× the planner before the
-house-on-grid model: the second window), no dependency, deterministic.  Its own
+step.  Net PV − load per step is rounded with the error carried, so totals are
+exact.  ~40-120 ms per plan on a PC, no dependency, deterministic.  Its own
 SOC path is the card's trajectory (`plan_trajectory_exact`); the
 negative-price flags (post-added) fall back to the slot simulation.
 
@@ -362,46 +326,36 @@ negative-price flags (post-added) fall back to the slot simulation.
 flex-load overlay.  NOT run for it: `_reduce_charge_spill` (it can only undo
 an optimum) and **urgent recovery** (Known Issues 8m).
 
-**Tests — `tests/test_planner.py` (1,376 cases, seeded; the id is the seed).**
+**Tests — `tests/test_planner.py` (1,373 cases, seeded; the id is the seed).**
 It contains its own continuous simulation of the model and checks the plan
 against it, never against the planner's own numbers: rules 1-3 (never buy
 when nothing is as cheap; every bought quarter pays; no cheaper moment does
 the job), exactness (brute force over every whole-step plan on short
 horizons; a second, finer optimiser with fractional charging on two-day ones;
-an LP lower bound nothing may beat), monotonicity (a fuller battery never
-costs more nor buys more **on the meter** — every grid kWh, not only those
-into the battery: one above its floor may rightly hold where one at its
-floor gets passthrough for free, seed 23; more sun never costs more or buys
-more; a bigger house never costs less; a cheaper slot never costs more),
-price scaling, determinism, **re-plan consistency**
+an LP lower bound nothing may beat), monotonicity (fuller battery / more sun
+never cost more or buy more; a bigger house never costs less; a cheaper slot
+never costs more), price scaling, determinism, **re-plan consistency**
 (follow the plan quarter by quarter — every decision is executed as decided
 15 min earlier: the October "sliding/toggling" bug class), physics, ties,
-negative prices, priorities, reserve, hourly tariffs, the house on the grid
-while charging (`test_a_charge_keeps_the_house_off_the_battery`), and the 19 Oct 2026
+negative prices, priorities, reserve, hourly tariffs, and the 19 Oct 2026
 customer case.  **When a report comes in, add it here as a situation.**
 
 **Known limits** (deliberate, documented):
-- The other trajectories in ems.py (greedy, MILP, the slot simulation the
-  negative-price flags fall back to) still model the battery as covering
-  the house during a charge; only the exact planner has the house on the
-  grid.
-- Inside a step the charge comes first.  When the battery would reach the
-  floor within the step anyway, letting it drain first and charging after
-  would be a little cheaper; the plan does not model that (it never costs
-  more than planned — charge-first is what the coordinator does).
-- No free "hold" (grid feeds the house, battery neither charges nor
-  discharges): rule 1 holds only while it charges, so a hold always buys
-  the Power Level into the battery too.  The LP bound in the tests shows
-  what a free hold would save.
-- **A battery below the EMS floor is planned from the floor.**  The
-  coordinator does not stop self-use at `battery_discharge_min_level`; the
-  inverter's own discharge depth does.  If that sits lower, the house drains
-  the battery past the EMS floor and the plan does not know the energy
-  between the two is missing — it charges too little, too late.  Found
-  26 Oct 2026 by the weekend replay at the harness's 10 % self-use floor
-  (Sunday ended at 89 %, not ≥ 95 %); the old model's over-buying (~1 kWh
-  per 8 kW quarter) had hidden it.  Modelling it needs the lattice extended
-  below the floor with the inverter's floor as an input.
+- The battery is modelled as covering the house even during a charge step
+  (as every trajectory in ems.py does); physically the grid feeds the house
+  then.  The difference is the loss on that load, ~a cent per step —
+  **but with a weekly price (8o) it can flip a decision**: near the floor
+  charging then mostly replaces the house's lossless passthrough, so an
+  emptier battery can buy less than a fuller one when house load is close
+  to the Power Level (`test_monotone_a_fuller_battery_never_buys_more`
+  checks "buys no more" only without a weekly price; cost stays checked).
+  A fix was tried (24 Oct 2026: grid feeds the house for the charged share
+  of a step) and reverted: rounding the per-step move to the lattice broke
+  re-plan consistency (`test_replan_*`).  Doing it right needs the move
+  priced exactly without carried rounding that depends on the horizon start.
+- No "hold" action (grid feeds the house, battery neither charges nor
+  discharges) below max SOC: rule 1 cannot express it today.  The LP bound
+  in the tests shows what it would save.
 - `to_grid` / `both` (selling) still use the greedy selector.
 
 ## Optional MILP Scheduler (`milp.py`)
@@ -3330,12 +3284,7 @@ Fix (see "The week's price" under The exact planner):
 Replay `test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follows`:
 Saturday 21:00 plan books 35 Sunday slots (62 kWh) instead of 13, the EV in
 each; Sunday ends ≥ 95 % with the car charged 5 h+, only while the battery
-charges.  (26 Oct 2026, house on the grid while charging: 25 slots instead
-of 10, the plan ending Sunday at 97 % instead of 51 % — each 8 kW quarter
-now also keeps the house's 0.5 kWh off the battery.  The replay's fake
-inverter now stops self-use at 24.5 %, just under the EMS floor; at its
-10 % default the old model's over-buying had hidden a 9 kWh gap — see
-"Known limits" under The exact planner.)  Unit: `TestWeeklyPriceReference` (an ordinary 0.22 day against a
+charges.  Unit: `TestWeeklyPriceReference` (an ordinary 0.22 day against a
 0.25 week still buys only for the night), coordinator:
 `TestWeeklyPriceMemory`; `test_planner.py`'s independent model, LP bound and
 fine optimiser carry the same terminal cost, and half its situations now
@@ -3925,7 +3874,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**2257 tests**: 2255 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**2255 tests**: 2253 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
