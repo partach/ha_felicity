@@ -3617,9 +3617,12 @@ class TestWeeklyPriceReference:
         )
         return config, state
 
-    def test_without_a_weekly_price_the_cheap_sunday_buys_nothing(self):
+    def test_without_a_weekly_price_the_cheap_sunday_buys_only_for_the_night(self):
+        """The battery gets through Sunday night (the premise, 31 Oct 2026),
+        so Sunday tops up what that night needs — and no more."""
         result = calculate_schedule(*self._saturday(0.10, None))
-        assert not result.tomorrow_scheduled_slots, result.tomorrow_scheduled_slots
+        assert all(i < 68 for i in result.tomorrow_scheduled_slots)
+        assert result.tomorrow_soc_trajectory[-1] < 50.0, result.tomorrow_soc_trajectory
 
     def test_the_cheapest_day_of_the_week_fills_the_battery(self):
         result = calculate_schedule(*self._saturday(0.10, 0.25))
@@ -3635,9 +3638,10 @@ class TestWeeklyPriceReference:
 
     def test_an_ordinary_day_still_buys_only_for_the_night(self):
         """0.22 against a week of 0.25: 0.22 / 0.9 = 0.244 per stored kWh,
-        while a stored kWh delivers only 0.25 × 0.9 = 0.225 later — not worth it."""
+        while a stored kWh delivers only 0.25 × 0.9 = 0.225 later — not worth
+        storing.  It tops up what Sunday night needs, nothing beyond."""
         result = calculate_schedule(*self._saturday(0.22, 0.25))
-        assert not result.tomorrow_scheduled_slots, result.tomorrow_scheduled_slots
+        assert result.tomorrow_soc_trajectory[-1] < 50.0, result.tomorrow_soc_trajectory
 
 
 class TestBothModeFullCharge:

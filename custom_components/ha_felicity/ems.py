@@ -183,7 +183,7 @@ class EMSState:
     predicted_soc_pct: float | None = None
     # Whether the inverter is charging right now (the coordinator's state).
     # The exact planner keeps the running step as it is unless changing it
-    # is worth more than OPTIMAL_START_COST_KWH — a plan re-made every poll must
+    # is worth more than OPTIMAL_SWITCH_COST — a plan re-made every poll must
     # not toggle the inverter over a fraction of a cent.  None = unknown.
     charging_now: bool | None = None
     # Last successful Modbus read timestamp (epoch seconds).  Informational —
@@ -2540,13 +2540,11 @@ def _reduce_charge_spill(
 #
 #   * Horizon: the current slot to the end of the last day with prices
 #     (today, or today + tomorrow once tomorrow's prices are published).
-#   * In each quarter-hour step the inverter charges for any share of it at
-#     the Power Level (rule 1, until max SOC) — or not at all.
+#   * Each slot is either a full-power charge slot or not — exactly what the
+#     inverter carries out (rule 1 charges at the Power Level until max SOC).
 #   * The battery covers the house; PV fills it (surplus beyond full is
 #     spilled/exported); below the discharge floor the house runs on the grid
-#     at that slot's price ("passthrough").  While rule 1 charges, the house
-#     runs on the grid too: the charge stores grid × efficiency AND keeps the
-#     house's draw off the battery (lossless).
+#     at that slot's price ("passthrough").
 #   * Grid energy bought into the battery loses (1 - efficiency).
 #   * After the horizon the battery must still carry the house through the
 #     following night until the sun takes over again; every kWh it is short
@@ -2570,10 +2568,17 @@ OPTIMAL_TIE_TOL = 1e-9         # relative: costs closer than this are equal
 #: (~1 ct at 0.25 €/kWh; a quantity of energy, so only price RATIOS matter).
 #: Part of the cost model: a plan re-made every poll must not start the
 #: inverter for a sliver, nor stop and restart it over rounding between two
-#: near-equal prices.  A charge still running at the end of a step carries
-#: on into the next at no such cost (the coordinator passes charging_now);
-#: one stopped inside its step has to start again.
+#: near-equal prices.  A running charge carries on at no such cost (the
+#: coordinator passes charging_now).
 OPTIMAL_START_COST_KWH = 0.05
+#: A kWh below Min SOC, or short of what the night needs, costs this many
+#: times the dearest price ahead (plus the cycle cost): more than charging can
+#: ever cost even at the lowest efficiency the setting allows (0.70: price /
+#: 0.7 + cycle), so the plan never accepts a shortfall it can charge away —
+#: a hard goal, but finite, so a goal out of reach is missed by as little as
+#: possible.  No steeper: it also multiplies the lattice's rounding.
+#: Premise, maintainer 31 Oct 2026.
+OPTIMAL_SHORTFALL_FACTOR = 2.0
 SELF_CONSUMPTION_RESERVE_BOOST = 1.25
 
 
@@ -2600,7 +2605,6 @@ class OptimalPlan:
     charge_tomorrow: set[int] = field(default_factory=set)
     horizon: list[_PlanSlot] = field(default_factory=list)
     charging: list[bool] = field(default_factory=list)          # per step: charges
-    runs_on: list[bool] = field(default_factory=list)           # per step: still charging at its end
     bought_kwh: list[float] = field(default_factory=list)       # per step: grid kWh into it
     planned_kwh: list[float] = field(default_factory=list)      # SOC after each step
     baseline_kwh: list[float] = field(default_factory=list)     # same, buying nothing
@@ -2608,7 +2612,9 @@ class OptimalPlan:
     plan_import_kwh: list[float] = field(default_factory=list)
     start_kwh: float = 0.0
     night_need_kwh: float = 0.0     # what the battery must hold at the horizon end
-    night_price: float = 0.0        # what a kWh short then costs
+    night_price: float = 0.0        # what a kWh short then costs (the shortfall price)
+    night_grid_price: float = 0.0   # what the grid will likely charge then (for the money line)
+    shortfall_price: float = 0.0    # what a kWh below Min SOC costs: 2 × the dearest price ahead + cycle
     store_value: float = 0.0        # what a kWh held beyond the night need is worth
     price_reference: float = 0.0    # this week's typical grid price it came from
     store_cap_kwh: float = 0.0      # how much beyond the need the next day can use
@@ -2616,6 +2622,8 @@ class OptimalPlan:
     sunrise_hour: int = 7
     cost: float = 0.0               # expected cost of the plan (incl. the night after)
     baseline_cost: float = 0.0      # the same, buying nothing
+    money: float = 0.0              # the plan's grid spend in euros (no shortfall pricing)
+    baseline_money: float = 0.0     # the same, buying nothing
 
 
 #: Decisions are taken per quarter hour (or per price slot, if shorter), so a
@@ -2739,11 +2747,10 @@ def plan_optimal_from_grid(
 ) -> OptimalPlan:
     """Exact cost-optimal grid-charge plan for from_grid (see section comment).
 
-    Backward induction over the lattice.  In each step the inverter may
-    charge for any share of it, from nothing up to the whole step at the
-    Power Level: the coordinator re-plans every poll while a step runs, so
-    it stops charging the moment the plan has what it needs (or starts the
-    moment it should).  With linear prices the best
+    Backward induction over the lattice.  In each step the battery may take
+    any amount from nothing up to a full step at the Power Level: the
+    coordinator re-plans every poll while a step runs, so it stops charging
+    the moment the plan has what it needs.  With linear prices the best
     amount is found by a sliding-window minimum, so a step costs O(states).
     """
     plan = OptimalPlan(start_kwh=current_kwh)
@@ -2768,16 +2775,52 @@ def plan_optimal_from_grid(
     plan.night_need_kwh, plan.night_price, plan.sunrise_hour = need, night_price, sunrise
 
     # Lattice: fine enough that the smallest charging step spans many points.
-    smallest = min((s.grid_kwh * eff for s in horizon if s.grid_kwh * eff > 1e-6), default=span)
+    # (the first step is left out: it runs from now to the next boundary, so
+    # its length — and with it the lattice — would change with every poll)
+    smallest = min((s.grid_kwh * eff for s in (horizon[1:] or horizon)
+                    if s.grid_kwh * eff > 1e-6), default=span)
     step = max(span / OPTIMAL_MAX_STATES, min(span / OPTIMAL_MIN_STATES, smallest / 20.0))
-    top = max(1, round(span / step))
-    step = span / top
-    cmax_i = math.floor((cmax - floor) / step + 1e-9)
+    # ... and sized so that a whole charging quarter at the Power Level is an
+    # exact number of points.  Rounded to the nearest point it promised more
+    # than the inverter delivers (0.762 kWh of a possible 0.75, and the plan
+    # drifted above the battery); rounded down it left up to an eighth of
+    # every quarter unused on a large battery.
+    full = max((s.grid_kwh * eff for s in (horizon[1:] or horizon)), default=0.0)
+    if full > 1e-6:
+        step = full / max(1, math.ceil(full / step - 1e-9))
+    top = max(1, math.floor(span / step + 1e-9))
+    # A battery already below Min SOC (Min SOC raised, an unexpected load, the
+    # inverter's own floor lower than Min SOC) is planned from where it really
+    # is: the lattice reaches down to it, and the plan buys the gap back.
+    lo = max(0, math.ceil((floor - current_kwh) / step - 1e-9))
+    top += lo
+    cmax_i = lo + math.floor((cmax - floor) / step + 1e-9)
+    # The plan holds one lattice point above Min SOC: the lattice is at most
+    # one point off the battery's real content (the carried rounding, now
+    # anchored at midnight), so this keeps the real battery above Min SOC too.
+    fl = min(lo + 1, cmax_i)
 
     # Net PV - consumption per step, rounded with the error carried forward so
-    # the totals stay exact; the most a step can charge, rounded per step.
+    # the totals stay exact; the most a step can charge, rounded per step
+    # (exact for a whole quarter at the Power Level, see the lattice above;
+    # only quarters the PV limits are rounded, to the nearest point).
+    # The rounding is anchored at today's midnight, not at "now": every
+    # quarter then rounds the same way in every plan, whenever it is made.
+    # Anchored at the horizon start, a plan made 15 minutes later rounded
+    # every step differently, and a near-tie (one lattice point below Min SOC
+    # against starting a charge) came out the other way — the plan switched
+    # on where the one before had not.
+    now_h = state.current_hour + state.current_minute / 60.0
+    cum = 0.0
+    pv_today = state.pv_hourly_kwh or {}
+    for h in range(int(now_h) + 1):
+        part = min(1.0, now_h - h)
+        if part <= 0:
+            break
+        cum += part * (float(pv_today.get(h, 0.0)) * pv_confidence
+                       - _battery_share(config, _hour_consumption(config, state, h), 1.0))
     nets: list[int] = []
-    cum, prev = 0.0, 0
+    prev = round(cum / step)
     for s in horizon:
         cum += s.pv_kwh - _battery_share(config, s.cons_kwh, s.hours)
         cur = round(cum / step)
@@ -2786,33 +2829,15 @@ def plan_optimal_from_grid(
     known_prices = [s.price for s in horizon if s.price is not None]
     mean_price = sum(known_prices) / len(known_prices) if known_prices else 0.0
     prices = [s.price if s.price is not None else mean_price for s in horizon]
+    charge_units = [round(s.grid_kwh * eff / step) if s.price is not None else 0
+                    for s in horizon]
+
     cycle_cost = config.battery_cycle_cost_eur_kwh
     if config.optimization_priority == "longevity":
         cycle_cost = max(cycle_cost, 0.05)
 
-    # While rule 1 charges, the inverter feeds the house from the grid: a
-    # charge for a share f of a step stores f × grid × eff AND keeps f × the
-    # house's draw on the battery (after PV) off it, for f × (grid + draw)
-    # kWh bought.  Linear in the target, so per step one price per unit the
-    # battery ends higher — from the physical amounts, never from the rounded
-    # lattice moves, so identical steps cost exactly the same per unit.  A
-    # whole step lifts the battery (grid × eff + draw) above where it would
-    # end idle, rounded per step (not carried: identical steps get identical
-    # moves) and added on top of the step's carried net, which every step
-    # applies whatever it decides — so no decision can pick its rounding.
-    slopes: list[float] = []
-    draws: list[float] = []
-    rise_units: list[int] = []
-    for s, p in zip(horizon, prices):
-        draw = max(0.0, _battery_share(config, s.cons_kwh, s.hours) - s.pv_kwh)
-        rise = s.grid_kwh * eff + draw if s.price is not None and s.grid_kwh > 1e-12 else 0.0
-        draws.append(draw)
-        rise_units.append(round(rise / step))
-        slopes.append((p * (s.grid_kwh + draw) + cycle_cost * s.grid_kwh * eff) / rise * step
-                      if rise > 1e-12 else 0.0)
-
     # A user reserve also applies tonight when tomorrow is in the horizon:
-    # each kWh short of it at midnight costs what tonight's grid costs.
+    # each kWh short of it at midnight costs the shortfall price (below).
     checkpoint = None
     if fixed_need > 0 and state.slot_prices_tomorrow:
         last_today = max((k for k, s in enumerate(horizon) if s.day == 0), default=None)
@@ -2825,7 +2850,7 @@ def plan_optimal_from_grid(
     plan.tonight_price = checkpoint[2] if checkpoint else night_price
 
     def _short(target_units: float, i: int, price: float) -> float:
-        return price * max(0.0, target_units - i) * step
+        return price * max(0.0, fl + target_units - i) * step
 
     # Energy beyond the night's need is used on the days after the horizon,
     # whose prices are unknown: it is worth what the grid typically costs this
@@ -2853,11 +2878,30 @@ def plan_optimal_from_grid(
         # reserve would buy LESS), and a cheap Sunday's night says little
         # about Monday's.
         night_price = max(night_price, store_value)
-        plan.night_price = night_price
         if store_cap <= 0:
             store_value = 0.0
     plan.store_value = store_value
     plan.store_cap_kwh = store_cap
+    # The premise (maintainer, 31 Oct 2026): the battery never goes below Min
+    # SOC and gets through the night; the plan only chooses the cheapest
+    # moments to make sure of that.  A kWh short of either costs ten times the
+    # twice the dearest price ahead (+ the cycle cost) — more than charging
+    # can ever cost, so a hard goal the plan never pays for when charging can
+    # avoid it (finite, so a goal out of reach is missed by as little as
+    # possible).  It replaces "below Min SOC the house runs on the grid at
+    # that hour's price", which the inverter does not do: nothing stops its
+    # self-use at Min SOC.  A battery that is ALREADY below Min SOC is bought
+    # back in the cheapest slots, never by force at the current price (the
+    # region under `lo`, below; Known Issues 8m).
+    plan.night_grid_price = night_price
+    shortfall = OPTIMAL_SHORTFALL_FACTOR * max(
+        [abs(p) for p in prices] + [abs(night_price), store_value, 1e-9]) + cycle_cost
+    night_grid = night_price
+    night_price = shortfall
+    plan.night_price = plan.shortfall_price = shortfall
+    if checkpoint is not None:
+        checkpoint = (checkpoint[0], checkpoint[1], shortfall)
+        plan.tonight_price = shortfall
     need_i = need / step
     cap_i = store_cap / step
 
@@ -2865,119 +2909,85 @@ def plan_optimal_from_grid(
         # What the next day still has to buy at that price (a constant
         # offset of the credit for what is held: same decisions, but a
         # bigger house can never look cheaper).
-        return store_value * (cap_i - min(cap_i, max(0.0, i - need_i))) * step
+        return store_value * (cap_i - min(cap_i, max(0.0, i - lo - need_i))) * step
 
     terminal = [_short(need_i, i, night_price) + _stored(i) for i in range(top + 1)]
-    # Two tables: the value from here on when the charge was off at the end
-    # of the previous step (starting one costs start_cost) and when it was
-    # still running.
+    # Two tables: the value from here on when the previous step was idle
+    # (starting a charge costs OPTIMAL_SWITCH_COST) and when it was charging.
     value_idle, value_run = terminal, terminal
     pol_idle: list[array] = [array("i")] * len(horizon)
     pol_run: list[array] = [array("i")] * len(horizon)
-    late = top + 1                           # policy code: a partial step that starts late
-    tie = OPTIMAL_TIE_TOL
+    unit_bought = step / eff                 # grid kWh per lattice unit stored
     start_cost = OPTIMAL_START_COST_KWH * (
         sum(abs(p) for p in prices) / len(prices) if prices else 0.0)
 
     for k in range(len(horizon) - 1, -1, -1):
         n = nets[k]
         p = prices[k]
-        g = rise_units[k]
+        g = charge_units[k]
         after_idle, after_run = value_idle, value_run
         if checkpoint is not None and checkpoint[0] == k:
             after_idle = [v + _short(checkpoint[1], i, checkpoint[2])
                           for i, v in enumerate(after_idle)]
             after_run = [v + _short(checkpoint[1], i, checkpoint[2])
                          for i, v in enumerate(after_run)]
-        slope = slopes[k]                                # cost per unit the battery rises
+        slope = p * unit_bought + cycle_cost * step      # cost per unit stored
         v_from_idle = [0.0] * (top + 1)
         v_from_run = [0.0] * (top + 1)
         p_from_idle = array("i", bytes(4 * (top + 1)))
         p_from_run = array("i", bytes(4 * (top + 1)))
-        # Charging to x costs slope*(x - xv), xv = where the battery ends
-        # idle before the floor clips it.  A whole step (x = hi) runs on into
-        # the next one.  A part of a step either comes first and stops (the
-        # next step starts idle — after_idle) or comes last, starting late
-        # (a new start, but still running at the step's end — after_run).
-        # With w[x] = after[x] + slope*x the cheapest partial target of each
-        # kind is a sliding-window minimum.
-        # Each window holds (w[x], x), w increasing from its front.
-        win_idle: deque[tuple[float, int]] = deque()
-        win_run: deque[tuple[float, int]] = deque()
+        # Charging from x0 to x costs w[x] - slope*x0 with w[x] = after_run[x]
+        # + slope*x: the cheapest target is a sliding-window minimum.
+        window: deque[int] = deque()
         pushed = -1
         for i in range(top + 1):
-            xv = i + n
-            x0 = xv
+            x0 = i + n
             imp = 0.0
-            if x0 < 0:
-                # Below the floor the house runs on the grid.
-                imp = p * (-x0) * step
-                x0 = 0
+            if i < fl:
+                # Already below Min SOC: planned as staying there (the house
+                # on the grid at this hour's price) until the plan buys the
+                # gap back; PV still fills it.
+                x0 = min(top, i + max(n, 0))
+                imp = p * max(0, -n) * step
+            elif x0 < fl:
+                # Going below Min SOC costs the shortfall price; a charge then
+                # goes into the battery on top.
+                imp = shortfall * (fl - x0) * step
+                x0 = fl
             elif x0 > top:
                 x0 = top                       # PV beyond full is spilled
             v_idle = imp + after_idle[x0]
-            # A whole step: the house on the grid, the battery takes PV
-            # beyond the house and the Power Level — up to max SOC, where
-            # rule 1 holds it full and the charge stays on.
-            hi = min(xv + g, cmax_i) if g > 0 else x0
+            hi = min(x0 + g, cmax_i) if g > 0 else x0
             if hi <= x0:
                 v_from_idle[i] = v_from_run[i] = v_idle
                 p_from_idle[i] = p_from_run[i] = x0
                 continue
-            while pushed < hi - 1:
+            while pushed < hi:
                 pushed += 1
+                wx = after_run[pushed] + slope * pushed
                 # Ties keep the LARGER target: charge as much as early as
                 # possible when it costs the same (fill early).
-                sx = slope * pushed
-                wx = after_idle[pushed] + sx
-                bar = wx - tie * (1.0 + abs(wx))
-                while win_idle and win_idle[-1][0] >= bar:
-                    win_idle.pop()
-                win_idle.append((wx, pushed))
-                wx = after_run[pushed] + sx
-                bar = wx - tie * (1.0 + abs(wx))
-                while win_run and win_run[-1][0] >= bar:
-                    win_run.pop()
-                win_run.append((wx, pushed))
-            while win_idle and win_idle[0][1] <= x0:
-                win_idle.popleft()
-            while win_run and win_run[0][1] <= x0:
-                win_run.popleft()
-            # The best way to charge if the charge was running before (vr)
-            # and if it was not (vi): the whole step first, then a part that
-            # stops, then a part that starts late — each only when cheaper.
-            sv = slope * xv
-            vr = after_run[hi] + slope * hi - sv
-            cr = ci = hi
-            vi = vr + start_cost
-            if win_idle:
-                v, e = win_idle[0]
-                v -= sv
-                if v < vr - tie * (1.0 + abs(vr)):
-                    vr, cr = v, e
-                v += start_cost
-                if v < vi - tie * (1.0 + abs(vi)):
-                    vi, ci = v, e
-            if win_run:
-                v, e = win_run[0]
-                v += start_cost - sv
-                if v < vr - tie * (1.0 + abs(vr)):
-                    vr, cr = v, e + late
-                if v < vi - tie * (1.0 + abs(vi)):
-                    vi, ci = v, e + late
-            tol = tie * (1.0 + abs(v_idle))
-            if vr <= v_idle + tol:
-                v_from_run[i], p_from_run[i] = vr, cr
+                while window and (after_run[window[-1]] + slope * window[-1]
+                                  >= wx - OPTIMAL_TIE_TOL * (1.0 + abs(wx))):
+                    window.pop()
+                window.append(pushed)
+            while window[0] <= x0:
+                window.popleft()
+            best_x = window[0]
+            v_charge = imp + after_run[best_x] + slope * (best_x - x0)
+            tol = OPTIMAL_TIE_TOL * (1.0 + abs(v_idle))
+            if v_charge <= v_idle + tol:
+                v_from_run[i], p_from_run[i] = v_charge, best_x
             else:
                 v_from_run[i], p_from_run[i] = v_idle, x0
-            if vi <= v_idle + tol:
-                v_from_idle[i], p_from_idle[i] = vi, ci
+            if v_charge + start_cost <= v_idle + tol:
+                v_from_idle[i], p_from_idle[i] = v_charge + start_cost, best_x
             else:
                 v_from_idle[i], p_from_idle[i] = v_idle, x0
         value_idle, value_run = v_from_idle, v_from_run
         pol_idle[k], pol_run[k] = p_from_idle, p_from_run
 
-    i0 = min(top, max(0, round((current_kwh - floor) / step)))
+    i0 = min(top, max(0, lo + round((current_kwh - floor) / step)))
     running_now = state.charging_now is True
     plan.cost = (value_run if running_now else value_idle)[i0]
 
@@ -2986,45 +2996,48 @@ def plan_optimal_from_grid(
         running = running_now
         bought: list[float] = []
         acts: list[bool] = []
-        runs: list[bool] = []
         socs: list[float] = []
         imports: list[float] = []
-        total = 0.0
-        for k, s in enumerate(horizon):
+        total = money = 0.0
+        for k, _ in enumerate(horizon):
             n = nets[k]
-            xv = j + n
-            x0 = min(top, max(0, xv))
-            x = (pol_run if running else pol_idle)[k][j] if policy_on else x0
-            starts_late = x >= late
-            if starts_late:
-                x -= late
-            whole = xv + rise_units[k]               # where a whole step ends
-            if x > x0:
-                total += slopes[k] * (x - xv)
-                share = min(1.0, (x - xv) / rise_units[k])
-                bought.append(share * s.grid_kwh)
-                imp = share * draws[k]          # the house on the grid meanwhile
-            else:
-                imp = max(0, -xv) * step
+            x0 = j + n
+            imp = 0.0
+            if j < fl:
+                x0 = min(top, j + max(n, 0))
+                imp = max(0, -n) * step
                 total += prices[k] * imp
-                bought.append(0.0)
-            acts.append(x > x0)
-            running = x > x0 and (starts_late or x == min(whole, cmax_i))
-            runs.append(running)
+            elif x0 < fl:
+                imp = (fl - x0) * step
+                total += shortfall * imp
+                x0 = fl
+            elif x0 > top:
+                x0 = top
+            money += prices[k] * imp
+            x = (pol_run if running else pol_idle)[k][j] if policy_on else x0
+            d = max(0, x - x0)
+            running = d > 0
+            buy = prices[k] * d * unit_bought + cycle_cost * d * step
+            total += buy
+            money += buy
+            bought.append(d * unit_bought)
+            acts.append(running)
             imports.append(imp)
-            socs.append(floor + x * step)
+            socs.append(floor + (x - lo) * step)
             j = x
             if checkpoint is not None and checkpoint[0] == k:
                 total += _short(checkpoint[1], j, checkpoint[2])
         total += _short(need_i, j, night_price) + _stored(j)
-        return bought, acts, runs, socs, imports, total
+        money += _short(need_i, j, night_grid) + _stored(j)
+        return bought, acts, socs, imports, total, money
 
-    (plan.bought_kwh, plan.charging, plan.runs_on, plan.planned_kwh,
-     plan.plan_import_kwh, _) = _walk(True)
+    (plan.bought_kwh, plan.charging, plan.planned_kwh, plan.plan_import_kwh,
+     _, plan.money) = _walk(True)
     for s, act in zip(horizon, plan.charging):
         if act:
             (plan.charge_today if s.day == 0 else plan.charge_tomorrow).add(s.idx)
-    _, _, _, plan.baseline_kwh, plan.baseline_import_kwh, plan.baseline_cost = _walk(False)
+    (_, _, plan.baseline_kwh, plan.baseline_import_kwh, plan.baseline_cost,
+     plan.baseline_money) = _walk(False)
     return plan
 
 
@@ -3083,9 +3096,9 @@ def _explain_optimal(plan: OptimalPlan, config: EMSConfig, current_kwh: float) -
         imported = sum(plan.baseline_import_kwh)
         top_price = max(horizon[k].price or 0.0 for k, imp in
                         enumerate(plan.baseline_import_kwh) if imp > 1e-6)
-        return (f"Battery runs empty at {_slot_clock(horizon[first_empty])} — buying "
-                f"those {imported:.1f} kWh live (up to {top_price:.3f}/kWh) is cheaper "
-                "than charging earlier after losses")
+        return (f"Battery reaches Min SOC at {_slot_clock(horizon[first_empty])} — no hour "
+                f"before it is cheaper after losses than those {imported:.1f} kWh then "
+                f"(up to {top_price:.3f}/kWh)")
     today = len({s.idx for s in bought if s.day == 0})
     tomorrow = len({s.idx for s in bought if s.day == 1})
     prices = [s.price for s in bought if s.price is not None]
@@ -3094,10 +3107,10 @@ def _explain_optimal(plan: OptimalPlan, config: EMSConfig, current_kwh: float) -
         parts.append(f"{today} today")
     if tomorrow:
         parts.append(f"{tomorrow} tomorrow")
-    saving = plan.baseline_cost - plan.cost
     why = ""
     if first_empty is not None:
-        why = f"; without them the battery runs empty at {_slot_clock(horizon[first_empty])}"
+        why = (f"; without them the battery reaches Min SOC at "
+               f"{_slot_clock(horizon[first_empty])}")
     floor = cap * config.battery_discharge_min_pct / 100.0
     if (plan.store_value > 0 and plan.planned_kwh
             and plan.planned_kwh[-1] - floor > plan.night_need_kwh + 0.1):
@@ -3105,8 +3118,11 @@ def _explain_optimal(plan: OptimalPlan, config: EMSConfig, current_kwh: float) -
                 f"(this week's average {plan.price_reference:.3f}/kWh)")
     span = (f"{min(prices):.3f}" if max(prices) - min(prices) < 0.0005
             else f"{min(prices):.3f}–{max(prices):.3f}")
-    return (f"Charging {' + '.join(parts)} slot(s) at {span}/kWh{why} "
-            f"(saves ~{max(0.0, saving):.2f})")
+    saving = plan.baseline_money - plan.money
+    money = (f"saves ~{saving:.2f}" if saving >= 0
+             else f"keeps Min SOC and the night covered for ~{-saving:.2f} "
+                  "more than buying live")
+    return f"Charging {' + '.join(parts)} slot(s) at {span}/kWh{why} ({money})"
 
 
 def _run_optimal(

@@ -14,6 +14,70 @@ memory or assumptions from training — the facts and status are HERE. If
 something you intend to do contradicts this document, stop and reconcile it
 first.
 
+### Maintainer decisions — do NOT change any of these without the maintainer's explicit OK
+
+The maintainer, 31 Oct 2026: *"learn to remember why choices were made and
+stick to it until there is an absolute good reason to change."*  Every entry
+below is a decision the maintainer made or confirmed, with its reason.  Before
+changing behaviour, check this list.  If a change would contradict an entry —
+even to fix something — **stop and ask**; say which entry and why.  When the
+maintainer makes a new decision, add it here in the same commit.
+
+**What the EMS is for (the premise)**
+- **The battery is kept above Min SOC and gets through the night; the plan
+  only chooses the cheapest moments to make sure of that** (31 Oct 2026,
+  restoring the README's premise after the exact planner had turned it into
+  pure cost arbitrage — Known Issues 8p).  Buying *beyond* that is economic:
+  only when cheaper after losses than later grid (cheap days via the weekly
+  price, negative prices).
+- **A battery already below Min SOC is bought back in the cheapest slots,
+  never by force at the current price** (31 Oct 2026; Known Issues 8m:
+  urgent recovery bought the 0.453 evening peak and toggled every 1-3 min).
+- **Register 8490 (battery discharge depth on-grid) is never written by the
+  EMS.**  It was never written before, its meaning (stop SOC or depth of
+  discharge) is undocumented, and nobody knows what writing it would do
+  (31 Oct 2026: "don't change without knowing what it does or should do").
+  Applies to every register: don't start writing one without knowing what
+  it does.
+- **No special-case rules in the planner.**  If a plan looks wrong, change
+  the cost model in one place, with a test — or fix the input.
+- **Ties: fill as soon as possible** (charge the earliest of equal prices).
+- **Today vs tomorrow: keep today's charge when it beats tonight's grid.**
+
+**Inverter control**
+- **Safe power: battery power first, flexible loads second** (Oct 2026).
+- **Rule 1 power is written only when a phase is over `max_amperage_per_phase`;
+  otherwise it stays at the user's Power Level** (23 Oct 2026); one-step cut;
+  nothing written while the battery is idle (24 Oct 2026).
+- **`grid_mode = off` writes nothing to the inverter** (8c).
+- **`HA_FelicityNumber` writes `int(value)`** — give number entities a
+  whole-number step instead (Oct 2026).
+- **Polling reads the full map in big chunks** — 2400 baud makes the number of
+  requests, not registers, the cost (8d).
+- **Never write `econ_rule_N_sell_enable` on an IVGM**; selling there is unproven.
+
+**Register maps and scaling**
+- **T-REX-25 scaling is FROZEN** (field-proven, altered firmware).
+- **A measurement on one model says nothing about another**: T-REX-5/6K are
+  not corrected from the T-REX-10 dump; never assert two maps agree.
+- **An IVGM / IVAM address must come from its own protocol document.**
+- **T-REX-10 rule value 3 is labelled "ECO mode (AC Couple)"** (29 Oct 2026,
+  discussion #230); T-REX-5/6K keep "ECO mode" until their app is checked.
+
+**Flexible loads / EV**
+- **Home battery first, the car after** (24 + 30 Oct 2026).  "Car after" on a
+  connection too small for both is NOT built yet: it needs a hold below max
+  SOC, unverified on hardware (test pending with the maintainer).
+
+**Process**
+- **Strategy presets set only `grid_mode` and `optimization_priority`** —
+  never a user-owned knob.
+- **Options flow: an absent field is not a clear.**
+- **Tagging and releasing is the maintainer's action**, never move a tag.
+- **The 26 Oct 2026 "house on the grid while charging" model was reverted**
+  (31 Oct 2026): more detail and a 2× slower suite, nothing the field
+  reported fixed.  Don't bring it back without the maintainer.
+
 ### The Documentation Set — keep ALL of it current (do not let it float)
 
 There are TWO authoritative docs and they must BOTH be read and kept in sync:
@@ -88,6 +152,14 @@ dip was the consumption profile, Known Issue 8l).
 greedy because MILP needs pulp/CBC and was not shown deterministic.  The exact
 planner has neither problem.)
 
+⚠️ **31 Oct 2026 — the planner's OBJECTIVE was put back on the original
+premise** (see the decisions register above and Known Issues 8p).  From
+19 to 31 Oct the planner minimised money only: it charged only when that
+beat later grid prices after losses, and otherwise planned the battery to
+sit at Min SOC with "the house on the grid" — which the inverter does not do.
+The owner had to start charges by hand for days.  Min SOC and the night are
+now hard goals of the cost model.
+
 ### The One Rule That Keeps Breaking — Single Point of Truth
 
 **`ems.py` is the SINGLE SOURCE OF TRUTH for all scheduling logic. It must
@@ -112,7 +184,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **2257**: 2255 pass + 2 documented skips; ~36 min serial (was ~16 before the house-on-grid planner), most of it `test_planner.py` and the replays; `pip install pytest-xdist` and `-n 4` runs `test_planner.py` in ~5 min) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **2260**: 2258 pass + 2 documented skips; ~21 min, most of it `test_planner.py` and the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -174,7 +246,7 @@ tests/
 ├── test_ems.py              # 292 tests for the pure EMS algorithm
 ├── test_planner.py          # The exact planner held to the RULES: independent
 │                            #   simulation, brute force, 2nd optimiser, LP bound,
-│                            #   monotonicity, re-plan consistency (1,376 cases)
+│                            #   monotonicity, re-plan consistency (1,379 cases)
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
@@ -247,41 +319,38 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
 - **Horizon**: now → the end of the last day with prices (today, or today +
   tomorrow once tomorrow's are out, ~13:00).
 - **Steps of 15 minutes** (or the price slot, if shorter), the first one from
-  now to the next boundary.  In each step the inverter charges for any share
-  f of it, from nothing to the whole step at the Power Level
-  (`G = min(power, inverter_max − PV)` per hour).  The coordinator re-plans
-  every poll while a step runs, so it stops the moment the plan has what it
-  needs — which is why a partial step is executable, and why an hourly
-  tariff buys three quarters instead of a whole hour.
-- The battery covers the house; PV fills it; PV beyond full is spilled;
-  below the discharge floor the house runs on the grid **at that step's
-  price** (passthrough).  Grid charging stops at max SOC (rule 1's SOC).
-  `battery_cycle_cost` (≥ 0.05 for `longevity`) is charged per stored grid
-  kWh.
-- **While rule 1 charges, the house runs on the grid (26 Oct 2026).**  A
-  charge for a share f of a step stores `f × G × eff` AND keeps `f × D` off
-  the battery (D = the house's draw on the battery after PV), for
-  `f × (G + D)` kWh bought.  Linear in where the battery ends, so the DP
-  stays exact: one price per unit the battery ends higher,
-  `p × (G + D) / (G × eff + D)`, from the physical amounts — identical steps
-  cost exactly the same per unit.  The charge comes first, so a battery near
-  the floor draws back what was stored (below the floor: passthrough).
-  Consequences: above the floor a charge step is also a **hold** — when the
-  house draws much more than the Power Level it costs barely more than the
-  price (×1.03-1.05), so a cheap-ish hour holds the battery for a dearer
-  night; a charge where the house draws on the battery beats one where PV
-  already feeds it (an equal-price afternoon over noon); at the floor
-  charging is pure storage at `p / eff` again.  Before this the battery was
-  modelled as feeding the house during a charge, which made an emptier
-  battery buy less than a fuller one once stored energy had a weekly value
-  (seed 27).
-  **Lattice**: a whole step lifts the battery `round((G × eff + D) / step)`
-  points above its idle end — rounded per step, NOT carried, and added to
-  the step's carried net, which every step applies whatever it decides.
-  (24 Oct 2026 attempt, reverted: the whole step ended at "start + G × eff"
-  ignoring the step's rounded net, so each charging step dropped its share
-  of the carried rounding — the DP picked steps by their rounding, and a
-  re-plan from a different start rounded differently.)
+  now to the next boundary.  In each step the battery takes any amount from
+  nothing to a full step at the Power Level (`min(power, inverter_max − PV)`,
+  stored × efficiency).  The coordinator re-plans every poll while a step
+  runs, so it stops the moment the plan has what it needs — which is why a
+  partial step is executable, and why an hourly tariff buys three quarters
+  instead of a whole hour.
+- The battery covers the house; PV fills it; PV beyond full is spilled.
+  Grid charging stops at max SOC (rule 1's SOC).  `battery_cycle_cost`
+  (≥ 0.05 for `longevity`) is charged per stored kWh.
+- **The premise (31 Oct 2026): Min SOC and the night are hard goals.**  A kWh
+  below Min SOC, or short of the night's need at the horizon end, costs the
+  **shortfall price**: `OPTIMAL_SHORTFALL_FACTOR` (2) × the dearest price
+  ahead (at least the expected night price and the weekly store value) + the
+  cycle cost.  That is more than charging can ever cost (even at efficiency
+  0.70), so the plan never accepts a shortfall it can charge away; it is
+  finite, so a goal out of reach is missed by as little as possible.  It
+  replaces "below the floor the house runs on the grid at that step's price"
+  (passthrough), which the inverter never did — nothing stops its self-use at
+  Min SOC — and which planned the battery "flat at Min SOC" for hours while
+  in reality it drained further.  Only 2×, not 10×: the factor also
+  multiplies the lattice's rounding.
+- **Already below Min SOC** (Min SOC raised, an unexpected load, the
+  inverter's own floor lower): the lattice reaches down to the real SOC
+  (`lo`), the battery is planned as staying there (house on the grid at the
+  step's price) until the plan buys the gap back — in the cheapest slots,
+  never forced at the current price (8m).  The night goal makes it recover by
+  the horizon end.  Before, the plan started such a battery AT Min SOC and
+  never saw the missing energy (the owner's week of manual charging).
+- **One lattice point of margin** (`fl = lo + 1`): the plan holds one point
+  (0.03-0.07 kWh) above Min SOC, because the lattice is at most one point off
+  the real content; otherwise rounding put the real battery a few Wh under
+  Min SOC at the shortfall price.
 - **The battery supplies at most the inverter's rating** (`_battery_share`:
   `min(consumption, inverter_max_power_kw × step)`).  The house is fed
   through the inverter; anything above the rating passes through from the
@@ -293,10 +362,10 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
   (`test_below_the_inverter_rating_the_cap_changes_nothing`).
 - **After the horizon**: the battery must carry the house from midnight to
   sunrise (first PV hour of tomorrow's forecast, else HA's sun times, else
-  07:00) — the old "survive the night".  Every kWh short then costs what the
-  same night hours cost on the last day with known prices.  Without a
-  weekly price, energy beyond that need is worth nothing — that is what
-  stops "fill the battery" buying.
+  07:00) — the old "survive the night".  Every kWh short then costs the
+  shortfall price (a hard goal, see above).  Without a weekly price, energy
+  beyond that need is worth nothing — that is what stops "fill the battery"
+  buying.
 - **The week's price (24 Oct 2026, Known Issues 8o)**: once the coordinator
   knows 3+ days of prices, `EMSState.price_reference_eur_kwh` (mean of the
   last 7 daily means) sets `store_value = reference × eff`.  What the NEXT
@@ -311,9 +380,9 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
   as Save Money (`test_priorities_order_the_amount_bought`).
 - `self_consumption`: that night need × 1.25 (the old boost, in one place).
 - `reserve_target_pct`: raises the night need to `max(need, fixed − floor)`,
-  and with tomorrow in the horizon also tonight (a midnight checkpoint priced
-  at tonight's grid).  NOT a hard per-step floor — that forced evening-peak
-  buys (`test_a_reserve_is_reached_from_the_cheap_slots_not_the_peak`).
+  and with tomorrow in the horizon also tonight (a midnight checkpoint at the
+  shortfall price).  A checkpoint, not a per-step floor — Min SOC is the
+  per-step floor (`test_a_reserve_is_reached_from_the_cheap_slots_not_the_peak`).
 - Ties (same money): charge **as early and as much** as possible (maintainer:
   "fill as soon as possible").  A step counts as "charging" (its slot is
   scheduled) whenever the plan puts energy into it.  (A first version
@@ -322,20 +391,10 @@ exactly; every behaviour below FOLLOWS from it — none is a special rule.
   found by the replay, pinned by `test_replan_inside_a_quarter_does_not_toggle`.)
 - **Starting a charge costs `OPTIMAL_START_COST_KWH` (0.05 kWh at the
   horizon's mean price, ~1 ct)** — part of the cost model, solved with a
-  second value table (charge off / still running at the end of the previous
-  step).  A plan re-made every poll then cannot start the inverter for a
-  sliver, nor stop and restart it over rounding between two near-equal
-  prices.  **Only a charge still running at a step's end continues free**
-  (26 Oct 2026): a whole step runs on; a partial step either comes first
-  and stops (the next charge is a new start) or **starts late** (a start,
-  then running into the next step).  Before, any charging step counted as
-  running, so one-lattice-point "slivers" kept a charge alive through
-  dear hours to dodge the start cost — and the coordinator executes such a
-  slot as a real charge.  Without "start late", a re-plan inside a quarter
-  could do what the plan at its start could not express ("charge the tail
-  of this quarter and carry on"), and switched on mid-quarter.
-  `OptimalPlan.runs_on` says per step whether the charge is still on at its
-  end.  The coordinator passes `EMSState.charging_now`, and
+  second value table (previous step idle / charging).  A plan re-made every
+  poll then cannot start the inverter for a sliver, nor stop and restart it
+  over rounding between two near-equal prices; a running charge continues
+  at no such cost.  The coordinator passes `EMSState.charging_now`, and
   `now.minute // 15` plus the charging state are in the skip-recalc hash so
   a new quarter (also inside an hourly price slot) re-plans.  A quantity of
   energy, not euros, so scaling every price still changes nothing.
@@ -348,60 +407,69 @@ decided by tonight's real grid price; partial charges; equal prices → the
 earliest; no "today-first" override needed.
 
 **Solver**: backward induction over SOC on a lattice (`OPTIMAL_MIN/MAX_STATES`,
-fine enough that the smallest charging step spans ≥ 20 points); per step the
+fine enough that the smallest charging step spans ≥ 20 points — the first,
+partial step left out, else the lattice changed every poll); per step the
 best amount is a **sliding-window minimum** (linear prices), so O(states) per
-step (two windows: a part that stops, a part that starts late).  Net PV −
-load per step is rounded with the error carried, so totals are exact.
-Median ~110 ms per plan on a PC, p90 ~310 ms (~1.8× the planner before the
-house-on-grid model: the second window), no dependency, deterministic.  Its own
+step.  **The lattice point divides a whole charging quarter at the Power Level
+exactly** (rounded to the nearest point it promised 0.762 kWh of a possible
+0.75, and the plan drifted above the battery; rounded down it wasted up to an
+eighth of each quarter).  **Net PV − load per step is rounded with the error
+carried from today's midnight** — the same rounding in every plan, whenever it
+is made (carried from the horizon start, a plan made 15 minutes later rounded
+differently and flipped near-ties: the October re-plan bug class).
+~40-120 ms per plan on a PC, no dependency, deterministic.  Its own
 SOC path is the card's trajectory (`plan_trajectory_exact`); the
 negative-price flags (post-added) fall back to the slot simulation.
 
 **Post-steps kept**: `charge_to_full_on_negative_price` adds every p<0 slot;
 `discharge_to_make_room_for_negative_price` adds `_select_discharges_for_pv_headroom`;
 flex-load overlay.  NOT run for it: `_reduce_charge_spill` (it can only undo
-an optimum) and **urgent recovery** (Known Issues 8m).
+an optimum) and **urgent recovery** (Known Issues 8m) — recovery below Min
+SOC is part of the plan now, in the cheapest slots.
 
-**Tests — `tests/test_planner.py` (1,376 cases, seeded; the id is the seed).**
+**The reason line** reports money only (`plan.money` / `baseline_money`, no
+shortfall pricing): "saves ~x", or "keeps Min SOC and the night covered for
+~x more than buying live" when holding the premise costs money.
+
+**Tests — `tests/test_planner.py` (1,379 cases, seeded; the id is the seed).**
 It contains its own continuous simulation of the model and checks the plan
 against it, never against the planner's own numbers: rules 1-3 (never buy
 when nothing is as cheap; every bought quarter pays; no cheaper moment does
 the job), exactness (brute force over every whole-step plan on short
 horizons; a second, finer optimiser with fractional charging on two-day ones;
-an LP lower bound nothing may beat), monotonicity (a fuller battery never
-costs more nor buys more **on the meter** — every grid kWh, not only those
-into the battery: one above its floor may rightly hold where one at its
-floor gets passthrough for free, seed 23; more sun never costs more or buys
-more; a bigger house never costs less; a cheaper slot never costs more),
-price scaling, determinism, **re-plan consistency**
+an LP lower bound nothing may beat), monotonicity (fuller battery / more sun
+never cost more or buy more; a bigger house never costs less; a cheaper slot
+never costs more), price scaling, determinism, **re-plan consistency**
 (follow the plan quarter by quarter — every decision is executed as decided
 15 min earlier: the October "sliding/toggling" bug class), physics, ties,
-negative prices, priorities, reserve, hourly tariffs, the house on the grid
-while charging (`test_a_charge_keeps_the_house_off_the_battery`), and the 19 Oct 2026
-customer case.  **When a report comes in, add it here as a situation.**
+negative prices, priorities, reserve, hourly tariffs, the 19 Oct 2026
+customer case, and **the premise** (`test_min_soc_is_kept_when_a_cheaper_hour_comes_first`,
+`test_a_battery_below_min_soc_is_bought_back_in_the_cheapest_slots`,
+`test_below_min_soc_at_the_evening_peak_nothing_is_forced`,
+`test_the_shortfall_price_is_the_dearest_price_ahead`; the first two fail on
+the old passthrough / start-at-the-floor code).  The independent model prices
+a shortfall the same way (`shortfall_price`).  "A fuller battery never buys
+more" is checked only when both batteries are on the same side of Min SOC:
+just above it Min SOC is defended, at or under it the gap is bought back
+cheaply — the two rules meet there by design (seeds 52, 57).
+**When a report comes in, add it here as a situation.**
 
 **Known limits** (deliberate, documented):
-- The other trajectories in ems.py (greedy, MILP, the slot simulation the
-  negative-price flags fall back to) still model the battery as covering
-  the house during a charge; only the exact planner has the house on the
-  grid.
-- Inside a step the charge comes first.  When the battery would reach the
-  floor within the step anyway, letting it drain first and charging after
-  would be a little cheaper; the plan does not model that (it never costs
-  more than planned — charge-first is what the coordinator does).
-- No free "hold" (grid feeds the house, battery neither charges nor
-  discharges): rule 1 holds only while it charges, so a hold always buys
-  the Power Level into the battery too.  The LP bound in the tests shows
-  what a free hold would save.
-- **A battery below the EMS floor is planned from the floor.**  The
-  coordinator does not stop self-use at `battery_discharge_min_level`; the
-  inverter's own discharge depth does.  If that sits lower, the house drains
-  the battery past the EMS floor and the plan does not know the energy
-  between the two is missing — it charges too little, too late.  Found
-  26 Oct 2026 by the weekend replay at the harness's 10 % self-use floor
-  (Sunday ended at 89 %, not ≥ 95 %); the old model's over-buying (~1 kWh
-  per 8 kW quarter) had hidden it.  Modelling it needs the lattice extended
-  below the floor with the inverter's floor as an input.
+- The battery is modelled as covering the house even during a charge step
+  (as every trajectory in ems.py does); physically the grid feeds the house
+  then.  The difference is the loss on that load, ~a cent per step —
+  **but with a weekly price (8o) it can flip a decision**: near the floor
+  charging then mostly replaces the house's lossless passthrough, so an
+  emptier battery can buy less than a fuller one when house load is close
+  to the Power Level (`test_monotone_a_fuller_battery_never_buys_more`
+  checks "buys no more" only without a weekly price; cost stays checked).
+  A fix was built (26 Oct 2026, "house on the grid while charging") and
+  **reverted by the maintainer on 31 Oct 2026**: more model detail and a 2×
+  slower suite, nothing the field reported fixed.  Don't bring it back
+  without the maintainer.
+- No "hold" action (grid feeds the house, battery neither charges nor
+  discharges) below max SOC: rule 1 cannot express it today.  The LP bound
+  in the tests shows what it would save.
 - `to_grid` / `both` (selling) still use the greedy selector.
 
 ## Optional MILP Scheduler (`milp.py`)
@@ -414,23 +482,14 @@ the whole remaining-today + tomorrow horizon as a single optimisation and
 lets a solver find the cost-optimal plan, so cross-slot/cross-day
 interactions can't fall through the cracks.
 
-**Engine selection**: `scheduler_engine` config option (**`greedy` default** /
-`milp`), exposed as a select entity ("Scheduler Engine") and in the EMS
-card's Advanced settings ("Scheduler"). When `milp`,
-`calculate_schedule` calls `_run_milp_or_none()`, which tries the solver
-and **silently falls back to greedy** on any failure (pulp missing,
-infeasible, timeout, non-optimal). The greedy path stays the safety net —
-MILP failures never break the EMS.
-
-⚠️ **This section used to say MILP was the default and was wrong for months**
-(corrected Oct 2026).  `config_flow._get_default_options` sets `"greedy"`, and
-`__init__.py` ~274 migrates any existing `milp` install **back to greedy** —
-the exact opposite of the "one-time migration bumps auto-greedy installs to
-milp" this paragraph used to claim.  The decision is recorded at the top of
-this file ("Engine default = GREEDY, June 2026"); the MILP section simply never
-got updated when the flip was reverted, so the document contradicted itself and
-the stale half described a migration that runs the other way.  **If you are
-about to act on something in this section, check it against the code first.**
+**Engine selection**: `scheduler_engine` config option (`optimal` default /
+`greedy` / `milp`), exposed as a select entity ("Scheduler Engine") and in
+the EMS card's Advanced settings ("Scheduler"). When `milp`,
+`calculate_schedule` calls `_run_milp_or_none()`, which tries the solver and
+**falls back to the exact planner** (from_grid) or greedy (to_grid / both) on
+any failure (pulp missing, infeasible, timeout, non-optimal) — MILP failures
+never break the EMS.  The MILP does not carry the 31 Oct premise (hard Min
+SOC); it is opt-in.
 
 **What MILP is actually for**: the greedy two-day reconstruction
 (`_compute_tomorrow_schedule`) is the fragile, non-deterministic part — on a
@@ -2087,7 +2146,7 @@ bracketed = Power Level.
 | discharge_to_make_room_for_negative_price | select | off/on | off | Pre-discharge before p<0 PV windows |
 | rule1_time_window | select | manual/auto | manual | Auto writes rule 1 start=00:00, stop=23:59 |
 | rule1_weekday | select | manual/auto | manual | Auto writes rule 1 effective_week=all days |
-| scheduler_engine | select | greedy/milp | greedy | greedy heuristic or MILP solver (auto-falls back to greedy) |
+| scheduler_engine | select | optimal/greedy/milp | optimal | exact planner (default), legacy greedy, or MILP (falls back to the exact planner) |
 
 All `HA_FelicityInternalNumber` configuration entities render as
 input boxes (`NumberMode.BOX`) so users can type precise values.
@@ -2405,8 +2464,10 @@ while branch pushes to the same repo succeeded.)
 
 ## Known Issues and Gotchas
 
-### 1. Code Duplication Between coordinator.py and ems.py
-The coordinator has ~300 lines of scheduling logic that duplicates ems.py. Changes to one must be manually mirrored to the other. This has caused bugs (e.g., missing solar protection in coordinator).
+### 1. Code Duplication Between coordinator.py and ems.py — FIXED
+The coordinator used to duplicate ~300 lines of ems.py; it now only builds
+`EMSConfig` / `EMSState` and calls `ems.calculate_schedule` (see "The One Rule
+That Keeps Breaking").  Kept as a warning: don't let it come back.
 
 ### 2. Frontend Simulation Divergence
 The JS card has a simplified version of the algorithm. It doesn't do SOC
@@ -3200,6 +3261,10 @@ minutes until past 23:20, each charge also switching the EV charger on (the
 flex overlay runs loads in charge slots) — 64 `turn_on`s — and each charge
 tripping safe power (18.5-19.4 A).
 
+*(31 Oct 2026: the planner now buys a battery under Min SOC back in the
+cheapest slots — see 8p.  This entry's "below the floor the house runs on the
+grid" was not true of the inverter; the no-forced-peak-charge decision stands.)*
+
 Cause: the urgent-recovery post-step (force a charge in the current slot
 whenever SOC < discharge_min, whatever the price) still ran after the exact
 planner.  Below the floor the inverter runs the house on the grid anyway, and
@@ -3330,12 +3395,7 @@ Fix (see "The week's price" under The exact planner):
 Replay `test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follows`:
 Saturday 21:00 plan books 35 Sunday slots (62 kWh) instead of 13, the EV in
 each; Sunday ends ≥ 95 % with the car charged 5 h+, only while the battery
-charges.  (26 Oct 2026, house on the grid while charging: 25 slots instead
-of 10, the plan ending Sunday at 97 % instead of 51 % — each 8 kW quarter
-now also keeps the house's 0.5 kWh off the battery.  The replay's fake
-inverter now stops self-use at 24.5 %, just under the EMS floor; at its
-10 % default the old model's over-buying had hidden a 9 kWh gap — see
-"Known limits" under The exact planner.)  Unit: `TestWeeklyPriceReference` (an ordinary 0.22 day against a
+charges.  Unit: `TestWeeklyPriceReference` (an ordinary 0.22 day against a
 0.25 week still buys only for the night), coordinator:
 `TestWeeklyPriceMemory`; `test_planner.py`'s independent model, LP bound and
 fine optimiser carry the same terminal cost, and half its situations now
@@ -3345,6 +3405,50 @@ draw a weekly price.
 forecast; when the horizon already includes tomorrow, tomorrow's forecast
 stands in for the day after.  The weekly price is greedy/MILP-blind (only
 the exact planner uses it).
+
+### 8p. The planner drifted from the premise; restored (31 Oct 2026)
+
+**What the owner saw** (maintainer's install, last week of October: 90 kWh,
+Min SOC raised to 45 % "because I want some reserve", Save Money): charges
+had to be started by hand in cheap slots for days; the card drew the battery
+"flat" at 45 % from 01:45 to 13:00 (*"this is fiction"*); the car got 40
+minutes overnight (see "Flexible loads" — the car only charges where the
+battery charges).  Maintainer: *"we have been drifting away from the
+original software … it has not improved."*
+
+**Why.**  The README's premise is: keep enough in the battery to get through
+the night, buy it in the cheapest slots, Min SOC = "the EMS will not
+discharge below this level".  The exact planner (19 Oct 2026, `394b25a`)
+replaced that with pure cost minimisation: it charged only when cheaper,
+after losses, than the grid it displaced later, and modelled the battery
+at Min SOC as "the house runs on the grid at that hour's price".  With
+prices of 0.40-0.51 and 0.9 efficiency that almost never pays, so it planned
+the battery empty and the house on the grid — and the inverter does NOT stop
+at Min SOC (nothing tells it to; register 8490 is not written), so in reality
+the battery drained further, the planner then started from Min SOC as if
+nothing were missing (`i0` was clipped to the floor), and bought too little.
+Removing urgent recovery (8m, 22 Oct) rested on the same false passthrough
+assumption.  Measured on the owner's inputs: battery really at 30 % → the
+planner bought 5 slots, greedy (the old reserve logic) 33.
+
+**Fix** (see "The exact planner"): Min SOC and the night are hard goals priced
+at the shortfall price; a battery under Min SOC is planned from its real SOC
+and bought back in the cheapest slots; plus three lattice fixes the stricter
+goal exposed — rounding carried from midnight (re-plans agree), a lattice
+point that divides a charging quarter exactly (no promise above the
+inverter), one point of margin above Min SOC.  The 26 Oct house-on-grid
+change was reverted.  On the owner's inputs: 50 % at 21:00 → kept above
+45 %; 30 % → the 14 kWh gap bought back tomorrow at 0.397-0.43, not tonight
+at 0.44-0.51.
+
+**Lessons, kept in the decisions register at the top:** the premise is a
+maintainer decision, not a modelling detail an engine may redefine; a plan
+must not assume the inverter does something nobody told it to do.
+
+**Still open:** the car (24/30 Oct: battery first, car after) — needs a
+hold below max SOC, not verified on hardware; the maintainer's test is
+pending.  Until then, under "smart" the car still only runs where the
+battery charges; with Min SOC defended that can include a dear hour.
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -3925,7 +4029,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**2257 tests**: 2255 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**2260 tests**: 2258 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM). `test_ems.py` (292) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
