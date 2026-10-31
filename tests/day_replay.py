@@ -411,7 +411,7 @@ class FakeInverter:
         grid current per phase (safe power), PV power and PV energy today
         (PV confidence)."""
         amps = self.phase_amps(single_phase_kw, l1_kw)
-        if self.monitor_only:                  # IVAM: one phase, W
+        if self.monitor_only and "grid_a_current" in self.register_map:   # IVAM: one phase, W
             self.set("grid_a_current", round(max(amps), 1))
             self.set("grid_a_phase_power", round(self.last_grid_kw * 1000))
             self.set("pv1_power", round(pv_kw * 1000))

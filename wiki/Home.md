@@ -31,6 +31,7 @@ Felicity inverter Home Assistant integration for easy setup and use of the devic
 | T-REX-50KHP3G01 | Full EMS | |
 | IVGM-8KLP1G1 / 15KLP3G1 / 20KLP3G1 | Full EMS (**provisional**) | Power scales and rule encoding confirmed from customer register dumps; selling not yet proven. Read [IVGM support gaps](https://github.com/partach/ha_felicity/blob/main/docs/IVGM_SUPPORT_GAPS.md) before enabling the EMS. |
 | IVAM6048P1G1 | **Monitoring only** | Its protocol has no control registers; the EMS stays off and nothing is ever written. |
+| IVGM100600 (10 kW HV, 3-phase) | **Monitoring only, provisional — own risk** | Reads like a T-REX-10K but is not identical (issue #206); high-voltage battery, so the EMS stays off and nothing is written. |
 
 ## Quick Links
 

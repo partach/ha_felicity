@@ -681,6 +681,101 @@ class TestNonRespondingGroupIsolation:
 # Manual price mode executes the card's slot overrides
 # ---------------------------------------------------------------------------
 
+class TestIllegalDataAddressIsolation:
+    """Issue #206 (IVGM100600 on the T-REX-10 profile): 0x1225-0x1238 answer
+    Modbus exception 2, ILLEGAL DATA ADDRESS, on every poll — four read groups
+    and four warnings every 15 s, for ever.  The inverter says those registers do
+    not exist, so they are isolated and dropped like a silent register."""
+
+    def _coord(self, illegal):
+        regs = {"soc": {"address": 4400, "size": 1, "name": "SOC", "index": 0}}
+        block = [f"e{a}" for a in range(4645, 4657, 2)]          # 6 x 2-word counters
+        for key in block:
+            regs[key] = {"address": int(key[1:]), "size": 2, "name": key, "index": 0}
+        coord = _make_coordinator(
+            register_map=regs,
+            groups=[{"start": 4400, "count": 1, "keys": ["soc"]},
+                    {"start": 4645, "count": 12, "keys": block}],
+        )
+        coord.client.close = MagicMock()
+
+        async def read(address, count, device_id):
+            reply = MagicMock()
+            reply.retries = 0
+            if illegal(address, count):
+                reply.isError.return_value = True
+                reply.exception_code = 2
+                return reply
+            reply.isError.return_value = False
+            reply.registers = [1] * count
+            return reply
+
+        coord.client.read_holding_registers = AsyncMock(side_effect=read)
+        return coord, block
+
+    @staticmethod
+    async def _polls(coord, n):
+        for _ in range(n):
+            coord._read_backoff_until = 0.0
+            with contextlib.suppress(Exception):
+                await coord._async_update_data()
+
+    @pytest.mark.asyncio
+    async def test_a_block_the_inverter_does_not_have_is_dropped(self):
+        coord, block = self._coord(lambda a, n: 4645 <= a < 4657)
+        await self._polls(coord, 3)
+        assert coord.dead_register_keys == set(block)
+        assert [g["start"] for g in coord._address_groups] == [4400]
+        await self._polls(coord, 1)
+        assert coord.poll_stats["groups_illegal_address"] == []
+        assert coord.poll_stats["groups_timed_out"] == []
+
+    @pytest.mark.asyncio
+    async def test_one_illegal_register_is_isolated_and_the_rest_kept(self):
+        """Exception 2 rejects the whole read when ONE address is illegal; the
+        split finds it and keeps the others."""
+        coord, block = self._coord(lambda a, n: a <= 4651 < a + n)
+        await self._polls(coord, 12)
+        assert coord.dead_register_keys == {"e4651"}
+        kept = {k for g in coord._address_groups for k in g["keys"]}
+        assert kept == ({"soc"} | set(block)) - {"e4651"}
+
+    @pytest.mark.asyncio
+    async def test_a_register_that_answered_once_is_never_dropped(self):
+        polls = {"n": 0}
+
+        def illegal(a, n):
+            return 4645 <= a < 4657 and polls["n"] > 0
+
+        coord, block = self._coord(illegal)
+        await self._polls(coord, 1)          # answered once
+        polls["n"] = 1
+        await self._polls(coord, 10)
+        assert not (coord.dead_register_keys & set(block))
+
+    @pytest.mark.asyncio
+    async def test_other_exceptions_are_not_taken_as_absent(self):
+        """Only code 2 means "no such address"; a busy device (6) or a gateway
+        failure (10/11) says nothing about the map."""
+        coord, _block = self._coord(lambda a, n: False)
+
+        async def busy(address, count, device_id):
+            reply = MagicMock()
+            reply.retries = 0
+            if 4645 <= address < 4657:
+                reply.isError.return_value = True
+                reply.exception_code = 6
+                return reply
+            reply.isError.return_value = False
+            reply.registers = [1] * count
+            return reply
+
+        coord.client.read_holding_registers = AsyncMock(side_effect=busy)
+        await self._polls(coord, 6)
+        assert coord.dead_register_keys == set()
+        assert any(g["start"] == 4645 and g["count"] == 12 for g in coord._address_groups)
+
+
 class TestManualModeExecutesOverrides:
     """Manual mode decided by price vs threshold only: the card accepted an
     override click and drew it, but the coordinator never executed it."""

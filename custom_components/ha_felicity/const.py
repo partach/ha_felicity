@@ -12,6 +12,11 @@ from .ivgm import (
     REGISTER_SETS_IVGM_EIGHT,
     REGISTER_SETS_IVGM_TWENTY,
 )
+from .ivgm_hv import (
+    _COMBINED_REGISTERS_IVGM_HUNDRED,
+    _REGISTERS_IVGM_HUNDRED,
+    REGISTER_SETS_IVGM_HUNDRED,
+)
 from .trex_fifty import (
     _COMBINED_REGISTERS_TREX_FIFTY,
     _REGISTERS_TREX_FIFTY,
@@ -67,6 +72,12 @@ INVERTER_MODEL_IVGM_TWENTY = "IVGM-20KLP3G1"
 # MONITOR-ONLY: its protocol document defines telemetry and no settings.
 INVERTER_MODEL_IVAM_SIX = "IVAM6048P1G1"
 
+# IVGM100600: 10 kW three-phase with a HIGH-VOLTAGE battery (180-580 V).  Answers
+# like a T-REX-10 but is not register-identical (issue #206) — own map in
+# ivgm_hv.py, derived from the T-REX-10 one.  PROVISIONAL and MONITOR-ONLY: every
+# EMS voltage and battery setting is for a 48 V pack.
+INVERTER_MODEL_IVGM_HUNDRED = "IVGM100600"
+
 INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_TREX_FIVE: 5,
     INVERTER_MODEL_TREX_SIX: 6,
@@ -77,6 +88,7 @@ INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_IVGM_FIFTEEN: 15,
     INVERTER_MODEL_IVGM_TWENTY: 20,
     INVERTER_MODEL_IVAM_SIX: 6,
+    INVERTER_MODEL_IVGM_HUNDRED: 10,
 }
 
 # Phases the inverter spreads its AC power over (the P1/P3 in the model id).
@@ -93,6 +105,7 @@ INVERTER_PHASES = {
     INVERTER_MODEL_IVGM_FIFTEEN: 3,
     INVERTER_MODEL_IVGM_TWENTY: 3,
     INVERTER_MODEL_IVAM_SIX: 1,
+    INVERTER_MODEL_IVGM_HUNDRED: 3,
 }
 
 SUPPORTED_MODELS = [
@@ -105,6 +118,7 @@ SUPPORTED_MODELS = [
     INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
     INVERTER_MODEL_IVAM_SIX,
+    INVERTER_MODEL_IVGM_HUNDRED,
     # add new ones here
 ]
 
@@ -137,7 +151,15 @@ OPERATING_MODE_MODELS = (
 #: paths is still a test failure and not a silent monitor-only install.
 MONITOR_ONLY_MODELS = (
     INVERTER_MODEL_IVAM_SIX,
+    INVERTER_MODEL_IVGM_HUNDRED,   # controllable in principle, unverified on HV
 )
+
+#: Models whose TELEMETRY uses the T-REX-5/10 key names (battery_capacity,
+#: battery_voltage, total_ac_input_power, ac_input_current…).  type_specific's
+#: READ accessors branch on this; the WRITE paths branch on the control path
+#: (OPERATING_MODE_MODELS).  The IVGM100600 reads like a T-REX-10 but is
+#: monitor-only, so it is here and not there.
+TREX_TELEMETRY_MODELS = OPERATING_MODE_MODELS + (INVERTER_MODEL_IVGM_HUNDRED,)
 
 #: IVGM family members.  They share the ECO block with TREX-25/50 but NOT the
 #: sell-enable registers — see IVGM_UNSUPPORTED_WRITES below.
@@ -196,6 +218,8 @@ POWER_UNIT_BY_MODEL = {
     INVERTER_MODEL_IVGM_TWENTY:      "kW",   # measured; still fully supported
     INVERTER_MODEL_IVAM_SIX:         "W",    # its document ("Rate 0", W) — UNMEASURED;
                                              # the IVGM document said W and was 10x off
+    INVERTER_MODEL_IVGM_HUNDRED:     "W",    # issue #206 dump: battery -148 W raw,
+                                             # plausible at 212.5 V; T-REX-10 layout
 }
 
 #: Derived — kept so type_specific.py keeps reading a single, obvious name.
@@ -233,6 +257,7 @@ SETPOINT_POWER_UNIT_BY_MODEL = {
     INVERTER_MODEL_IVGM_FIFTEEN:     "W",    # 15K's defaults prove it for the
     INVERTER_MODEL_IVGM_TWENTY:      "W",    # 3-phase members
     INVERTER_MODEL_IVAM_SIX:         "W",    # no setpoint registers exist; never written
+    INVERTER_MODEL_IVGM_HUNDRED:     "W",    # monitor-only; never written
 }
 
 #: Derived — used on the SETPOINT read/write path (determine_rule_power,
@@ -321,6 +346,14 @@ def build_groups(registers):
 
 
 MODEL_REGISTRY = {
+    INVERTER_MODEL_IVGM_HUNDRED: {
+        "registers":        _REGISTERS_IVGM_HUNDRED,
+        "combined":         _COMBINED_REGISTERS_IVGM_HUNDRED,
+        "register_groups":  build_groups(_REGISTERS_IVGM_HUNDRED),
+        "register_sets":    REGISTER_SETS_IVGM_HUNDRED,
+        "default_first_reg": 4353,   # T-REX-10 layout
+        "default_slave_id": 1,
+    },
     INVERTER_MODEL_IVAM_SIX: {
         "registers":        _REGISTERS_IVAM_SIX,
         "combined":         _COMBINED_REGISTERS_IVAM_SIX,

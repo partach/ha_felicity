@@ -17,6 +17,7 @@ Felicity's protocol document for this series is titled **IVGM5048 / IVGM10048**:
 - The T-REX 25K and 50K range is now released with v0.8.0 (has complete new register setup).
 - The IVGM 8K / 15K / 20K range (provisional — see `docs/IVGM_SUPPORT_GAPS.md`).
 - The IVAM6048P1G1 (6 kW) — **monitoring only**: its protocol defines no setting registers, so the EMS cannot control it (see `docs/IVAM_SUPPORT_GAPS.md`).
+- The IVGM100600 (10 kW, three-phase, high-voltage battery) — **monitoring only, provisional, at your own risk**: it answers like a T-REX-10K but is not register-identical, and every EMS voltage setting is for a 48 V battery, so nothing is written to it.
 - Others with exactly similar register configurations as above types, just be aware you chose the right configuration matching your type.
 
 

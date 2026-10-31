@@ -937,12 +937,15 @@ async def test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follow
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_a_monitor_only_inverter_is_never_written():
-    """The IVAM's protocol defines no control registers.  Even with the EMS
-    switched on (the setup migration forces it off; the replay bypasses setup)
-    and safe power set to "on", a whole day passes without one write, and the
-    coordinator reports self-use instead of retrying a transition each poll."""
-    r = _replay(const.INVERTER_MODEL_IVAM_SIX,
+@pytest.mark.parametrize("model", [const.INVERTER_MODEL_IVAM_SIX,
+                                   const.INVERTER_MODEL_IVGM_HUNDRED])
+async def test_a_monitor_only_inverter_is_never_written(model):
+    """The IVAM's protocol defines no control registers; the IVGM100600 (HV
+    battery, issue #206) is monitor-only until control is verified.  Even with
+    the EMS switched on (the setup migration forces it off; the replay bypasses
+    setup) and safe power set to "on", a whole day passes without one write, and
+    the coordinator reports self-use instead of retrying a transition each poll."""
+    r = _replay(model,
                 options={**AUTO, "safe_power_management": "on", "max_amperage_per_phase": 10},
                 soc=30.0, start=day(D, 0), prices_for=DUCK, load_kw=lambda _t: 3.0,
                 pv_kw=SUN, forecast_kw=SUN)

@@ -22,6 +22,18 @@
   ordinary day buys only what it needs. Both engines, Save Money /
   Self-Sufficiency / Battery Care.
 - Two scheduler engines: Greedy (default) and MILP.
+- **New model: IVGM100600 (10 kW, three-phase, high-voltage battery) —
+  monitoring only, provisional, at your own risk** (issue #206). It answers
+  like a T-REX-10K, but a register dump showed it is not identical: it has no
+  0x1225–0x1238 consumption-energy registers, its BMS total current is signed
+  and its BMS total voltage is in 0.1 V. It gets its own register map (the
+  T-REX-10K map is unchanged) and nothing is ever written to it: every EMS
+  voltage setting is for a 48 V battery. Previously set up as a T-REX-10K?
+  Remove the device and add it again as IVGM100600.
+- **Registers the inverter says it does not have are no longer read every
+  poll.** A read answered with "illegal data address" is isolated and dropped
+  after three polls, like a register that never answers — instead of a
+  warning in the log every poll.
 - **Self-Sufficiency: the reserve by sunrise instead of by midnight.** The
   battery must still reach the morning with energy, but it is now charged in
   the cheapest slots before sunrise — including the night after midnight —
