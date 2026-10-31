@@ -994,6 +994,29 @@ async def test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled(
     assert not [c for c in calls if c[1] == "turn_on" and c[2] == EV], calls
 
 
+@pytest.mark.asyncio
+async def test_self_sufficiency_reserve_by_sunrise_not_by_midnight():
+    """The same evening on Self-Sufficiency (maintainer, 31 Oct 2026: the
+    reserve by SUNRISE).  "By midnight" charged at the 0.43-0.45 evening; now
+    the house runs on the grid until midnight and the battery is charged in
+    the 0.25 night, so it carries the house into the morning."""
+    r = _replay(options={**AUTO, "battery_discharge_min_level": 25,
+                         "optimization_priority": "self_consumption",
+                         "daily_consumption_estimate": 30.0},
+                capacity_kwh=60.0, soc=24.7, start=day(D, 19, 30),
+                prices_for=EVENING_PEAK, load_kw=lambda _t: 1.25)
+    r.inverter.self_use_floor_pct = 24.5
+    await r.run_until(day(NEXT, 7, 30), step_s=60)
+    _chart(r, "self_sufficiency_reserve_by_sunrise")
+
+    assert "charge" not in r.inverter_actions(day(D, 19, 30), day(NEXT, 0)), r.timeline(30)
+    assert "charge" in r.inverter_actions(day(NEXT, 0), day(NEXT, 7)), r.timeline(30)
+    # The battery carries the house from shortly after midnight to sunrise.
+    assert min(t.soc for t in r.ticks if day(NEXT, 1) <= t.at < day(NEXT, 7)) > 26.0, \
+        r.timeline(30)
+    assert max(t.price for t in r.ticks if t.inverter == "charge") <= 0.25
+
+
 # ---------------------------------------------------------------------------
 # Safe power: the rule-1 limit swinging 1 <-> 8 kW (22-23 Oct 2026)
 # ---------------------------------------------------------------------------

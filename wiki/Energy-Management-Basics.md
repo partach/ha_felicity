@@ -80,7 +80,11 @@ The reserve target is what the battery should hold for the night.
 
 ### Dynamic (reserve_target_pct = 0, the default)
 
-The night need is your consumption from midnight to sunrise, summed hour by hour from your **consumption profile**. Sunrise is the first hour of tomorrow's PV forecast, else Home Assistant's sun times, else 07:00. **Self-Sufficiency** multiplies it by 1.25.
+reserve target = Min SOC + the night need. The night need is your consumption from sunset to sunrise (after sunset: the hours still left until sunrise), summed hour by hour from your **consumption profile** when there is one. Sunset and sunrise come from the PV forecast (07:00 / 19:00 without one). **Self-Sufficiency** multiplies the night need by 1.25 during the day.
+
+### Self-Sufficiency: the reserve by sunrise
+
+With Self-Sufficiency the reserve must be in the battery by the **next sunrise**, so the new day does not start with an empty battery (on a sunny day the PV only comes after sunrise). It is bought in the cheapest slots before sunrise — the rest of today, and once tomorrow's prices are out (~13:00) also the night slots after midnight. So when the evening is dear and the night cheap, the house runs on the grid until midnight and the battery is charged in the night. Because sunrise is a fixed time, the reserve is never pushed to tomorrow's daytime. (Until 31 Oct 2026 the deadline was midnight, which bought a dear evening ahead of a cheaper night.) Save Money and Battery Care have no such deadline: they buy the deficit in the cheapest known slots.
 
 ### Fixed (reserve_target_pct > 0)
 

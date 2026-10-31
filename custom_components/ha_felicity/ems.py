@@ -297,6 +297,21 @@ def _sunset_sunrise_hours(
     return sunset_hour, sunrise_hour
 
 
+def _next_sunrise(
+    pv_hourly_kwh: dict[int, float] | None,
+    pv_hourly_kwh_tomorrow: dict[int, float] | None,
+    current_hour: int,
+) -> tuple[int, int]:
+    """(day, hour) of the next sunrise: today's when it is still ahead
+    (day 0), else tomorrow's (day 1, from tomorrow's PV curve when there is
+    one, else today's).  Self-Sufficiency's reserve must be in the battery
+    by then (maintainer, 31 Oct 2026: "reserve by sunrise")."""
+    today = _sunset_sunrise_hours(pv_hourly_kwh)[1]
+    if int(current_hour) < today:
+        return 0, today
+    return 1, _sunset_sunrise_hours(pv_hourly_kwh_tomorrow or pv_hourly_kwh)[1]
+
+
 def _is_night(
     pv_hourly_kwh: dict[int, float] | None,
     current_hour: int,
@@ -1853,33 +1868,54 @@ def select_unified_charge_slots(
     today_selected = [s for s in selected if s[1] == 0]
     tomorrow_selected = [s for s in selected if s[1] == 1]
 
-    # --- Self-sufficiency: cover today's deficit from today's slots ---
+    # --- Self-sufficiency: the reserve by SUNRISE ---
     # The unified pool may have placed today's deficit onto tomorrow's
-    # cheaper slots.  For self-consumption the user wants the battery
-    # charged TODAY — deferring causes overnight grid use and the
-    # "tomorrow never comes" loop (the next day defers again).
+    # cheaper daytime slots.  For self-consumption the battery must carry the
+    # house into the next morning — the new day must not start empty, above
+    # all on a sunny day whose PV only arrives after sunrise.  So today's
+    # deficit is covered by slots BEFORE THE NEXT SUNRISE: the rest of today
+    # and, once tomorrow's prices are out, tomorrow's night slots — the
+    # cheapest of them.  (Until 31 Oct 2026 this said "by midnight", so the
+    # evening peak was bought ahead of a cheaper night: 0.43 tonight, about
+    # 0.53 after the losses, for energy the house then used before midnight
+    # where the grid would have cost 0.43.)  Sunrise is a fixed point in time,
+    # so it cannot slide into the next day: no "tomorrow never comes" loop.
     if optimization_priority == "self_consumption" and energy_deficit > 0:
-        today_charge_energy = sum(_slot_charge_energy(s) for s in today_selected)
-        shortfall = energy_deficit - today_charge_energy
+        cut_day, cut_hour = _next_sunrise(pv_hourly_kwh, pv_hourly_kwh_tomorrow, current_hour)
+        mps_tmr = (minutes_per_slot
+                   or (24 * 60 / len(slot_prices_tomorrow) if slot_prices_tomorrow else 60))
+        mps_today = minutes_per_slot or 60
+
+        def _before_sunrise(s: tuple[float, int, int]) -> bool:
+            hour = int(s[2] * (mps_today if s[1] == 0 else mps_tmr) / 60)
+            if cut_day == 0:
+                return s[1] == 0 and hour < cut_hour
+            return s[1] == 0 or hour < cut_hour
+
+        covered = sum(_slot_charge_energy(s)
+                      for s in today_selected + tomorrow_selected if _before_sunrise(s))
+        shortfall = energy_deficit - covered
         if shortfall > 1e-3:
-            today_selected_indices = {s[2] for s in today_selected}
-            unused_today = sorted(
-                [s for s in today_pool
-                 if s[0] >= 0 and s[2] not in today_selected_indices],
-                key=lambda x: x[0],
+            chosen = {(s[1], s[2]) for s in today_selected + tomorrow_selected}
+            candidates = sorted(
+                [s for s in today_pool + tomorrow_pool
+                 if s[0] >= 0 and (s[1], s[2]) not in chosen and _before_sunrise(s)],
+                key=lambda x: (x[0], x[1], x[2]),      # cheapest; ties: earliest
             )
-            for s in unused_today:
+            added = 0.0
+            for s in candidates:
                 if shortfall <= 1e-3:
                     break
                 slot_energy = _slot_charge_energy(s)
                 if slot_energy <= 1e-9:
                     continue
-                today_selected.append(s)
+                (today_selected if s[1] == 0 else tomorrow_selected).append(s)
                 shortfall -= slot_energy
+                added += slot_energy
             _LOGGER.info(
-                "Self-sufficiency: forced %.1f kWh of today's %.1f kWh "
-                "deficit onto today's slots (was deferred to tomorrow)",
-                energy_deficit - shortfall, energy_deficit,
+                "Self-sufficiency: %.1f kWh of today's %.1f kWh deficit moved to "
+                "the cheapest slots before sunrise (%s %02d:00)",
+                added, energy_deficit, "today" if cut_day == 0 else "tomorrow", cut_hour,
             )
 
     # --- Keep today's deficit today when that beats tonight's grid ---
@@ -2434,6 +2470,8 @@ def _run_milp_or_none(
         # per stored kWh that is store_bar / eff).
         store_value=store_bar / config.efficiency if store_bar > 0 else 0.0,
         store_cap_kwh=store_cap,
+        sunrise=_next_sunrise(state.pv_hourly_kwh, state.pv_hourly_kwh_tomorrow,
+                              state.current_hour),
     )
     if milp_result is None:
         return None
@@ -3042,6 +3080,18 @@ def _schedule_from_grid(
                 f"Solar fills battery to {solar_pct:.0f}%"
                 " — no grid charging needed"
             )
+        elif tomorrow_slots:
+            # Nothing today, but the deficit is bought tomorrow (cheaper there).
+            # "Reserve is met" would be wrong here — e.g. a battery below Min
+            # SOC whose gap is bought back in tomorrow's cheapest slots.
+            soc_pct = (current_kwh / config.battery_capacity_kwh * 100
+                       if config.battery_capacity_kwh > 0 else 0)
+            top = max(p for _, p in tomorrow_slots)
+            result.schedule_reason = (
+                f"Battery {soc_pct:.0f}% — nothing cheap enough today; charging "
+                f"{len(tomorrow_slots)} slot{'s' if len(tomorrow_slots) != 1 else ''} "
+                f"tomorrow (up to {top:.3f}/kWh) to cover {energy_deficit:.1f} kWh"
+            )
         elif config.optimization_priority == "self_consumption":
             # Self-consumption targets max SOC, but only via slots cheap
             # enough to beat round-trip losses (it never charges at a loss)
@@ -3085,18 +3135,6 @@ def _schedule_from_grid(
                     f"Reserve met ({soc_pct:.0f}%) — no slots cheap enough to "
                     "top off without losing money on round-trip losses"
                 )
-        elif tomorrow_slots:
-            # Nothing today, but the deficit is bought tomorrow (cheaper there).
-            # "Reserve is met" would be wrong here — e.g. a battery below Min
-            # SOC whose gap is bought back in tomorrow's cheapest slots.
-            soc_pct = (current_kwh / config.battery_capacity_kwh * 100
-                       if config.battery_capacity_kwh > 0 else 0)
-            top = max(p for _, p in tomorrow_slots)
-            result.schedule_reason = (
-                f"Battery {soc_pct:.0f}% — nothing cheap enough today; charging "
-                f"{len(tomorrow_slots)} slot{'s' if len(tomorrow_slots) != 1 else ''} "
-                f"tomorrow (up to {top:.3f}/kWh) to cover {energy_deficit:.1f} kWh"
-            )
         else:
             result.schedule_reason = "Battery reserve is met — no charging needed"
         return result

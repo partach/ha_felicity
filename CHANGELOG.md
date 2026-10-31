@@ -22,6 +22,12 @@
   ordinary day buys only what it needs. Both engines, Save Money /
   Self-Sufficiency / Battery Care.
 - Two scheduler engines: Greedy (default) and MILP.
+- **Self-Sufficiency: the reserve by sunrise instead of by midnight.** The
+  battery must still reach the morning with energy, but it is now charged in
+  the cheapest slots before sunrise — including the night after midnight —
+  instead of at a dear evening. Example (a real evening): 0.43 until
+  midnight, 0.25 at night — it used to charge at 0.43; now the house runs on
+  the grid until midnight and the battery charges at 0.25 for the morning.
 - **The SOC "dip" at 04:00 is gone.** The consumption profile counted a
   whole day of use in the 04:00 hour, every day (the inverter's day counter
   briefly reports yesterday's total at ~04:05, and Home Assistant's

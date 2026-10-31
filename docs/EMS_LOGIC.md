@@ -53,6 +53,21 @@ behaviour, the simulator is the gate that decides whether you were right.
      day of the week fills the battery; an ordinary day buys only what it
      needs.  The reason line says "store cheap energy for the coming days
      (this week's average …)".
+   **0b. Self-Sufficiency: the reserve by SUNRISE, not by midnight
+   (maintainer, 31 Oct 2026).**  The purpose was that the new day does not
+   start with an empty battery (on a sunny day PV only comes after sunrise).
+   The deadline is now the next sunrise (`ems._next_sunrise`): greedy covers
+   today's deficit with the cheapest slots before it — the rest of today and
+   tomorrow's night slots; MILP prices the grid feeding the house between
+   midnight and sunrise at the reserve penalty, so the battery carries those
+   hours.  When tonight is cheaper than the night, tonight is still bought.
+   Sunrise is a fixed time, so the reserve cannot slide into the next day
+   ("tomorrow never comes").  On the 22 Oct evening (0.43 until midnight,
+   0.25 night) the house now runs on the grid until midnight and the night
+   charges the battery for the morning, instead of buying the 0.43 evening
+   (~0.53 after losses).  Save Money / Battery Care unchanged.
+   Pinned by `TestSelfSufficiencyReserveBySunrise` and the replay
+   `test_self_sufficiency_reserve_by_sunrise_not_by_midnight`.
    Pinned by `TestNoUrgentRecovery`, `TestMILPHouseOnTheGridAtTheFloor`,
    `TestWeeklyPriceReference` (test_ems), the 8m replay and
    `test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follows`.
@@ -135,7 +150,7 @@ behaviour, the simulator is the gate that decides whether you were right.
      a 0.30 evening peak to hit a high self_consumption reserve —
      `self_suff_flat_low_soc` now charges the 0.15 slots, like greedy).
      **Tomorrow** is capped at the energy the LP allocated to it, which
-     preserves the midnight-reserve "today-first" split (self-sufficiency:
+     preserves the reserve-by-sunrise split (self-sufficiency:
      charge today rather than defer everything to a cheaper tomorrow — a single
      global cheapest-first cap would let cheap tomorrow slots starve today).
      The dearest slot is reached only when the cheaper ones genuinely can't
@@ -181,8 +196,8 @@ behaviour, the simulator is the gate that decides whether you were right.
     (which still forces SOME today charging for survival) and the
     end-of-horizon reserve; deferring the reserve fill to a cheaper tomorrow
     is allowed, mirroring greedy (`test_cost_mode_may_defer_to_tomorrow`).
-    Self_consumption keeps the midnight constraint
-    (`TestSelfSufficiencyTodayFirst`).
+    Self_consumption kept the midnight constraint — **replaced on 31 Oct
+    2026 by "the reserve by sunrise", see decision 0b.**
 14. **Spill reduction — equal-price charges placed to absorb PV (July 2026).**
     Shared post-processing (`_reduce_charge_spill`, both engines): a charge
     slot is relocated to an equal-or-cheaper-priced slot when that buys less

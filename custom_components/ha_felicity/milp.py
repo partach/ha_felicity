@@ -199,6 +199,7 @@ def solve_schedule(
     pv_confidence: float,
     store_value: float = 0.0,
     store_cap_kwh: float = 0.0,
+    sunrise: tuple[int, int] | None = None,
 ) -> tuple[dict[int, str], dict[int, str]] | None:
     """Solve the EMS schedule as a MILP.
 
@@ -237,6 +238,7 @@ def solve_schedule(
             pv_confidence=pv_confidence,
             store_value=store_value,
             store_cap_kwh=store_cap_kwh,
+            sunrise=sunrise,
         )
     except FileNotFoundError as err:
         # The CBC solver binary is missing / unrunnable on this platform
@@ -273,6 +275,7 @@ def _solve(
     pv_confidence: float,
     store_value: float = 0.0,
     store_cap_kwh: float = 0.0,
+    sunrise: tuple[int, int] | None = None,
 ) -> dict[int, str] | None:
     global _MILP_LAST_ERROR
 
@@ -310,6 +313,7 @@ def _solve(
             horizon.append({
                 "day": day,
                 "slot": idx,
+                "hour": hour,
                 "price": price,
                 "net": pv_slot - load,          # natural SOC delta
                 "charge_cap": grid_kw * slot_hours,  # grid-side kWh if charging
@@ -432,37 +436,27 @@ def _solve(
     prob += soc[K - 1] + end_short >= reserve_clamped
     reserve_shortfalls.append(end_short)
 
-    # Midnight boundary: when the horizon spans today+tomorrow, push the
-    # battery toward reserve_target by end of today.  Without this the solver
-    # defers all charging to cheaper tomorrow slots, the battery drains
-    # overnight, and on the next day it defers again — "tomorrow never comes."
+    # Self-Sufficiency: the battery carries the house until SUNRISE
+    # (maintainer, 31 Oct 2026).  The new day must not start with an empty
+    # battery — above all on a sunny day, whose PV only arrives after sunrise.
+    # So from midnight until the next sunrise (`sunrise` = (day, hour), from
+    # ems._next_sunrise) the grid feeding the house costs the reserve penalty
+    # instead of the slot price: the solver buys what those hours need, in
+    # the cheapest slots before them — tonight's or the night's own.
     #
-    # SELF-CONSUMPTION ONLY.  The full-reserve-by-midnight demand is the
-    # self-sufficiency contract ("battery full tonight").  In cost/longevity
-    # mode it is economically WRONG whenever tonight's prices exceed
-    # tomorrow's: with the battery low in an expensive evening and cheap
-    # night slots right after midnight, the penalty (5× max price) forced the
-    # solver to stuff the 0.30 evening slots to hit the reserve by 00:00 —
-    # while the 0.05 slots two hours later would fill the same reserve for 6×
-    # less (real case: low-SOC recovery at 18:00 charged 3 expensive slots;
-    # greedy correctly charged 1 + cheap after midnight).  Cost mode instead
-    # relies on: the per-slot `soc >= soc_min` floor (hard, with the imp[k]
-    # passthrough slack) for survival — which still forces SOME today
-    # charging when the battery would otherwise cross the hardware floor —
-    # and the end-of-horizon reserve for tomorrow-night coverage.  This
-    # mirrors greedy, where cost mode may defer to a cheaper tomorrow
-    # (test_cost_mode_may_defer_to_tomorrow) and only self_consumption forces
-    # today-first (TestSelfSufficiencyTodayFirst).
-    if config.optimization_priority == "self_consumption":
-        midnight_k = None
-        for k in range(K):
-            if horizon[k]["day"] == "tomorrow":
-                midnight_k = k
-                break
-        if midnight_k is not None and midnight_k > 0:
-            mid_short = pulp.LpVariable("reserve_short_mid", lowBound=0)
-            prob += soc[midnight_k - 1] + mid_short >= reserve_clamped
-            reserve_shortfalls.append(mid_short)
+    # Until 31 Oct 2026 this was a checkpoint `soc[midnight] >= reserve`, which
+    # bought the evening peak ahead of a cheaper night (0.43 tonight, ~0.53
+    # after the losses, for energy the house used before midnight where the
+    # grid would have cost 0.43).  The checkpoint was SELF-CONSUMPTION ONLY,
+    # and so is this: Save Money / Battery Care may run the house on the grid
+    # at the floor whenever that is cheaper (cost mode relies on the
+    # end-of-horizon reserve for the night after).
+    carry = set()
+    if config.optimization_priority == "self_consumption" and sunrise is not None:
+        sr_day, sr_hour = sunrise
+        sr_name = "today" if sr_day == 0 else "tomorrow"
+        carry = {k for k in range(K)
+                 if horizon[k]["day"] == sr_name and horizon[k]["hour"] < sr_hour}
 
     # Value energy left in the battery at the horizon end so the solver
     # doesn't pointlessly dump it at the last positive price.  Reference:
@@ -522,7 +516,8 @@ def _solve(
         + pulp.lpSum(cycle_cost * d[k] for k in range(K))                  # wear
         - terminal_value * reward_soc                                      # leftover value (≤ reserve)
         + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
-        + pulp.lpSum(horizon[k]["price"] * imp[k] for k in range(K))       # house on the grid at the floor
+        + pulp.lpSum((reserve_penalty if k in carry else horizon[k]["price"]) * imp[k]
+                     for k in range(K))                                    # house on the grid at the floor
         - store_value * reward_store                                       # week's price: energy for the coming days
         + pulp.lpSum(early * k * c[k] for k in range(K))                   # charge earlier (tie-break)
     )

@@ -53,6 +53,13 @@ maintainer makes a new decision, add it here in the same commit.
   it does.
 - **Ties: fill as soon as possible** (charge the earliest of equal prices).
 - **Today vs tomorrow: keep today's charge when it beats tonight's grid.**
+- **Self-Sufficiency: the reserve by SUNRISE, not by midnight** (31 Oct
+  2026).  Purpose (maintainer): "when starting the new day at midnight, you
+  did not start with an empty battery … on sunny days you only get a PV
+  charge early in the morning".  The deadline is the next sunrise; the
+  cheapest slots before it (tonight's or the night's own) are used.  Sunrise
+  is a fixed time, so the reserve can't slide into the next day ("tomorrow
+  never comes").  Save Money / Battery Care never had the rule.
 
 **Inverter control**
 - **Safe power: battery power first, flexible loads second** (Oct 2026).
@@ -180,7 +187,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **890**: 888 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **897**: 895 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -239,7 +246,7 @@ custom_components/ha_felicity/
 tests/
 ├── conftest.py              # Shared HA-free bootstrap: stubs HA/pymodbus, loads the
 │                            #   REAL const.py (never a hand-typed replica — see below)
-├── test_ems.py              # 301 tests for the pure EMS algorithm (greedy + MILP)
+├── test_ems.py              # 307 tests for the pure EMS algorithm (greedy + MILP)
 ├── test_milp_solver_install.py # HiGHS installed at setup for MILP; a failed install never stops loading
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
@@ -427,15 +434,17 @@ do NOT set the flag (they can be input-dependent and recover next slot).
   headroom after PV), `d[k]` (battery kWh discharged to sell, ≤ safe
   power), `spill[k]` (PV curtailment), `soc[k]`.
 - SOC dynamics: `soc[k] = soc[k-1] + net_pv[k] - load[k] + eff·c[k] - d[k] - spill[k]`.
-- Bounds: `soc_min ≤ soc[k] ≤ soc_max`; `soc[end] ≥ reserve_target`;
-  `soc[midnight] ≥ reserve_target` **(self_consumption only, July 2026)** —
-  the full-reserve-by-midnight demand is the self-sufficiency contract.  In
-  cost/longevity it forced expensive-evening charging when cheap slots came
-  right after midnight (low-SOC recovery at 18:00 charged 3× 0.30 slots;
-  greedy correctly charged 1 + cheap after 00:00).  Cost mode relies on the
-  per-slot `soc ≥ soc_min` floor (still forces SOME today charging for
-  survival) + the end-of-horizon reserve, mirroring greedy's
-  may-defer-to-tomorrow economics.
+- Bounds: `soc_min ≤ soc[k] ≤ soc_max` (with the house on the grid at the
+  floor, above); `soc[end] ≥ reserve_target` (soft).
+- **Self-Sufficiency carries the house until sunrise (31 Oct 2026)**: from
+  midnight to the next sunrise (`sunrise=(day, hour)` from
+  `ems._next_sunrise`) the grid feeding the house costs the reserve penalty
+  instead of the slot price, so the solver buys what those hours need in the
+  cheapest slots before them.  Replaced the July 2026 checkpoint
+  `soc[midnight] ≥ reserve_target`, which bought the evening peak ahead of a
+  cheaper night.  Self-consumption only (it always was — in cost mode the
+  midnight checkpoint had forced 3× 0.30 evening slots ahead of 0.05 night
+  slots).
 - Objective: minimise `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal_value·soc[end]`.
   Terminal value = `avg_price × efficiency`.  No per-priority boost — pushing
   terminal value higher (e.g. P90) would charge at uneconomic prices.
@@ -1379,16 +1388,25 @@ already modelled this through its horizon, €1.42).  Pinned by
 `TestKeepTodaysChargeWhenTonightsGridIsDearer` and
 `test_cheap_today_is_not_deferred_to_a_marginally_cheaper_tomorrow`.
 
-**Exception — `self_consumption` priority**: the self-sufficiency strategy
-overrides the no-swap rule.  `select_unified_charge_slots` forces today's
-`energy_deficit` onto today's slots even when tomorrow is cheaper.  Without
-this, the user sees "tomorrow never comes" — every day defers to the next.
-The MILP enforces this via a midnight SOC boundary constraint
-(`soc[midnight_slot] >= reserve_target`) — scoped to **self_consumption
-only** (in cost mode it forced expensive-evening charging when cheap slots
-came right after midnight; cost survival is covered by the per-slot
-`soc >= soc_min` floor instead).
-`TestSelfSufficiencyTodayFirst` pins both.
+**Exception — `self_consumption` priority: the reserve by SUNRISE** (31 Oct
+2026, maintainer decision; was "by midnight" until then).
+`select_unified_charge_slots` makes sure today's `energy_deficit` is covered
+by slots BEFORE THE NEXT SUNRISE (`_next_sunrise`: today's when it is still
+ahead, else tomorrow's from tomorrow's PV curve, 07:00 by default): the rest
+of today plus tomorrow's night slots, cheapest first, ties earliest.  Without
+any deadline the user saw "tomorrow never comes" — every day deferred to the
+next day's cheaper slots; sunrise is a fixed time, so that cannot return.
+"By midnight" bought the evening peak ahead of a cheaper night (22 Oct 2026
+evening: 0.43 tonight, ~0.53 after losses, for energy used before midnight
+where the grid cost 0.43; now the house runs on the grid until midnight and
+the 0.25 night charges the battery for the morning).  The MILP: from midnight
+to sunrise the grid feeding the house costs the reserve penalty (see the MILP
+model).  Known simplification (greedy): the amount is still today's whole
+deficit (reserve = Min SOC + the night's need), so when it is bought after
+midnight a little is left at sunrise for the morning.  Pinned by
+`TestSelfSufficiencyReserveBySunrise` (both engines; mutation-checked for
+each), `TestSelfSufficiencyTodayFirst` and the replay
+`test_self_sufficiency_reserve_by_sunrise_not_by_midnight`.
 
 ### Per-Slot SOC Validation
 
@@ -2119,7 +2137,7 @@ traces each setting from `config_entry.options` through to its consumers.
 | `charge_to_full_on_negative_price` | Explicit: forces ALL p<0 slots + phantom-charge exemption | Explicit: forces ALL p<0 slots in the extraction (the LP alone stops at SOC-max) | Both engines now grab every negative slot when the flag is on (user opted in for the revenue, accepting PV curtailment) |
 | `discharge_to_make_room_for_negative_price` | Explicit: `_select_discharges_for_pv_headroom` helper | Implicit: joint optimization sees both sell revenue + negative-buy revenue | MILP may be more or less aggressive depending on price spread |
 | `yesterday_deficit_kwh` | Added as carryover to deficit | Not used; current_kwh already reflects yesterday's shortfall | No impact — same result |
-| Cross-day slot selection | Separate today/tomorrow pools with today-first guard for self_consumption | Single unified horizon with midnight SOC constraint | MILP sees the whole picture; greedy needs explicit guards |
+| Cross-day slot selection | Unified pool; self_consumption: today's deficit covered before the next sunrise | Single unified horizon; self_consumption: battery carries midnight→sunrise | MILP sees the whole picture; greedy needs explicit guards |
 | Slot count capping | Fixed count from deficit ÷ per-slot energy | LP energy-based with MIN_FRAC + headroom caps | MILP avoids over-scheduling marginal slots |
 
 ---
@@ -2189,8 +2207,9 @@ Deficit = max(snapshot_deficit, predictive_deficit) + yesterday_deficit:
   `min(safe_power, inverter_max − pv) × hours × efficiency`.
   Midday PV-saturated slots deliver 0 grid kWh → skipped.
 - Accumulates until deficit covered (+ headroom cap).
-- **Self-consumption today-first**: forces today's deficit onto today's
-  slots when `optimization_priority == "self_consumption"`.
+- **Self-consumption reserve by sunrise**: today's deficit is covered by
+  slots before the next sunrise (rest of today + tomorrow's night slots)
+  when `optimization_priority == "self_consumption"`.
 - **Self-consumption top-off**: after deficit covered, fills toward max
   SOC from cheap slots only: `price ≤ efficiency² × mean_remaining`.
   Never charges at uneconomic prices.  **Also capped by the horizon
@@ -2228,8 +2247,8 @@ Forward-simulates SOC through every slot.  Drops violations:
 - Builds horizon: today's remaining + all of tomorrow.
 - Per-slot continuous vars: charge energy `c[k]`, discharge `d[k]`, spill, soc.
 - **Constraints**: SOC dynamics, `soc_min ≤ soc ≤ soc_max`,
-  `soc[end] ≥ reserve_target`; `soc[midnight] ≥ reserve_target`
-  (self_consumption only — see model section above).
+  `soc[end] ≥ reserve_target` (soft); Self-Sufficiency: the battery carries
+  the house from midnight to sunrise (see model section above).
 - **Objective**: min `Σ price·c − Σ price·eff·d + cycle_cost·Σd − terminal·min(soc[end], reserve)`
   where `terminal = avg_price × efficiency`.  **The leftover-energy reward is
   capped at the reserve target** (not all the way to `soc_max`).  Rewarding
@@ -3937,7 +3956,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**890 tests**: 888 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (301) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**897 tests**: 895 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -3976,7 +3995,7 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - Sell coverage (both mode charges today to cover today's sell slots)
 - MILP scheduler: cheapest charge, arbitrage, no-charge-when-full, tomorrow, fallback
 - MILP vs Greedy parity: from_grid, both arbitrage, cross-day, cloudy, large battery
-- Self-sufficiency today-first: greedy charges today, MILP midnight constraint
+- Self-sufficiency reserve by sunrise: before the next sunrise, cheapest first, both engines
 - Self-consumption top-off: charges above reserve, cost-gated, never charges expensive
 - Schedule reason messages
 - Consumption deviation correction (car charger detection, noise filter, below-reserve guard, both mode)

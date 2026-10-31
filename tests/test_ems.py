@@ -6126,12 +6126,15 @@ class TestMILPvsGreedy:
 
 
 class TestSelfSufficiencyTodayFirst:
-    """Self-sufficiency should charge the battery TODAY — not defer to tomorrow.
+    """Self-sufficiency must not defer the reserve to tomorrow's daytime.
 
     When tomorrow's prices are cheaper, the unified pool (greedy) and the MILP
-    both tend to defer all charging to tomorrow. For self-consumption mode
-    this is wrong: the user wants the battery full tonight.  If deferral
-    happens every day, it becomes 'tomorrow never comes.'
+    both tend to defer all charging to tomorrow.  For self-consumption the
+    battery must carry the house into the next morning; deferring every day
+    becomes 'tomorrow never comes.'  Since 31 Oct 2026 the deadline is the
+    next SUNRISE, not midnight (TestSelfSufficiencyReserveBySunrise): here
+    "now" is 00:00 with sunrise at 07:00, so the slots before sunrise are
+    today's.
     """
 
     @staticmethod
@@ -6193,7 +6196,8 @@ class TestSelfSufficiencyTodayFirst:
 
     @pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
     def test_milp_midnight_constraint_charges_today(self):
-        """MILP midnight SOC constraint forces today charging for overnight."""
+        """MILP: the battery carries the house until sunrise, so it charges
+        today (before 07:00), not at tomorrow's cheaper slots."""
         base, state = self._make_scenario("self_consumption", "milp")
         result = calculate_schedule(EMSConfig(**base), EMSState(**state))
         today_charges = {i for i, a in result.scheduled_slots.items()
@@ -6224,6 +6228,105 @@ class TestSelfSufficiencyTodayFirst:
             "MILP cost mode should charge today to cover overnight reserve "
             "(battery=40%, reserve needs overnight coverage)"
         )
+
+
+class TestSelfSufficiencyReserveBySunrise:
+    """Maintainer, 31 Oct 2026: Self-Sufficiency's reserve must be in the
+    battery by SUNRISE, not by midnight.  The goal was that the new day does
+    not start with an empty battery (on a sunny day the PV only comes after
+    sunrise); midnight was only where one day's prices end.  "By midnight"
+    bought the 0.43 evening ahead of a 0.25 night: ~0.53 after the losses,
+    for energy the house used before midnight where the grid cost 0.43.
+
+    The 22 Oct 2026 evening: battery a hair under the 25 % floor at 20:10,
+    0.43-0.453 until midnight, 0.25 until 07:00, tomorrow 0.23 at noon."""
+
+    @staticmethod
+    def _evening(engine, tonight=0.43, night=0.25, soc_pct=14.8 / 60 * 100,
+                 noon=0.23):
+        today = [tonight if i >= 80 else 0.25 for i in range(96)]
+        tomorrow = [night if i < 28 else (noon if 48 <= i < 56 else 0.30) for i in range(96)]
+        config = default_config(
+            scheduler_engine=engine, grid_mode="from_grid",
+            optimization_priority="self_consumption",
+            battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
+            consumption_est_kwh=30.0, safe_power_kw=8.0, inverter_max_power_kw=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=soc_pct,
+            slot_prices_today=today, slot_prices_tomorrow=tomorrow,
+            pv_hourly_kwh=make_pv_hourly(12.5), pv_forecast_today=12.5,
+            pv_forecast_remaining=0.0, pv_actual_today_kwh=17.9,
+            pv_forecast_tomorrow=4.8, current_hour=20, current_minute=10,
+        )
+        return config, state
+
+    @staticmethod
+    def _engines():
+        return ["greedy", "milp"] if _HAS_PULP else ["greedy"]
+
+    @staticmethod
+    def _charged(slots):
+        return sorted(i for i, a in slots.items() if a == "charge")
+
+    def test_the_evening_peak_is_not_bought_ahead_of_a_cheaper_night(self):
+        for engine in self._engines():
+            result = calculate_schedule(*self._evening(engine))
+            assert result.scheduler_active == engine
+            assert self._charged(result.scheduled_slots) == [], engine
+
+    def test_the_night_before_sunrise_is_bought(self):
+        """The battery reaches the morning with energy: tomorrow's slots
+        before 07:00 (index < 28) carry the reserve."""
+        for engine in self._engines():
+            result = calculate_schedule(*self._evening(engine))
+            night = [i for i in self._charged(result.tomorrow_scheduled_slots) if i < 28]
+            assert len(night) >= 8, (engine, self._charged(result.tomorrow_scheduled_slots))
+            assert not any(28 <= i < 48 for i in self._charged(result.tomorrow_scheduled_slots))
+            # ... and it carries the house from midnight: never at Min SOC
+            # (25 %) between 00:15 and sunrise.  (Charging only 04:00-07:00
+            # would also reach the morning, after four hours on the grid.)
+            traj = result.tomorrow_soc_trajectory
+            assert min(traj[1:28]) > 25.5, (engine, traj[:28])
+
+    def test_a_cheaper_tonight_is_still_bought_tonight(self):
+        """Cheapest first: when tonight is cheaper than the night, tonight."""
+        for engine in self._engines():
+            result = calculate_schedule(*self._evening(engine, tonight=0.20, night=0.30))
+            assert self._charged(result.scheduled_slots), engine
+
+    def test_tomorrow_never_comes_is_still_prevented(self):
+        """Tomorrow's noon at 0.03 is far cheaper than tonight and the night
+        (both 0.25), yet the reserve is not pushed past sunrise."""
+        for engine in self._engines():
+            result = calculate_schedule(*self._evening(engine, tonight=0.25, night=0.25, noon=0.03))
+            before_sunrise = (self._charged(result.scheduled_slots)
+                              + [i for i in self._charged(result.tomorrow_scheduled_slots) if i < 28])
+            assert len(before_sunrise) >= 8, (engine, result.scheduled_slots,
+                                              result.tomorrow_scheduled_slots)
+
+    def test_after_midnight_the_slots_before_sunrise_are_used(self):
+        """At 00:10 the next sunrise is today's: the night's energy comes from
+        today's slots before 07:00, not from today's cheaper noon."""
+        for engine in self._engines():
+            config, state = self._evening(engine)
+            state.slot_prices_today = [0.25 if i < 28 else (0.20 if 48 <= i < 56 else 0.30)
+                                       for i in range(96)]
+            state.slot_prices_tomorrow = None
+            state.current_hour, state.current_minute = 0, 10
+            state.pv_actual_today_kwh = 0.0
+            state.pv_forecast_remaining = 12.5
+            result = calculate_schedule(config, state)
+            night = [i for i in self._charged(result.scheduled_slots) if i < 28]
+            assert night, (engine, self._charged(result.scheduled_slots))
+
+    def test_save_money_is_unchanged(self):
+        """Cost mode never had the rule: no charge tonight either way."""
+        for engine in self._engines():
+            config, state = self._evening(engine)
+            config.optimization_priority = "cost"
+            result = calculate_schedule(config, state)
+            assert self._charged(result.scheduled_slots) == [], engine
 
 
 class TestSelfConsumptionFillsBattery:
