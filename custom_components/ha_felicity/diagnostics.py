@@ -31,7 +31,7 @@ from .const import (
     INVERTER_MODEL_IVAM_SIX,
     IVGM_MODELS,
     MODEL_REGISTRY,
-    OPERATING_MODE_MODELS,
+    TREX_TELEMETRY_MODELS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ async def _async_dump(hass: HomeAssistant, coordinator, model: str | None) -> di
     if model in IVGM_MODELS:
         documented = await hass.async_add_executor_job(
             register_dump.load_ivgm_documented_addresses)
-    elif model in OPERATING_MODE_MODELS:
+    elif model in TREX_TELEMETRY_MODELS:
         # T-REX-5/6/10: every address of the IVGM5048/10048 document, so the
         # unmapped settings and the scale questions (power-conversion
         # registers) can be read off one dump.

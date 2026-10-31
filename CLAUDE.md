@@ -80,6 +80,10 @@ maintainer makes a new decision, add it here in the same commit.
 - **An IVGM / IVAM address must come from its own protocol document.**
 - **T-REX-10 rule value 3 is labelled "ECO mode (AC Couple)"** (29 Oct 2026,
   discussion #230); T-REX-5/6K keep "ECO mode" until their app is checked.
+- **IVGM100600 is its own model, MONITORING ONLY, provisional, at the user's
+  own risk** (31 Oct 2026, issue #206).  It reads like a T-REX-10 but is not
+  register-identical, and its battery is high-voltage while every EMS voltage
+  setting is for 48 V.  The T-REX-10 map is NOT corrected from its dump.
 
 **Flexible loads / EV**
 - **Home battery first, the car after** (24 + 30 Oct 2026).  "Car after" on a
@@ -187,7 +191,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **897**: 895 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **942**: 940 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -201,7 +205,7 @@ this rule exists to prevent — don't.
 
 ## Project Overview
 
-**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50**, the **IVGM family (8K / 15K / 20K, provisional)** and the **IVAM6048P1G1 (monitoring only — no control registers, see below)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
+**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50**, the **IVGM family (8K / 15K / 20K, provisional)**, the **IVAM6048P1G1 (monitoring only — no control registers, see below)** and the **IVGM100600 (10 kW HV, monitoring only, provisional — see below)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
 
 **Version**: see `custom_components/ha_felicity/manifest.json` — the only copy
 that matters.  A number written here goes stale the first time someone bumps the
@@ -234,6 +238,7 @@ custom_components/ha_felicity/
 ├── ivgm_documented_registers.json # Frozen transcript of the IVGM protocol document
 ├── ivam.py                  # IVAM6048P1G1 map — MONITOR-ONLY (telemetry; no control registers)
 ├── ivam_documented_registers.json # Frozen transcript of the IVAM protocol document
+├── ivgm_hv.py               # IVGM100600 (10 kW HV) — MONITOR-ONLY, derived from the T-REX-10 map
 ├── trex_documented_registers.json # Frozen transcript of the IVGM5048/10048 document = T-REX-5/6/10 layout
 ├── plausibility.py          # HA-free guard: impossible readings never reach sensors/EMS (#220)
 ├── register_dump.py         # HA-free read-only register dump (diagnostics + tools/ivgm_dump.py)
@@ -259,6 +264,7 @@ tests/
 ├── test_power_scaling.py    # Per-model telemetry/setpoint scaling — measured, never inherited
 ├── test_card_contract.py    # The cards' name-based coupling to the register maps
 ├── test_ivam_support.py     # IVAM: provenance vs its document; no write ever reaches the bus
+├── test_ivgm_hv_support.py  # IVGM100600: own map vs the #206 dump; monitor-only; T-REX-10 untouched
 ├── test_trex_documented_registers.py # T-REX-5/6/10 maps vs the IVGM5048/10048 document
 ├── test_write_register_service.py    # the write_register service, through the real write path
 ├── test_plausibility.py     # #220 guard, judged by HA's own total_increasing sum rule
@@ -1084,6 +1090,50 @@ meter) and `battery_discharge_depth_on_grid_bms` (no BMS limit registers).  The
 replay harness models a monitor-only inverter (`FakeInverter.monitor_only`):
 `test_a_monitor_only_inverter_is_never_written` runs a day with the EMS and
 safe power ON and asserts zero writes.
+
+### IVGM100600 — 10 kW HV, MONITOR-ONLY, provisional (31 Oct 2026, issue #206)
+
+Felicity Benelux support said the IVGM100600 (10 kW three-phase, battery
+180-580 V) is "the same as the T-REX-10K", and the owner ran it on the T-REX-10
+profile.  The diagnostics dump (1.3.13, 2026-10-31, Waveshare RS485 TO POE
+ETH (B) in "Modbus TCP to RTU", "Auto query storage" mode, 2400 8N1) shows it
+answers the T-REX-10 telemetry layout — battery 212.5 V (0.1 V), −148 W, 98 %,
+AC 229.6 V / 49.95 Hz, a 6.6 s poll with no timeouts — but is NOT
+register-identical:
+- **0x1225–0x1238** (line-load / total-load "consumption energy inquiry"
+  totals) answer exception 2, ILLEGAL DATA ADDRESS (the maintainer's T-REX-10
+  answers them);
+- **0x120C TotalCurrent is signed**: raw 65530 = −6 → −0.6 A; physics:
+  −148 W / 212.5 V = −0.70 A;
+- **0x120D TotalVoltage is 0.1 V**: raw 2130 → 213.0 V beside a 212.5 V
+  battery (the document's 0.01 V gives 21.3 V).
+- Unsettled: **0x119D/0x119E LoadPower_LineSide** read the words 4502/4503 —
+  the decimal numbers of the neighbouring addresses, not a power (gateway
+  storage mode?).  A second dump in "Simple Modbus TCP to RTU" mode was asked
+  for on the issue.  The plausibility guard drops the 295 MW it decodes to.
+
+So, per the rating-variant rule, it has **its own entry** (`ivgm_hv.py`,
+`INVERTER_MODEL_IVGM_HUNDRED = "IVGM100600"`), derived from the T-REX-10 map at
+import time (never a hand copy): telemetry (0x1xxx), version words (0xF8xx)
+and the BMS discharge depth (0x212A, read-only for the card) only; the
+0x1225–0x1238 keys dropped; the two corrections applied; every writable entity
+type stripped (`status` stays — read-only enum).  **The T-REX-10 map is not
+changed** (`test_the_t_rex_ten_map_is_not_changed_by_this_measurement`).
+
+**MONITOR-ONLY, at the user's own risk** (maintainer decision): the battery is
+high-voltage, and every EMS voltage (Rule 1 charge 58 V / discharge 50 V) and
+every battery setting in the T-REX-10 map is for a 48 V pack.  It is in
+`MONITOR_ONLY_MODELS` (no write ever reaches the bus, EMS forced off), and in
+the new `TREX_TELEMETRY_MODELS` (= `OPERATING_MODE_MODELS` + IVGM100600), which
+type_specific's READ accessors branch on (SOC from `battery_capacity`, grid
+power from `total_ac_input_power`, phase currents from `ac_input_current*`);
+the WRITE paths still branch on the control path.  The setup label says
+"monitoring only, provisional — own risk".  A unit set up as a T-REX-10 must be
+removed and re-added as IVGM100600.  `INVERTER_PHASES` = 3 (the id has no P3;
+`_PHASES_NOT_IN_ID` in test_model_coverage).  Control needs its own evidence
+from a high-voltage unit first.  Pinned by `tests/test_ivgm_hv_support.py` (the
+dump's raw words; mutation: dropping it from MONITOR_ONLY_MODELS fails 7) and
+the monitor-only replay (parametrised over both monitor-only models).
 
 ### T-REX-5/6/10 = IVGM5048 / IVGM6048 / IVGM10048 — documented (Oct 2026)
 
@@ -2667,6 +2717,16 @@ absent = 5 timeouts total, frame too large, dead link never splits, an
 intermittent block is never dropped or fragmented, a register that answered
 once is never dropped).
 
+**ILLEGAL DATA ADDRESS is handled the same way (31 Oct 2026, issue #206).**  A
+read answered with Modbus exception 2 means the inverter has no such address
+(the IVGM100600 lacks 0x1225–0x1238) — it used to log "Read error … skipping
+group" every poll for ever.  Those groups now go through `_adapt_read_groups`
+with the silent ones: split to isolate, dropped after `DEAD_REGISTER_STRIKES`
+polls (a block whose halves both fail goes whole), never dropped once it has
+answered.  Only code 2 — a busy device (6) or a gateway failure (10/11) says
+nothing about the map.  `poll_stats.groups_illegal_address` lists them.
+Pinned by `TestIllegalDataAddressIsolation` (mutation-checked).
+
 Diagnostics on a 5K also help: `register_dump.async_read_all` retries a failed
 batch register-by-register, so the dump shows which of 8568–8603 answer.
 
@@ -3958,7 +4018,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**897 tests**: 895 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**942 tests**: 940 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

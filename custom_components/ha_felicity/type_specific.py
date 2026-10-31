@@ -8,6 +8,7 @@ from .const import (
     MONITOR_ONLY_MODELS,
     OPERATING_MODE_MODELS,
     SETPOINT_WATT_MODELS,
+    TREX_TELEMETRY_MODELS,
     WATT_POWER_MODELS,
 )
 
@@ -63,7 +64,7 @@ class TypeSpecificHandler:
         """
         MIN_VALID_VOLTAGE = 10.0  # Arbitrary but safe threshold (e.g. <10V is unrealistic for a battery pack)
     
-        if self._inverter_model in OPERATING_MODE_MODELS:
+        if self._inverter_model in TREX_TELEMETRY_MODELS:
             voltage = data.get("battery_voltage")
             if voltage is not None and voltage > MIN_VALID_VOLTAGE:
                 return voltage
@@ -152,7 +153,7 @@ class TypeSpecificHandler:
 
     def determine_phase_currents(self, data: dict) -> list[float] | None:
         """Absolute grid current per phase, [L1, L2, L3], or None."""
-        if self._inverter_model in OPERATING_MODE_MODELS:
+        if self._inverter_model in TREX_TELEMETRY_MODELS:
             keys = ("ac_input_current", "ac_input_current_l2", "ac_input_current_l3")
         elif self._inverter_model in ECO_TIMEOFUSE_MODELS:
             keys = ("phase_a_ct_current", "phase_b_ct_current", "phase_c_ct_current")
@@ -168,7 +169,7 @@ class TypeSpecificHandler:
         Uses abs() to detect overcurrent in both directions:
         positive (importing from grid) and negative (exporting to grid).
         """
-        if self._inverter_model in OPERATING_MODE_MODELS:
+        if self._inverter_model in TREX_TELEMETRY_MODELS:
             phase_1 = abs(data.get("ac_input_current", 0.0))
             phase_2 = abs(data.get("ac_input_current_l2", 0.0))
             phase_3 = abs(data.get("ac_input_current_l3", 0.0))
@@ -190,7 +191,7 @@ class TypeSpecificHandler:
         Positive = importing from grid, negative = exporting to grid.
         Returns None if no data available.
         """
-        if self._inverter_model in OPERATING_MODE_MODELS:
+        if self._inverter_model in TREX_TELEMETRY_MODELS:
             val = data.get("total_ac_input_power")
             if val is not None:
                 return float(val)  # Already in watts, signed (index 3)
@@ -222,7 +223,7 @@ class TypeSpecificHandler:
           - Only one available → return that one
           - Neither → return None
         """
-        if self._inverter_model in OPERATING_MODE_MODELS:
+        if self._inverter_model in TREX_TELEMETRY_MODELS:
             soc = data.get("battery_capacity")
             if soc is not None:
                 return soc

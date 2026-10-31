@@ -73,6 +73,9 @@ READ_BACKOFF_MAX_S = 300
 # Strikes count CONSECUTIVE misses, and a register that has answered even once
 # is never dropped: the same reporter later showed the block exists and answers
 # intermittently (a flaky link fails long reads more often than short ones).
+#: Modbus exception code 2: "the data address received in the query is not an
+#: allowable address for the server" — the inverter has no such register.
+ILLEGAL_DATA_ADDRESS = 2
 DEAD_REGISTER_STRIKES = 3
 # A block that has answered before but now misses is split no further than this
 # many registers (one T-REX-5 ECO rule): small enough for a flaky link to get
@@ -3351,10 +3354,16 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             self._group_timeout_strikes.pop(group["split_from"], None)
 
     def _adapt_read_groups(self, timed_out: list[dict]) -> None:
-        """Isolate reads that time out while the rest of the poll succeeds.
+        """Isolate reads that time out — or that the inverter answers with
+        ILLEGAL DATA ADDRESS — while the rest of the poll succeeds.
 
         Only called when at least one read in the same poll was answered, so a
-        dead link (handled by the backoff) never splits or drops anything.
+        dead link (handled by the backoff) never splits or drops anything.  An
+        illegal-address reply is handled exactly like a silent read: a group is
+        split to isolate the address, a register that never answered is dropped
+        after DEAD_REGISTER_STRIKES polls in a row, a block whose two halves both
+        fail is dropped whole, and a register that ever answered is never
+        dropped.
         """
         replace: dict[int, list[dict]] = {}
 
@@ -3381,7 +3390,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                     replace[id(half)] = []
                 self.dead_register_keys.update(keys)
                 _LOGGER.warning(
-                    "Registers at %d–%d (%s … %s) never respond on this inverter/gateway "
+                    "Registers at %d–%d (%s … %s) never answer on this inverter/gateway "
+                    "(no response, or illegal data address) "
                     "— the model probably does not have them; no longer polled until "
                     "the integration is reloaded",
                     parent[0], parent[0] + parent[1] - 1, keys[0], keys[-1],
@@ -3400,7 +3410,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 halves = self._split_group(group)
                 replace[id(group)] = halves
                 _LOGGER.warning(
-                    "Read at %d (count %d) got no response while other reads succeeded "
+                    "Read at %d (count %d) got no valid reply while other reads succeeded "
                     "— splitting it into %s to isolate the cause",
                     group["start"], group["count"],
                     ", ".join(f"{h['start']}/{h['count']}" for h in halves),
@@ -3415,7 +3425,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 replace[id(group)] = []
                 self.dead_register_keys.update(group["keys"])
                 _LOGGER.warning(
-                    "Register %s (address %d) never responds on this inverter/gateway "
+                    "Register %s (address %d) never answers on this inverter/gateway "
+                    "(no response, or illegal data address) "
                     "— no longer polled until the integration is reloaded",
                     group["keys"][0], group["start"],
                 )
@@ -3426,7 +3437,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             ]
 
     def _record_poll_stats(self, started: float, groups_ok: int,
-                           timed_out: list[dict], silent_retries: int) -> None:
+                           timed_out: list[dict], silent_retries: int,
+                           illegal: list[dict] | None = None) -> None:
         """Keep the last poll's timing; warn (hourly) when polling is slow."""
         duration = time.monotonic() - started
         self.poll_stats = {
@@ -3434,6 +3446,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "groups": len(self._address_groups),
             "groups_ok": groups_ok,
             "groups_timed_out": [f"{g['start']}/{g['count']}" for g in timed_out],
+            "groups_illegal_address": [f"{g['start']}/{g['count']}" for g in (illegal or [])],
             "silent_retries": silent_retries,
             "dead_registers": sorted(self.dead_register_keys),
             "reply_count_mismatches": getattr(self, "_reply_count_mismatches", 0),
@@ -3472,6 +3485,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         consecutive_timeouts = 0
         poll_started = time.monotonic()
         timed_out_groups: list[dict] = []
+        illegal_groups: list[dict] = []
         silent_retries = 0
         groups_ok = 0
 
@@ -3510,6 +3524,18 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                 if isinstance(retries, int):
                     silent_retries += retries
                 if result.isError():
+                    if getattr(result, "exception_code", None) == ILLEGAL_DATA_ADDRESS:
+                        # The inverter says these addresses do not exist (a
+                        # model lacking a block — issue #206: the IVGM100600
+                        # has no 0x1225-0x1238).  Isolated and dropped like a
+                        # silent register, below, instead of a warning every
+                        # poll for ever.
+                        illegal_groups.append(group)
+                        _LOGGER.warning(
+                            "Read at %d (count %d): illegal data address — the "
+                            "inverter does not have (all of) these registers",
+                            start_addr, count)
+                        continue
                     _LOGGER.warning("Read error at address %d, skipping group", start_addr)
                     continue
                 # A reply of the wrong length answers some OTHER request (issue
@@ -3579,9 +3605,10 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                     new_data[key] = value
             self._plausibility.apply(new_data, time.time())
-            self._record_poll_stats(poll_started, groups_ok, timed_out_groups, silent_retries)
-            if any_read_ok and timed_out_groups:
-                self._adapt_read_groups(timed_out_groups)
+            self._record_poll_stats(poll_started, groups_ok, timed_out_groups, silent_retries,
+                                    illegal_groups)
+            if any_read_ok and (timed_out_groups or illegal_groups):
+                self._adapt_read_groups(timed_out_groups + illegal_groups)
 
             # dynamically check which system we have an appropriated settings.
             operational_mode = self.TypeSpecificHandler.determine_operational_mode(new_data)

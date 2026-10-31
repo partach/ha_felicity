@@ -91,8 +91,12 @@ def test_control_path_registers_exist_in_the_model_map(model):
                    "econ_rule_1_voltage", "econ_rule_1_soc", "econ_rule_1_power"}
         present = sorted(control & set(registers))
         assert not present, f"{model} is monitor-only but maps control registers {present}"
-        assert not any(info.get("type") for info in registers.values()), (
-            f"{model}: a monitor-only map must expose no writable entity")
+        # "status" is a read-only enum sensor (sensor.py); every other type
+        # creates a control entity (number / select / time / date).
+        writable = sorted(k for k, info in registers.items()
+                          if info.get("type") not in (None, "status"))
+        assert not writable, (
+            f"{model}: a monitor-only map must expose no writable entity {writable}")
         return
     if model in const.OPERATING_MODE_MODELS:
         required = ["operating_mode", "econ_rule_1_enable",
@@ -109,9 +113,10 @@ def test_control_path_registers_exist_in_the_model_map(model):
 def test_soc_and_grid_power_sources_exist(model):
     """The EMS cannot schedule without a battery SOC or a grid power reading."""
     registers = const.MODEL_REGISTRY[model]["registers"]
-    soc = ("battery_capacity",) if model in const.OPERATING_MODE_MODELS else ("bat1_soc", "bat2_soc")
+    soc = (("battery_capacity",) if model in const.TREX_TELEMETRY_MODELS
+           else ("bat1_soc", "bat2_soc"))
     assert any(k in registers for k in soc), f"{model}: no SOC register among {soc}"
-    if model in const.OPERATING_MODE_MODELS:
+    if model in const.TREX_TELEMETRY_MODELS:
         grid = ("total_ac_input_power",)
     elif model in const.MONITOR_ONLY_MODELS:
         grid = ("grid_a_phase_power",)       # type_specific's monitor-only branch
@@ -296,6 +301,12 @@ def test_setup_dropdown_offers_exactly_the_supported_models():
 
 
 
+
+#: Model ids without a P1/P3 part, and the phase count their nameplate states.
+_PHASES_NOT_IN_ID = {
+    const.INVERTER_MODEL_IVGM_HUNDRED: 3,   # label "Hybrid inverter / Three Phase" (issue #206)
+}
+
 @pytest.mark.parametrize("model", const.SUPPORTED_MODELS)
 def test_every_model_declares_its_phases(model):
     """Safe power sizes its one-step battery cut from the phase count; a
@@ -303,4 +314,8 @@ def test_every_model_declares_its_phases(model):
     it (…P1… / …P3…), so the two must agree."""
     phases = const.INVERTER_PHASES[model]
     assert phases in (1, 3)
+    if model in _PHASES_NOT_IN_ID:
+        # The id carries no …P1/P3…: the nameplate does.
+        assert phases == _PHASES_NOT_IN_ID[model]
+        return
     assert f"P{phases}" in model.replace("-", "")

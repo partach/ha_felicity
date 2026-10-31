@@ -41,6 +41,7 @@ from .const import (
     INVERTER_MODEL_IVAM_SIX,
     INVERTER_MODEL_IVGM_EIGHT,
     INVERTER_MODEL_IVGM_FIFTEEN,
+    INVERTER_MODEL_IVGM_HUNDRED,
     INVERTER_MODEL_IVGM_TWENTY,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_FIVE,
@@ -201,6 +202,12 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             selector.SelectOptionDict(
                                 value=INVERTER_MODEL_IVAM_SIX,
                                 label=f"{INVERTER_MODEL_IVAM_SIX} (monitoring only, 9600 baud, provisional)"),
+                            # 10 kW 3-phase, HIGH-VOLTAGE battery; reads like a
+                            # T-REX-10 but is not register-identical (issue #206).
+                            # Monitoring only, at the user's own risk.
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVGM_HUNDRED,
+                                label=f"{INVERTER_MODEL_IVGM_HUNDRED} (10 kW HV, monitoring only, provisional — own risk)"),
                             # Future models go here
                         ],
                         mode=selector.SelectSelectorMode.DROPDOWN,
