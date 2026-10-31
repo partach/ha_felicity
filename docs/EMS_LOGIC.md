@@ -22,50 +22,55 @@ could merge unseen — and a test file that had stopped collecting entirely went
 unnoticed for weeks (see CLAUDE.md, "Test harness"). If you change scheduling
 behaviour, the simulator is the gate that decides whether you were right.
 
-0. **from_grid is planned EXACTLY (Oct 2026) — this overrides every
-   from_grid rule below that it contradicts.**  The default engine
-   `optimal` (`ems.plan_optimal_from_grid`) solves one cost model over the
-   whole horizon (now → end of the last day with prices) in 15-minute steps:
+0. **from_grid: the premise, planned exactly (Oct 2026; premise restored
+   31 Oct 2026) — this overrides every from_grid rule below that it
+   contradicts.**
+   **The premise (maintainer decision, as the README always said): the
+   battery is kept above Min SOC and gets through the night; the EMS only
+   chooses the cheapest moments to make sure of that.**  Buying beyond that is
+   economic.  The default engine `optimal` (`ems.plan_optimal_from_grid`)
+   solves this over the whole horizon (now → end of the last day with prices)
+   in 15-minute steps:
    - the battery covers the house — **at most at the inverter's rating**; any
-     load above that passes through from the grid whatever the battery holds,
-     so a battery can never empty faster than the rating allows — PV fills
-     it, PV beyond full is spilled,
-     below the discharge floor the house buys from the grid **at that step's
-     price**; a step may charge anything from nothing to a full step at the
-     Power Level (the coordinator re-plans while it runs and stops when the
-     plan has enough); grid energy stored loses (1 − efficiency); cycle cost
-     per stored kWh (≥ 0.05 for Battery Care);
-   - after the horizon the battery must carry the house from midnight to
-     sunrise; each kWh short costs the last known night's price;
-   - **this week's price** (24 Oct 2026): with 3+ days of price history the
-     coordinator passes the mean of the last 7 daily means.  Energy the next
-     day can use beyond the night (its consumption after sunrise − 0.8 ×
-     tomorrow's forecast) is worth that price × efficiency, and the unknown
-     night is never priced below it.  So grid energy is stored when
-     `price < weekly × eff²`: the cheapest day of the week fills the battery
-     (and the EV, which runs in its charge slots), an ordinary day buys only
-     for the night.  Without history: energy beyond the night is worth
-     nothing, as before;
-   - Self-Sufficiency: that night need × 1.25;  a reserve setting raises it
-     to `max(need, reserve)` (and checks tonight too) — never a per-step
-     hard floor;
+     load above that passes through from the grid whatever the battery holds —
+     PV fills it, PV beyond full is spilled; a step may charge anything from
+     nothing to a full step at the Power Level (the coordinator re-plans while
+     it runs and stops when the plan has enough); grid energy stored loses
+     (1 − efficiency); cycle cost per stored kWh (≥ 0.05 for Battery Care);
+   - **Min SOC is never planned below.**  When the battery would go under it,
+     the plan buys before that, in the cheapest slots that still prevent it —
+     also at a dear hour if nothing cheaper comes first.  (The inverter does
+     not stop at Min SOC by itself; register 8490 is not written by the EMS.)
+   - **After the horizon the battery must carry the house from midnight to
+     sunrise** — a hard goal, bought in the cheapest slots before it.
+     Self-Sufficiency: that night need × 1.25; a reserve setting raises it to
+     `max(need, reserve)` (and checks tonight too);
+   - **a battery already below Min SOC** (Min SOC raised, an unexpected load,
+     the inverter's own floor lower) is planned from its real SOC and **bought
+     back in the cheapest slots, never by force at the current price**
+     (22 Oct 2026: forcing it bought the 0.453 evening peak and flipped
+     charge/idle every 1-3 minutes).  Greedy / MILP keep their *urgent
+     recovery*;
+   - **this week's price** (24 Oct 2026): with 3+ days of price history,
+     energy the next day can use beyond the night is worth this week's
+     typical price × efficiency, so the cheapest day of the week fills the
+     battery; an ordinary day buys only for the night (and Min SOC);
    - equal cost → charge as early and as much as possible;
-   - **below the floor nothing is forced** (22 Oct 2026): the house already
-     runs on the grid there, and the plan charges only when that is cheaper
-     than buying the same kWh live.  Greedy / MILP keep *urgent recovery*
-     (force a charge in the current slot whenever SOC < discharge_min);
-     under the planner it bought the 0.453 evening peak and flipped
-     charge/idle every 1-3 minutes for three hours with SOC a hair under the
-     floor, switching the EV charger with it.
-   **Expected behaviour, in plain words:** it buys only when that is cheaper
-   (after losses) than the grid energy it saves later, only at the cheapest
-   such moments, never what tomorrow's sun brings for free, and never "to
-   fill the battery".  A battery that lasts until a cheaper moment or the
-   sun **waits** — e.g. 81 % at 21:45 with tonight dearer than tomorrow buys
-   nothing tonight.  The greedy-specific rules below (deficit, reserve
-   target "at all times", unified slot pool, validation, re-shop, top-off
+   - the reason line shows money: "saves ~x", or "keeps Min SOC and the night
+     covered for ~x more than buying live".
+   **Expected behaviour, in plain words:** the battery never goes under your
+   Min SOC in the plan and always gets through the night; that energy is
+   bought at the cheapest moments that do it; more is bought only when it is
+   cheaper than the grid it saves later (a cheap day, negative prices); never
+   what tomorrow's sun brings for free.  The greedy-specific rules below
+   (deficit, reserve target, unified slot pool, validation, re-shop, top-off
    gate + horizon cap, today-first, spill relocation) describe the legacy
    `greedy` engine and still apply to `to_grid` / `both`.
+   *History: from 19 to 31 Oct 2026 this engine minimised money only and
+   planned the battery "at Min SOC with the house on the grid" — fiction, the
+   inverter drains further; the owner had to charge by hand (CLAUDE.md Known
+   Issues 8p).  The 26 Oct "house on the grid while charging" model was
+   reverted on 31 Oct.*
    Checked by `tests/test_planner.py` against an independent model,
    brute force, a second optimiser and an LP bound; see CLAUDE.md "The exact
    planner".

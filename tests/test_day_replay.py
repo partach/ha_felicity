@@ -942,8 +942,12 @@ async def test_the_cheapest_day_of_the_week_fills_the_battery_and_the_car_follow
     await r.run_until(day(SAT, 21), step_s=300)
 
     battery, ev = _planned_tomorrow(r)
-    battery_before, _ = _planned_tomorrow(without)
-    assert len(battery) >= 30 > 2 * len(battery_before), (len(battery), len(battery_before))
+    # Saturday's plan fills the battery by Sunday night; without the week's
+    # price it covers Sunday and its night (the premise, 31 Oct 2026) and no
+    # more.  (Slots no longer tell them apart: both keep Min SOC all Sunday.)
+    full = r.coordinator._backend_soc_trajectory_tomorrow[-1]
+    night_only = without.coordinator._backend_soc_trajectory_tomorrow[-1]
+    assert full >= 95 > night_only + 30, (full, night_only)
     assert ev == battery, "the EV is planned in the battery's charge slots"
     assert "this week's average 0.255" in r.coordinator.schedule_reason
 
@@ -995,11 +999,13 @@ async def test_a_battery_under_the_floor_is_not_charged_at_the_peak_nor_toggled(
     a 15.0 kWh floor.  Urgent recovery then forced a charge at 0.453; a few
     tenths of a kWh later it no longer applied — idle, drain, charge again —
     every 1-3 minutes until past 23:00, switching the EV charger with it 64
-    times.  Below the floor the house runs on the grid whatever the EMS does;
-    the planner prices that and has nothing to buy at the peak."""
+    times.  A battery already below Min SOC is bought back in the cheapest
+    slots (maintainer, 31 Oct 2026), never by force at the peak.  (Above Min
+    SOC the plan does defend it — also at a dear hour; that is the other
+    half of the premise, test_planner's test_min_soc_is_kept_*.)"""
     r = _replay(options={**AUTO, **EV_OPTIONS, "battery_discharge_min_level": 25,
                          "daily_consumption_estimate": 30.0},
-                capacity_kwh=60.0, soc=26.0, start=day(D, 19, 30),
+                capacity_kwh=60.0, soc=24.7, start=day(D, 19, 30),     # 14.8 of 15.0 kWh
                 prices_for=EVENING_PEAK, load_kw=lambda _t: 3.0,
                 switched_loads={EV: 3.7})
     r.inverter.self_use_floor_pct = 24.5     # the inverter's own floor sits just under the EMS's

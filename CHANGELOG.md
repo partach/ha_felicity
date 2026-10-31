@@ -2,6 +2,20 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **Back to the original premise: the battery stays above your Min SOC and
+  gets through the night.** The planner had been charging only when it
+  saved money, and planned the battery to sit at Min SOC "with the house on
+  the grid" — which the inverter doesn't do: it keeps discharging below Min
+  SOC, so your reserve was used and charges had to be started by hand. Now
+  Min SOC and the night are firm goals, bought at the cheapest moments that
+  meet them. If the battery is already below Min SOC (for example after you
+  raised it), the gap is bought back in the cheapest slots — never forced at
+  an expensive hour. Buying more than that still happens only when it pays
+  (a cheap day, negative prices).
+- Plans made a few minutes apart now agree with each other more reliably
+  (the planner rounds the same way whenever it plans), and a charging
+  quarter-hour is never planned above what the inverter can deliver.
+- Reverted the 26 Oct planner change ("house on the grid while charging").
 - **New default planner: exact, for Save Money / Self-Sufficiency / Battery
   Care.** Instead of a stack of rules (reserve deficit, cheapest-N slots,
   top-off, horizon caps…) the plan is now the cheapest one there is for the

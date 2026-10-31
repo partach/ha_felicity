@@ -196,13 +196,25 @@ def house(config: EMSConfig, st) -> float:
     return st.cons_kwh
 
 
-def terminal(plan, held: float) -> float:
+def shortfall_price(plan, config) -> float:
+    """What a kWh below Min SOC, or short of the night's need, costs: twice
+    the dearest price ahead (at least the expected night price and the week's
+    stored value) plus the cycle cost — more than charging can ever cost, so
+    a hard goal.  The premise (maintainer, 31 Oct 2026): the battery never
+    goes below Min SOC and gets through the night; the plan only chooses the
+    cheapest moments to make sure of that."""
+    return ems.OPTIMAL_SHORTFALL_FACTOR * max(
+        [abs(st.price) for st in plan.horizon]
+        + [abs(plan.night_grid_price), plan.store_value, 1e-9]) + _limits(config)[3]
+
+
+def terminal(plan, held: float, config) -> float:
     """What the battery's content at the end of the horizon costs (or is
-    worth): each kWh short of the night's need costs the night price; what
-    the next day can use beyond it (``plan.store_cap_kwh``) and the battery
-    does not hold costs this week's typical price after the round-trip loss,
-    at most the night price (``plan.store_value``; 0 without a weekly price)."""
-    return (plan.night_price * max(0.0, plan.night_need_kwh - held)
+    worth): each kWh short of the night's need costs the shortfall price;
+    what the next day can use beyond it (``plan.store_cap_kwh``) and the
+    battery does not hold costs this week's typical price after the
+    round-trip loss (``plan.store_value``; 0 without a weekly price)."""
+    return (shortfall_price(plan, config) * max(0.0, plan.night_need_kwh - held)
             + plan.store_value * (plan.store_cap_kwh
                                   - min(plan.store_cap_kwh,
                                         max(0.0, held - plan.night_need_kwh))))
@@ -213,8 +225,9 @@ def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
 
     ``charging`` per step is either a bool (charge the whole step at the
     Power Level) or a float (grid kWh to take in that step).  The house is
-    fed by PV, then the battery; below the floor by the grid at that step's
-    price, and a charge then goes into the battery on top.  Charging stops at
+    fed by PV, then the battery; what would take it below Min SOC comes from
+    the grid at the shortfall price, and a charge then goes into the battery
+    on top.  Charging stops at
     max SOC; PV beyond full is spilled.  After the horizon, each kWh short of
     the night's need costs the night price, and what the next day can use
     beyond it and is not held costs this week's typical price after losses
@@ -238,7 +251,7 @@ def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
         p = st.price
         x = s + st.pv_kwh - house(config, st)
         if x < floor:
-            cost += p * (floor - x)
+            cost += shortfall_price(plan, config) * (floor - x)
             x = floor
         x = min(cap, x)
         amount = st.grid_kwh if want is True else (0.0 if want is False else float(want))
@@ -250,8 +263,8 @@ def simulate(config: EMSConfig, plan, charging, start_kwh: float | None = None):
         s = x
         socs.append(s)
         if checkpoint and checkpoint[0] == k:
-            cost += plan.tonight_price * max(0.0, checkpoint[1] - (s - floor))
-    cost += terminal(plan, s - floor)
+            cost += shortfall_price(plan, config) * max(0.0, checkpoint[1] - (s - floor))
+    cost += terminal(plan, s - floor, config)
     return cost, socs, bought
 
 
@@ -299,7 +312,7 @@ def lp_lower_bound(config, plan) -> float:
     m += extra <= (prev - floor) - plan.night_need_kwh + short
     m += (pulp.lpSum(st.price * (b[k] + imp[k]) + cycle * eff * b[k]
                      for k, st in enumerate(plan.horizon))
-          + plan.night_price * short + plan.store_value * (plan.store_cap_kwh - extra))
+          + shortfall_price(plan, config) * short + plan.store_value * (plan.store_cap_kwh - extra))
     m.solve(pulp.PULP_CBC_CMD(msg=False))
     assert pulp.LpStatus[m.status] == "Optimal"
     return pulp.value(m.objective)
@@ -329,7 +342,7 @@ def fine_optimum(config, plan, points: int = 1200) -> float:
         x = s + st.pv_kwh - house(config, st)
         c = 0.0
         if x < floor:
-            c += st.price * (floor - x)
+            c += shortfall_price(plan, config) * (floor - x)
             x = floor
         x = min(cap, x)
         b = min(st.grid_kwh * share, max(0.0, cmax - x) / eff)
@@ -338,7 +351,7 @@ def fine_optimum(config, plan, points: int = 1200) -> float:
 
     shares = (0.0, 0.25, 0.5, 0.75, 1.0)
     tables = [None] * (len(plan.horizon) + 1)
-    values = [terminal(plan, s - floor) for s in grid]
+    values = [terminal(plan, s - floor, config) for s in grid]
     tables[-1] = values
     for k in range(len(plan.horizon) - 1, -1, -1):
         st = plan.horizon[k]
@@ -482,6 +495,12 @@ def test_monotone_a_fuller_battery_never_buys_more(seed):
     if not _priced(state):
         # Below zero, room in the battery is worth money (it gets paid to
         # charge), so a fuller battery can legitimately earn less.
+        return
+    if lower.battery_soc_pct <= config.battery_discharge_min_pct + 0.5:
+        # At or under Min SOC the battery is bought back in the cheapest
+        # slots, never by force; just above it Min SOC is defended, also at a
+        # dear hour.  The maintainer's two rules (31 Oct 2026) meet at Min
+        # SOC, so the two sides are deliberately not compared (seeds 52, 57).
         return
     assert _cost(config, state) <= _cost(config, lower) + _tol(_cost(config, lower)), seed
     if state.price_reference_eur_kwh is not None:
@@ -694,10 +713,10 @@ def test_equal_prices_charge_the_earliest():
                      pv_hourly_kwh={}, current_hour=10, current_minute=0,
                      consumption_hourly_kwh={h: 1.0 for h in range(24)})
     plan = _plan(config, state)
-    bought = [k for k, a in enumerate(plan.charging) if a]
-    # With a flat price, buying is no cheaper than drawing the grid live —
-    # after losses it is dearer — so nothing at all is bought.
-    assert bought == []
+    bought = [plan.horizon[k].idx for k, a in enumerate(plan.charging) if a]
+    # The battery is kept above Min SOC (the premise, 31 Oct 2026): with a
+    # flat price that starts at the first opportunity, 10:00.
+    assert bought and bought[0] == 40, bought
     cheap = dataclasses.replace(state, slot_prices_today=[0.10] * 48 + [0.30] * 48)
     plan = _plan(config, cheap)
     bought = [plan.horizon[k].idx for k, a in enumerate(plan.charging) if a]
@@ -771,8 +790,9 @@ def test_a_reserve_is_reached_from_the_cheap_slots_not_the_peak():
 
 
 def test_an_hourly_tariff_buys_a_quarter_not_the_whole_hour():
-    """Hourly prices: the ~3.9 kWh the evening needs (17:00-24:00 at 0.30) is
-    bought as three quarter-hours at 0.15, not as whole hours of 5 kWh each
+    """Hourly prices: what the evening (17:00-24:00 at 0.30) and the night
+    after it need — the battery gets through the night (the premise, 31 Oct
+    2026) — is bought in quarter-hours at 0.15, not in whole hours of 5 kWh
     (the old whole-slot rounding would buy 5 or 10)."""
     config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10,
                        battery_discharge_min_pct=20, safe_power_kw=5,
@@ -784,9 +804,94 @@ def test_an_hourly_tariff_buys_a_quarter_not_the_whole_hour():
                      consumption_hourly_kwh={h: 0.5 for h in range(24)})
     plan = _plan(config, state)
     bought = simulate(config, plan, plan.bought_kwh)[2]
-    assert 3.0 <= bought <= 4.6, bought               # what the evening needs, at 0.15
+    assert 6.5 <= bought <= 8.5, bought               # evening + night, at 0.15
     assert all(st.price == 0.15 for st, a in zip(plan.horizon, plan.charging) if a)
 
+
+
+# ── the premise (maintainer, 31 Oct 2026) ──────────────────────────────────
+# The battery is kept above Min SOC and gets through the night, bought at the
+# cheapest moments that do it; a battery already below Min SOC is bought back
+# in the cheapest slots; Min SOC is never defended by charging at the dearest
+# hour (Known Issues 8m).  Read docs/EMS_LOGIC.md decision 0 before changing.
+
+def _card_31_oct(soc: float, hour: int = 21):
+    """The maintainer's card, 31 Oct 2026: ~90 kWh, Min SOC 45 %, Save Money,
+    ~30 kWh/day, 0.40-0.51 all day with a 0.397 dip at 13:00 tomorrow."""
+    def day(base, dip):
+        h = [base + 0.03 if x < 7 else (0.51 if 17 <= x < 22 else base) for x in range(24)]
+        for x in dip:
+            h[x] = 0.397
+        return [h[i // 4] for i in range(96)]
+    config = EMSConfig(grid_mode="from_grid", optimization_priority="cost",
+                       battery_capacity_kwh=90.8, battery_discharge_min_pct=45,
+                       efficiency=0.9, safe_power_kw=8, inverter_max_power_kw=10,
+                       consumption_est_kwh=30.2, scheduler_engine="optimal")
+    prof = {h: (0.9 if h < 7 else 1.4 if 17 <= h <= 22 else 1.2) for h in range(24)}
+    state = EMSState(battery_soc_pct=soc, slot_prices_today=day(0.44, []),
+                     slot_prices_tomorrow=day(0.43, [13]),
+                     pv_hourly_kwh=ems._synthesize_pv_hourly(3.4, 8, 17),
+                     pv_hourly_kwh_tomorrow=ems._synthesize_pv_hourly(8.9, 8, 17),
+                     pv_forecast_today=3.4, pv_forecast_tomorrow=8.9, pv_actual_today_kwh=3.4,
+                     consumption_hourly_kwh=prof, current_hour=hour, current_minute=0,
+                     sunrise_hour=8, sunset_hour=17)
+    return config, state
+
+
+def test_the_shortfall_price_is_the_dearest_price_ahead():
+    for seed in range(20):
+        config, state = situation(seed)
+        plan = _plan(config, state)
+        assert abs(plan.shortfall_price - shortfall_price(plan, config)) < 1e-9, seed
+
+
+def test_min_soc_is_kept_when_a_cheaper_hour_comes_first():
+    """The card showed the battery planned flat at Min SOC from 01:45 to
+    13:00, "the house on the grid" — which the inverter does not do (nothing
+    stops its self-use at Min SOC).  With hours ahead cheaper than the
+    dearest one after losses, the plan keeps the battery above Min SOC."""
+    config, state = _card_31_oct(50.0)       # reaches 45 % around 01:00
+    plan = _plan(config, state)
+    floor = config.battery_capacity_kwh * config.battery_discharge_min_pct / 100.0
+    assert sum(plan.plan_import_kwh) < 0.2, sum(plan.plan_import_kwh)
+    assert min(plan.planned_kwh) >= floor - 0.1
+    result = ems.calculate_schedule(config, state)
+    assert result.tomorrow_scheduled_slots, "it buys for tomorrow's evening and night"
+
+
+def test_a_battery_below_min_soc_is_bought_back_in_the_cheapest_slots():
+    """Min SOC raised to 45 % while the inverter's own floor stays lower: the
+    battery reads 30 %.  The plan starts from 30 % (it used to start from
+    45 % and never see the missing 14 kWh), and buys the gap back in the
+    cheapest slots — tomorrow's 0.397-0.43, not tonight's 0.44-0.51."""
+    config, state = _card_31_oct(30.0)
+    plan = _plan(config, state)
+    floor = config.battery_capacity_kwh * config.battery_discharge_min_pct / 100.0
+    assert plan.planned_kwh[0] < floor - 5, plan.planned_kwh[0]
+    bought = [(st.day, st.price) for st, a in zip(plan.horizon, plan.charging) if a]
+    assert bought and all(day == 1 and price <= 0.43 for day, price in bought), bought
+    assert plan.planned_kwh[-1] >= floor - 0.1, "back above Min SOC by the end"
+
+
+def test_below_min_soc_at_the_evening_peak_nothing_is_forced():
+    """Known Issues 8m (22 Oct 2026): the battery at 14.8 of a 15.0 kWh floor
+    at the evening peak — urgent recovery forced a charge at 0.453 and then
+    charge/idle every few minutes.  Below Min SOC the plan buys the gap back
+    in the cheapest slots (0.25 after midnight), not at the peak."""
+    prices = [0.45 if 68 <= i < 84 else (0.43 if i >= 84 else 0.25) for i in range(96)]
+    tomorrow = [0.25] * 96
+    config = EMSConfig(grid_mode="from_grid", optimization_priority="self_consumption",
+                       battery_capacity_kwh=60.0, battery_discharge_min_pct=25,
+                       efficiency=0.9, safe_power_kw=8, inverter_max_power_kw=10,
+                       consumption_est_kwh=30.0, scheduler_engine="optimal")
+    state = EMSState(battery_soc_pct=24.7, slot_prices_today=prices,
+                     slot_prices_tomorrow=tomorrow, pv_hourly_kwh={},
+                     current_hour=20, current_minute=10,
+                     consumption_hourly_kwh={h: 3.0 if 17 <= h < 21 else 1.0 for h in range(24)})
+    plan = _plan(config, state)
+    assert not any(a and st.day == 0 and st.price >= 0.43
+                   for st, a in zip(plan.horizon, plan.charging))
+    assert any(plan.charging), "it does buy the gap back"
 
 # ── the reports that made this ─────────────────────────────────────────────
 
@@ -866,7 +971,9 @@ def test_the_battery_never_drains_faster_than_the_inverter_delivers():
     prev = plan.start_kwh
     for st, after, bought in zip(plan.horizon, plan.planned_kwh, plan.bought_kwh):
         drained = prev + st.pv_kwh + bought * config.efficiency - after
-        assert drained <= config.inverter_max_power_kw * st.hours + 0.05, (st.day, st.start_h)
+        # + one lattice point (0.069 kWh at this size): the planner's own
+        # rounding, carried from midnight — not a faster drain.
+        assert drained <= config.inverter_max_power_kw * st.hours + 0.1, (st.day, st.start_h)
         prev = after
     result = ems.calculate_schedule(config, state)
     assert "runs empty at tomorrow 04" not in result.schedule_reason, result.schedule_reason
