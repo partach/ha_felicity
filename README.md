@@ -10,17 +10,32 @@ Additionally includes a full Energy Management System to Buy and Sell electricit
 With the right settings the software makes sure you pay the best energy prices or use no grid if not needed.
 
 For this integration to work you need to have a wired modbus connection to your inverter either [via this USB dongle](https://www.amazon.nl/Industrial-Converter-Lightningproof-Resettable-Protection/dp/B0B87YJLJQ?source=ps-sl-shoppingads-lpcontext&ref_=fplfs&psc=1&smid=A2FQD9ZIAONBLW) or via something [like this](https://www.kiwi-electronics.com/nl/rs485-to-rj45-ethernet-tcp-ip-to-serial-rail-mount-support-20109?country=NL&utm_term=20109&gad_source=1&gad_campaignid=19763718639&gbraid=0AAAAADuMvucKntnrNZrVkZAHDgps81zYC&gclid=Cj0KCQiAx8PKBhD1ARIsAKsmGbeFZaWC_S38eFyu1NtZ0SP4zyLWwMWG70BRz6Ur1nmBymMCxvSR1_kaAmR9EALw_wcB).
-Currently supports IVGM / TREX types: 
-- The T-REX 5 and 10K series with H or L (High / Low Voltage batteries) with 1 or 3 Phases (P1 or P3).<br>
-Letters are in the type indication like  T-REX-**10**K**H**P**3**G01<br>
-Felicity's protocol document for this series is titled **IVGM5048 / IVGM10048**: an IVGM5048, IVGM6048 or IVGM10048 is set up as the T-REX-5K, T-REX-6K or T-REX-10K (the setup list shows both names). Not to be confused with the IVGM 8K / 15K / 20K below, which use a different register layout.
-- The T-REX 25K and 50K range is now released with v0.8.0 (has complete new register setup).
-- The IVGM 8K / 15K / 20K range (provisional — see `docs/IVGM_SUPPORT_GAPS.md`).
-- The IVAM6048P1G1 (6 kW) — **monitoring only**: its protocol defines no setting registers, so the EMS cannot control it (see `docs/IVAM_SUPPORT_GAPS.md`).
-- The IVGM100600 (10 kW, three-phase, high-voltage battery) — **monitoring only, provisional, at your own risk**: it answers like a T-REX-10K but is not register-identical, and every EMS voltage setting is for a 48 V battery, so nothing is written to it.
-- Others with exactly similar register configurations as above types, just be aware you chose the right configuration matching your type.
+## Supported models
 
+| Model (setup list) | Status | Notes |
+|---|---|---|
+| **T-REX-10K-P3G01 / IVGM10048** | ✅ Supported — monitoring + EMS | Field-proven; register map checked against Felicity's protocol document and a register dump. |
+| **T-REX-5K-P1G01 / IVGM5048** | ✅ Supported — monitoring + EMS | Map checked against Felicity's protocol document. |
+| **T-REX-6KLP1G01 / IVGM6048** | ✅ Supported — monitoring + EMS | Same registers as the 5K, 6 kW rating. |
+| **T-REX-25KHP3G01** | ✅ Supported — monitoring + EMS | Field-proven. |
+| **T-REX-50KHP3G01** | ✅ Supported — monitoring + EMS | Power readings corrected from a user report; the scale of its power *settings* is not yet measured. |
+| **IVGM-8KLP1G1** | 🧪 Provisional | Built from Felicity's protocol document; no 8K has sent a register dump yet. Selling is unproven. See `docs/IVGM_SUPPORT_GAPS.md`. |
+| **IVGM-15KLP3G1**, **IVGM-20KLP3G1** | 🧪 Provisional | Power scale, time format and weekdays confirmed by two user dumps. Selling is unproven. See `docs/IVGM_SUPPORT_GAPS.md`. |
+| **IVAM6048P1G1** | 👁 Monitoring only | Its protocol has no setting registers, so the EMS cannot control it and nothing is ever written. See `docs/IVAM_SUPPORT_GAPS.md`. |
+| **IVGM100600** (10 kW, 3-phase, high-voltage battery) | 👁 Monitoring only, provisional — **at your own risk** | Reads like a T-REX-10K but is not register-identical (issue #206). Nothing is ever written: the EMS voltage settings are for 48 V batteries. |
 
+The T-REX 5/10K series comes with H or L (high / low voltage battery) and 1 or 3 phases (P1 / P3) — the letters in the type, e.g. T-REX-**10**K**H**P**3**G01. Felicity's protocol document for this series is titled **IVGM5048 / IVGM10048**: an IVGM5048, IVGM6048 or IVGM10048 is set up as the T-REX-5K, T-REX-6K or T-REX-10K. Not to be confused with the IVGM 8K / 15K / 20K, which use a different register layout.
+
+Another model with the same register layout as one above may work too — choose the matching configuration carefully.
+
+### 🙏 Help add or verify your model: send in your diagnostics
+
+Every scaling fix so far came from a user's register dump. If your model is provisional, monitoring only, not listed, or shows a value that looks wrong, please send a diagnostics file:
+
+1. **Settings → Devices & services → HA-Felicity → ⋮ → Download diagnostics.**
+2. Open an [issue](https://github.com/partach/ha_felicity/issues) and attach the file, with the exact model from the inverter's label (a photo helps) and, if you can, a screenshot of the Felicity app taken at the same moment.
+
+**The diagnostics download only reads registers — not a single register is written to your inverter.** It reads the registers the integration knows plus every other address in the model's protocol document, and shows the raw values next to how they are decoded. Your host address is removed from the file; it does contain the inverter's serial number, which you may blank out before posting.
 
 <p align="center">
 <img src="https://github.com/partach/ha_felicity/blob/main/pictures/T-REX-10KLP3G01.png" width="200" style="vertical-align: middle; margin: 0 10px;"/>
