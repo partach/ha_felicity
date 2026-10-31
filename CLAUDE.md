@@ -507,7 +507,9 @@ integration loading (no wheel on 32-bit ARM).  Pinned by
 "MILP refuses to run on my HA" (asked before the exact planner was built;
 cherry-picked from the unmerged branch `claude/nice-brahmagupta-y7jxse` on
 31 Oct 2026).**  After updating: select MILP, restart HA once, check
-`milp_status` → `state: active, solver: HiGHS`.
+`milp_status` → `state: active, solver: HiGHS`.  **Confirmed running on the
+maintainer's HA OS machine (x86_64, Python 3.14) on 31 Oct 2026, after PR
+#233.**
 
 **Diagnosing "Greedy (fallback)"** (`milp.milp_status()`): the engine can fail
 four distinct ways — pulp missing, no runnable solver, the solver binary absent
