@@ -88,9 +88,9 @@ SLOW_POLL_FACTOR = 2
 CONSUMPTION_HISTORY_DAYS = 7
 MIN_HOURS_FOR_HISTORY_DAY = 20
 
-# Daily mean grid prices: this week's typical price, at which the exact
-# planner values energy kept in the battery beyond the night (so the cheapest
-# day of the week fills it).  Needs a few days before it means anything.
+# Daily mean grid prices: this week's typical price.  Greedy and MILP buy
+# extra energy for the coming days only below it after losses (so the cheapest
+# day of the week fills the battery).  Needs a few days before it means anything.
 PRICE_HISTORY_DAYS = 7
 MIN_PRICE_HISTORY_DAYS = 3
 
@@ -1198,7 +1198,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             )).lower() in ("on", "true", "1"),
             flexible_loads=self._build_flex_load_configs(),
             ev_charge_strategy=str(opts.get("ev_charge_strategy", "smart")),
-            scheduler_engine=str(opts.get("scheduler_engine", "optimal")),
+            scheduler_engine=str(opts.get("scheduler_engine", "greedy")),
         )
 
         # What did the previous schedule predict the SOC would be at this slot?
@@ -1273,7 +1273,6 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             sunrise_hour=self.sunrise_hour,
             sunset_hour=self.sunset_hour,
             predicted_soc_pct=predicted_soc,
-            charging_now=self._current_energy_state == "charging",
             price_reference_eur_kwh=self.price_reference,
         )
 
@@ -1298,11 +1297,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             json.dumps(self.slot_overrides, sort_keys=True) if self.slot_overrides else "",
             safe_power_kw,
             opts.get("ev_charge_strategy", "smart"),
-            opts.get("scheduler_engine", "optimal"),
-            # The exact planner decides per quarter-hour (also inside an
-            # hourly price slot) and holds the running step (charging_now).
-            now.minute // 15,
-            self._current_energy_state == "charging",
+            opts.get("scheduler_engine", "greedy"),
             self.price_reference,
         ))
         if (input_hash == self._last_schedule_input_hash
@@ -1409,7 +1404,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # Capture WHY when the MILP engine is selected but greedy is running.
         # The reason previously lived only in a one-off WARNING that has usually
         # rotated away by the time anyone asks "why does my card say fallback?".
-        if opts.get("scheduler_engine", "optimal") == "milp":
+        if opts.get("scheduler_engine", "greedy") == "milp":
             self.milp_status = _milp_status_snapshot()
         else:
             self.milp_status = None
@@ -2400,8 +2395,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
     def price_reference(self) -> float | None:
         """This week's typical grid price: the mean of the daily mean prices
         of the last PRICE_HISTORY_DAYS days (today included).  None until
-        MIN_PRICE_HISTORY_DAYS days are known — the planner then values energy
-        beyond the night at nothing, as before."""
+        MIN_PRICE_HISTORY_DAYS days are known — nothing is then stored for the
+        coming days beyond what the plan already buys."""
         oldest = (datetime.now().date()
                   - timedelta(days=PRICE_HISTORY_DAYS - 1)).strftime("%Y-%m-%d")
         means = [e["mean"] for e in self._daily_price_history
@@ -3850,14 +3845,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                             _commit_opts = self.config_entry.options
                             charge_max_pct = _commit_opts.get("battery_charge_max_level", 100)
                             commit_grid_mode = _commit_opts.get("grid_mode", "off")
-                            # Not for the exact planner: starting a charge is
-                            # priced in its plan and a running charge carries on,
-                            # so it stops exactly when the plan has enough — this
-                            # hold would buy up to 15 min more than planned.
-                            planner_engine = str(self.scheduler_active).startswith("optimal")
                             if (self._current_energy_state == "charging"
                                     and desired_state == "idle"
-                                    and not planner_engine
                                     and commit_grid_mode in ("from_grid", "both")
                                     and battery_soc is not None
                                     and battery_soc < charge_max_pct

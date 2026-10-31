@@ -1972,7 +1972,7 @@ class FelicityEMSCard extends LitElement {
       : "";
     const operationalMode = this._getState("operational_mode") || null;
     const schedulerActive = this._getAttr("schedule_status", "scheduler_active") || null;
-    const schedulerEngine = this._getState("scheduler_engine") || "optimal";
+    const schedulerEngine = this._getState("scheduler_engine") || "greedy";
     // Rule 1 power limit + grid current (for throttle display in status bar)
     const powerLevelKw = this._getNumericState("power_level");
     const safeMaxKw = this._getNumericState("safe_max_power") != null
@@ -2215,9 +2215,9 @@ class FelicityEMSCard extends LitElement {
             </div>
             <div class="status-bar">
               ${operationalMode ? html`<span class="status-chip mode">${operationalMode}</span>` : ''}
-              ${schedulerEngine !== "optimal" || (schedulerActive && schedulerActive !== "optimal") ? html`
-                <span class="status-chip engine ${schedulerActive && schedulerActive.endsWith('_fallback') ? 'fallback' : ''}"
-                      title="${schedulerEngine === "milp" ? this._milpTooltip() : "Scheduler engine"}">${this._engineLabel(schedulerActive || schedulerEngine)}</span>
+              ${schedulerEngine === "milp" ? html`
+                <span class="status-chip engine ${schedulerActive === 'greedy_fallback' ? 'fallback' : ''}"
+                      title="${this._milpTooltip()}">${this._engineLabel(schedulerActive || schedulerEngine)}</span>
               ` : ''}
               ${safeMaxKw != null ? html`
                 <span class="status-chip power ${isThrottled ? 'throttled' : ''}"
@@ -2294,9 +2294,7 @@ class FelicityEMSCard extends LitElement {
   // The engine that actually planned (schedule_status.scheduler_active).
   _engineLabel(active) {
     const labels = {
-      optimal: "Exact planner",
-      optimal_fallback: "Exact planner (MILP fallback)",
-      greedy: "Greedy (legacy)",
+      greedy: "Greedy",
       greedy_fallback: "Greedy (fallback)",
       milp: "MILP",
     };
@@ -2304,9 +2302,9 @@ class FelicityEMSCard extends LitElement {
   }
 
   _renderSchedulerEngineControl() {
-    const current = this._getState("scheduler_engine") || "optimal";
-    const labels = { optimal: "Exact planner (default)", greedy: "Greedy (legacy)", milp: "Optimizer (MILP)" };
-    const options = ["optimal", "greedy", "milp"];
+    const current = this._getState("scheduler_engine") || "greedy";
+    const labels = { greedy: "Greedy (default)", milp: "Optimizer (MILP)" };
+    const options = ["greedy", "milp"];
     return html`
       <div class="control-item">
         <span class="control-label">Scheduler</span>

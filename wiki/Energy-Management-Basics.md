@@ -18,40 +18,24 @@ When the current price is below the threshold, the system charges. When above, i
 
 ### Auto Mode (Scheduler)
 
-In auto mode the integration re-plans every poll (10 s) whenever an input changed — SOC, prices, forecast, a new quarter hour — and executes the plan. Which engine plans depends on the grid mode and the **Scheduler Engine** setting:
+In auto mode the integration re-plans every poll (10 s) whenever an input changed — SOC, prices, forecast, a new slot — and executes the plan. Two engines, chosen with **Scheduler Engine**:
 
-| Grid Mode | Engine |
+| Engine | What it is |
 |---|---|
-| From Grid | **Exact planner** (`optimal`, the default) — or greedy / MILP if you select them |
-| To Grid, Both | Greedy selector (or MILP if you select it) |
+| **Greedy** (default) | Works out the deficit (what the battery needs to stay above Min SOC through the night), buys it in the **cheapest known slots** (today, plus tomorrow once its prices are out, ~13:00), and validates the plan against the battery's limits. No extra software needed. |
+| **MILP** | One optimisation over today + tomorrow with a solver (HiGHS or CBC). Better at cross-day trading (Trader). Falls back to greedy when no solver runs — see *MILP will not load* in Diagnostics and Troubleshooting. |
 
 All advanced features below only apply in auto mode.
 
-## The Exact Planner (From Grid, default)
+### At Min SOC: the house runs on the grid
 
-The planner solves one cost model exactly, in 15-minute steps, from now to the end of the last day with known prices (today, or today + tomorrow once tomorrow's prices are published, ~13:00):
+When the battery reaches its minimum, the inverter feeds the house from the grid — that is the inverter's own behaviour at its minimum SOC (set in the Felicity app). The EMS does **not** force a charge at that moment's price: the missing energy becomes part of the deficit and is bought back in the cheapest known slots. (Until 31 Oct 2026 both engines forced an immediate charge below Min SOC — "urgent recovery". On 22 Oct 2026 it bought the evening peak and switched the charge on and off every few minutes for hours.)
 
-- The battery covers the house and the sun fills it; sun beyond a full battery is lost.
-- Below the **discharge floor** the house runs on the grid at that moment's price.
-- In each step the battery may take any amount from nothing up to the **Power Level** (less what the PV already uses of the inverter's rating). Stored grid energy loses `1 − efficiency`. **Battery Cycle Cost** (at least 0.05 €/kWh for Battery Care) is charged per stored kWh.
-- The battery can never supply the house faster than the inverter's rating.
-- **After the horizon**, the battery must carry the house from midnight to sunrise. Each kWh short is priced at that night's grid price.
-- **This week's price**: the integration remembers the average price of each of the last 7 days. Energy kept for the next day (as much as that day will use beyond its sun) is worth this week's average price after losses. So the **cheapest day of the week fills the battery** — grid energy is stored when it costs less than about 81 % (efficiency²) of the week's average — while an ordinary day buys only what the night needs. The weekly price needs 3 days of history; at startup it is rebuilt from Home Assistant's long-term statistics of your price entity when those exist.
-- Starting a charge costs a tiny amount (0.05 kWh worth), so the plan never starts the inverter for a sliver and never flips on/off between two nearly equal prices.
-- Equal cost → charge as early and as much as possible.
+Note: the EMS **Min SOC** setting is a planning value. The integration does not write it to the inverter as a stop, so while the battery is not charging the inverter's self-use keeps feeding the house down to **its own** minimum. If you want a reserve the battery really keeps, set the inverter's own minimum in its app.
 
-What follows from that, without any extra rule:
-- It buys only when that is cheaper (after losses) than the grid energy it replaces, and only in the cheapest such moments.
-- It never buys what tomorrow's sun delivers for free.
-- A battery that lasts until a cheaper moment, or until the sun, waits.
-- Today vs tomorrow is decided by tonight's real grid price.
-- On an hourly tariff it can buy part of an hour; the coordinator stops as soon as the plan has what it needs.
+### This week's price
 
-The card's reason line tells you what the plan decided, e.g. *"Charging 3 today slot(s) at 0.081–0.094/kWh; without them the battery runs empty at 19:15 (saves ~1.20)"* or *"Battery runs empty at 20:00 — buying those 6.3 kWh live (up to 0.450/kWh) is cheaper than charging earlier after losses"*. When it fills the battery for the coming days it adds *"stores cheap energy for the coming days (this week's average 0.255/kWh)"*.
-
-### Below the floor
-
-When the battery is at (or a hair under) its floor, the inverter runs the house from the grid. The planner charges then only if that is cheaper than buying the same energy live. It does **not** force a charge just because SOC is under the floor. (The older engines do — "urgent recovery" — see below.)
+The integration remembers the average price of each of the last 7 days (rebuilt at startup from Home Assistant's long-term statistics of your price entity, when those exist; needs 3 days). Beyond what the plan needs, energy is bought **for the coming days** only from slots cheaper than about 81 % (efficiency²) of this week's average, and only as much as the battery, the sun and tomorrow's use leave room for. So the **cheapest day of the week fills the battery**, an ordinary day buys only what it needs. Both engines, From Grid only. The reason line then adds *"store cheap energy for the coming days (this week's average 0.233/kWh)"*.
 
 ## Operating Modes
 
@@ -62,7 +46,11 @@ When the battery is at (or a hair under) its floor, the inverter runs the house 
 
 ### From Grid Mode (Buy Only)
 
-**Goal**: charge from the grid only when it saves money. Planned by the exact planner (above) by default.
+**Goal**: keep the battery above Min SOC and through the night, charging from the grid at the cheapest possible moments.
+
+1. **Calculate the deficit**: how much energy is needed to reach the reserve target (Min SOC + what the night needs), accounting for expected PV.
+2. **Select cheapest charge slots**: from today's remaining slots (and tomorrow's once its prices are known), the cheapest ones that cover the deficit.
+3. **Validate**: simulate the battery forward — drop charge slots that would overflow.
 
 ### To Grid Mode (Sell Only)
 
@@ -96,11 +84,11 @@ The night need is your consumption from midnight to sunrise, summed hour by hour
 
 ### Fixed (reserve_target_pct > 0)
 
-The fixed percentage can only **raise** the reserve, never lower it: `max(fixed, dynamic)`. In the planner it raises the night need, and with tomorrow's prices known it also applies tonight. It is not a hard per-quarter floor — the planner reaches it from the cheapest moments, not at the evening peak.
+The fixed percentage can only **raise** the reserve, never lower it: `max(fixed, dynamic)`.
 
 ## Consumption Profile
 
-The planner uses a **per-hour consumption profile** built from the last 7 days of Home Assistant's statistics for your load meter (the inverter's load energy sensor, or a meter you pick as *consumption override entity* in the options flow — a real P1/energy meter is most accurate). It is rebuilt at every start.
+The EMS uses a **per-hour consumption profile** built from the last 7 days of Home Assistant's statistics for your load meter (the inverter's load energy sensor, or a meter you pick as *consumption override entity* in the options flow — a real P1/energy meter is most accurate). It is rebuilt at every start.
 
 The EMS card shows an amber chip when the profile is **flat** (no history yet) or **partial**. Impossible hours (more than the house can physically draw) are left out.
 
@@ -135,7 +123,7 @@ Click slots on the EMS card's chart to force them: in From Grid every picked slo
 | **EMS Strategy** | save_money / self_sufficiency / battery_care / trader / custom | save_money | Sets Grid Mode + Optimization Priority |
 | **Grid Mode** | off / from_grid / to_grid / both | off | Main EMS switch |
 | **Price Mode** | manual / auto | manual | Threshold-based or scheduler |
-| **Scheduler Engine** | optimal / greedy / milp | optimal | `optimal` = exact planner (From Grid). `greedy` = legacy. `milp` = solver (falls back to the planner when no solver is installed) |
+| **Scheduler Engine** | greedy / milp | greedy | `greedy` = cheapest-slot selector (default). `milp` = solver (falls back to greedy when no solver runs) |
 | **Price Threshold Level** | 1-10 | 5 | Manual mode price point |
 | **Power Level** | 1 - max kW (model) | 5 | Charge/discharge power; the plan always assumes this level |
 | **Battery Charge Max Level** | 30-100% | 100 | SOC ceiling for grid charging |
@@ -203,11 +191,7 @@ A charge that is running at midnight keeps running: on TREX-5/6/10 the rule's da
 
 ### Charge Execution
 
-A scheduled charge slot is executed as planned — there is no "wait for a cheaper slot" at run time; the plan already chose the cheapest moments. With the exact planner the charge stops as soon as the plan has what it needs (also part-way through a slot). The greedy/MILP engines hold a started charge for at least 15 minutes or +5% SOC, to avoid on/off toggling.
-
-### Urgent Recovery (greedy / MILP only)
-
-With the greedy or MILP engine, a SOC below the discharge floor forces an immediate charge. The exact planner does not do this (see *Below the floor* above): at the evening peak it bought at the dearest price and, with SOC hovering at the floor, toggled the charge on and off every few minutes.
+A scheduled charge slot is executed as planned — there is no "wait for a cheaper slot" at run time; the plan already chose the cheapest moments. A started charge is held for at least 15 minutes or +5% SOC, to avoid on/off toggling.
 
 ### Anti-Conflict Guard
 

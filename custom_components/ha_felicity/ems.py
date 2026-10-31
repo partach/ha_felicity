@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import logging
 import math
-from array import array
-from collections import deque
 from dataclasses import dataclass, field, replace
 
 _LOGGER = logging.getLogger(__name__)
@@ -150,7 +148,7 @@ class EMSConfig:
     # "milp" (the solver in milp.py).  When "milp", calculate_schedule tries
     # the MILP first and silently falls back to greedy on any failure
     # (pulp missing, infeasible, timeout).
-    scheduler_engine: str = "optimal"
+    scheduler_engine: str = "greedy"
     # NOTE: battery State of Health (SOH) is applied by the coordinator
     # before constructing this config — it scales battery_capacity_kwh
     # by the SOH factor.  ems.py treats the capacity as already-effective.
@@ -181,11 +179,6 @@ class EMSState:
     # has drained the battery faster than predicted.  The difference is fed
     # into the deficit as extra energy to recover.
     predicted_soc_pct: float | None = None
-    # Whether the inverter is charging right now (the coordinator's state).
-    # The exact planner keeps the running step as it is unless changing it
-    # is worth more than OPTIMAL_SWITCH_COST — a plan re-made every poll must
-    # not toggle the inverter over a fraction of a cent.  None = unknown.
-    charging_now: bool | None = None
     # Last successful Modbus read timestamp (epoch seconds).  Informational —
     # the staleness check lives in the coordinator, which refuses to re-plan
     # when reads have failed for too long.
@@ -202,10 +195,11 @@ class EMSState:
     sunrise_hour: float | None = None
     sunset_hour: float | None = None
     # What a kWh from the grid typically costs this week (€/kWh): the mean of
-    # the last days' prices, kept by the coordinator.  The exact planner values
-    # energy left in the battery beyond the night's need at this price after
-    # the round-trip loss, so a day clearly cheaper than the week fills the
-    # battery; None (no history yet) keeps that energy worth nothing.
+    # the last days' daily mean prices, kept by the coordinator.  Greedy and
+    # MILP (from_grid) buy energy for the coming days beyond what the plan
+    # already needs only when it is cheaper than this after the round-trip
+    # loss, so the cheapest day of the week fills the battery
+    # (`_store_for_coming_days`).  None (no history yet) stores nothing extra.
     price_reference_eur_kwh: float | None = None
 
 
@@ -224,7 +218,7 @@ class ScheduleResult:
     tomorrow_precharge: float = 0.0
     status: str = "off"
     schedule_reason: str = ""
-    scheduler_active: str = "greedy"  # greedy | milp | optimal | greedy_fallback | optimal_fallback
+    scheduler_active: str = "greedy"  # "greedy" | "milp" | "greedy_fallback"
     soc_trajectory: list[float] = field(default_factory=list)
     tomorrow_scheduled_slots: dict[int, str] = field(default_factory=dict)
     tomorrow_soc_trajectory: list[float] = field(default_factory=list)
@@ -236,9 +230,6 @@ class ScheduleResult:
     # forecast surplus; elsewhere its default current.
     load_currents: dict[int, dict[int, int]] = field(default_factory=dict)
     tomorrow_load_currents: dict[int, dict[int, int]] = field(default_factory=dict)
-    # True when soc_trajectory / tomorrow_soc_trajectory already come from the
-    # exact planner's own simulation of exactly this schedule.
-    plan_trajectory_exact: bool = False
 
 
 @dataclass
@@ -1616,11 +1607,10 @@ def _topoff_horizon_need_kwh(
     conservative.  With no tomorrow forecast the credit is 0 and the top-off
     behaves as before, bounded only by the battery's two-day runway.
 
-    This bounds the DISCRETIONARY top-off only.  The survival deficit and the
-    reserve target are computed separately and are never reduced by it, so
-    the overnight floor — and the urgent-recovery path below it — are
-    unaffected: the cap can lower what we buy for comfort, never what we buy
-    to survive the night.
+    This bounds the DISCRETIONARY top-off only (and the week's-price store).
+    The survival deficit and the reserve target are computed separately and
+    are never reduced by it: the cap can lower what we buy for comfort, never
+    what we buy to survive the night.
     """
     hour = max(0, min(23, int(current_hour)))
     if consumption_hourly_kwh:
@@ -1641,6 +1631,47 @@ def _topoff_horizon_need_kwh(
             - (max(0.0, pv_remaining_today) + pv_credit)
             - usable_now)
     return max(0.0, need)
+
+
+def _store_for_coming_days(config: EMSConfig, state: EMSState) -> tuple[float, float]:
+    """The week's price memory: (price bar, kWh the next day can use).
+
+    A kWh bought now and used later is worth what the grid typically costs —
+    this week's average, ``state.price_reference_eur_kwh`` — after the
+    round-trip loss.  So energy is stored for the coming days only from slots
+    priced at or below ``reference × eff² − cycle cost`` (the same round-trip
+    bar the self-consumption top-off and the MILP terminal value use, with the
+    week's average instead of today's).  An ordinary day clears no slot; the
+    cheapest day of the week fills the battery (maintainer, 24 Oct 2026: "keep
+    track of the weekly cost and charge at the cheapest part of the week").
+
+    The kWh cap is what the next day can still use after its sunrise, less the
+    sun expected then (tomorrow's forecast at ``_TOMORROW_PV_TRUST`` — the best
+    guess for the day after too): a kWh for a day the sun covers is spilled.
+
+    from_grid only (Save Money, Self-Sufficiency, Battery Care); returns
+    (0, 0) without a weekly price.  Shared by greedy and MILP.
+    """
+    ref = state.price_reference_eur_kwh
+    if config.grid_mode != "from_grid" or ref is None or ref <= 0:
+        return 0.0, 0.0
+    eff = config.efficiency
+    cycle_cost = config.battery_cycle_cost_eur_kwh
+    if config.optimization_priority == "longevity":
+        cycle_cost = max(cycle_cost, 0.05)
+    bar = ref * eff * eff - cycle_cost
+    if bar <= 0:
+        return 0.0, 0.0
+    if state.sunrise_hour is not None:
+        sunrise = max(0, min(23, math.ceil(state.sunrise_hour)))
+    else:
+        sunrise = _sunset_sunrise_hours(
+            state.pv_hourly_kwh_tomorrow or state.pv_hourly_kwh)[1]
+    hourly = state.consumption_hourly_kwh or {}
+    flat = config.consumption_est_kwh / 24.0
+    day_use = sum(hourly.get(h, flat) for h in range(sunrise, 24))
+    sun = _TOMORROW_PV_TRUST * max(0.0, state.pv_forecast_tomorrow or 0.0)
+    return bar, max(0.0, day_use - min(sun, day_use))
 
 
 def select_unified_charge_slots(
@@ -1667,8 +1698,14 @@ def select_unified_charge_slots(
     minutes_per_slot: float | None = None,
     pv_hourly_kwh_tomorrow: dict[int, float] | None = None,
     consumption_hourly_kwh: dict[int, float] | None = None,
+    store_price_bar: float = 0.0,
 ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], float]:
     """Select charge slots from a unified today+tomorrow pool.
+
+    store_price_bar (> 0 when the coordinator knows this week's price, see
+    `_store_for_coming_days`): after the deficit, today's slots at or below it
+    are bought for the coming days, in any priority, bounded by the same
+    horizon need as the self-consumption top-off.
 
     reserve_target_pct / optimization_priority shape the *tomorrow*
     reserve target the same way they shape today's (fixed floor and
@@ -1991,11 +2028,25 @@ def select_unified_charge_slots(
     # done its work.  Physical headroom alone is not a reason to buy — on a
     # big-solar-tomorrow day it filled the battery with grid energy the
     # forecast was about to supply free.
+    #
+    # The week's price memory adds a second bar, in ANY priority: a slot at or
+    # below `store_price_bar` (this week's average after the round-trip loss)
+    # is bought for the coming days — but never when tomorrow has a slot that
+    # is cheaper still (tomorrow's own plan buys there).
+    ceilings = []
     if optimization_priority == "self_consumption":
-        round_trip = efficiency * efficiency
         ref_prices = [s[0] for s in (today_pool + tomorrow_pool) if s[0] >= 0]
-        if ref_prices and effective_per_slot > 0:
-            ceiling = round_trip * (sum(ref_prices) / len(ref_prices))
+        if ref_prices:
+            ceilings.append(efficiency * efficiency * (sum(ref_prices) / len(ref_prices)))
+    if store_price_bar > 0:
+        week_bar = store_price_bar
+        tmr_prices = [s[0] for s in tomorrow_pool]
+        if tmr_prices:
+            week_bar = min(week_bar, min(tmr_prices))
+        ceilings.append(week_bar)
+    if ceilings:
+        if effective_per_slot > 0:
+            ceiling = max(ceilings)
             committed = sum(_slot_charge_energy(s) for s in today_selected)
             room = max(0.0, headroom - committed)
 
@@ -2040,7 +2091,7 @@ def select_unified_charge_slots(
                 added_kwh += e
             if added_kwh > 0:
                 _LOGGER.info(
-                    "Self-consumption top-off: +%.1f kWh from cheap slots "
+                    "Top-off for later use: +%.1f kWh from cheap slots "
                     "(<= %.4f/kWh) toward max SOC (room=%.1f kWh)",
                     added_kwh, ceiling, room,
                 )
@@ -2366,6 +2417,7 @@ def _run_milp_or_none(
     deviation = _consumption_deviation_kwh(
         state, current_kwh, reserve_target, config.battery_capacity_kwh)
     milp_current_kwh = max(0.0, current_kwh - deviation)
+    store_bar, store_cap = _store_for_coming_days(config, state)
 
     milp_result = milp.solve_schedule(
         config, state,
@@ -2376,6 +2428,12 @@ def _run_milp_or_none(
         minutes_per_slot=minutes_per_slot,
         reserve_target=reserve_target,
         pv_confidence=pv_confidence,
+        # The week's price memory: energy beyond the reserve, up to what the
+        # next day can use, is worth this week's price after the loss — the
+        # same bar greedy buys at (store_bar = reference × eff² − cycle;
+        # per stored kWh that is store_bar / eff).
+        store_value=store_bar / config.efficiency if store_bar > 0 else 0.0,
+        store_cap_kwh=store_cap,
     )
     if milp_result is None:
         return None
@@ -2409,6 +2467,14 @@ def _run_milp_or_none(
         parts.append(f"selling {n_sell}+{tmr_sell} slot(s)")
     if parts:
         result.schedule_reason = f"MILP plan: {', '.join(parts)}"
+        tmr_prices = state.slot_prices_tomorrow or []
+        bought = charge_prices + [tmr_prices[i] for i, v in tomorrow_scheduled.items()
+                                  if v == "charge" and i < len(tmr_prices)
+                                  and tmr_prices[i] is not None]
+        if store_bar > 0 and any(p <= store_bar for p in bought):
+            result.schedule_reason += (
+                f"; stores cheap energy for the coming days (this week's "
+                f"average {state.price_reference_eur_kwh:.3f}/kWh)")
     else:
         result.schedule_reason = "MILP plan: no grid action needed"
     return result
@@ -2530,679 +2596,6 @@ def _reduce_charge_spill(
             ", ".join(f"{a}→{b}" for a, b in moved), base_cost,
         )
     return scheduled
-
-
-# ── Exact planner (the "optimal" engine) ─────────────────────────────────────
-#
-# One cost model, solved exactly, instead of a stack of heuristics.  Every
-# grid-charge decision follows from a single question: what does the house's
-# energy cost over the whole price horizon, with and without this slot?
-#
-#   * Horizon: the current slot to the end of the last day with prices
-#     (today, or today + tomorrow once tomorrow's prices are published).
-#   * Each slot is either a full-power charge slot or not — exactly what the
-#     inverter carries out (rule 1 charges at the Power Level until max SOC).
-#   * The battery covers the house; PV fills it (surplus beyond full is
-#     spilled/exported); below the discharge floor the house runs on the grid
-#     at that slot's price ("passthrough").
-#   * Grid energy bought into the battery loses (1 - efficiency).
-#   * After the horizon the battery must still carry the house through the
-#     following night until the sun takes over again; every kWh it is short
-#     then is bought at the price of the last known night.  Energy beyond that
-#     need has no value — that is what stops buying "to fill the battery".
-#
-# Consequences, all without a special rule: a slot is bought only when it is
-# cheaper (after losses) than the grid energy it displaces later, and only
-# the cheapest such slots; energy the sun will deliver free is not bought;
-# a battery that lasts until a cheaper slot or until the sun waits; tomorrow
-# is planned in the same pass, from tonight's real end state.
-#
-# Solved by dynamic programming over the state of charge on a fine lattice
-# (no solver dependency, deterministic).  Among plans of equal cost the
-# earliest charging wins (fill as soon as possible — maintainer decision).
-
-OPTIMAL_MAX_STATES = 1500      # lattice points between floor and capacity
-OPTIMAL_MIN_STATES = 500
-OPTIMAL_TIE_TOL = 1e-9         # relative: costs closer than this are equal
-#: What starting a charge must be worth, as kWh at the horizon's mean price
-#: (~1 ct at 0.25 €/kWh; a quantity of energy, so only price RATIOS matter).
-#: Part of the cost model: a plan re-made every poll must not start the
-#: inverter for a sliver, nor stop and restart it over rounding between two
-#: near-equal prices.  A running charge carries on at no such cost (the
-#: coordinator passes charging_now).
-OPTIMAL_START_COST_KWH = 0.05
-#: A kWh below Min SOC, or short of what the night needs, costs this many
-#: times the dearest price ahead (plus the cycle cost): more than charging can
-#: ever cost even at the lowest efficiency the setting allows (0.70: price /
-#: 0.7 + cycle), so the plan never accepts a shortfall it can charge away —
-#: a hard goal, but finite, so a goal out of reach is missed by as little as
-#: possible.  No steeper: it also multiplies the lattice's rounding.
-#: Premise, maintainer 31 Oct 2026.
-OPTIMAL_SHORTFALL_FACTOR = 2.0
-SELF_CONSUMPTION_RESERVE_BOOST = 1.25
-
-
-@dataclass
-class _PlanSlot:
-    """One decision step of the plan: at most 15 minutes, inside one price slot."""
-
-    day: int            # 0 = today, 1 = tomorrow
-    idx: int            # price-slot index within its day
-    price: float | None
-    hour: int
-    start_h: float      # clock time the step starts (h, within its day)
-    hours: float        # step length (h)
-    pv_kwh: float       # PV energy in the step (today confidence-scaled)
-    cons_kwh: float     # house consumption in the step
-    grid_kwh: float     # grid energy a charging step draws (PV shares the inverter)
-
-
-@dataclass
-class OptimalPlan:
-    """What the exact planner decided, plus what it needs to explain it."""
-
-    charge_today: set[int] = field(default_factory=set)
-    charge_tomorrow: set[int] = field(default_factory=set)
-    horizon: list[_PlanSlot] = field(default_factory=list)
-    charging: list[bool] = field(default_factory=list)          # per step: charges
-    bought_kwh: list[float] = field(default_factory=list)       # per step: grid kWh into it
-    planned_kwh: list[float] = field(default_factory=list)      # SOC after each step
-    baseline_kwh: list[float] = field(default_factory=list)     # same, buying nothing
-    baseline_import_kwh: list[float] = field(default_factory=list)
-    plan_import_kwh: list[float] = field(default_factory=list)
-    start_kwh: float = 0.0
-    night_need_kwh: float = 0.0     # what the battery must hold at the horizon end
-    night_price: float = 0.0        # what a kWh short then costs (the shortfall price)
-    night_grid_price: float = 0.0   # what the grid will likely charge then (for the money line)
-    shortfall_price: float = 0.0    # what a kWh below Min SOC costs: 2 × the dearest price ahead + cycle
-    store_value: float = 0.0        # what a kWh held beyond the night need is worth
-    price_reference: float = 0.0    # this week's typical grid price it came from
-    store_cap_kwh: float = 0.0      # how much beyond the need the next day can use
-    tonight_price: float = 0.0      # what a kWh short of a user reserve tonight costs
-    sunrise_hour: int = 7
-    cost: float = 0.0               # expected cost of the plan (incl. the night after)
-    baseline_cost: float = 0.0      # the same, buying nothing
-    money: float = 0.0              # the plan's grid spend in euros (no shortfall pricing)
-    baseline_money: float = 0.0     # the same, buying nothing
-
-
-#: Decisions are taken per quarter hour (or per price slot, if shorter), so a
-#: need of 1 kWh is not rounded up to a whole hour of charging on an hourly
-#: tariff.  The coordinator re-plans while a slot runs, so it stops charging
-#: as soon as the plan says so.
-OPTIMAL_STEP_H = 0.25
-
-
-def _hour_consumption(config: EMSConfig, state: EMSState, hour: int) -> float:
-    profile = state.consumption_hourly_kwh
-    if profile and hour in profile:
-        return float(profile[hour])
-    return config.consumption_est_kwh / 24.0
-
-
-def _battery_share(config: EMSConfig, cons_kwh: float, hours: float) -> float:
-    """The part of a step's consumption the inverter can deliver (kWh).
-
-    The house is fed through the inverter, so it gets at most the inverter's
-    rating from PV and battery together; anything above that passes through
-    from the grid whatever the battery holds.  So the battery can never be
-    emptied faster than the rating — a 60 kWh battery behind a 10 kW inverter
-    takes at least six hours to drain, however large the load.
-    """
-    if config.inverter_max_power_kw > 0:
-        return min(cons_kwh, config.inverter_max_power_kw * hours)
-    return cons_kwh
-
-
-def _optimal_horizon(
-    config: EMSConfig, state: EMSState, current_slot: int, pv_confidence: float,
-) -> list[_PlanSlot]:
-    """The steps from now to the end of the last day with prices."""
-    days = [(0, state.slot_prices_today or [], state.pv_hourly_kwh or {}, pv_confidence)]
-    if state.slot_prices_tomorrow:
-        days.append((1, state.slot_prices_tomorrow, state.pv_hourly_kwh_tomorrow or {}, 1.0))
-    now_h = state.current_hour + state.current_minute / 60.0
-    horizon: list[_PlanSlot] = []
-    for day, prices, pv_hourly, conf in days:
-        n = len(prices)
-        if n == 0:
-            continue
-        slot_h = 24.0 / n
-        step_h = min(slot_h, OPTIMAL_STEP_H)
-        per_slot = max(1, round(slot_h / step_h))
-        step_h = slot_h / per_slot
-        first = current_slot if day == 0 else 0
-        for idx in range(first, n):
-            for j in range(per_slot):
-                t0 = idx * slot_h + j * step_h
-                t1 = t0 + step_h
-                if day == 0:
-                    if t1 <= now_h + 1e-9:
-                        continue
-                    t0 = max(t0, now_h)
-                hours = t1 - t0
-                if hours <= 1e-9:
-                    continue
-                hour = min(23, int(t0 + 1e-9))
-                pv_kw = float(pv_hourly.get(hour, 0.0)) * conf
-                grid_kw = min(config.safe_power_kw,
-                              max(0.0, config.inverter_max_power_kw - pv_kw))
-                horizon.append(_PlanSlot(
-                    day=day, idx=idx, price=prices[idx], hour=hour,
-                    start_h=t0, hours=hours,
-                    pv_kwh=pv_kw * hours,
-                    cons_kwh=_hour_consumption(config, state, hour) * hours,
-                    grid_kwh=grid_kw * hours,
-                ))
-    return horizon
-
-
-def _optimal_night_after(
-    config: EMSConfig, state: EMSState, horizon: list[_PlanSlot],
-) -> tuple[float, float, int]:
-    """(energy needed above the floor, its price per kWh, sunrise hour) for
-    the night that follows the horizon.
-
-    The battery has to carry the house from midnight until sunrise — the
-    same "survive the night" the reserve has always meant.  Sunrise is the
-    first hour of the forecast PV (tomorrow's, the best guess for the day
-    after too), else the sun times Home Assistant supplied, else 07:00.
-    Only the night counts: by the time the horizon ends, the prices of the
-    day after it are already published and the next plan buys for that day
-    itself — valuing energy for it now would be buying on a guess.
-
-    Each kWh short at midnight is priced at what the same night hours cost
-    on the last day whose prices are known.
-    """
-    pv_next = state.pv_hourly_kwh_tomorrow or {}
-    lit = [h for h, kwh in pv_next.items() if kwh > 0.1]
-    if lit:
-        sunrise = min(lit)
-    elif state.sunrise_hour is not None:
-        sunrise = math.ceil(state.sunrise_hour)
-    else:
-        sunrise = 7
-    sunrise = max(0, min(12, int(sunrise)))
-    need = sum(_battery_share(config, _hour_consumption(config, state, h), 1.0)
-               for h in range(sunrise))
-    if config.optimization_priority == "self_consumption":
-        need *= SELF_CONSUMPTION_RESERVE_BOOST
-
-    last_day = horizon[-1].day if horizon else 0
-    prices = state.slot_prices_tomorrow if last_day == 1 else state.slot_prices_today
-    prices = prices or []
-    n = len(prices)
-    night = [p for i, p in enumerate(prices)
-             if p is not None and n and int(i * 24.0 / n) < max(1, sunrise)]
-    known = night or [p for p in prices if p is not None] or [0.0]
-    return need, sum(known) / len(known), sunrise
-
-
-def plan_optimal_from_grid(
-    config: EMSConfig,
-    state: EMSState,
-    current_kwh: float,
-    current_slot: int,
-    pv_confidence: float,
-) -> OptimalPlan:
-    """Exact cost-optimal grid-charge plan for from_grid (see section comment).
-
-    Backward induction over the lattice.  In each step the battery may take
-    any amount from nothing up to a full step at the Power Level: the
-    coordinator re-plans every poll while a step runs, so it stops charging
-    the moment the plan has what it needs.  With linear prices the best
-    amount is found by a sliding-window minimum, so a step costs O(states).
-    """
-    plan = OptimalPlan(start_kwh=current_kwh)
-    horizon = _optimal_horizon(config, state, current_slot, pv_confidence)
-    plan.horizon = horizon
-    cap = config.battery_capacity_kwh
-    floor = cap * config.battery_discharge_min_pct / 100.0
-    cmax = max(floor, cap * config.battery_charge_max_pct / 100.0)
-    span = cap - floor
-    if not horizon or span <= 0:
-        return plan
-    eff = max(0.01, config.efficiency)
-
-    need, night_price, sunrise = _optimal_night_after(config, state, horizon)
-    # A user reserve ("keep at least X %") raises what the battery must hold
-    # when a night starts — never lowers it (the same max(fixed, dynamic) the
-    # reserve target has always used).
-    fixed_need = 0.0
-    if config.reserve_target_pct > 0:
-        fixed_need = max(0.0, min(cmax, cap * config.reserve_target_pct / 100.0) - floor)
-    need = max(need, fixed_need)
-    plan.night_need_kwh, plan.night_price, plan.sunrise_hour = need, night_price, sunrise
-
-    # Lattice: fine enough that the smallest charging step spans many points.
-    # (the first step is left out: it runs from now to the next boundary, so
-    # its length — and with it the lattice — would change with every poll)
-    smallest = min((s.grid_kwh * eff for s in (horizon[1:] or horizon)
-                    if s.grid_kwh * eff > 1e-6), default=span)
-    step = max(span / OPTIMAL_MAX_STATES, min(span / OPTIMAL_MIN_STATES, smallest / 20.0))
-    # ... and sized so that a whole charging quarter at the Power Level is an
-    # exact number of points.  Rounded to the nearest point it promised more
-    # than the inverter delivers (0.762 kWh of a possible 0.75, and the plan
-    # drifted above the battery); rounded down it left up to an eighth of
-    # every quarter unused on a large battery.
-    full = max((s.grid_kwh * eff for s in (horizon[1:] or horizon)), default=0.0)
-    if full > 1e-6:
-        step = full / max(1, math.ceil(full / step - 1e-9))
-    top = max(1, math.floor(span / step + 1e-9))
-    # A battery already below Min SOC (Min SOC raised, an unexpected load, the
-    # inverter's own floor lower than Min SOC) is planned from where it really
-    # is: the lattice reaches down to it, and the plan buys the gap back.
-    lo = max(0, math.ceil((floor - current_kwh) / step - 1e-9))
-    top += lo
-    cmax_i = lo + math.floor((cmax - floor) / step + 1e-9)
-    # The plan holds one lattice point above Min SOC: the lattice is at most
-    # one point off the battery's real content (the carried rounding, now
-    # anchored at midnight), so this keeps the real battery above Min SOC too.
-    fl = min(lo + 1, cmax_i)
-
-    # Net PV - consumption per step, rounded with the error carried forward so
-    # the totals stay exact; the most a step can charge, rounded per step
-    # (exact for a whole quarter at the Power Level, see the lattice above;
-    # only quarters the PV limits are rounded, to the nearest point).
-    # The rounding is anchored at today's midnight, not at "now": every
-    # quarter then rounds the same way in every plan, whenever it is made.
-    # Anchored at the horizon start, a plan made 15 minutes later rounded
-    # every step differently, and a near-tie (one lattice point below Min SOC
-    # against starting a charge) came out the other way — the plan switched
-    # on where the one before had not.
-    now_h = state.current_hour + state.current_minute / 60.0
-    cum = 0.0
-    pv_today = state.pv_hourly_kwh or {}
-    for h in range(int(now_h) + 1):
-        part = min(1.0, now_h - h)
-        if part <= 0:
-            break
-        cum += part * (float(pv_today.get(h, 0.0)) * pv_confidence
-                       - _battery_share(config, _hour_consumption(config, state, h), 1.0))
-    nets: list[int] = []
-    prev = round(cum / step)
-    for s in horizon:
-        cum += s.pv_kwh - _battery_share(config, s.cons_kwh, s.hours)
-        cur = round(cum / step)
-        nets.append(cur - prev)
-        prev = cur
-    known_prices = [s.price for s in horizon if s.price is not None]
-    mean_price = sum(known_prices) / len(known_prices) if known_prices else 0.0
-    prices = [s.price if s.price is not None else mean_price for s in horizon]
-    charge_units = [round(s.grid_kwh * eff / step) if s.price is not None else 0
-                    for s in horizon]
-
-    cycle_cost = config.battery_cycle_cost_eur_kwh
-    if config.optimization_priority == "longevity":
-        cycle_cost = max(cycle_cost, 0.05)
-
-    # A user reserve also applies tonight when tomorrow is in the horizon:
-    # each kWh short of it at midnight costs the shortfall price (below).
-    checkpoint = None
-    if fixed_need > 0 and state.slot_prices_tomorrow:
-        last_today = max((k for k, s in enumerate(horizon) if s.day == 0), default=None)
-        if last_today is not None and last_today < len(horizon) - 1:
-            tmr = state.slot_prices_tomorrow
-            tonight = [p for i, p in enumerate(tmr)
-                       if p is not None and int(i * 24.0 / len(tmr)) < max(1, sunrise)]
-            price = sum(tonight) / len(tonight) if tonight else night_price
-            checkpoint = (last_today, fixed_need / step, price)
-    plan.tonight_price = checkpoint[2] if checkpoint else night_price
-
-    def _short(target_units: float, i: int, price: float) -> float:
-        return price * max(0.0, fl + target_units - i) * step
-
-    # Energy beyond the night's need is used on the days after the horizon,
-    # whose prices are unknown: it is worth what the grid typically costs this
-    # week, after the round-trip loss (stored × eff on the way in, × eff again
-    # on the way out — the same bar as the MILP's terminal value and the old
-    # top-off gate, eff² × mean).  So a day clearly cheaper than the week
-    # fills the battery, and an ordinary day buys only for the night.
-    # Only up to what the next day can use: its consumption after sunrise
-    # less the sun expected then (tomorrow's forecast — the best guess for
-    # the day after too — trusted at _TOMORROW_PV_TRUST).  A kWh bought for
-    # a day the sun covers is spilled, not used.
-    store_value = 0.0
-    store_cap = 0.0
-    if state.price_reference_eur_kwh is not None and state.price_reference_eur_kwh > 0:
-        day_use = sum(_battery_share(config, _hour_consumption(config, state, h), 1.0)
-                      for h in range(sunrise, 24))
-        sun = _TOMORROW_PV_TRUST * max(0.0, state.pv_forecast_tomorrow or 0.0)
-        store_cap = max(0.0, day_use - min(sun, day_use))
-        store_value = state.price_reference_eur_kwh * eff
-        plan.price_reference = state.price_reference_eur_kwh
-        # The night after the horizon is not priced yet either; it was
-        # guessed from the last known night.  That guess is not allowed below
-        # the week's value: a kWh the night needs must never be worth less
-        # than one kept for the day after (else Self-Sufficiency or a higher
-        # reserve would buy LESS), and a cheap Sunday's night says little
-        # about Monday's.
-        night_price = max(night_price, store_value)
-        if store_cap <= 0:
-            store_value = 0.0
-    plan.store_value = store_value
-    plan.store_cap_kwh = store_cap
-    # The premise (maintainer, 31 Oct 2026): the battery never goes below Min
-    # SOC and gets through the night; the plan only chooses the cheapest
-    # moments to make sure of that.  A kWh short of either costs ten times the
-    # twice the dearest price ahead (+ the cycle cost) — more than charging
-    # can ever cost, so a hard goal the plan never pays for when charging can
-    # avoid it (finite, so a goal out of reach is missed by as little as
-    # possible).  It replaces "below Min SOC the house runs on the grid at
-    # that hour's price", which the inverter does not do: nothing stops its
-    # self-use at Min SOC.  A battery that is ALREADY below Min SOC is bought
-    # back in the cheapest slots, never by force at the current price (the
-    # region under `lo`, below; Known Issues 8m).
-    plan.night_grid_price = night_price
-    shortfall = OPTIMAL_SHORTFALL_FACTOR * max(
-        [abs(p) for p in prices] + [abs(night_price), store_value, 1e-9]) + cycle_cost
-    night_grid = night_price
-    night_price = shortfall
-    plan.night_price = plan.shortfall_price = shortfall
-    if checkpoint is not None:
-        checkpoint = (checkpoint[0], checkpoint[1], shortfall)
-        plan.tonight_price = shortfall
-    need_i = need / step
-    cap_i = store_cap / step
-
-    def _stored(i: float) -> float:
-        # What the next day still has to buy at that price (a constant
-        # offset of the credit for what is held: same decisions, but a
-        # bigger house can never look cheaper).
-        return store_value * (cap_i - min(cap_i, max(0.0, i - lo - need_i))) * step
-
-    terminal = [_short(need_i, i, night_price) + _stored(i) for i in range(top + 1)]
-    # Two tables: the value from here on when the previous step was idle
-    # (starting a charge costs OPTIMAL_SWITCH_COST) and when it was charging.
-    value_idle, value_run = terminal, terminal
-    pol_idle: list[array] = [array("i")] * len(horizon)
-    pol_run: list[array] = [array("i")] * len(horizon)
-    unit_bought = step / eff                 # grid kWh per lattice unit stored
-    start_cost = OPTIMAL_START_COST_KWH * (
-        sum(abs(p) for p in prices) / len(prices) if prices else 0.0)
-
-    for k in range(len(horizon) - 1, -1, -1):
-        n = nets[k]
-        p = prices[k]
-        g = charge_units[k]
-        after_idle, after_run = value_idle, value_run
-        if checkpoint is not None and checkpoint[0] == k:
-            after_idle = [v + _short(checkpoint[1], i, checkpoint[2])
-                          for i, v in enumerate(after_idle)]
-            after_run = [v + _short(checkpoint[1], i, checkpoint[2])
-                         for i, v in enumerate(after_run)]
-        slope = p * unit_bought + cycle_cost * step      # cost per unit stored
-        v_from_idle = [0.0] * (top + 1)
-        v_from_run = [0.0] * (top + 1)
-        p_from_idle = array("i", bytes(4 * (top + 1)))
-        p_from_run = array("i", bytes(4 * (top + 1)))
-        # Charging from x0 to x costs w[x] - slope*x0 with w[x] = after_run[x]
-        # + slope*x: the cheapest target is a sliding-window minimum.
-        window: deque[int] = deque()
-        pushed = -1
-        for i in range(top + 1):
-            x0 = i + n
-            imp = 0.0
-            if i < fl:
-                # Already below Min SOC: planned as staying there (the house
-                # on the grid at this hour's price) until the plan buys the
-                # gap back; PV still fills it.
-                x0 = min(top, i + max(n, 0))
-                imp = p * max(0, -n) * step
-            elif x0 < fl:
-                # Going below Min SOC costs the shortfall price; a charge then
-                # goes into the battery on top.
-                imp = shortfall * (fl - x0) * step
-                x0 = fl
-            elif x0 > top:
-                x0 = top                       # PV beyond full is spilled
-            v_idle = imp + after_idle[x0]
-            hi = min(x0 + g, cmax_i) if g > 0 else x0
-            if hi <= x0:
-                v_from_idle[i] = v_from_run[i] = v_idle
-                p_from_idle[i] = p_from_run[i] = x0
-                continue
-            while pushed < hi:
-                pushed += 1
-                wx = after_run[pushed] + slope * pushed
-                # Ties keep the LARGER target: charge as much as early as
-                # possible when it costs the same (fill early).
-                while window and (after_run[window[-1]] + slope * window[-1]
-                                  >= wx - OPTIMAL_TIE_TOL * (1.0 + abs(wx))):
-                    window.pop()
-                window.append(pushed)
-            while window[0] <= x0:
-                window.popleft()
-            best_x = window[0]
-            v_charge = imp + after_run[best_x] + slope * (best_x - x0)
-            tol = OPTIMAL_TIE_TOL * (1.0 + abs(v_idle))
-            if v_charge <= v_idle + tol:
-                v_from_run[i], p_from_run[i] = v_charge, best_x
-            else:
-                v_from_run[i], p_from_run[i] = v_idle, x0
-            if v_charge + start_cost <= v_idle + tol:
-                v_from_idle[i], p_from_idle[i] = v_charge + start_cost, best_x
-            else:
-                v_from_idle[i], p_from_idle[i] = v_idle, x0
-        value_idle, value_run = v_from_idle, v_from_run
-        pol_idle[k], pol_run[k] = p_from_idle, p_from_run
-
-    i0 = min(top, max(0, lo + round((current_kwh - floor) / step)))
-    running_now = state.charging_now is True
-    plan.cost = (value_run if running_now else value_idle)[i0]
-
-    def _walk(policy_on: bool):
-        j = i0
-        running = running_now
-        bought: list[float] = []
-        acts: list[bool] = []
-        socs: list[float] = []
-        imports: list[float] = []
-        total = money = 0.0
-        for k, _ in enumerate(horizon):
-            n = nets[k]
-            x0 = j + n
-            imp = 0.0
-            if j < fl:
-                x0 = min(top, j + max(n, 0))
-                imp = max(0, -n) * step
-                total += prices[k] * imp
-            elif x0 < fl:
-                imp = (fl - x0) * step
-                total += shortfall * imp
-                x0 = fl
-            elif x0 > top:
-                x0 = top
-            money += prices[k] * imp
-            x = (pol_run if running else pol_idle)[k][j] if policy_on else x0
-            d = max(0, x - x0)
-            running = d > 0
-            buy = prices[k] * d * unit_bought + cycle_cost * d * step
-            total += buy
-            money += buy
-            bought.append(d * unit_bought)
-            acts.append(running)
-            imports.append(imp)
-            socs.append(floor + (x - lo) * step)
-            j = x
-            if checkpoint is not None and checkpoint[0] == k:
-                total += _short(checkpoint[1], j, checkpoint[2])
-        total += _short(need_i, j, night_price) + _stored(j)
-        money += _short(need_i, j, night_grid) + _stored(j)
-        return bought, acts, socs, imports, total, money
-
-    (plan.bought_kwh, plan.charging, plan.planned_kwh, plan.plan_import_kwh,
-     _, plan.money) = _walk(True)
-    for s, act in zip(horizon, plan.charging):
-        if act:
-            (plan.charge_today if s.day == 0 else plan.charge_tomorrow).add(s.idx)
-    (_, _, plan.baseline_kwh, plan.baseline_import_kwh, plan.baseline_cost,
-     plan.baseline_money) = _walk(False)
-    return plan
-
-
-def _plan_trajectory(
-    plan: OptimalPlan, config: EMSConfig, day: int, num_slots: int, current_slot: int,
-) -> list[float]:
-    """SOC % at the start of each price slot of ``day``, from the plan itself.
-
-    Past slots of today repeat the current SOC (the card draws history there).
-    """
-    cap = config.battery_capacity_kwh
-    if cap <= 0 or num_slots <= 0:
-        return []
-
-    def pct(kwh: float) -> float:
-        return round(max(0.0, min(100.0, kwh / cap * 100.0)), 1)
-
-    at_start: dict[int, float] = {}
-    soc = plan.start_kwh
-    for s, after in zip(plan.horizon, plan.planned_kwh):
-        if s.day == day:
-            at_start.setdefault(s.idx, soc)
-        soc = after
-    if day == 1 and not at_start:
-        return []
-    out: list[float] = []
-    last = plan.start_kwh if day == 0 else None
-    for i in range(num_slots):
-        if day == 0 and i < current_slot:
-            out.append(pct(plan.start_kwh))
-            continue
-        if i in at_start:
-            last = at_start[i]
-        out.append(pct(last if last is not None else plan.start_kwh))
-    return out
-
-
-def _slot_clock(slot: _PlanSlot) -> str:
-    minutes = round(slot.start_h * 60)
-    day = "tomorrow " if slot.day == 1 else ""
-    return f"{day}{minutes // 60:02d}:{minutes % 60:02d}"
-
-
-def _explain_optimal(plan: OptimalPlan, config: EMSConfig, current_kwh: float) -> str:
-    """One line a user can check against the chart."""
-    cap = config.battery_capacity_kwh
-    soc_pct = current_kwh / cap * 100.0 if cap > 0 else 0.0
-    horizon = plan.horizon
-    first_empty = next((k for k, imp in enumerate(plan.baseline_import_kwh) if imp > 1e-6), None)
-    bought = [s for s, act in zip(horizon, plan.charging) if act]
-    if not bought:
-        if first_empty is None:
-            until = "tomorrow's sun" if horizon and horizon[-1].day == 0 else "the end of tomorrow"
-            return (f"Battery ({soc_pct:.0f}%) lasts until {until} — "
-                    "no grid charging needed")
-        imported = sum(plan.baseline_import_kwh)
-        top_price = max(horizon[k].price or 0.0 for k, imp in
-                        enumerate(plan.baseline_import_kwh) if imp > 1e-6)
-        return (f"Battery reaches Min SOC at {_slot_clock(horizon[first_empty])} — no hour "
-                f"before it is cheaper after losses than those {imported:.1f} kWh then "
-                f"(up to {top_price:.3f}/kWh)")
-    today = len({s.idx for s in bought if s.day == 0})
-    tomorrow = len({s.idx for s in bought if s.day == 1})
-    prices = [s.price for s in bought if s.price is not None]
-    parts = []
-    if today:
-        parts.append(f"{today} today")
-    if tomorrow:
-        parts.append(f"{tomorrow} tomorrow")
-    why = ""
-    if first_empty is not None:
-        why = (f"; without them the battery reaches Min SOC at "
-               f"{_slot_clock(horizon[first_empty])}")
-    floor = cap * config.battery_discharge_min_pct / 100.0
-    if (plan.store_value > 0 and plan.planned_kwh
-            and plan.planned_kwh[-1] - floor > plan.night_need_kwh + 0.1):
-        why += (f"; stores cheap energy for the coming days "
-                f"(this week's average {plan.price_reference:.3f}/kWh)")
-    span = (f"{min(prices):.3f}" if max(prices) - min(prices) < 0.0005
-            else f"{min(prices):.3f}–{max(prices):.3f}")
-    saving = plan.baseline_money - plan.money
-    money = (f"saves ~{saving:.2f}" if saving >= 0
-             else f"keeps Min SOC and the night covered for ~{-saving:.2f} "
-                  "more than buying live")
-    return f"Charging {' + '.join(parts)} slot(s) at {span}/kWh{why} ({money})"
-
-
-def _run_optimal(
-    config: EMSConfig,
-    state: EMSState,
-    remaining: list[tuple[int, float]],
-    current_kwh: float,
-    num_slots: int,
-    current_slot: int,
-    minutes_per_slot: float,
-) -> ScheduleResult:
-    """The "optimal" engine for from_grid: exact plan + the shared result fields."""
-    result = ScheduleResult()
-    result.scheduler_active = "optimal"
-
-    reserve_kwh = calculate_self_consumption_reserve(
-        config.consumption_est_kwh, state.pv_hourly_kwh,
-        state.current_hour, state.current_minute,
-        consumption_hourly_kwh=state.consumption_hourly_kwh)
-    night = _is_night(state.pv_hourly_kwh, state.current_hour, state.current_minute)
-    reserve_target = _compute_reserve_target(config, reserve_kwh, apply_boost=not night)
-    result.self_consumption_reserve = round(reserve_kwh, 2)
-    result.reserve_target_pct = round(
-        reserve_target / config.battery_capacity_kwh * 100.0, 1,
-    ) if config.battery_capacity_kwh > 0 else 0.0
-
-    pv_confidence = _calculate_pv_confidence(
-        state.pv_hourly_kwh, state.pv_actual_today_kwh,
-        state.current_hour, state.current_minute,
-        previous_confidence=state.previous_pv_confidence,
-    )
-    # An unexpected sustained load (see _consumption_deviation_kwh): plan from
-    # a battery that is as much emptier as the load has drained it.
-    deviation = _consumption_deviation_kwh(
-        state, current_kwh, reserve_target, config.battery_capacity_kwh)
-    plan = plan_optimal_from_grid(
-        config, state, max(0.0, current_kwh - deviation), current_slot, pv_confidence)
-
-    scheduled = {i: "charge" for i in sorted(plan.charge_today)}
-    tomorrow = {i: "charge" for i in sorted(plan.charge_tomorrow)}
-    if config.charge_to_full_on_negative_price:
-        for i, p in remaining:
-            if p is not None and p < 0:
-                scheduled[i] = "charge"
-        for i, p in enumerate(state.slot_prices_tomorrow or []):
-            if p is not None and p < 0:
-                tomorrow[i] = "charge"
-    if config.discharge_to_make_room_for_negative_price:
-        for i in _select_discharges_for_pv_headroom(
-                remaining, current_kwh, {i for i, a in scheduled.items() if a == "charge"},
-                config, state, minutes_per_slot, pv_confidence, reserve_target):
-            scheduled.setdefault(i, "discharge")
-    result.scheduled_slots = scheduled
-    result.tomorrow_scheduled_slots = tomorrow
-
-    prices_today = {i: p for i, p in remaining}
-    charge_prices = [prices_today[i] for i, a in scheduled.items()
-                     if a == "charge" and prices_today.get(i) is not None]
-    if charge_prices:
-        result.price_threshold = max(charge_prices)
-    # What the plan actually stores (partial steps included), not slots × power.
-    stored = {0: 0.0, 1: 0.0}
-    for s, kwh in zip(plan.horizon, plan.bought_kwh):
-        stored[s.day] += kwh * config.efficiency
-    result.cheap_slots_remaining = len(charge_prices)
-    result.grid_energy_planned = round(stored[0], 2)
-    result.tomorrow_planned_slots = len(tomorrow)
-    result.tomorrow_planned_kwh = round(stored[1], 2)
-    result.schedule_reason = _explain_optimal(plan, config, current_kwh)
-    # The plan's own SOC path (15-minute steps, partial charging) — the shared
-    # slot-level trajectory assumes a whole slot of charging and would draw
-    # a plan the inverter is not going to carry out.
-    tmr_n = len(state.slot_prices_tomorrow or [])
-    result.soc_trajectory = _plan_trajectory(plan, config, 0, num_slots, current_slot)
-    result.tomorrow_soc_trajectory = _plan_trajectory(plan, config, 1, tmr_n, 0)
-    result.plan_trajectory_exact = (
-        set(scheduled) == plan.charge_today and set(tomorrow) == plan.charge_tomorrow)
-    if not scheduled:
-        result.status = "no_action_needed"
-    return result
 
 
 def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
@@ -3357,41 +2750,20 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             )
         return ScheduleResult()
 
-    # The exact planner covers from_grid (Save money, Self-Sufficiency, Battery
-    # care).  to_grid / both still use the greedy selector.
-    optimal_mode = config.grid_mode == "from_grid"
-
-    def _run_planner() -> ScheduleResult:
-        return _run_optimal(
-            config, state, remaining, current_kwh,
-            num_slots, current_slot, minutes_per_slot,
-        )
-
     if config.scheduler_engine == "milp":
         result = _run_milp_or_none(
             config, state, remaining, current_kwh,
             num_slots, current_slot, minutes_per_slot,
         )
         if result is None:
-            # No solver: the exact planner needs none, so it is the fallback
-            # wherever it applies.
-            if optimal_mode:
-                result = _run_planner()
-                result.scheduler_active = "optimal_fallback"
-            else:
-                result = _run_greedy()
-                result.scheduler_active = "greedy_fallback"
-    elif config.scheduler_engine == "optimal" and optimal_mode:
-        result = _run_planner()
+            result = _run_greedy()
+            result.scheduler_active = "greedy_fallback"
     else:
         result = _run_greedy()
 
-    # Spill reduction (greedy and MILP): relocate equal/cheaper-priced charge
+    # Spill reduction (both engines): relocate equal/cheaper-priced charge
     # slots past a PV peak when that buys less grid for the same end/min SOC.
-    # Runs BEFORE urgent recovery so forced immediate slots are never moved.
-    # The exact planner already accounts for spill — moving its slots could
-    # only undo an optimum.
-    if result.scheduled_slots and not result.scheduler_active.startswith("optimal"):
+    if result.scheduled_slots:
         _spill_conf = _calculate_pv_confidence(
             state.pv_hourly_kwh, state.pv_actual_today_kwh,
             state.current_hour, state.current_minute,
@@ -3403,38 +2775,13 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
             _spill_conf, num_slots,
         )
 
-    # Urgent recovery: when battery is below discharge_min, force immediate
-    # charge slots starting from the current slot.  The cheapest-slot optimizer
-    # may schedule charge hours from now, leaving the battery critically low
-    # in the meantime.  This ensures the inverter starts charging NOW.
-    #
-    # NOT for the exact planner: below the floor the inverter runs the house
-    # on the grid anyway, and the planner already prices that (and charges
-    # when charging is cheaper).  Forcing a charge on top bought at whatever
-    # the slot cost — 0.453 at the evening peak, 22 Oct 2026 — and, with SOC
-    # hovering a hair under the floor, flipped charge/idle every 1-3 minutes
-    # for hours, switching the EV charger with it each time.
-    min_kwh = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
-    if (current_kwh < min_kwh
-            and not result.scheduler_active.startswith("optimal")
-            and config.grid_mode in ("from_grid", "both")
-            and result.scheduled_slots is not None):
-        effective_per_slot = config.safe_power_kw * (minutes_per_slot / 60.0) * config.efficiency
-        recovery_needed = min_kwh - current_kwh
-        urgent_slots_needed = math.ceil(recovery_needed / effective_per_slot) if effective_per_slot > 0 else 0
-        added = 0
-        for i in range(current_slot, num_slots):
-            if added >= urgent_slots_needed:
-                break
-            if result.scheduled_slots.get(i) != "charge":
-                result.scheduled_slots[i] = "charge"
-                added += 1
-        if added:
-            _LOGGER.info(
-                "Urgent recovery: battery at %.1f kWh (min=%.1f), "
-                "forced %d immediate charge slot(s)",
-                current_kwh, min_kwh, added,
-            )
+    # No "urgent recovery" (maintainer, 31 Oct 2026).  A battery below Min SOC
+    # is NOT charged at once at whatever the current price is: the inverter
+    # runs the house on the grid at its own minimum anyway, and a forced
+    # charge bought the 0.453 evening peak and flipped charge/idle every 1-3
+    # minutes for hours (22 Oct 2026, Known Issues 8m).  The missing energy is
+    # part of the deficit (reserve target - what the battery holds), so the
+    # normal selection buys it back in the cheapest known slots.
 
     # Update status
     if not result.scheduled_slots:
@@ -3445,27 +2792,19 @@ def calculate_schedule(config: EMSConfig, state: EMSState) -> ScheduleResult:
     else:
         result.status = "waiting"
 
-    # The exact planner's trajectory is authoritative for its own schedule
-    # (urgent recovery never touches it); when a post-step changed the
-    # schedule (the negative-price flags) the shared slot-level simulation runs.
-    planner = result.scheduler_active.startswith("optimal")
-    planner_owns = planner and result.plan_trajectory_exact
-    result.plan_trajectory_exact = planner_owns
-
     # Compute authoritative SOC trajectory with the finalized schedule
-    if not planner_owns:
-        result.soc_trajectory = _compute_scheduled_soc_trajectory(
-            prices, num_slots, minutes_per_slot,
-            current_kwh, current_slot,
-            result.scheduled_slots,
-            config, state,
-        )
+    result.soc_trajectory = _compute_scheduled_soc_trajectory(
+        prices, num_slots, minutes_per_slot,
+        current_kwh, current_slot,
+        result.scheduled_slots,
+        config, state,
+    )
 
     # Compute tomorrow's schedule and trajectory (if tomorrow prices exist).
-    # When the MILP or the exact planner already provided tomorrow's plan,
-    # skip the greedy reconstruction and only compute the SOC trajectory.
-    if state.slot_prices_tomorrow and not planner_owns:
-        if result.tomorrow_scheduled_slots or planner:
+    # When the MILP already provided tomorrow_scheduled_slots, skip the
+    # greedy reconstruction and only compute the SOC trajectory.
+    if state.slot_prices_tomorrow:
+        if result.tomorrow_scheduled_slots:
             tmr_num = len(state.slot_prices_tomorrow)
             tmr_mps = (24 * 60) / tmr_num
             min_kwh_t = (config.battery_discharge_min_pct / 100.0) * config.battery_capacity_kwh
@@ -3653,6 +2992,7 @@ def _schedule_from_grid(
     else:
         energy_deficit = base_deficit
 
+    store_bar, _store_cap = _store_for_coming_days(config, state)
     selected, tomorrow_slots, tomorrow_charge_kwh = select_unified_charge_slots(
         remaining, energy_deficit, effective_per_slot,
         config.battery_capacity_kwh, config.battery_discharge_min_pct,
@@ -3671,6 +3011,7 @@ def _schedule_from_grid(
         minutes_per_slot=minutes_per_slot,
         pv_hourly_kwh_tomorrow=state.pv_hourly_kwh_tomorrow,
         consumption_hourly_kwh=state.consumption_hourly_kwh,
+        store_price_bar=store_bar,
     )
 
     result.tomorrow_precharge = round(-tomorrow_charge_kwh, 2) if tomorrow_charge_kwh > 0 else 0.0
@@ -3744,6 +3085,18 @@ def _schedule_from_grid(
                     f"Reserve met ({soc_pct:.0f}%) — no slots cheap enough to "
                     "top off without losing money on round-trip losses"
                 )
+        elif tomorrow_slots:
+            # Nothing today, but the deficit is bought tomorrow (cheaper there).
+            # "Reserve is met" would be wrong here — e.g. a battery below Min
+            # SOC whose gap is bought back in tomorrow's cheapest slots.
+            soc_pct = (current_kwh / config.battery_capacity_kwh * 100
+                       if config.battery_capacity_kwh > 0 else 0)
+            top = max(p for _, p in tomorrow_slots)
+            result.schedule_reason = (
+                f"Battery {soc_pct:.0f}% — nothing cheap enough today; charging "
+                f"{len(tomorrow_slots)} slot{'s' if len(tomorrow_slots) != 1 else ''} "
+                f"tomorrow (up to {top:.3f}/kWh) to cover {energy_deficit:.1f} kWh"
+            )
         else:
             result.schedule_reason = "Battery reserve is met — no charging needed"
         return result
@@ -3831,10 +3184,20 @@ def _schedule_from_grid(
     parts = []
     if n_charge:
         max_price = max(s[1] for s in selected)
-        parts.append(
-            f"Charging {n_charge} slot{'s' if n_charge != 1 else ''}"
-            f" (up to {max_price:.3f}/kWh) to cover {deficit_kwh:.1f} kWh deficit"
-        )
+        stores = store_bar > 0 and any(s[1] <= store_bar for s in selected)
+        week = (f"store cheap energy for the coming days (this week's "
+                f"average {state.price_reference_eur_kwh:.3f}/kWh)") if stores else ""
+        if stores and deficit_kwh < 0.05:
+            parts.append(
+                f"Charging {n_charge} slot{'s' if n_charge != 1 else ''}"
+                f" (up to {max_price:.3f}/kWh) to {week}"
+            )
+        else:
+            parts.append(
+                f"Charging {n_charge} slot{'s' if n_charge != 1 else ''}"
+                f" (up to {max_price:.3f}/kWh) to cover {deficit_kwh:.1f} kWh deficit"
+                + (f", and to {week}" if stores else "")
+            )
     if n_discharge:
         parts.append(
             f"Pre-discharging {n_discharge} slot{'s' if n_discharge != 1 else ''}"

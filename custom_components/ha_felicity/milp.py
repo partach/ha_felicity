@@ -180,7 +180,7 @@ def _pick_solver(pulp):
         "MILP found no usable LP solver. Probed: %s. Install HiGHS with "
         "`pip install highspy` in the Home Assistant environment (on Home "
         "Assistant OS the integration does this itself while the engine is "
-        "MILP), then restart HA.  The exact planner runs in the meantime.",
+        "MILP), then restart HA.  Greedy runs in the meantime.",
         ", ".join(tried) or "nothing",
     )
     return None
@@ -197,6 +197,8 @@ def solve_schedule(
     minutes_per_slot: float,
     reserve_target: float,
     pv_confidence: float,
+    store_value: float = 0.0,
+    store_cap_kwh: float = 0.0,
 ) -> tuple[dict[int, str], dict[int, str]] | None:
     """Solve the EMS schedule as a MILP.
 
@@ -233,6 +235,8 @@ def solve_schedule(
             minutes_per_slot=minutes_per_slot,
             reserve_target=reserve_target,
             pv_confidence=pv_confidence,
+            store_value=store_value,
+            store_cap_kwh=store_cap_kwh,
         )
     except FileNotFoundError as err:
         # The CBC solver binary is missing / unrunnable on this platform
@@ -267,6 +271,8 @@ def _solve(
     minutes_per_slot: float,
     reserve_target: float,
     pv_confidence: float,
+    store_value: float = 0.0,
+    store_cap_kwh: float = 0.0,
 ) -> dict[int, str] | None:
     global _MILP_LAST_ERROR
 
@@ -345,7 +351,27 @@ def _solve(
     # naturally stops at the SOC floor.  Round-trip efficiency loss makes
     # charging and discharging the same slot never optimal, so no binary
     # "exclusive" variable is needed — this stays a fast, robust LP.
-    c, d, spill, soc, imp = {}, {}, {}, {}, {}
+    # At Min SOC the house runs on the GRID, at that slot's price (maintainer,
+    # 31 Oct 2026: "if the minimum SOC is reached but the price is high, you
+    # do not charge the battery extra — the house runs on grid").  The
+    # inverter does exactly that at its own minimum.  Modelled with one binary
+    # per hour, z = "the battery is at its floor": then the grid may feed the
+    # house (imp[k], up to what the house draws beyond PV, paid at the slot
+    # price) and the battery ends the hour at or below Min SOC; without it the
+    # battery feeds the house and stays at or above Min SOC.  The
+    # binary is what stops the plan "parking" a fuller battery while the grid
+    # feeds the house — the inverter's self-use cannot do that.
+    #
+    # Until Oct 2026 imp[k] was a feasibility slack at 5x the dearest price,
+    # i.e. Min SOC was defended at ANY price: a battery reaching it at the
+    # 0.30 evening was charged at 0.30 rather than run the house on the grid
+    # until the 0.05 night — MILP's own "urgent recovery".
+    #
+    # A battery ALREADY below Min SOC starts where it is (soc_lo) and stays
+    # there with the house on the grid until the plan buys the gap back, in
+    # the cheapest slots (the soft reserve below pulls it up).
+    soc_lo = max(0.0, min(soc_min, current_kwh))
+    c, d, spill, soc, imp, z, zk = {}, {}, {}, {}, {}, {}, {}
     for k, h in enumerate(horizon):
         price = h["price"]
         charge_ub = h["charge_cap"] if allow_charge else 0.0
@@ -360,23 +386,30 @@ def _solve(
         c[k] = pulp.LpVariable(f"c_{k}", lowBound=0, upBound=charge_ub)
         d[k] = pulp.LpVariable(f"d_{k}", lowBound=0, upBound=discharge_ub)
         spill[k] = pulp.LpVariable(f"spill_{k}", lowBound=0)
-        soc[k] = pulp.LpVariable(f"soc_{k}", lowBound=soc_min, upBound=soc_max)
-        # Emergency feasibility slack — physically, grid passthrough keeps the
-        # battery from dropping below soc_min (the house draws from grid when
-        # the battery is empty).  Without it the SOC dynamics can be
-        # INFEASIBLE: when consumption drains the battery faster than charging
-        # can offset (e.g. to_grid mode where charging is disallowed, or a very
-        # high-consumption slot), `soc[k] == prev + net + ... ` cannot satisfy
-        # `soc[k] >= soc_min`, and the whole MILP collapses to greedy.  imp[k]
-        # absorbs exactly that deficit.  It carries a high penalty so it's 0 in
-        # every normal case (no behavioural change / parity preserved) and only
-        # activates to keep the LP feasible.
-        imp[k] = pulp.LpVariable(f"imp_{k}", lowBound=0)
+        soc[k] = pulp.LpVariable(f"soc_{k}", lowBound=soc_lo, upBound=max(soc_max, soc_lo))
+        drain = max(0.0, -h["net"])        # what the house draws beyond PV
+        imp[k] = pulp.LpVariable(f"imp_{k}", lowBound=0, upBound=drain)
+        # One binary per HOUR (the four quarters of an hour share it): the
+        # solve stays well under a second on a small CPU, where one per
+        # quarter took seconds.
+        zkey = (h["day"], int((h["slot"] * minutes_per_slot) // 60))
+        if zkey not in z:
+            z[zkey] = pulp.LpVariable(f"floor_{zkey[0]}_{zkey[1]}", cat="Binary")
+        zk[k] = z[zkey]
 
     # SOC dynamics.  soc[k] is the level at the *end* of slot k.
     prev = current_kwh
+    span = max(soc_max, soc_lo) - soc_lo
     for k in range(K):
         prob += soc[k] == prev + horizon[k]["net"] + eff * c[k] - d[k] - spill[k] + imp[k]
+        drain = max(0.0, -horizon[k]["net"])
+        prob += imp[k] <= drain * zk[k]                                 # grid only at the floor
+        prob += soc[k] >= soc_min - (soc_min - soc_lo) * zk[k]          # else at/above Min SOC
+        if k == K - 1 or zk[k + 1] is not zk[k]:
+            # ... and an hour with the grid feeding the house ends at/below
+            # Min SOC (checked at the hour's end, so the battery may reach the
+            # floor during that hour).
+            prob += soc[k] <= soc_min + span * (1 - zk[k])
         prev = soc[k]
 
     # Reserve constraints are SOFT (slack + penalty), never hard.  A hard
@@ -463,6 +496,17 @@ def _solve(
     reward_soc = pulp.LpVariable("reward_soc", lowBound=0, upBound=reserve_clamped)
     prob += reward_soc <= soc[K - 1]
 
+    # The week's price memory (ems._store_for_coming_days): energy ABOVE the
+    # reserve, up to what the next day can use after its sun, is worth this
+    # week's grid price after the loss.  So the solver stores energy for the
+    # coming days only from slots cheaper than the week, after the round-trip
+    # loss — the cheapest day of the week fills the battery, an ordinary day
+    # does not.  0 without a weekly price (no change).
+    reward_store = pulp.LpVariable(
+        "reward_store", lowBound=0,
+        upBound=max(0.0, min(store_cap_kwh, soc_max - reserve_clamped)) if store_value > 0 else 0.0)
+    prob += reward_store <= soc[K - 1] + end_short - reserve_clamped
+
     # Earliness preference: when several slots share the SAME price, charge the
     # EARLIER one.  The cost objective is indifferent between equal-price slots,
     # so the solver would otherwise pick arbitrarily (often the latest, right
@@ -478,7 +522,8 @@ def _solve(
         + pulp.lpSum(cycle_cost * d[k] for k in range(K))                  # wear
         - terminal_value * reward_soc                                      # leftover value (≤ reserve)
         + pulp.lpSum(reserve_penalty * s for s in reserve_shortfalls)      # soft reserve
-        + pulp.lpSum(reserve_penalty * imp[k] for k in range(K))           # feasibility slack
+        + pulp.lpSum(horizon[k]["price"] * imp[k] for k in range(K))       # house on the grid at the floor
+        - store_value * reward_store                                       # week's price: energy for the coming days
         + pulp.lpSum(early * k * c[k] for k in range(K))                   # charge earlier (tie-break)
     )
 
@@ -486,7 +531,7 @@ def _solve(
         solver = _pick_solver(pulp)
         if solver is None:
             # No usable LP solver on this platform — structural, so the caller
-            # disables MILP for the session (one warning, the planner runs).
+            # disables MILP for the session (one warning, greedy runs).
             # Reuse the FileNotFoundError path in solve_schedule for the flag.
             raise FileNotFoundError(
                 "no LP solver that runs here — tried "

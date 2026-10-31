@@ -6,8 +6,7 @@ EMS day-simulator / scenario harness  (Windows-runnable, no Home Assistant neede
 Purpose
 -------
 Run the PURE scheduling algorithm (``ems.calculate_schedule``) on a library of
-named, realistic scenarios — for EVERY engine (the exact planner "optimal",
-the legacy "greedy" and the MILP) — and:
+named, realistic scenarios — for BOTH engines (greedy and MILP) — and:
 
   * print a readable console report (which slots charge/sell, planned kWh,
     reserve target, projected SOC low, the human "reason"),
@@ -27,7 +26,7 @@ Run (Windows / Mac / Linux)
     python tools/ems_simulator.py        # run all scenarios, write charts to tools/sim_output/
     python tools/ems_simulator.py --name self_suff_daytime_ev   # one scenario
     python tools/ems_simulator.py --no-plot                     # text only
-    python tools/ems_simulator.py --engine optimal              # one engine
+    python tools/ems_simulator.py --engine greedy               # one engine
 
 Exit code is 0 when all expectations pass, 1 otherwise.
 
@@ -542,14 +541,14 @@ def plot_scenario(scenario: dict, results: dict, outdir: str):
 def main():
     ap = argparse.ArgumentParser(description="EMS scenario simulator")
     ap.add_argument("--name", help="run only the scenario with this name")
-    ap.add_argument("--engine", choices=["optimal", "greedy", "milp", "all"], default="all")
+    ap.add_argument("--engine", choices=["greedy", "milp", "both"], default="both")
     ap.add_argument("--no-plot", action="store_true")
     ap.add_argument("--outdir", default=os.path.join(_HERE, "sim_output"))
     args = ap.parse_args()
 
-    engines = ["optimal", "greedy", "milp"] if args.engine == "all" else [args.engine]
+    engines = ["greedy", "milp"] if args.engine == "both" else [args.engine]
     if "milp" in engines and not _HAS_MILP:
-        engines = [e for e in engines if e != "milp"] or ["optimal"]
+        engines = [e for e in engines if e != "milp"] or ["greedy"]
 
     scenarios = [s for s in SCENARIOS if (not args.name or s["name"] == args.name)]
     if not scenarios:

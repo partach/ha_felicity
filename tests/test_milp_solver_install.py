@@ -78,7 +78,7 @@ async def test_a_failed_install_never_stops_the_integration(monkeypatch, require
     _highspy(monkeypatch, present=False)
     requirements.async_process_requirements.side_effect = RuntimeError("no wheel for armv7")
     assert await INIT.async_ensure_lp_solver(_hass()) is False
-    assert any("exact planner runs instead" in r.getMessage() for r in caplog.records)
+    assert any("greedy runs instead" in r.getMessage() for r in caplog.records)
 
 
 def test_highspy_is_not_a_manifest_requirement():

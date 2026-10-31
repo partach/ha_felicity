@@ -766,7 +766,8 @@ class TestCalculateSchedule:
         assert result.grid_energy_planned > 0
 
     def test_battery_nearly_empty_urgent(self):
-        """Battery at 22% (near min 20%) → urgent charging."""
+        """Battery at 22% (near min 20%) → it plans charging (in the cheapest
+        slots — no forced charge, see TestNoUrgentRecovery)."""
         config = default_config()
         state = default_state(
             battery_soc_pct=22.0,
@@ -3424,14 +3425,99 @@ class TestInherentLowSOCValidation:
             )
 
 
-class TestUrgentRecoveryCharge:
-    """When battery is below discharge_min, force immediate charge slots."""
+class TestNoUrgentRecovery:
+    """Maintainer, 31 Oct 2026: a battery at or below Min SOC is NOT charged at
+    once at whatever the current price is — the inverter runs the house on the
+    grid at its own minimum, and the gap is bought back in the cheapest known
+    slots.  Greedy and MILP both had a forced charge ("urgent recovery" in
+    ems.py; in milp.py a Min SOC defended at 5x the dearest price).  On 22 Oct
+    2026 it bought the 0.453 evening peak and, with the battery a hair under
+    the floor, flipped charge/idle every 1-3 minutes for hours.
 
-    def test_immediate_charge_when_below_min(self):
-        """Battery at 10% with 20% min should charge NOW, not wait for
-        cheaper slots hours later."""
+    The 22 Oct install ran Self-Sufficiency, whose contract is "the reserve by
+    midnight" (TestSelfSufficiencyTodayFirst) — so these use Save Money, the
+    mode where only the floor is at stake."""
+
+    @staticmethod
+    def _evening(soc_pct, engine):
+        def today(i):
+            if i >= 80:
+                return 0.453 if i == 80 else 0.43
+            return 0.25
+        tomorrow = [0.25 if i < 28 else (0.23 if 48 <= i < 56 else 0.30) for i in range(96)]
         config = default_config(
-            grid_mode="both",
+            scheduler_engine=engine, grid_mode="from_grid", optimization_priority="cost",
+            battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
+            consumption_est_kwh=30.0, safe_power_kw=8.0, inverter_max_power_kw=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=soc_pct,
+            slot_prices_today=[today(i) for i in range(96)],
+            slot_prices_tomorrow=tomorrow,
+            pv_hourly_kwh=make_pv_hourly(12.5), pv_forecast_today=12.5,
+            pv_forecast_remaining=0.0, pv_actual_today_kwh=17.9,
+            pv_forecast_tomorrow=4.8,
+            current_hour=20, current_minute=10,
+        )
+        return config, state
+
+    @staticmethod
+    def _engines():
+        return ["greedy", "milp"] if _HAS_PULP else ["greedy"]
+
+    def test_a_hair_under_the_floor_does_not_buy_the_evening_peak(self):
+        for engine in self._engines():
+            result = calculate_schedule(*self._evening(14.8 / 60 * 100, engine))
+            assert result.scheduler_active == engine
+            tonight = sorted(i for i, a in result.scheduled_slots.items() if a == "charge")
+            assert tonight == [], (engine, tonight)
+
+    def test_the_gap_is_bought_back_in_tomorrows_cheapest_slots(self):
+        for engine in self._engines():
+            result = calculate_schedule(*self._evening(14.8 / 60 * 100, engine))
+            bought = sorted(i for i, a in result.tomorrow_scheduled_slots.items() if a == "charge")
+            assert bought, (engine, result.schedule_reason)
+            assert set(range(48, 56)) <= set(bought), (engine, bought)      # the 0.23 window
+            assert not any(28 <= i < 48 or i >= 56 for i in bought), (engine, bought)  # never 0.30
+
+    def test_the_same_plan_either_side_of_the_floor(self):
+        """The flip-flop: 14.8 kWh charged, 15.0 kWh did not.  A 0.2 kWh
+        difference in SOC no longer changes what the inverter does tonight."""
+        for engine in self._engines():
+            below = calculate_schedule(*self._evening(14.8 / 60 * 100, engine))
+            above = calculate_schedule(*self._evening(15.0 / 60 * 100, engine))
+            tonight = lambda r: {i for i, a in r.scheduled_slots.items() if a == "charge"}
+            assert tonight(below) == tonight(above) == set(), engine
+
+    def test_the_reason_does_not_claim_the_reserve_is_met(self):
+        result = calculate_schedule(*self._evening(14.8 / 60 * 100, "greedy"))
+        assert "reserve is met" not in result.schedule_reason, result.schedule_reason
+        assert "tomorrow" in result.schedule_reason, result.schedule_reason
+
+    def test_below_the_floor_it_charges_in_the_cheap_slots_later_today(self):
+        """A cheap window later today and dear hours now: the gap waits for
+        the cheap window — no forced charge at 0.45 now."""
+        for engine in self._engines():
+            config = default_config(
+                scheduler_engine=engine, grid_mode="from_grid",
+                battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
+                consumption_est_kwh=10.0, safe_power_kw=8.0, inverter_max_power_kw=10.0,
+            )
+            state = default_state(
+                battery_soc_pct=20.0,
+                slot_prices_today=[0.05 if 64 <= i < 72 else 0.45 for i in range(96)],
+                pv_hourly_kwh={}, pv_forecast_today=0.0, pv_forecast_remaining=0.0,
+                pv_actual_today_kwh=0.0, current_hour=12,
+            )
+            result = calculate_schedule(config, state)
+            charged = sorted(i for i, a in result.scheduled_slots.items() if a == "charge")
+            assert charged and all(64 <= i < 72 for i in charged), (engine, charged)
+
+    def test_when_the_cheapest_slots_are_now_it_charges_now(self):
+        """Battery at 10 % (Min SOC 20 %) at 08:00, the cheapest hours 08-10:
+        the cheapest slots happen to start now, so it charges now."""
+        config = default_config(
+            grid_mode="from_grid",
             battery_capacity_kwh=60.0,
             battery_discharge_min_pct=20.0,
             consumption_est_kwh=11.0,
@@ -3449,40 +3535,11 @@ class TestUrgentRecoveryCharge:
             current_hour=8,
         )
         result = calculate_schedule(config, state)
-        # Current slot (hour 8) must be scheduled for charge
-        assert result.scheduled_slots.get(8) == "charge", (
-            f"Battery at 10% (below 20% min) should force immediate charge "
-            f"at current slot 8, got: {result.scheduled_slots}"
-        )
+        assert result.scheduled_slots.get(8) == "charge", result.scheduled_slots
 
-    def test_no_urgent_charge_when_above_min(self):
-        """Battery above discharge_min should NOT force immediate charge."""
-        config = default_config(
-            grid_mode="from_grid",
-            battery_capacity_kwh=60.0,
-            battery_discharge_min_pct=20.0,
-            consumption_est_kwh=11.0,
-            safe_power_kw=5.0,
-        )
-        # Cheap slots at hours 2-4, expensive at hour 12 (current)
-        prices = [0.30] * 2 + [0.05] * 3 + [0.30] * 19
-        state = default_state(
-            battery_soc_pct=25.0,
-            slot_prices_today=prices,
-            pv_hourly_kwh={},
-            pv_forecast_remaining=0.0,
-            pv_forecast_today=0.0,
-            pv_actual_today_kwh=0.0,
-            current_hour=12,
-        )
-        result = calculate_schedule(config, state)
-        # Hour 12 is expensive, battery is above min — no forced charge
-        if result.scheduled_slots.get(12) == "charge":
-            # It might be scheduled by the optimizer if needed, but not forced
-            pass  # OK if optimizer chose it
-
-    def test_urgent_recovery_adds_enough_slots(self):
-        """Urgent recovery should add enough slots to reach discharge_min."""
+    def test_the_whole_gap_is_planned(self):
+        """5 % against a 20 % floor on a flat day: the plan buys at least the
+        gap back (9 kWh) — just not by force in the current slot."""
         config = default_config(
             grid_mode="from_grid",
             battery_capacity_kwh=60.0,
@@ -3490,11 +3547,9 @@ class TestUrgentRecoveryCharge:
             consumption_est_kwh=10.0,
             safe_power_kw=5.0,
         )
-        # 15-min granularity: 96 slots
-        prices = [0.10] * 96
         state = default_state(
             battery_soc_pct=5.0,
-            slot_prices_today=prices,
+            slot_prices_today=[0.10] * 96,
             pv_hourly_kwh={},
             pv_forecast_remaining=0.0,
             pv_forecast_today=0.0,
@@ -3502,146 +3557,128 @@ class TestUrgentRecoveryCharge:
             current_hour=8,
         )
         result = calculate_schedule(config, state)
-        # Battery at 3 kWh (5% of 60), min = 12 kWh, need 9 kWh
-        # At 5 kW * 0.25h * 0.9 eff = 1.125 kWh per slot → ceil(9/1.125) = 8 slots
-        # Current slot at hour 8 = slot 32 (of 96)
-        current_slot = 32
-        immediate_charges = sum(
-            1 for i in range(current_slot, min(current_slot + 10, 96))
-            if result.scheduled_slots.get(i) == "charge"
-        )
-        assert immediate_charges >= 1, (
-            "Battery far below min should have immediate charge slots "
-            f"starting at current slot, got: {sorted(result.scheduled_slots.items())[:15]}"
-        )
+        n = sum(1 for a in result.scheduled_slots.values() if a == "charge")
+        assert n * 5.0 * 0.25 * 0.9 >= 9.0, sorted(result.scheduled_slots)
 
 
-class TestNoUrgentRecoveryUnderThePlanner:
-    """22 Oct 2026, live install (60 kWh, floor 25 %, Self-Sufficiency): at
-    20:10 the battery read 14.8 kWh against a 15.0 floor and urgent recovery
-    forced a charge at 0.453 — the evening peak.  With SOC hovering a hair
-    under the floor it then flipped charge/idle every 1-3 minutes until past
-    23:00, switching the EV charger on and off 64 times.
+@pytest.mark.skipif(not _HAS_PULP, reason="pulp not installed")
+class TestMILPHouseOnTheGridAtTheFloor:
+    """milp.py: at Min SOC the grid feeds the house at that slot's price.  It
+    used to be a feasibility slack at 5x the dearest price, so the solver kept
+    the battery above Min SOC at any price."""
 
-    Below the floor the inverter feeds the house from the grid anyway, and the
-    exact planner prices that; a forced charge on top is a rule the cost model
-    does not contain.  Under the planner, being below the floor charges only
-    when the planner finds it cheaper.  (Greedy and MILP keep urgent recovery
-    — TestUrgentRecoveryCharge.)"""
-
-    @staticmethod
-    def _evening(soc_pct, now_price=0.453):
-        def today(i):
-            h = i / 4
-            if h >= 20:
-                return now_price if i == 80 else 0.43
-            return 0.25
-        tomorrow = [0.25 if i < 28 else (0.23 if 48 <= i < 56 else 0.30) for i in range(96)]
+    def test_no_charge_at_the_dear_evening_when_the_night_is_cheap(self):
         config = default_config(
-            scheduler_engine="optimal", grid_mode="from_grid",
-            optimization_priority="self_consumption",
-            battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
-            consumption_est_kwh=30.0, safe_power_kw=8.0, inverter_max_power_kw=10.0,
+            scheduler_engine="milp", grid_mode="from_grid", optimization_priority="cost",
+            battery_capacity_kwh=10.0, battery_discharge_min_pct=20.0,
+            consumption_est_kwh=12.0, safe_power_kw=5.0, inverter_max_power_kw=10.0,
         )
         state = default_state(
-            battery_soc_pct=soc_pct,
-            slot_prices_today=[today(i) for i in range(96)],
-            slot_prices_tomorrow=tomorrow,
-            pv_hourly_kwh=make_pv_hourly(12.5), pv_forecast_today=12.5,
-            pv_forecast_remaining=0.0, pv_actual_today_kwh=17.9,
-            pv_forecast_tomorrow=4.8,
-            current_hour=20, current_minute=10,
-        )
-        return config, state
-
-    def test_a_hair_under_the_floor_does_not_buy_the_evening_peak(self):
-        config, state = self._evening(14.8 / 60 * 100)
-        result = calculate_schedule(config, state)
-        assert result.scheduler_active == "optimal"
-        assert result.scheduled_slots.get(80) != "charge", sorted(result.scheduled_slots)
-        assert not any(i >= 80 for i in result.scheduled_slots), sorted(result.scheduled_slots)
-
-    def test_the_same_inputs_give_the_same_plan_either_side_of_the_floor(self):
-        """The flip-flop: 14.8 kWh charged, 15.0 kWh did not.  Now a 0.2 kWh
-        difference in SOC no longer changes what the inverter does tonight."""
-        below = calculate_schedule(*self._evening(14.8 / 60 * 100))
-        above = calculate_schedule(*self._evening(15.0 / 60 * 100))
-        tonight = lambda r: {i for i, a in r.scheduled_slots.items() if i >= 80 and a == "charge"}
-        assert tonight(below) == tonight(above) == set()
-
-    def test_below_the_floor_it_still_charges_when_that_is_cheaper(self):
-        """A cheap slot now and a dear evening ahead: the planner buys on its
-        own — no forced rule needed."""
-        config = default_config(
-            scheduler_engine="optimal", grid_mode="from_grid",
-            battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
-            consumption_est_kwh=30.0, safe_power_kw=8.0, inverter_max_power_kw=10.0,
-        )
-        state = default_state(
-            battery_soc_pct=20.0,
-            slot_prices_today=[0.05 if 56 <= i < 64 else 0.45 for i in range(96)],
+            battery_soc_pct=22.0,
+            slot_prices_today=[0.30] * 24,
+            slot_prices_tomorrow=[0.05] * 6 + [0.15] * 18,
             pv_hourly_kwh={}, pv_forecast_today=0.0, pv_forecast_remaining=0.0,
-            pv_actual_today_kwh=0.0, current_hour=14,
+            pv_actual_today_kwh=0.0, current_hour=18,
         )
         result = calculate_schedule(config, state)
-        assert result.scheduled_slots.get(56) == "charge", sorted(result.scheduled_slots)
+        assert result.scheduler_active == "milp"
+        assert not result.scheduled_slots, result.scheduled_slots
+        assert any(i < 6 for i in result.tomorrow_scheduled_slots), result.tomorrow_scheduled_slots
+
+    def test_the_battery_is_never_parked_above_the_floor(self):
+        """The grid may feed the house only when the battery is at its floor
+        (the inverter's self-use cannot hold a fuller battery).  A plan that
+        parked it at the cheap night to use it at the dear evening would buy
+        too little; the trajectory must drain through the cheap night."""
+        config = default_config(
+            scheduler_engine="milp", grid_mode="from_grid", optimization_priority="cost",
+            battery_capacity_kwh=10.0, battery_discharge_min_pct=20.0,
+            consumption_est_kwh=12.0, safe_power_kw=5.0, inverter_max_power_kw=10.0,
+        )
+        state = default_state(
+            battery_soc_pct=60.0,
+            slot_prices_today=[0.05] * 6 + [0.30] * 18,
+            pv_hourly_kwh={}, pv_forecast_today=0.0, pv_forecast_remaining=0.0,
+            pv_actual_today_kwh=0.0, current_hour=0,
+        )
+        result = calculate_schedule(config, state)
+        # 6 cheap hours x 0.5 kWh: the evening needs the battery full at 06:00,
+        # and nothing but charging in the cheap hours can get it there.
+        assert any(i < 6 for i, a in result.scheduled_slots.items() if a == "charge"), \
+            result.scheduled_slots
+        assert result.soc_trajectory[6] > 60.0, result.soc_trajectory
 
 
 class TestWeeklyPriceReference:
-    """24 Oct 2026, live install (60 kWh at 89 % on Saturday evening,
-    Self-Sufficiency): Sunday was the cheapest day of the week, ~0.10 until
-    17:00, yet the card said "Battery (89%) lasts until the end of tomorrow —
-    no grid charging needed".  The planner valued nothing beyond the night
-    after its horizon, so it could not see that Sunday's energy would displace
-    Monday's dearer grid — and with no battery charge the EV got no cheap slot
-    either.  With this week's typical price as the value of energy held beyond
-    the night's need (after the round-trip loss), a day clearly cheaper than
-    the week fills the battery; an ordinary day still buys only for the night."""
+    """24 Oct 2026 (maintainer): "keep track of the weekly cost and charge at
+    the cheapest part of the week".  The week's average price (kept by the
+    coordinator) is a bar for buying beyond what the plan needs: energy for
+    the coming days is stored only when it is cheaper than the week after the
+    round-trip loss (ems._store_for_coming_days).  Greedy and MILP since
+    31 Oct 2026 (it was the removed exact planner's alone)."""
 
     @staticmethod
-    def _saturday(tomorrow_price, reference):
-        today = [0.22 if i < 68 else 0.30 for i in range(96)]          # Saturday
-        tomorrow = [tomorrow_price if i < 68 else 0.27 for i in range(96)]
+    def _sunday(price, reference, engine="greedy", priority="cost"):
+        today = [price if i < 68 else 0.27 for i in range(96)]
         config = default_config(
-            scheduler_engine="optimal", grid_mode="from_grid",
-            optimization_priority="self_consumption",
+            scheduler_engine=engine, grid_mode="from_grid", optimization_priority=priority,
             battery_capacity_kwh=60.0, battery_discharge_min_pct=25.0,
             consumption_est_kwh=33.7, safe_power_kw=8.0, inverter_max_power_kw=10.0,
         )
         state = default_state(
-            battery_soc_pct=89.0, slot_prices_today=today, slot_prices_tomorrow=tomorrow,
-            pv_hourly_kwh=make_pv_hourly(21.7), pv_forecast_today=28.7,
-            pv_forecast_remaining=0.0, pv_actual_today_kwh=21.7,
-            pv_forecast_tomorrow=10.2, current_hour=20, current_minute=30,
+            battery_soc_pct=60.0, slot_prices_today=today, slot_prices_tomorrow=None,
+            pv_hourly_kwh=make_pv_hourly(10.0), pv_forecast_today=10.0,
+            pv_forecast_remaining=10.0, pv_actual_today_kwh=0.0,
+            pv_forecast_tomorrow=10.2, current_hour=6, current_minute=0,
             price_reference_eur_kwh=reference,
         )
         return config, state
 
-    def test_without_a_weekly_price_the_cheap_sunday_buys_only_for_the_night(self):
-        """The battery gets through Sunday night (the premise, 31 Oct 2026),
-        so Sunday tops up what that night needs — and no more."""
-        result = calculate_schedule(*self._saturday(0.10, None))
-        assert all(i < 68 for i in result.tomorrow_scheduled_slots)
-        assert result.tomorrow_soc_trajectory[-1] < 50.0, result.tomorrow_soc_trajectory
+    @staticmethod
+    def _engines():
+        return ["greedy", "milp"] if _HAS_PULP else ["greedy"]
+
+    @staticmethod
+    def _charged(result):
+        return sorted(i for i, a in result.scheduled_slots.items() if a == "charge")
 
     def test_the_cheapest_day_of_the_week_fills_the_battery(self):
-        result = calculate_schedule(*self._saturday(0.10, 0.25))
-        bought = sorted(result.tomorrow_scheduled_slots)
-        assert bought, result.schedule_reason
-        assert all(i < 68 for i in bought), bought                        # only the cheap part
-        assert "this week's average" in result.schedule_reason, result.schedule_reason
-        # Sunday ends holding the night's need plus what Monday can use
-        # (~72 %); without the week's price it ends at ~42 %.
-        assert result.tomorrow_soc_trajectory[-1] >= 70.0, result.tomorrow_soc_trajectory
-        without = calculate_schedule(*self._saturday(0.10, None))
-        assert without.tomorrow_soc_trajectory[-1] < 50.0, without.tomorrow_soc_trajectory
+        for engine in self._engines():
+            result = calculate_schedule(*self._sunday(0.10, 0.25, engine))
+            bought = self._charged(result)
+            assert bought and all(i < 68 for i in bought), (engine, bought)
+            assert "this week's average" in result.schedule_reason, result.schedule_reason
+            assert max(result.soc_trajectory) >= 75.0, (engine, result.soc_trajectory)
+            without = calculate_schedule(*self._sunday(0.10, None, engine))
+            assert self._charged(without) == [], (engine, without.scheduled_slots)
 
-    def test_an_ordinary_day_still_buys_only_for_the_night(self):
-        """0.22 against a week of 0.25: 0.22 / 0.9 = 0.244 per stored kWh,
-        while a stored kWh delivers only 0.25 × 0.9 = 0.225 later — not worth
-        storing.  It tops up what Sunday night needs, nothing beyond."""
-        result = calculate_schedule(*self._saturday(0.22, 0.25))
-        assert result.tomorrow_soc_trajectory[-1] < 50.0, result.tomorrow_soc_trajectory
+    def test_an_ordinary_day_stores_nothing(self):
+        """0.22 against a week of 0.25: 0.22 / 0.81 = 0.27 per kWh used later,
+        dearer than the week — nothing stored."""
+        for engine in self._engines():
+            result = calculate_schedule(*self._sunday(0.22, 0.25, engine))
+            assert self._charged(result) == [], (engine, result.scheduled_slots)
+
+    def test_a_cheaper_tomorrow_stores_nothing_today(self):
+        """Today 0.10 is cheap against the week, but tomorrow is cheaper
+        still — tomorrow's own plan buys there."""
+        config, state = self._sunday(0.10, 0.25)
+        state.slot_prices_tomorrow = [0.06] * 96
+        result = calculate_schedule(config, state)
+        assert "this week's average" not in result.schedule_reason, result.schedule_reason
+
+    def test_a_sunny_next_day_caps_what_is_stored(self):
+        sunny_cfg, sunny = self._sunday(0.10, 0.25)
+        sunny.pv_forecast_tomorrow = 60.0
+        dull = calculate_schedule(*self._sunday(0.10, 0.25))
+        bright = calculate_schedule(sunny_cfg, sunny)
+        assert len(self._charged(bright)) < len(self._charged(dull)), (
+            self._charged(bright), self._charged(dull))
+
+    def test_selling_modes_ignore_it(self):
+        config, state = self._sunday(0.10, 0.25)
+        config.grid_mode = "both"
+        assert ems._store_for_coming_days(config, state) == (0.0, 0.0)
 
 
 class TestBothModeFullCharge:
@@ -5351,12 +5388,11 @@ class TestMILPStatusDiagnosis:
 class TestMILPScheduler:
     """Tests for the optional MILP scheduler (milp.py)."""
 
-    def test_default_engine_is_the_exact_planner(self):
-        """The exact planner is the default (no solver dependency, exact for
-        from_grid — see tests/test_planner.py).  Greedy stays selectable and
-        still serves to_grid / both."""
+    def test_default_engine_is_greedy(self):
+        """Greedy is the default engine (maintainer, 31 Oct 2026: the exact
+        planner was removed; two engines, greedy and MILP)."""
         config = EMSConfig(grid_mode="from_grid", battery_capacity_kwh=10)
-        assert config.scheduler_engine == "optimal"
+        assert config.scheduler_engine == "greedy"
 
     def test_milp_never_infeasible_extreme_drain(self):
         """MILP must stay feasible (not fall back) even when consumption would
@@ -5536,9 +5572,7 @@ class TestMILPScheduler:
                 f"Tomorrow sells should be expensive slots: {tmr_sells}"
 
     def test_milp_falls_back_when_solve_returns_none(self, monkeypatch):
-        """When the solver returns None, calculate_schedule falls back to the
-        exact planner (it needs no solver) in from_grid, and to greedy where
-        the planner does not apply (to_grid / both)."""
+        """When the solver returns None, calculate_schedule uses greedy."""
         monkeypatch.setattr(milp, "solve_schedule", lambda *a, **k: None)
         config = EMSConfig(
             grid_mode="from_grid",
@@ -5558,10 +5592,9 @@ class TestMILPScheduler:
             current_minute=0,
         )
         result = calculate_schedule(config, state)
-        # The fallback still produces a schedule (no MILP reason string).
+        # Greedy still produces a schedule (no MILP reason string).
         assert "MILP" not in result.schedule_reason
-        assert result.scheduler_active == "optimal_fallback"
-        assert result.scheduled_slots
+        assert result.scheduler_active == "greedy_fallback"
         both = calculate_schedule(dataclasses.replace(config, grid_mode="both"), state)
         assert both.scheduler_active == "greedy_fallback"
 
@@ -6283,12 +6316,7 @@ class TestSelfConsumptionFillsBattery:
     def test_self_consumption_never_charges_expensive(self):
         """CRITICAL: self-consumption tops off ONLY from cheap slots — it must
         never charge an expensive slot just to fill the battery.  An EMS
-        minimises cost above all.
-
-        The house uses 30 kWh today against 12 kWh usable, so energy IS
-        needed; it must come from the cheap morning.  (With a 10 kWh/day
-        house this used to assert a "top-off" too: the exact planner buys
-        no energy the house will not use before tomorrow's sun.)"""
+        minimises cost above all."""
         base = dict(
             grid_mode="from_grid",
             battery_capacity_kwh=60,
@@ -6296,7 +6324,7 @@ class TestSelfConsumptionFillsBattery:
             battery_charge_max_pct=100,
             safe_power_kw=15,
             inverter_max_power_kw=15,
-            consumption_est_kwh=30,
+            consumption_est_kwh=10,
             efficiency=0.90,
             optimization_priority="self_consumption",
         )

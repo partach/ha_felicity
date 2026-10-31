@@ -132,7 +132,7 @@ async def async_setup_entry(
             coordinator=coordinator,
             entry=entry,
             option_key="scheduler_engine",
-            select_options=["optimal", "greedy", "milp"],
+            select_options=["greedy", "milp"],
             name="Scheduler Engine",
             icon="mdi:function-variant",
             entity_category=EntityCategory.CONFIG,

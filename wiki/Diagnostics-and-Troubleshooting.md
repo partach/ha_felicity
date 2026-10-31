@@ -40,29 +40,29 @@ What usually fixes it: RS485 wiring and termination, and the gateway settings. S
 |---|---|
 | Amber chip **Consumption profile flat / partial** | Less than 7 days of hourly history for your load meter (new install, or the recorder misses hours). The plan uses a flat daily average where history is missing. Picking a real energy meter as *consumption override entity* gives the best profile. |
 | Banner **Rule 1 window** warning | A planned action falls outside the inverter's Rule 1 time window or weekdays. Set *Rule 1 Time Window* / *Rule 1 Weekday* to `auto`, or widen the window yourself. |
-| Reason *"Battery runs empty at … — buying those kWh live is cheaper"* | The planner checked charging earlier and it costs more after losses than buying at that moment. |
+| Reason *"Battery …% — nothing cheap enough today; charging N slots tomorrow"* | The battery is low (possibly under Min SOC) and today's remaining slots are dearer than tomorrow's: the house runs on the grid at the inverter's minimum and the gap is bought tomorrow, in the cheapest slots. |
 | **Grid charge limit** / **Rule 1 power** chip below your Power Level, chip red | Safe Power has cut the battery because a phase is over your limit. It returns to the Power Level when that fits again. |
-| Reason *"… stores cheap energy for the coming days (this week's average …)"* | Today or tomorrow is clearly cheaper than this week's average: the battery is filled for the days after (see [Energy Management Basics](Energy-Management-Basics)). |
-| Engine chip **Greedy (fallback)** / **Optimal (fallback)** | You selected MILP but no solver could run — see *MILP will not load* below. |
+| Reason *"… store cheap energy for the coming days (this week's average …)"* | Today is clearly cheaper than this week's average: the battery is filled for the days after (see [Energy Management Basics](Energy-Management-Basics)). |
+| Engine chip **Greedy (fallback)** | You selected MILP but no solver could run — see *MILP will not load* below. |
 | THRESHOLD figure that does not change | Known issue: in auto mode the threshold shows the dearest price of the last plan that bought something. |
 
 ## "Why didn't it charge?" checklist
 
 1. **Grid Mode** is not `off` and **Price Mode** is `auto`.
-2. The reason line on the card — the planner says why it did or did not buy.
+2. The reason line on the card — it says why it did or did not buy.
 3. **Consumption profile** chip — a wrong profile gives a wrong plan.
 4. **Rule 1 window** banner — the inverter ignores a rule outside its window.
 5. History of `energy_state` and the **Rule 1 Power** entity: was it charging, and at what power? A low Rule 1 power means Safe Power cut it (see [Power Management Basics](Power-Management-Basics)).
 6. Is your installed version the latest release? HACS installs releases (tags), not the newest code on GitHub.
-7. `schedule_status` → `input_sources.price_reference`: this week's average price. Empty for the first 3 days after an update unless HA's statistics of your price entity could rebuild it — until then a cheap day only buys for the night.
+7. `schedule_status` → `input_sources.price_reference`: this week's average price. Empty for the first 3 days after an update unless HA's statistics of your price entity could rebuild it — until then a cheap day only buys what the plan needs.
 
 ## MILP will not load
 
-The default engine (**Optimal**) needs nothing extra and is the better one for From Grid (Save Money, Self-Sufficiency, Battery Care): it is exact, and it uses this week's prices, which MILP does not. MILP is worth choosing for **Trader** (To Grid / Both).
+The default engine (**Greedy**) needs nothing extra. MILP plans today and tomorrow in one optimisation and is the better engine for cross-day trading (**Trader**); both use this week's price.
 
 MILP needs an LP solver program. On **Home Assistant OS** pulp's bundled CBC cannot run: it is built for glibc, and the Home Assistant container is Alpine (musl) — the file is there, starting it fails with *"No such file or directory"*. `pulp[cbc]` installs the same kind of build. **HiGHS** (`highspy`) has musl wheels and runs inside Python.
 
-1. Select **MILP** as the scheduler engine and **restart Home Assistant once**. While the engine is MILP, the integration installs HiGHS at startup through Home Assistant's own installer — again after every Home Assistant update, which replaces the container and drops hand-installed packages. A failed install only logs a warning; the exact planner then runs.
+1. Select **MILP** as the scheduler engine and **restart Home Assistant once**. While the engine is MILP, the integration installs HiGHS at startup through Home Assistant's own installer — again after every Home Assistant update, which replaces the container and drops hand-installed packages. A failed install only logs a warning; greedy then runs.
 2. Check: hover the engine chip on the card, or `schedule_status` → `milp_status`: `state: active`, `solver: HiGHS`. A broken bundled CBC shows in `tried` as `PULP_CBC_CMD(broken: …)` and is skipped.
 3. Still not running? The log line *"Could not install the HiGHS solver"* says why (e.g. no wheel for a 32-bit ARM board). By hand, from the *Advanced SSH & Web Terminal* add-on (protection mode off): `docker exec -it homeassistant pip install highspy`, then restart. `tools/check_milp.py` (copy it to `/config`, run `docker exec -it homeassistant python3 /config/check_milp.py`) prints a verdict.
 

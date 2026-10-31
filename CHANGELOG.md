@@ -2,36 +2,26 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
-- **Back to the original premise: the battery stays above your Min SOC and
-  gets through the night.** The planner had been charging only when it
-  saved money, and planned the battery to sit at Min SOC "with the house on
-  the grid" — which the inverter doesn't do: it keeps discharging below Min
-  SOC, so your reserve was used and charges had to be started by hand. Now
-  Min SOC and the night are firm goals, bought at the cheapest moments that
-  meet them. If the battery is already below Min SOC (for example after you
-  raised it), the gap is bought back in the cheapest slots — never forced at
-  an expensive hour. Buying more than that still happens only when it pays
-  (a cheap day, negative prices).
-- Plans made a few minutes apart now agree with each other more reliably
-  (the planner rounds the same way whenever it plans), and a charging
-  quarter-hour is never planned above what the inverter can deliver.
-- Reverted the 26 Oct planner change ("house on the grid while charging").
-- **New default planner: exact, for Save Money / Self-Sufficiency / Battery
-  Care.** Instead of a stack of rules (reserve deficit, cheapest-N slots,
-  top-off, horizon caps…) the plan is now the cheapest one there is for the
-  whole period with known prices, in quarter-hours. In plain words: it buys
-  only when that is cheaper (after the battery's losses) than the grid energy
-  it saves later, only at the cheapest moments, never what tomorrow's sun
-  brings for free, and never just to fill the battery; a battery that lasts
-  until a cheaper moment waits. Example from a real card: 81 % at 21:45 with
-  tonight dearer than tomorrow — it used to buy 7 slots at 0.34–0.36, now
-  nothing. On an hourly tariff it can buy part of an hour. Equal prices:
-  earliest first. No extra software needed (the MILP option still exists and
-  now falls back to this planner when no solver is installed; the old
-  planner stays selectable as "Greedy (legacy)"). Trader / sell modes are
-  unchanged. Checked by ~1,100 generated situations against independent
-  calculations (`tests/test_planner.py`), and the inverter follows it without
-  switching on and off: a charge stops when the plan has enough.
+- **MILP now runs on Home Assistant OS.** pulp's built-in CBC solver cannot
+  start in Home Assistant OS (it is built for a different system library), and
+  that switched MILP off for the whole session. Now a solver that won't start
+  is skipped for the next one, and while the engine is MILP the integration
+  installs the HiGHS solver itself at startup (again after every Home
+  Assistant update). After updating: select MILP and restart Home Assistant
+  once; hover the engine chip — it should say HiGHS.
+- **No forced charging when the battery is at Min SOC.** At its minimum the
+  inverter runs the house on the grid; the EMS no longer charges right away
+  at whatever the price is because the battery is low (that bought the
+  evening peak and switched the charge on and off every few minutes). The
+  missing energy is bought back in the cheapest slots. Both engines.
+- **The cheapest day of the week fills the battery.** The integration
+  remembers the average price of the last 7 days (rebuilt from Home
+  Assistant's statistics at startup). Energy for the coming days is bought
+  only when it is clearly cheaper than that after the battery's losses — so
+  a cheap Sunday fills the battery (and the car follows in those slots), an
+  ordinary day buys only what it needs. Both engines, Save Money /
+  Self-Sufficiency / Battery Care.
+- Two scheduler engines: Greedy (default) and MILP.
 - **The SOC "dip" at 04:00 is gone.** The consumption profile counted a
   whole day of use in the 04:00 hour, every day (the inverter's day counter
   briefly reports yesterday's total at ~04:05, and Home Assistant's
@@ -45,12 +35,6 @@
   04:15"). Stored days are now cleaned on load: an hour no house can draw is
   dropped and the day's total recalculated. The log says, once per start,
   which days were rebuilt and which were not.
-- **The plan knows the battery cannot empty faster than the inverter.** The
-  house is fed through the inverter, so the battery side gives at most its
-  rating; above that the grid passes through. A 60 kWh battery behind a
-  10 kW inverter can no longer "run empty" in a quarter of an hour on paper.
-
-
 - **New model: IVAM6048P1G1 (6 kW) — monitoring only, provisional.** Sensors
   and the energy-flow card work; the EMS does not. Felicity's protocol document
   for this inverter defines only read-only measurements and no settings, so the
