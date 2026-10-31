@@ -191,7 +191,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **942**: 940 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **949**: 947 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1995,6 +1995,14 @@ already degrade gracefully when empty (they guard or fall back to
 stepping/step-down no-op, the sensor uses `default_current`), so recognising
 the charger from the current entity alone is safe.  Add `current_steps` to get
 variable-amp control; without it the charger runs on/off and Boost forces it on.
+**Steps typed with units are read (31 Oct 2026, ported from the unmerged
+`d7d702b`).**  `coordinator._parse_current_steps` takes the whole number in
+each comma-separated item, so "6 A,10 A,16 A" gives [6, 10, 16].  It used to
+count only bare digits — a list typed with units parsed as NO steps and
+silently switched current stepping off.  Pinned by `TestEvCurrentStepsParsing`
+(mutation-checked).  The rest of `d7d702b` (EV need by a ready-by time, the
+"holding" state) is NOT ported: it writes a hold below max SOC, unverified on
+hardware (decisions register, "car after").
 
 | Strategy | Slots scheduled |
 |---|---|
@@ -4018,7 +4026,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**942 tests**: 940 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**949 tests**: 947 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
