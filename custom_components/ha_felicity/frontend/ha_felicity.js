@@ -1438,15 +1438,23 @@ class FelicityInverterCardEditor extends LitElement {
 }
 
 
-customElements.define("felicity-inverter-card", FelicityInverterCard);
-customElements.define("felicity-inverter-card-editor",FelicityInverterCardEditor);
+// Guarded: served from two resource URLs, the module is evaluated twice and a
+// bare define() throws "the name ... has already been used".
+if (!customElements.get("felicity-inverter-card")) {
+  customElements.define("felicity-inverter-card", FelicityInverterCard);
+}
+if (!customElements.get("felicity-inverter-card-editor")) {
+  customElements.define("felicity-inverter-card-editor", FelicityInverterCardEditor);
+}
 
 (function () {
   window.customCards = window.customCards || [];
-  window.customCards.push({
-    type: "felicity-inverter-card",
-    name: "Felicity Inverter Card",
-    description: "Visualize Felicity Inverter", 
-    preview: true,
-  });
+  if (!window.customCards.some((card) => card.type === "felicity-inverter-card")) {
+    window.customCards.push({
+      type: "felicity-inverter-card",
+      name: "Felicity Inverter Card",
+      description: "Visualize Felicity Inverter",
+      preview: true,
+    });
+  }
 })();

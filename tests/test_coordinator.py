@@ -1447,3 +1447,30 @@ class TestRepliesOfTheWrongLength:
         assert captured["pv_year"] == 148 and captured["pv_month"] == 7
         assert captured["pv_day"] == 6777
         assert coord._reply_count_mismatches == 0
+
+
+class TestEvCurrentStepsParsing:
+    """The EV current steps text: "6 A,10 A,16 A" used to parse as no steps,
+    which silently switched current stepping off (ported from d7d702b)."""
+
+    @pytest.mark.parametrize("text, steps", [
+        ("6,10,13,16,20,25", [6, 10, 13, 16, 20, 25]),
+        ("6 A,10 A,16 A", [6, 10, 16]),
+        (" 6A , 10A, 16 amps ", [6, 10, 16]),
+        ("", []),
+        (None, []),
+        ("6,,16", [6, 16]),
+    ])
+    def test_steps_with_or_without_units(self, text, steps):
+        assert coordinator_mod._parse_current_steps(text) == steps
+
+    def test_the_ev_load_gets_its_steps_from_a_list_with_units(self):
+        coord = _make_coordinator()
+        coord.config_entry.options = {
+            "flexible_load_1_enabled": "on",
+            "flexible_load_1_switch_entity": "switch.ev",
+            "flexible_load_1_current_entity": "number.ev_current",
+            "flexible_load_1_current_steps": "6 A,10 A,16 A",
+        }
+        loads = coordinator_mod.HA_FelicityCoordinator._build_flex_load_configs(coord)
+        assert loads[0].current_steps == [6, 10, 16]

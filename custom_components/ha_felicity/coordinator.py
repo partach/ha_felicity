@@ -5,6 +5,7 @@ import dataclasses
 import json
 import logging
 import math
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -123,6 +124,21 @@ SAFE_POWER_TARGET = 0.9
 # Setting parent logger to CRITICAL to catch all sub-loggers
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
 logging.getLogger("pymodbus.logging").setLevel(logging.CRITICAL)
+
+
+def _parse_current_steps(text) -> list[int]:
+    """EV current steps from the options text: "6,10,16" or "6 A, 10 A, 16 A".
+
+    The whole number in each item counts.  Only bare digits used to: a list
+    typed with units ("6 A,10 A,...") parsed as no steps at all, which silently
+    switched current stepping off (found 26 Oct 2026, ported 31 Oct).
+    """
+    steps = []
+    for item in str(text or "").split(","):
+        match = re.search(r"\d+", item)
+        if match:
+            steps.append(int(match.group()))
+    return steps
 
 class HA_FelicityCoordinator(DataUpdateCoordinator):
     """Felicity Solar Inverter Data Update Coordinator."""
@@ -1624,9 +1640,7 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             if not enabled:
                 continue
             steps_str = opts.get(f"{prefix}current_steps", "") if n == 1 else ""
-            steps = []
-            if steps_str:
-                steps = [int(s.strip()) for s in str(steps_str).split(",") if s.strip().isdigit()]
+            steps = _parse_current_steps(steps_str)
             loads.append(ems_module.FlexibleLoadConfig(
                 enabled=True,
                 name=opts.get(f"{prefix}name", "") or f"Load {n}",

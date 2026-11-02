@@ -3377,13 +3377,21 @@ class FelicityEMSCardEditor extends LitElement {
   }
 }
 
-customElements.define("felicity-ems-card", FelicityEMSCard);
-customElements.define("felicity-ems-card-editor", FelicityEMSCardEditor);
+// Guarded: served from two resource URLs, the module is evaluated twice and a
+// bare define() throws "the name ... has already been used".
+if (!customElements.get("felicity-ems-card")) {
+  customElements.define("felicity-ems-card", FelicityEMSCard);
+}
+if (!customElements.get("felicity-ems-card-editor")) {
+  customElements.define("felicity-ems-card-editor", FelicityEMSCardEditor);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "felicity-ems-card",
-  name: "Felicity EMS Card",
-  description: "Energy Management System \u2014 slot timeline, schedule, and controls",
-  preview: true,
-});
+if (!window.customCards.some((card) => card.type === "felicity-ems-card")) {
+  window.customCards.push({
+    type: "felicity-ems-card",
+    name: "Felicity EMS Card",
+    description: "Energy Management System \u2014 slot timeline, schedule, and controls",
+    preview: true,
+  });
+}
