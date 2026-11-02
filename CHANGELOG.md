@@ -2,6 +2,12 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **No more duplicate dashboard resources after each restart (HA 2026.11).**
+  The new Marketplace moves card resources from `/hacsfiles/` to
+  `/local/community/`; the integration no longer recognised its own entry and
+  added another on every restart. It now recognises the entry under either
+  path, removes the duplicates earlier versions left behind, and the cards no
+  longer throw "has already been used" when loaded twice.
 - **MILP now runs on Home Assistant OS.** pulp's built-in CBC solver cannot
   start in Home Assistant OS (it is built for a different system library), and
   that switched MILP off for the whole session. Now a solver that won't start

@@ -65,8 +65,30 @@ async def async_install_frontend_resource(hass: HomeAssistant):
     # Offload the blocking file operations to the executor thread
     await hass.async_add_executor_job(install)
 
+# async_install_frontend_resource() copies both cards into
+# www/community/<domain>/ itself, so /local/community resolves with or without
+# HACS / the Marketplace.
+CARD_FILES = (f"{DOMAIN}.js", f"{DOMAIN}_ems.js")
+
+
+def _card_url(js_file: str) -> str:
+    return f"/local/community/{DOMAIN}/{js_file}"
+
+
+def _is_card_resource(url: str, js_file: str) -> bool:
+    """Return True if a Lovelace resource URL points at this card file.
+
+    Only the path's end is compared.  HACS served the cards from /hacsfiles/...;
+    the HA 2026.11 Marketplace serves them from /local/community/... and
+    rewrites existing entries in place, keeping their ID.  Comparing the full
+    URL missed the rewritten entry, so a fresh duplicate was added on every
+    restart (protocol_wizard issue 82, same construct).
+    """
+    return url.split("?")[0].endswith(f"/{DOMAIN}/{js_file}")
+
+
 async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
-    """Register the custom card as a Lovelace resource."""
+    """Register each card as a Lovelace resource, exactly once."""
     lovelace_data = hass.data.get("lovelace")
     if not lovelace_data:
         _LOGGER.debug("Unable to get lovelace data (new api 2026.2)")
@@ -77,26 +99,53 @@ async def async_register_card(hass: HomeAssistant, entry: ConfigEntry):
         _LOGGER.debug("Unable to get resources (new api 2026.2)")
         return  # YAML mode or not loaded
 
-    if not resources.loaded:
+    if not getattr(resources, "loaded", True):
         await resources.async_load()
 
-    card_urls = [
-        f"/hacsfiles/{DOMAIN}/{DOMAIN}.js",
-        f"/hacsfiles/{DOMAIN}/{DOMAIN}_ems.js",
-    ]
+    for js_file in CARD_FILES:
+        card_url = _card_url(js_file)
+        existing = [
+            item for item in resources.async_items()
+            if _is_card_resource(item.get("url", ""), js_file)
+        ]
 
-    for card_url in card_urls:
-        already_registered = any(
-            item["url"] == card_url for item in resources.async_items()
-        )
-        if already_registered:
-            _LOGGER.debug("Card already registered: %s", card_url)
+        # In YAML mode the resource collection is read-only.
+        if not hasattr(resources, "async_create_item"):
+            if not existing:
+                _LOGGER.warning(
+                    "Lovelace is in YAML mode — add %s to your resources manually",
+                    card_url,
+                )
             continue
 
-        await resources.async_create_item({
-            "res_type": "module",
-            "url": card_url,
-        })
+        if existing:
+            # Remove duplicates left by earlier versions, keeping the first.
+            for duplicate in existing[1:]:
+                item_id = duplicate.get("id")
+                if not item_id:
+                    continue
+                try:
+                    await resources.async_delete_item(item_id)
+                except Exception as err:  # best effort; never block setup
+                    _LOGGER.debug(
+                        "Could not remove duplicate card resource %s: %s",
+                        duplicate.get("url"), err,
+                    )
+                else:
+                    _LOGGER.info(
+                        "Removed duplicate card resource: %s", duplicate.get("url")
+                    )
+            _LOGGER.debug("Card already registered: %s", existing[0].get("url"))
+            continue
+
+        try:
+            await resources.async_create_item({
+                "res_type": "module",
+                "url": card_url,
+            })
+        except Exception as err:  # best effort; never block setup
+            _LOGGER.warning("Could not register card resource %s: %s", card_url, err)
+            continue
         _LOGGER.debug("Card registered: %s", card_url)
 
 

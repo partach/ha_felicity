@@ -191,7 +191,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **949**: 947 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **956**: 954 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -253,6 +253,7 @@ tests/
 │                            #   REAL const.py (never a hand-typed replica — see below)
 ├── test_ems.py              # 307 tests for the pure EMS algorithm (greedy + MILP)
 ├── test_milp_solver_install.py # HiGHS installed at setup for MILP; a failed install never stops loading
+├── test_lovelace_resources.py # each card registered once, whoever rewrote its URL (Marketplace)
 ├── test_coordinator.py      # Coordinator resilience (loaded against HA stubs)
 ├── test_select.py           # Select-entity optimistic update (async)
 ├── test_harness_integrity.py # Guards the harness itself can't silently stop testing
@@ -3447,6 +3448,24 @@ hold below max SOC, not verified on hardware; the maintainer's test is
 pending.  Until then, under "smart" the car still only runs where the
 battery charges; with Min SOC defended that can include a dear hour.
 
+### 8q. A duplicate Lovelace resource on every restart (HA 2026.11 Marketplace) — FIXED (2 Nov 2026)
+
+Reported on protocol_wizard (issue 82), which shares the construct.  HA
+2026.11's Marketplace (the successor of HACS) serves dashboard resources from
+`/local/community/` and rewrites existing `/hacsfiles/...` entries in place,
+keeping their ID.  `async_register_card` compared the full URL with
+`/hacsfiles/ha_felicity/<card>.js`, no longer found its own entry and added
+another — one per card per restart (Spook: `lovelace_duplicate_resources`;
+browser: "the name felicity-ems-card has already been used").  Now
+(`__init__._is_card_resource`) an entry is matched on the path's end
+(`/ha_felicity/<file>`, query string ignored), new entries go under
+`/local/community/ha_felicity/` (resolves with or without HACS, since
+`async_install_frontend_resource` copies both cards to `www/community/`),
+duplicates from earlier versions are removed keeping the first, and YAML mode
+writes nothing.  Both cards guard `customElements.define` and the
+`customCards` push, so a double load is harmless.  Pinned by
+`tests/test_lovelace_resources.py` (all 7 fail on the old code).
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -4026,7 +4045,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**949 tests**: 947 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**956 tests**: 954 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
