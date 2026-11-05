@@ -162,8 +162,10 @@ Caught by the second dump before release.
 A second report corroborates it from another direction: an **IVGM-50K** driven by
 the T-REX-50 map read every power sensor 10× high, and `-2` (not the documented
 `-1`) was confirmed against nameplate capacity, the day-energy registers, and an
-external meter. So across the range: small models in W, large in 0.01 kW —
-T-REX-5/10 vs T-REX-25/50, and IVGM-50K.
+external meter. That correction was first put on the T-REX-50 map itself; a
+real T-REX-50KHP3G01 then read 10× LOW (issue #237, Nov 2026 — 0.1 kW per
+count), so the IVGM-50K has its own entry (`ivgm_fifty.py`, derived from the
+T-REX-50 map) and the T-REX-50 is back at /10.
 
 **The 8K follows the 20K**, and this is *not* the cross-model inference the
 T-REX-25 freeze forbids. There, the two models legitimately diverge: the 25's

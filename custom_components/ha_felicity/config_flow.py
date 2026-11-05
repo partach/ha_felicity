@@ -41,6 +41,7 @@ from .const import (
     INVERTER_MODEL_IVAM_SIX,
     INVERTER_MODEL_IVGM_EIGHT,
     INVERTER_MODEL_IVGM_FIFTEEN,
+    INVERTER_MODEL_IVGM_FIFTY,
     INVERTER_MODEL_IVGM_HUNDRED,
     INVERTER_MODEL_IVGM_TWENTY,
     INVERTER_MODEL_TREX_FIFTY,
@@ -185,6 +186,10 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 label=f"{INVERTER_MODEL_TREX_TEN} / IVGM10048"),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_TWENTY_FIVE, label=INVERTER_MODEL_TREX_TWENTY_FIVE),
                             selector.SelectOptionDict(value=INVERTER_MODEL_TREX_FIFTY, label=INVERTER_MODEL_TREX_FIFTY),
+                            # The T-REX-50 layout with power in 0.01 kW (#237).
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVGM_FIFTY,
+                                label=f"{INVERTER_MODEL_IVGM_FIFTY} (T-REX-50 layout)"),
                             # IVGM family — PROVISIONAL, built from the 8K RS485
                             # protocol document and not yet hardware-validated.
                             # The label says so, so nobody picks one expecting

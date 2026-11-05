@@ -18,7 +18,8 @@ For this integration to work you need to have a wired modbus connection to your 
 | **T-REX-5K-P1G01 / IVGM5048** | ✅ Supported — monitoring + EMS | Map checked against Felicity's protocol document. |
 | **T-REX-6KLP1G01 / IVGM6048** | ✅ Supported — monitoring + EMS | Same registers as the 5K, 6 kW rating. |
 | **T-REX-25KHP3G01** | ✅ Supported — monitoring + EMS | Field-proven. |
-| **T-REX-50KHP3G01** | ✅ Supported — monitoring + EMS | Power readings corrected from a user report; the scale of its power *settings* is not yet measured. |
+| **T-REX-50KHP3G01** | ✅ Supported — monitoring + EMS | Power readings in 0.1 kW, measured on a T-REX-50 (issue #237). Its power *settings* look right (the rated power reads 50.0 kW). |
+| **IVGM-50K** | ✅ Monitoring + EMS on the T-REX-50 layout | Same registers as the T-REX-50, but its power readings count 0.01 kW. Pick this entry if your power readings show 10× too high as a T-REX-50. |
 | **IVGM-8KLP1G1** | 🧪 Provisional | Built from Felicity's protocol document; no 8K has sent a register dump yet. Selling is unproven. See `docs/IVGM_SUPPORT_GAPS.md`. |
 | **IVGM-15KLP3G1**, **IVGM-20KLP3G1** | 🧪 Provisional | Power scale, time format and weekdays confirmed by two user dumps. Selling is unproven. See `docs/IVGM_SUPPORT_GAPS.md`. |
 | **IVAM6048P1G1** | 👁 Monitoring only | Its protocol has no setting registers, so the EMS cannot control it and nothing is ever written. See `docs/IVAM_SUPPORT_GAPS.md`. |

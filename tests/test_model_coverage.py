@@ -305,6 +305,7 @@ def test_setup_dropdown_offers_exactly_the_supported_models():
 #: Model ids without a P1/P3 part, and the phase count their nameplate states.
 _PHASES_NOT_IN_ID = {
     const.INVERTER_MODEL_IVGM_HUNDRED: 3,   # label "Hybrid inverter / Three Phase" (issue #206)
+    const.INVERTER_MODEL_IVGM_FIFTY: 3,     # runs the 3-phase T-REX-50 layout (issue #237)
 }
 
 @pytest.mark.parametrize("model", const.SUPPORTED_MODELS)

@@ -84,6 +84,11 @@ maintainer makes a new decision, add it here in the same commit.
   own risk** (31 Oct 2026, issue #206).  It reads like a T-REX-10 but is not
   register-identical, and its battery is high-voltage while every EMS voltage
   setting is for 48 V.  The T-REX-10 map is NOT corrected from its dump.
+- **T-REX-50 telemetry power is 0.1 kW (/10); the IVGM-50K is its own entry
+  at 0.01 kW (/100)** (5 Nov 2026, issue #237).  The Sept 2026 /100 came from
+  an IVGM-50K on the T-REX-50 map; a real T-REX-50KHP3G01 read 10× low with
+  it.  Split rather than bend one map to fit both — the same rule as the
+  IVGM100600.
 
 **Flexible loads / EV**
 - **Home battery first, the car after** (24 + 30 Oct 2026).  "Car after" on a
@@ -191,7 +196,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **956**: 954 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **992**: 990 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -205,7 +210,7 @@ this rule exists to prevent — don't.
 
 ## Project Overview
 
-**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50**, the **IVGM family (8K / 15K / 20K, provisional)**, the **IVAM6048P1G1 (monitoring only — no control registers, see below)** and the **IVGM100600 (10 kW HV, monitoring only, provisional — see below)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
+**ha_felicity** is a Home Assistant integration for Felicity solar inverters — **T-REX-5 / 6 / 10 / 25 / 50**, the **IVGM family (8K / 15K / 20K, provisional)**, the **IVAM6048P1G1 (monitoring only — no control registers, see below)** the **IVGM100600 (10 kW HV, monitoring only, provisional — see below)** and the **IVGM-50K (the T-REX-50 layout with power in 0.01 kW)**. It combines Modbus-based inverter monitoring with an Energy Management System (EMS) that optimizes battery charge/discharge based on electricity prices, solar forecasts, and consumption patterns.
 
 **Version**: see `custom_components/ha_felicity/manifest.json` — the only copy
 that matters.  A number written here goes stale the first time someone bumps the
@@ -239,6 +244,7 @@ custom_components/ha_felicity/
 ├── ivam.py                  # IVAM6048P1G1 map — MONITOR-ONLY (telemetry; no control registers)
 ├── ivam_documented_registers.json # Frozen transcript of the IVAM protocol document
 ├── ivgm_hv.py               # IVGM100600 (10 kW HV) — MONITOR-ONLY, derived from the T-REX-10 map
+├── ivgm_fifty.py            # IVGM-50K — the T-REX-50 map with telemetry power at 0.01 kW (#237)
 ├── trex_documented_registers.json # Frozen transcript of the IVGM5048/10048 document = T-REX-5/6/10 layout
 ├── plausibility.py          # HA-free guard: impossible readings never reach sensors/EMS (#220)
 ├── register_dump.py         # HA-free read-only register dump (diagnostics + tools/ivgm_dump.py)
@@ -726,7 +732,8 @@ documentation is **wrong** about it, and two models that share a document do
 |---|---|---|---|
 | T-REX-5/6/10 | raw **W** | **W** | long-standing; T-REX-10 telemetry confirmed by physics in a dump (Oct 2026) |
 | T-REX-25 | **/100 → kW**, precision 1 | kW (index 1) | **FROZEN — do not touch.** Proven in the field; firmware was altered, so it legitimately differs from the 50 |
-| T-REX-50 | **/100 → kW**, precision 2 | kW (index 1), **unverified** | customer B, Sept 2026 — telemetry was /10, reporting **10× too high** |
+| T-REX-50 | **/10 → kW**, precision 1 | kW (index 1); rated power reads 50.0 = nameplate | issue #237 dump, Nov 2026 — PV1 raw 32 at 616.9 V × 5.3 A, Bat1 raw 27 at 640.2 V × 4.2 A |
+| IVGM-50K (T-REX-50 layout) | **/100 → kW**, precision 2 | kW (index 1), as the T-REX-50 | customer B, Sept 2026 — /10 read **10× too high** |
 | IVGM-8K/15K/20K | **/100 → kW**, precision 2 | raw **W** | customers A + C, measured — see the IVGM section |
 
 ⚠️ **Telemetry and setpoint power are two separate questions, and on the IVGM the
@@ -739,7 +746,19 @@ raw **500** into a register that wants **5000** — a tenth of the intended char
 power, with nothing in the log.  If you ever find yourself reaching for
 `WATT_POWER_MODELS` on a write path, you want the setpoint list.
 
-**The T-REX-50 bug**: all 30 telemetry power registers used index 8 (/10), so a
+⚠️ **Corrected 5 Nov 2026 (issue #237): the report below was an IVGM-50K on the
+T-REX-50 map, not a T-REX-50.**  The fix went onto the T-REX-50 map, and the
+first dump from a real T-REX-50KHP3G01 (firmware master 227 / slave 109 / comm
+207; the dump's own physics check said `SCALE SUSPECT`, ratio 0.1) read 10×
+LOW: PV1 raw 32 vs 616.9 V × 5.3 A = 3270 W, PV2 25 vs 2500 W, Bat1 27 vs
+2689 W, Bat2 28 vs 2789 W.  So the T-REX-50 is back at /10, precision 1, and the
+IVGM-50K has its own entry (`ivgm_fifty.py`, derived from the T-REX-50 map at
+import — only the 30 telemetry power registers differ; control path, setpoints
+and writes are the T-REX-50's, as its owner ran them).  IVGM-50K owners must
+re-add the device as IVGM-50K.  Pinned by `test_power_scaling.py`
+(`_DUMP_237`, and the IVGM-50K differing in power scale only).
+
+**The (IVGM-50K) report**: all 30 telemetry power registers used index 8 (/10), so a
 50 kW inverter reported up to 500 kW — a single PV string of 6.65 kWp read
 ~50 kW.  Root cause is Felicity's own document: the "Multiple" column says `-1`
 for every Kw/KVA row (V01 2025-03-27, V02 2025-05-16, and the IVGM variant
@@ -3130,7 +3149,11 @@ kept so the statistics continue:
    protected too, not only the sensors.  Bounds come from the register's unit and
    the model's `INVERTER_MAX_POWER_KW`, nothing model-specific:
    - an energy counter may rise at most `5 × rating × elapsed + 0.5 kWh`;
-   - a lifetime total never falls and never reads 0; a period counter
+   - a lifetime total never falls and never reads 0 — unless it has never
+     counted: a 0 with no baseline yet becomes the baseline after
+     `CONFIRM_POLLS` polls (#237: `microinverter_total_energy` with nothing
+     on that port was rejected 4,943 times, the sensor stuck at unknown);
+     a period counter
      (`day`/`month`/`year` in its key) may fall only to what it could have
      counted since a reset — that IS its reset;
    - a rejected reading publishes the last good value; a new level that holds,
@@ -4045,7 +4068,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**956 tests**: 954 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**992 tests**: 990 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
