@@ -12,7 +12,9 @@ Two independent customer reports, Sept 2026:
   **1560 W**, i.e. 0.01 kW per count.  The IVGM protocol document says "W" for
   that register.  It is wrong.
 * **IVGM-50K driven by the T-REX-50 map** — every telemetry power sensor read
-  **10x too high**, corroborated four independent ways: string power exceeding
+  **10x too high** (this was first applied to the T-REX-50 map itself; a real
+  T-REX-50KHP3G01 then read 10x LOW, issue #237, so the IVGM-50K has its own
+  entry now), corroborated four independent ways: string power exceeding
   the installed DC capacity tenfold, Riemann-integrated power vs the (correct)
   day-energy registers, an external Eastron sub-meter, and the fact that power
   factor and frequency in the same table already use the -2 scale.  Root cause:
@@ -60,43 +62,85 @@ def _watts(raw: int, info: dict) -> float:
 
 
 # --------------------------------------------------------------------------
-# T-REX-50 — reported 10x too high; measured scale is 0.01 kW per count
+# T-REX-50 — 0.1 kW per count, measured on a T-REX-50KHP3G01 (issue #237)
+# IVGM-50K — 0.01 kW per count, measured on an IVGM-50K on this map (Sept 2026)
 # --------------------------------------------------------------------------
+#
+# The Sept 2026 /100 fix was put on the T-REX-50 map from an IVGM-50K.  The
+# first dump from a real T-REX-50 (#237, Download diagnostics on 1.3.15,
+# firmware master 227 / slave 109 / comm 207) reads 10x low at /100.  Raw words
+# from that dump, beside the same snapshot's voltage x current:
+_DUMP_237 = {
+    #  key          raw   volts   amps   -> watts by physics
+    "pv1_power":  (32, 616.9, 5.3),   # 3270 W
+    "pv2_power":  (25, 625.2, 4.0),   # 2501 W
+    "bat1_power": (27, 640.2, 4.2),   # 2689 W
+    "bat2_power": (28, 648.5, 4.3),   # 2789 W
+}
 
-def test_trex_fifty_telemetry_power_is_centi_kilowatt():
-    """All 30 telemetry power registers must be signed /100 (index 9).
 
-    Index 8 (/10) made a 50 kW inverter report up to 500 kW — physically
-    impossible against both the nameplate and the installed array.
-    """
-    regs = _registers(const.INVERTER_MODEL_TREX_FIFTY)
-    telemetry = {k: i for k, i in regs.items()
-                 if i.get("unit") in ("kW", "kVA") and i.get("index") != 1}
-    wrong = {k: i["index"] for k, i in telemetry.items() if i["index"] != 9}
-    assert not wrong, f"T-REX-50 telemetry power must be index 9 (/100), got {wrong}"
+def _telemetry_power(model):
+    return {k: i for k, i in _registers(model).items()
+            if i.get("unit") in ("kW", "kVA") and i.get("index") != 1}
+
+
+@pytest.mark.parametrize("key", sorted(_DUMP_237))
+def test_trex_fifty_power_matches_volts_times_amps(key):
+    raw, volts, amps = _DUMP_237[key]
+    info = _registers(const.INVERTER_MODEL_TREX_FIFTY)[key]
+    ratio = _watts(raw, info) / (volts * amps)
+    assert 0.9 <= ratio <= 1.1, (
+        f"T-REX-50 {key}: raw {raw} reads {_watts(raw, info):.0f} W, "
+        f"physics says {volts * amps:.0f} W (ratio {ratio:.2f})")
+
+
+def test_trex_fifty_telemetry_power_is_deci_kilowatt():
+    """All 30 telemetry power registers are signed /10 (index 8), precision 1
+    — the register's own 0.1 kW resolution."""
+    telemetry = _telemetry_power(const.INVERTER_MODEL_TREX_FIFTY)
+    wrong = {k: (i["index"], i.get("precision")) for k, i in telemetry.items()
+             if (i["index"], i.get("precision")) != (8, 1)}
+    assert not wrong, f"T-REX-50 telemetry power must be index 8 / precision 1, got {wrong}"
     assert len(telemetry) == 30, f"expected 30 telemetry power registers, found {len(telemetry)}"
 
 
-def test_trex_fifty_power_precision_keeps_the_registers_resolution():
-    """precision must be 2, because the coordinator rounds with it.
+def test_ivgm_fifty_telemetry_power_is_centi_kilowatt():
+    """The IVGM-50K on the same layout: signed /100 (index 9), precision 2.
 
-    `_async_update_data` applies `round(value, precision)` BEFORE the EMS ever
-    sees the number, so precision 1 would discard the register's real 0.01 kW
-    resolution — turning a 1.56 kW reading into 1.6 kW for scheduling, not just
-    for display.
+    /10 made it read 10x high — string power ten times the installed DC
+    capacity, against the day-energy registers and an external sub-meter.
     """
-    regs = _registers(const.INVERTER_MODEL_TREX_FIFTY)
-    coarse = {k: i.get("precision") for k, i in regs.items()
-              if i.get("unit") in ("kW", "kVA") and i.get("index") == 9
-              and i.get("precision", 0) < 2}
-    assert not coarse, f"index-9 power registers need precision 2, got {coarse}"
+    telemetry = _telemetry_power(const.INVERTER_MODEL_IVGM_FIFTY)
+    wrong = {k: (i["index"], i.get("precision")) for k, i in telemetry.items()
+             if (i["index"], i.get("precision")) != (9, 2)}
+    assert not wrong, f"IVGM-50K telemetry power must be index 9 / precision 2, got {wrong}"
+    assert len(telemetry) == 30
+
+
+def test_ivgm_fifty_differs_from_the_trex_fifty_only_in_power_scale():
+    """Derived from the T-REX-50 map, not a copy: same keys and addresses, and
+    every non-power register identical."""
+    t50 = _registers(const.INVERTER_MODEL_TREX_FIFTY)
+    i50 = _registers(const.INVERTER_MODEL_IVGM_FIFTY)
+    assert t50.keys() == i50.keys()
+    power = set(_telemetry_power(const.INVERTER_MODEL_TREX_FIFTY))
+    for key in t50:
+        if key in power:
+            assert {k: v for k, v in i50[key].items() if k not in ("index", "precision")} == \
+                   {k: v for k, v in t50[key].items() if k not in ("index", "precision")}
+        else:
+            assert i50[key] == t50[key], key
+    assert const.MODEL_REGISTRY[const.INVERTER_MODEL_IVGM_FIFTY] is not \
+        const.MODEL_REGISTRY[const.INVERTER_MODEL_TREX_FIFTY]
 
 
 def test_trex_fifty_reports_a_plausible_reading():
-    """Regression on the actual complaint: a 50 kW unit cannot read 1560 kW."""
-    info = _registers(const.INVERTER_MODEL_TREX_FIFTY)["pv1_power"]
-    kw = round(_scale(15600, info["index"]), info["precision"])
-    assert kw == 156.0, f"raw 15600 should read 156.0 kW, got {kw}"
+    """#237: raw 32 is 3.2 kW on a T-REX-50 — and the same word on an IVGM-50K
+    is 0.32 kW."""
+    t50 = _registers(const.INVERTER_MODEL_TREX_FIFTY)["pv1_power"]
+    i50 = _registers(const.INVERTER_MODEL_IVGM_FIFTY)["pv1_power"]
+    assert round(_scale(32, t50["index"]), t50["precision"]) == 3.2
+    assert round(_scale(32, i50["index"]), i50["precision"]) == 0.32
 
 
 def test_trex_fifty_setpoints_are_left_alone():

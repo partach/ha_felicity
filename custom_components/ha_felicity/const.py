@@ -12,6 +12,11 @@ from .ivgm import (
     REGISTER_SETS_IVGM_EIGHT,
     REGISTER_SETS_IVGM_TWENTY,
 )
+from .ivgm_fifty import (
+    _COMBINED_REGISTERS_IVGM_FIFTY,
+    _REGISTERS_IVGM_FIFTY,
+    REGISTER_SETS_IVGM_FIFTY,
+)
 from .ivgm_hv import (
     _COMBINED_REGISTERS_IVGM_HUNDRED,
     _REGISTERS_IVGM_HUNDRED,
@@ -78,6 +83,12 @@ INVERTER_MODEL_IVAM_SIX = "IVAM6048P1G1"
 # EMS voltage and battery setting is for a 48 V pack.
 INVERTER_MODEL_IVGM_HUNDRED = "IVGM100600"
 
+# IVGM-50K: runs on the T-REX-50 register layout, but its telemetry power counts
+# 0.01 kW where a T-REX-50KHP3G01 counts 0.1 kW (Sept 2026 report vs issue #237).
+# Own map in ivgm_fifty.py, derived from the T-REX-50 one; everything else —
+# control path, setpoints, writes — is the T-REX-50's, as its owner ran it.
+INVERTER_MODEL_IVGM_FIFTY = "IVGM-50K"
+
 INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_TREX_FIVE: 5,
     INVERTER_MODEL_TREX_SIX: 6,
@@ -89,6 +100,7 @@ INVERTER_MAX_POWER_KW = {
     INVERTER_MODEL_IVGM_TWENTY: 20,
     INVERTER_MODEL_IVAM_SIX: 6,
     INVERTER_MODEL_IVGM_HUNDRED: 10,
+    INVERTER_MODEL_IVGM_FIFTY: 50,
 }
 
 # Phases the inverter spreads its AC power over (the P1/P3 in the model id).
@@ -106,6 +118,7 @@ INVERTER_PHASES = {
     INVERTER_MODEL_IVGM_TWENTY: 3,
     INVERTER_MODEL_IVAM_SIX: 1,
     INVERTER_MODEL_IVGM_HUNDRED: 3,
+    INVERTER_MODEL_IVGM_FIFTY: 3,
 }
 
 SUPPORTED_MODELS = [
@@ -119,6 +132,7 @@ SUPPORTED_MODELS = [
     INVERTER_MODEL_IVGM_TWENTY,
     INVERTER_MODEL_IVAM_SIX,
     INVERTER_MODEL_IVGM_HUNDRED,
+    INVERTER_MODEL_IVGM_FIFTY,
     # add new ones here
 ]
 
@@ -130,6 +144,7 @@ SUPPORTED_MODELS = [
 ECO_TIMEOFUSE_MODELS = (
     INVERTER_MODEL_TREX_TWENTY_FIVE,
     INVERTER_MODEL_TREX_FIFTY,
+    INVERTER_MODEL_IVGM_FIFTY,     # the T-REX-50 layout, as its owner ran it
     INVERTER_MODEL_IVGM_EIGHT,
     INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_TWENTY,
@@ -190,7 +205,11 @@ IVGM_MODELS = (
 #: "Power-register scaling"):
 #:   T-REX-5/10     W   long-standing, unchallenged
 #:   T-REX-25       kW  field-proven; FROZEN, do not harmonise with the 50
-#:   T-REX-50       kW  customer report, Sept 2026 — was 10x high as W-scaled
+#:   T-REX-50       kW  0.1 kW per count — issue #237 dump (Nov 2026): raw
+#:                      PV1 32 at 616.9 V x 5.3 A = 3270 W, Bat1 27 at 640.2 V
+#:                      x 4.2 A = 2689 W.  (Sept 2026 /100 came from an IVGM-50K.)
+#:   IVGM-50K       kW  0.01 kW per count — Sept 2026 report on the T-REX-50
+#:                      map: /10 read 10x high, four independent checks
 #:   IVGM-20K       kW  customer report, Sept 2026 — bat1_power raw 156 = 1560 W,
 #:                      i.e. 0.01 kW per count, NOT the watts its document claims
 #:   IVGM-15K       kW  second dump, Sept 2026 — confirmed twice from physics:
@@ -220,6 +239,7 @@ POWER_UNIT_BY_MODEL = {
                                              # the IVGM document said W and was 10x off
     INVERTER_MODEL_IVGM_HUNDRED:     "W",    # issue #206 dump: battery -148 W raw,
                                              # plausible at 212.5 V; T-REX-10 layout
+    INVERTER_MODEL_IVGM_FIFTY:       "kW",   # 0.01 kW; the T-REX-50 is 0.1 kW
 }
 
 #: Derived — kept so type_specific.py keeps reading a single, obvious name.
@@ -258,6 +278,7 @@ SETPOINT_POWER_UNIT_BY_MODEL = {
     INVERTER_MODEL_IVGM_TWENTY:      "W",    # 3-phase members
     INVERTER_MODEL_IVAM_SIX:         "W",    # no setpoint registers exist; never written
     INVERTER_MODEL_IVGM_HUNDRED:     "W",    # monitor-only; never written
+    INVERTER_MODEL_IVGM_FIFTY:       "kW",   # the T-REX-50 setpoints, as run
 }
 
 #: Derived — used on the SETPOINT read/write path (determine_rule_power,
@@ -430,4 +451,13 @@ MODEL_REGISTRY = {
 # entry here — do not "fix" the shared one.
 MODEL_REGISTRY[INVERTER_MODEL_TREX_SIX] = MODEL_REGISTRY[INVERTER_MODEL_TREX_FIVE]
 MODEL_REGISTRY[INVERTER_MODEL_IVGM_FIFTEEN] = MODEL_REGISTRY[INVERTER_MODEL_IVGM_TWENTY]
+
+# NOT register-identical to the T-REX-50 (power scale differs), so its own entry.
+MODEL_REGISTRY[INVERTER_MODEL_IVGM_FIFTY] = {
+    **MODEL_REGISTRY[INVERTER_MODEL_TREX_FIFTY],
+    "registers":        _REGISTERS_IVGM_FIFTY,
+    "combined":         _COMBINED_REGISTERS_IVGM_FIFTY,
+    "register_groups":  build_groups(_REGISTERS_IVGM_FIFTY),
+    "register_sets":    REGISTER_SETS_IVGM_FIFTY,
+}
 

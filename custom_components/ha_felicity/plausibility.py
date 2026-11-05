@@ -20,7 +20,7 @@ Neither can be told from the value alone, but both are physically impossible:
 energy cannot arrive faster than the hardware can move it.  So:
 
 * an energy counter may rise by at most ``rate × elapsed`` (+ a small slack);
-* a lifetime total never falls; a period counter may fall only to a value it
+* a lifetime total never falls (it may read 0 only if it never counted); a period counter may fall only to a value it
   could have reached since a reset (that IS its reset);
 * a rejected reading keeps the last good value — unless the new level holds
   for ``CONFIRM_POLLS`` consecutive polls, consistent with itself, in which
@@ -77,6 +77,8 @@ class PlausibilityGuard:
         self._power_bound_kw = max(inverter_max_kw, 1.0) * POWER_BOUND_FACTOR
         self._counters: dict[str, _Track] = {}
         self._power: dict[str, tuple[float, float]] = {}
+        #: Consecutive 0 readings of a lifetime total with no baseline yet.
+        self._zero_streak: dict[str, int] = {}
         #: {key: count} of readings rejected since start — for diagnostics.
         self.rejected: dict[str, int] = {}
 
@@ -115,8 +117,17 @@ class PlausibilityGuard:
         track = self._counters.get(key)
         if track is None:
             if not period and value <= 0:
-                self._reject(data, key, None)      # a lifetime total is never 0
-                return
+                # A lifetime total reading 0 is the #220 garbage — unless it
+                # has never counted anything (no micro-inverter on the port,
+                # issue #237: rejected on every poll for ever).  So 0 becomes
+                # the baseline once it has held for CONFIRM_POLLS polls.  A
+                # total that has been above 0 still may not fall back to it.
+                streak = self._zero_streak.get(key, 0) + 1
+                if streak < CONFIRM_POLLS:
+                    self._zero_streak[key] = streak
+                    self._reject(data, key, None)
+                    return
+            self._zero_streak.pop(key, None)
             self._counters[key] = _Track(value, now)
             return
         if self._plausible(track.value, track.ts, value, now, factor, period):

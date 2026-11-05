@@ -2,6 +2,16 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **T-REX-50: power readings were 10× too low (issue #237).** Since 1.3.9 the
+  T-REX-50 read its power in 0.01 kW — a correction that came from an
+  IVGM-50K running on the T-REX-50 settings. A real T-REX-50KHP3G01 counts
+  0.1 kW (its PV, battery and grid power now match volts × amps again).
+  **IVGM-50K owners:** pick the new **IVGM-50K** entry (remove the device and
+  add it again); on the T-REX-50 entry your power now reads 10× too high.
+- **A lifetime energy counter that has never counted reads 0 instead of
+  unknown** (e.g. micro-inverter energy with nothing on that port). A total
+  that has counted still can't drop back to 0, so the statistics protection
+  from #220 stays.
 - **No more duplicate dashboard resources after each restart (HA 2026.11).**
   The new Marketplace moves card resources from `/hacsfiles/` to
   `/local/community/`; the integration no longer recognised its own entry and

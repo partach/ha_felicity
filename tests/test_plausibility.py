@@ -95,6 +95,31 @@ def test_a_lifetime_total_never_reads_zero_or_falls():
     assert guard.rejected["pv_generated_energy_total"] == 2
 
 
+def test_a_lifetime_total_that_never_counted_may_read_zero():
+    """Issue #237: microinverter_total_energy on a T-REX-50 with nothing on the
+    micro-inverter port reads 0 for ever, and was rejected 4,943 times — the
+    sensor stayed unknown.  0 is the baseline once it has held CONFIRM_POLLS
+    polls; the counter then counts up as usual."""
+    readings = [0, 0, 0, 0, 0, 0.1]
+    published, guard = _run("microinverter_total_energy", "kWh", readings, kw=50.0)
+    assert published == [None, None, 0, 0, 0, 0.1]
+    assert guard.rejected == {"microinverter_total_energy": pl.CONFIRM_POLLS - 1}
+
+
+def test_a_zero_before_the_first_real_total_is_still_dropped():
+    """The #220 garbage 0 at startup is not taken as the baseline."""
+    published, _ = _run("pv_generated_energy_total", "Wh", [0, 19_366_742, 19_366_750])
+    assert published == [None, 19_366_742, 19_366_750]
+
+
+def test_a_total_that_has_counted_may_not_fall_back_to_zero():
+    readings = [0, 0, 0, 0.5, 0, 0, 0.6]
+    published, _ = _run("microinverter_total_energy", "kWh", readings, kw=50.0)
+    assert published[3] == 0.5
+    assert published[4] == 0.5 and published[5] == 0.5      # the 0s are not published
+    assert published[6] == 0.6
+
+
 def test_a_garbage_jump_on_a_year_counter_is_rejected():
     """lineload_consumption_energy_inquiry_year +3,858,109 kWh in one poll."""
     readings = [10_270_168, 10_270_170, 3_868_379_000, 10_270_175]
