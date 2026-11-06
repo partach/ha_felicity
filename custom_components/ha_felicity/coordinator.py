@@ -115,6 +115,32 @@ CONSUMPTION_BACKFILL_RETRY_S = 300
 # (After a raise the stale reading is LOW, which cannot cause an over-cut, so
 # a raise starts no wait — a charge that overloads a phase is cut at once.)
 SAFE_POWER_SETTLE_S = 30
+
+#: Anti-conflict guard (Known Issues 5 / 8g / 8r).  A sale is suppressed when
+#: the grid imports while the battery discharges; the hold stops the every-
+#: minute flip-flop on a house wired to the inverter's OUTPUT, where idle
+#: self-use covers it.  On a house wired on the GRID side (issue #239) idle
+#: covers nothing and the import grows — so the guard watches what going idle
+#: did: when the import did not fall, twice, it stays off for the session.
+ANTICONFLICT_SOFT_THRESHOLD_W = 200
+ANTICONFLICT_HARD_THRESHOLD_W = 2000
+ANTICONFLICT_MIN_TICKS = 2
+ANTICONFLICT_HOLD_S = 300
+#: Seconds after a suppression before the idle import is judged (the inverter
+#: ramps down; the next poll still measures the discharge).
+ANTICONFLICT_SETTLE_S = 30
+#: Idle readings averaged for that judgement.
+ANTICONFLICT_IDLE_SAMPLES = 2
+#: Idle "helped" when it brought the import below this share of the import
+#: that tripped the guard.  On the output the battery covers the house (import
+#: ~0); on the grid side the import stays level or grows by the discharge
+#: power.  A share, not "lower at all": the reading that trips a resumed sale
+#: is often the idle poll before the discharge took effect, i.e. equal.
+ANTICONFLICT_IDLE_HELPED_SHARE = 0.5
+#: Suppressions in a row where idle did not lower the import before the guard
+#: concludes the house is not on the inverter's output.  One could be a load
+#: switching on at that moment.
+ANTICONFLICT_NO_COVER_EVIDENCE = 2
 # A cut aims the busiest phase at this share of max_amperage_per_phase, and the
 # Power Level returns once it would keep every phase under it: a margin for a
 # load that moves, without cutting before the limit is actually exceeded.
@@ -342,6 +368,14 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         # inverter to flip discharge → idle → discharge every ~16 seconds.
         self._anticonflict_import_ticks: int = 0
         self._anticonflict_suppress_until_ts: float = 0.0
+        # What going idle does to the import (issue #239): the import that
+        # tripped the guard, when, the idle readings since, how many
+        # suppressions in a row idle did not help, and the conclusion.
+        self._anticonflict_trip_import_w: float | None = None
+        self._anticonflict_trip_ts: float = 0.0
+        self._anticonflict_idle_samples: list[float] = []
+        self._anticonflict_no_cover_count: int = 0
+        self.anticonflict_idle_covers_house: bool = True
 
         # Flexible load state tracking
         self._flex_load_states: dict[int, bool] = {}  # {load_idx: on/off}
@@ -1491,6 +1525,51 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
         "Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday",
     ]
+
+    def _anticonflict_idle_helped(self, data: dict) -> bool | None:
+        """Did going idle lower the grid import?  (Issue #239.)
+
+        Judged once per suppression, from ANTICONFLICT_IDLE_SAMPLES readings
+        taken at least ANTICONFLICT_SETTLE_S after it.  On a house wired to the
+        inverter's output the battery covers it in self-use and the import
+        falls to about 0; on a house wired on the grid side idle covers nothing
+        and the import stays level or grows by the discharge power.  Helped =
+        below ANTICONFLICT_IDLE_HELPED_SHARE of the import that tripped it.  ``False``: idle did not help —
+        the caller ends the hold, and after ANTICONFLICT_NO_COVER_EVIDENCE such
+        suppressions in a row the guard is off until restart.  ``True``: it
+        helped (the hold stands).  ``None``: not judged yet.
+        """
+        trip = self._anticonflict_trip_import_w
+        if trip is None or time.time() - self._anticonflict_trip_ts < ANTICONFLICT_SETTLE_S:
+            return None
+        handler = self.TypeSpecificHandler
+        grid_power = (handler.determine_grid_power(data)
+                      if hasattr(handler, "determine_grid_power") else None)
+        if grid_power is None:
+            return None
+        self._anticonflict_idle_samples.append(float(grid_power))
+        if len(self._anticonflict_idle_samples) < ANTICONFLICT_IDLE_SAMPLES:
+            return None
+        idle = sum(self._anticonflict_idle_samples) / len(self._anticonflict_idle_samples)
+        self._anticonflict_trip_import_w = None          # one judgement per suppression
+        self._anticonflict_idle_samples = []
+        if idle < trip * ANTICONFLICT_IDLE_HELPED_SHARE:
+            self._anticonflict_no_cover_count = 0
+            return True
+        self._anticonflict_no_cover_count += 1
+        if self._anticonflict_no_cover_count >= ANTICONFLICT_NO_COVER_EVIDENCE:
+            self.anticonflict_idle_covers_house = False
+            _LOGGER.warning(
+                "Anti-conflict: going idle did not lower the grid import (%.0fW "
+                "discharging, %.0fW idle, %d times in a row) — the house is not on "
+                "the inverter's output, so idle does not cover it.  The guard is "
+                "off until Home Assistant restarts; discharge runs as planned",
+                trip, idle, self._anticonflict_no_cover_count)
+        else:
+            _LOGGER.info(
+                "Anti-conflict: going idle did not lower the grid import (%.0fW "
+                "discharging, %.0fW idle) — resuming the discharge", trip, idle)
+        return False
 
     def _check_rule1_window_conflict(self) -> dict | None:
         """Check whether the planned schedule falls outside Economic Rule 1's
@@ -3805,32 +3884,36 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
 
                             desired_state = self._determine_energy_state(battery_soc)
 
-                            # Anti-conflict guard: don't export while the house is
-                            # importing (e.g. an EV or oven pulls more than the
-                            # discharge power — the battery would be better spent
-                            # covering the house in self-use).  Filters spikes:
+                            # Anti-conflict guard (module constants, Known Issues 5
+                            # / 8g / 8r): when the grid imports while the battery
+                            # discharges, idle self-use may cover more of the house
+                            # than the rule-1 power does.  Filters spikes:
                             #   - small/moderate import (200-2000W) must persist for
                             #     ≥ANTICONFLICT_MIN_TICKS consecutive cycles
                             #   - large import (>2000W) suppresses immediately
                             #   - a suppression HOLDS discharge off for
                             #     ANTICONFLICT_HOLD_S, then allows one retry.
-                            # The hold is what stops the flip-flop: once idle, the
-                            # battery covers the house in self-use, the import
-                            # disappears, and the guard used to let discharge
-                            # straight back in — the import returned, suppress
-                            # again, every minute for as long as the load ran (156
-                            # rule writes in two hours in the day-replay harness).
-                            # Its old 60 s "cooldown" only stopped RE-SUPPRESSION.
-                            ANTICONFLICT_SOFT_THRESHOLD_W = 200
-                            ANTICONFLICT_HARD_THRESHOLD_W = 2000
-                            ANTICONFLICT_MIN_TICKS = 2
-                            ANTICONFLICT_HOLD_S = 300
+                            # The hold is what stops the flip-flop on a house wired
+                            # to the inverter's output: once idle, the battery covers
+                            # the house in self-use, the import disappears, and the
+                            # guard used to let discharge straight back in (156 rule
+                            # writes in two hours in the day-replay harness).
+                            # On a house wired on the GRID side (#239) idle covers
+                            # nothing — the import grows — so the hold kept the
+                            # battery idle all evening.  _anticonflict_idle_helped
+                            # watches the import after going idle and switches the
+                            # guard off when idle does not lower it.
                             grid_power = None
-                            if desired_state == "discharging" and time.time() < self._anticonflict_suppress_until_ts:
-                                _LOGGER.debug(
-                                    "Anti-conflict: discharge held off for %.0fs more",
-                                    self._anticonflict_suppress_until_ts - time.time())
-                                desired_state = "idle"
+                            if desired_state == "discharging" and not self.anticonflict_idle_covers_house:
+                                pass   # idle does not cover this house: never suppress
+                            elif desired_state == "discharging" and time.time() < self._anticonflict_suppress_until_ts:
+                                if self._anticonflict_idle_helped(new_data) is False:
+                                    self._anticonflict_suppress_until_ts = 0.0   # resume the sale
+                                else:
+                                    _LOGGER.debug(
+                                        "Anti-conflict: discharge held off for %.0fs more",
+                                        self._anticonflict_suppress_until_ts - time.time())
+                                    desired_state = "idle"
                             elif desired_state == "discharging":
                                 if hasattr(self.TypeSpecificHandler, 'determine_grid_power'):
                                     grid_power = self.TypeSpecificHandler.determine_grid_power(new_data)
@@ -3840,9 +3923,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                     large = grid_power > ANTICONFLICT_HARD_THRESHOLD_W
                                     if sustained or large:
                                         _LOGGER.info(
-                                            "Anti-conflict: suppressing discharge for %ds — grid "
-                                            "importing %.0fW (sustained=%d ticks, large=%s) — "
-                                            "would sell battery while buying from grid",
+                                            "Anti-conflict: holding discharge off for %ds — grid "
+                                            "importing %.0fW while discharging (sustained=%d ticks, "
+                                            "large=%s); idle self-use may cover the house",
                                             ANTICONFLICT_HOLD_S, grid_power,
                                             self._anticonflict_import_ticks, large,
                                         )
@@ -3851,6 +3934,9 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
                                         self._anticonflict_suppress_until_ts = (
                                             time.time() + ANTICONFLICT_HOLD_S
                                         )
+                                        self._anticonflict_trip_import_w = grid_power
+                                        self._anticonflict_trip_ts = time.time()
+                                        self._anticonflict_idle_samples = []
                                     else:
                                         _LOGGER.debug(
                                             "Anti-conflict: tolerating brief import %.0fW "

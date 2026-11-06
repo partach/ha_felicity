@@ -70,6 +70,7 @@ Falls back to summing the per-phase CT active power registers if the total is un
 | 200-2000W for 2+ polls | Suppress discharge |
 | > 2000W | Suppress immediately |
 | After a suppression | Discharge held off for 5 minutes, then one retry |
+| Idle did not lower the import (twice in a row) | The house is not on the inverter's output: the guard switches off until restart, discharge runs as planned (issue #239) |
 
 ## Peak Shaving Interaction
 

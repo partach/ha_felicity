@@ -168,7 +168,7 @@ class FakeInverter:
 
     def __init__(self, model: str, clock: FakeClock, *, capacity_kwh: float,
                  soc_pct: float, efficiency: float = 0.95, self_use_floor_pct: float = 10.0,
-                 honour_rule_dates: bool = True):
+                 honour_rule_dates: bool = True, house_on_output: bool = True):
         self.model = model
         self.clock = clock
         self.register_map = const.MODEL_REGISTRY[model]["registers"]
@@ -177,6 +177,11 @@ class FakeInverter:
         self.efficiency = efficiency
         self.self_use_floor_pct = self_use_floor_pct
         self.honour_rule_dates = honour_rule_dates
+        # Where the house is wired.  On the inverter's AC output (the default)
+        # self-use covers it from the battery.  On the GRID side (between the
+        # meter and the inverter, issue #239) self-use covers nothing: the
+        # battery feeds the house only while rule 1 discharges.
+        self.house_on_output = house_on_output
         # Seconds a new rule-1 power limit takes to reach the battery.  A real
         # inverter ramps, so the poll right after a write still measures the
         # old power (22 Oct 2026 log: cut to 3 kW, 16 s later still 19.5 A).
@@ -376,6 +381,8 @@ class FakeInverter:
         elif act == "hold":
             imp += max(0.0, net)
             bat, exp = absorb_surplus(bat)
+        elif net > 0 and not self.house_on_output:      # self-use, house on the grid side
+            imp += net
         elif net > 0:                                   # self-use, house short
             floor = self.self_use_floor_pct / 100.0 * cap
             drawn = min(net, max(0.0, bat - floor))
@@ -587,6 +594,7 @@ class DayReplay:
     # through its current entity (an EV charger), not its rated kW.
     current_entities: dict = field(default_factory=dict)
     honour_rule_dates: bool = True
+    house_on_output: bool = True             # False: the house is on the grid side (#239)
     l1_load_kw: callable = lambda t: 0.0     # a single-phase house load on L1 (an oven)
     # Persistent storage. Pass the same dict to a second DayReplay to simulate
     # a Home Assistant restart: what the first one saved, the second one loads.
@@ -603,7 +611,8 @@ class DayReplay:
             self.entry.options["forecast_entity_tomorrow"] = FakeHass.FORECAST_TOMORROW_ENTITY
         self.inverter = FakeInverter(self.model, self.clock, capacity_kwh=self.capacity_kwh,
                                      soc_pct=self.soc_pct,
-                                     honour_rule_dates=self.honour_rule_dates)
+                                     honour_rule_dates=self.honour_rule_dates,
+                                     house_on_output=self.house_on_output)
         model_config = const.MODEL_REGISTRY[self.model]
         self.coordinator = coordinator.HA_FelicityCoordinator(
             hass=self.hass, client=self.inverter, slave_id=1,

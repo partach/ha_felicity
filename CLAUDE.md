@@ -67,6 +67,10 @@ maintainer makes a new decision, add it here in the same commit.
   otherwise it stays at the user's Power Level** (23 Oct 2026); one-step cut;
   nothing written while the battery is idle (24 Oct 2026).
 - **`grid_mode = off` writes nothing to the inverter** (8c).
+- **Anti-conflict guard: the 5-minute hold stays, but only where idle helps**
+  (6 Nov 2026, issue #239, option A chosen over a setting): when going idle
+  does not lower the import, twice in a row, the house is on the grid side
+  and the guard is off for the session (8r).  No topology setting.
 - **`HA_FelicityNumber` writes `int(value)`** — give number entities a
   whole-number step instead (Oct 2026).
 - **Polling reads the full map in big chunks** — 2400 baud makes the number of
@@ -196,7 +200,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **992**: 990 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **996**: 994 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -2524,6 +2528,9 @@ Now uses thresholded hysteresis:
   blocked *re-suppression* — so once idle, the battery covered the house in
   self-use, the import vanished, discharge went straight back on, the import
   returned: on/off every minute for as long as the load ran.  See 8g.)
+- **…but only where idle covers the house (Nov 2026, 8r).**  A house wired
+  on the grid side is not covered by idle self-use; the guard learns that
+  from the import and switches itself off for the session.
 - Each cycle now logs the grid_power + state decision at DEBUG level
   so the flipper pattern is easy to spot in retrospect:
   `State decision: desired=X, current=Y, soc=%, price=, threshold=, grid_power=W`
@@ -3489,6 +3496,42 @@ writes nothing.  Both cards guard `customElements.define` and the
 `customCards` push, so a double load is harmless.  Pinned by
 `tests/test_lovelace_resources.py` (all 7 fail on the old code).
 
+### 8r. The anti-conflict hold kept a grid-side house on the grid all evening — FIXED (6 Nov 2026, issue #239)
+
+T-REX-10, 15 kWh, house wired on the **grid side** of the inverter (no loads
+on its AC output), Trader-like (`both`, manual price), Power Level 2 kW, 2–3 kW
+of house in the evening.  Discharging still imported >200 W, so the guard
+tripped after two polls and — since 8g's fix — held discharge off for 5
+minutes.  8g assumed idle self-use covers the house; on this wiring idle covers
+nothing and the import grows.  Measured by the reporter: 6–17 % of 16:00–24:00
+discharging on 1.3.14 (battery 100 → 84 %), ~53 % on 1.1.6 (its 60 s cooldown
+toggled every ~64 s instead).  The right behaviour here is to discharge
+continuously: 2 kW into a 2–3 kW house exports nothing.
+
+Fix (`_anticonflict_idle_helped`, module constants `ANTICONFLICT_*`): after a
+suppression, wait `ANTICONFLICT_SETTLE_S` (30 s), average
+`ANTICONFLICT_IDLE_SAMPLES` (2) idle readings; idle **helped** when they are
+below `ANTICONFLICT_IDLE_HELPED_SHARE` (0.5) × the tripping import.  Output
+wiring: import ≈ 0 → hold stands (8g unchanged).  Grid-side: import level or
+up → the hold ends at once, and after `ANTICONFLICT_NO_COVER_EVIDENCE` (2)
+such suppressions in a row `anticonflict_idle_covers_house = False`: the
+guard never suppresses again until restart (WARNING logged once).  A share,
+not "any drop": the reading that trips a resumed sale is often the idle poll
+before the discharge took effect, i.e. equal to the idle import.  Re-learnt
+after each restart (two short idle spells).
+
+**What `total_ac_input_power` measures on that wiring is not established** —
+with the house between meter and inverter and no CT the inverter's grid port
+would show export while discharging and the guard would never trip; it does
+trip, so a CT is likely.  The fix judges the reading itself, whatever it is.
+
+Pinned by the replay `test_a_house_on_the_grid_side_is_covered_by_the_discharge_all_evening`
+(`FakeInverter.house_on_output=False`; 0 % discharging on the old code, now
+≥ 95 % after 18:20, ≤ 3 rule episodes), the output-side
+`test_a_heavy_load_while_selling_is_not_toggled_every_poll` (hold kept, guard
+on) and `TestAntiConflictLearnsWhereTheHouseIs` (one misleading reading is
+forgotten; mutation: evidence 1 fails 2).
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -4068,7 +4111,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**992 tests**: 990 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**996 tests**: 994 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests

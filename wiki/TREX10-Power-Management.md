@@ -60,6 +60,7 @@ Used by the anti-conflict guard to detect grid import during discharge:
 | 200-2000W for 2+ polls | Suppress discharge |
 | > 2000W | Suppress immediately |
 | After a suppression | Discharge held off for 5 minutes, then one retry |
+| Idle did not lower the import (twice in a row) | The house is not on the inverter's output: the guard switches off until restart, discharge runs as planned (issue #239) |
 
 ## Safe Power Configuration
 
