@@ -204,6 +204,7 @@ Prevents selling while the house imports from the grid (e.g. an EV starts during
 - Moderate import (200-2000 W): must persist 2 polls before discharge is suppressed
 - Large import (> 2000 W): suppresses immediately
 - A suppression holds discharge off for **5 minutes**, then allows one retry
+- If going idle does not lower the import (twice in a row), the house is wired on the grid side of the inverter, where idle covers nothing: the guard then stays off until Home Assistant restarts and the battery discharges as planned
 
 ## Economic Rule Set Integration
 

@@ -2,6 +2,13 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **House wired on the grid side of the inverter: the battery covers it again
+  in the evening (issue #239).** Since 1.3.x a sale was held off for 5 minutes
+  whenever the grid imported during a discharge — right when the house is on
+  the inverter's output (idle then covers it from the battery), wrong when the
+  house is on the grid side (idle covers nothing). The integration now checks
+  what going idle did to the import; when it did not fall (twice in a row) it
+  stops holding discharge off until Home Assistant restarts. No setting needed.
 - **T-REX-50: power readings were 10× too low (issue #237).** Since 1.3.9 the
   T-REX-50 read its power in 0.01 kW — a correction that came from an
   IVGM-50K running on the T-REX-50 settings. A real T-REX-50KHP3G01 counts

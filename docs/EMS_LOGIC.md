@@ -879,8 +879,11 @@ Prevents discharge during grid import (e.g., EV charging pulls from grid while t
 | Small/moderate import (200–2000W) | Must persist ≥ 2 consecutive cycles (~20s) before suppression |
 | Large import (> 2000W) | Suppresses immediately (genuine sustained draw) |
 | After a suppression | Discharge is held off for 5 minutes, then retried once |
+| Idle did not lower the import (below half the import that tripped the guard), two suppressions in a row | The guard is off until restart; discharge runs as planned |
 
 This prevents the inverter from flipping between discharge → idle → discharge on short load spikes (kettle, microwave, EV startup) **and** under a sustained heavy load: once idle, the battery covers the house in self-use and the import disappears, so without the hold the guard would let discharge straight back in and suppress it again every poll for as long as the load runs.
+
+That premise holds only for a house wired to the inverter's **output**.  A house wired on the **grid side** (between the meter and the inverter, issue #239) is covered by the battery only while rule 1 discharges; idle covers nothing and the import grows.  So, 30 s after a suppression, the guard averages two idle readings: below half the tripping import, idle helped and the hold stands; otherwise it resumes the discharge, and after two such suppressions in a row it stays off for the session.  One misleading reading (a load switching on just then) is forgotten when the next suppression shows idle helping.
 
 ### Midnight Rollover
 

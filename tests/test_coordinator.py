@@ -1474,3 +1474,54 @@ class TestEvCurrentStepsParsing:
         }
         loads = coordinator_mod.HA_FelicityCoordinator._build_flex_load_configs(coord)
         assert loads[0].current_steps == [6, 10, 16]
+
+
+class TestAntiConflictLearnsWhereTheHouseIs:
+    """Issue #239: going idle only helps a house wired to the inverter's
+    output.  The guard judges what idle did to the import, and switches off
+    only after ANTICONFLICT_NO_COVER_EVIDENCE suppressions in a row where it
+    did not help — one misleading reading (a load switching on just then)
+    must not do it."""
+
+    def _guard(self, monkeypatch):
+        coord = _make_coordinator()
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(coordinator_mod.time, "time", lambda: clock["t"])
+        coord.TypeSpecificHandler = MagicMock()
+        coord.TypeSpecificHandler.determine_grid_power = lambda data: data["grid"]
+        coord._anticonflict_no_cover_count = 0
+        coord.anticonflict_idle_covers_house = True
+        return coord, clock
+
+    def _suppress_then_idle(self, coord, clock, trip_w, idle_w):
+        """A suppression at `trip_w`, then idle polls reading `idle_w`."""
+        coord._anticonflict_trip_import_w = trip_w
+        coord._anticonflict_trip_ts = clock["t"]
+        coord._anticonflict_idle_samples = []
+        judge = HA_FelicityCoordinator._anticonflict_idle_helped
+        clock["t"] += 10
+        assert judge(coord, {"grid": idle_w}) is None             # still settling
+        verdict = None
+        for _ in range(coordinator_mod.ANTICONFLICT_IDLE_SAMPLES):
+            clock["t"] += coordinator_mod.ANTICONFLICT_SETTLE_S
+            verdict = judge(coord, {"grid": idle_w})
+        return verdict
+
+    def test_the_house_on_the_output_keeps_the_hold(self, monkeypatch):
+        coord, clock = self._guard(monkeypatch)
+        assert self._suppress_then_idle(coord, clock, 3000, 40) is True
+        assert coord.anticonflict_idle_covers_house is True
+
+    def test_the_house_on_the_grid_side_switches_the_guard_off(self, monkeypatch):
+        coord, clock = self._guard(monkeypatch)
+        assert self._suppress_then_idle(coord, clock, 500, 2500) is False
+        assert coord.anticonflict_idle_covers_house is True      # once is not enough
+        assert self._suppress_then_idle(coord, clock, 2500, 2500) is False
+        assert coord.anticonflict_idle_covers_house is False
+
+    def test_one_misleading_reading_is_forgotten(self, monkeypatch):
+        coord, clock = self._guard(monkeypatch)
+        assert self._suppress_then_idle(coord, clock, 3000, 3200) is False   # oven on
+        assert self._suppress_then_idle(coord, clock, 3000, 0) is True       # idle covers
+        assert self._suppress_then_idle(coord, clock, 3000, 3200) is False
+        assert coord.anticonflict_idle_covers_house is True

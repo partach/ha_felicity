@@ -433,6 +433,30 @@ async def test_a_heavy_load_while_selling_is_not_toggled_every_poll():
               for prev, nxt in itertools.pairwise(episodes)]
     assert pauses and all(p >= 300 for p in pauses), episodes
     assert len(episodes) <= 8, episodes
+    # Idle covered the house (the import fell), so the guard keeps its hold.
+    assert r.coordinator.anticonflict_idle_covers_house is True
+
+
+@pytest.mark.asyncio
+async def test_a_house_on_the_grid_side_is_covered_by_the_discharge_all_evening():
+    """Issue #239: T-REX-10, house wired on the GRID side of the inverter, Power
+    Level 2 kW, 2.5 kW of house.  Discharging still imports 0.5 kW, so the
+    guard trips — but idle covers nothing here (the import grows to 2.5 kW).
+    The 5-minute hold kept the battery idle most of the evening (6-17 % of
+    16:00-24:00 in the report).  The guard must notice that idle did not help
+    and let the battery cover the house."""
+    house = lambda t: 2.5 if t >= day(D, 18) else 0.6
+    r = _replay(options={**TRADER, "power_level": 2.0}, soc=95.0, start=day(D, 17, 55),
+                prices_for=DUCK, load_kw=house, house_on_output=False)
+    await r.run_until(day(D, 21), step_s=10)
+    _chart(r, "house_on_the_grid_side")
+
+    after_learning = [t for t in r.ticks if day(D, 18, 20) <= t.at < day(D, 21)]
+    discharging = sum(t.inverter == "discharge" for t in after_learning) / len(after_learning)
+    assert discharging >= 0.95, r.timeline(5)
+    episodes = _episodes(r, "econ_rule_1_enable", day(D, 17, 55))
+    assert len(episodes) <= 3, episodes                 # two short idle spells to learn, then one sale
+    assert r.coordinator.anticonflict_idle_covers_house is False
 
 
 @pytest.mark.asyncio
