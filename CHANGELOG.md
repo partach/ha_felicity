@@ -2,6 +2,13 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **Energy counters that answer 0 now and then no longer stick at 0 or inflate
+  the statistics (issue #214).** On an IVAM the day/month/year load counters
+  read 0 in some polls: the sensors showed 0.0 while the inverter said 2.6 kWh,
+  or flipped between the two — and each flip made Home Assistant count the
+  day again. A 0 is now taken as a counter's starting point or its reset only
+  once it holds (near the counter's own reset time a minute, otherwise 15
+  minutes). A real midnight reset shows a minute later; nothing else changes.
 - **House wired on the grid side of the inverter: the battery covers it again
   in the evening (issue #239).** Since 1.3.x a sale was held off for 5 minutes
   whenever the grid imported during a discharge — right when the house is on

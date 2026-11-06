@@ -53,12 +53,13 @@ physics checks: `P / (V × I)` for the battery, PV1, PV2, grid and load.
 
 | # | Question | Why it matters |
 |---|---|---|
-| 1 | **Is power really in W?** The document says "Rate 0, W". The IVGM document said the same and its telemetry was 0.01 kW per count (10× off). | Every power sensor and the card. A ratio near 10 or 0.1 in the dump's physics checks settles it. |
+| 1 | **Is power really in W?** The document says "Rate 0, W". The IVGM document said the same and its telemetry was 0.01 kW per count (10× off). **Grid and load: yes** — issue #214 dump (1.3.15, 2026-11-06): Grid A 688 W vs 234.3 V × 3.1 A (ratio 0.95), Load A 652 W vs 234.9 V × 2.7 A (1.03). **Battery and PV: not yet** — too little current in that dump. | Every power sensor and the card. A dump while the battery charges or discharges a few hundred W settles the rest. |
 | 2 | Sign of **grid power** (0x1173): import positive? | Card direction of the grid flow. Not documented (battery current/power ARE: negative = discharging). |
 | 3 | **SccHs temperature** "Rate 0 °C" — raw degrees, or tenths like the IVGM's temperatures turned out to be? | A reading of ~300 means tenths. |
 | 4 | The "**inquiry – Day / Month / Year**" registers at 0x1260–0x1269 and 0x1294–0x1298 sit beside the "This day / month / year" ones. What period do they answer? | Not mapped until known; the dump reads them. |
 | 5 | Alarm and fault code values — "see the model's instruction manual". | Shown as raw numbers. |
-| 6 | 30 small reads per poll at 9600 baud (the document's registers are scattered). | Should be ~1–2 s; `poll_stats` in the diagnostics shows the real number. |
+| 6 | 30 small reads per poll at 9600 baud (the document's registers are scattered). | Measured 2.6 s, 30/30 groups, no retries (Elfin EW41B, #214). |
+| 7 | The load energy counters (0x11A9 total, 0x11E5–0x11E9 day/month/year) answer **0 in some polls** and their real value in others (#214: the dump read 2.6 / 8.0 / 81.2 kWh while the sensors showed 0.0). | The reading check now ignores such zeros (CLAUDE.md 8s); `poll_stats.implausible_last` shows the last rejected reading per counter. Why the inverter answers 0 is not known. |
 
 ## Setting it up
 

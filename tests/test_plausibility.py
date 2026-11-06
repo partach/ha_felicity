@@ -9,6 +9,8 @@ total — and why the assertions are about the SUM, not just the state.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from tests.conftest import load_component
@@ -47,6 +49,15 @@ def _run(key, unit, readings, kw=T10_KW, start=0.0):
     return out, guard
 
 
+def _local(*args) -> float:
+    """Epoch seconds of a LOCAL wall-clock time (the reset window is local)."""
+    return time.mktime((*args, *(0,) * (6 - len(args)), 0, 0, -1))
+
+
+NOON = _local(2026, 11, 6, 12, 0)          # far from any reset time
+NIGHT = _local(2026, 11, 6, 23, 30)        # a day counter's reset window
+
+
 def test_period_words_classify_every_models_counters():
     assert pl.is_period_counter("pv_generated_energy_day")
     assert pl.is_period_counter("total_load_consumption_energy_day")   # "total" + day
@@ -62,10 +73,18 @@ def test_the_day_rollover_glitch_is_not_counted():
     04:05 and 0 again at the next — booked as +34 kWh and a reset, every day."""
     readings = [0, 0, 34309, 0, 0, 0]
     published, guard = _run("pv_generated_energy_day", "Wh", readings)
-    assert published == [0, 0, 0, 0, 0, 0]
+    # A start of zeros is held back until 0 has held (the sensor keeps its
+    # restored value meanwhile); the glitch is never published.
+    assert published == [None, None, None, 0, 0, 0]
     assert lts_sum(published) == 0
     assert lts_sum(readings) == 34309            # what HA counted before
-    assert guard.rejected == {"pv_generated_energy_day": 1}
+    guard = pl.PlausibilityGuard(_map(pv_generated_energy_day="Wh"), T10_KW)
+    out = []
+    for i, value in enumerate([0, 0, 0, 0, 34309, 0, 0]):   # 0 held, then the glitch
+        data = {"pv_generated_energy_day": value}
+        guard.apply(data, NOON + i * POLL)
+        out.append(data.get("pv_generated_energy_day"))
+    assert out == [None, None, 0, 0, 0, 0, 0]
 
 
 def test_the_month_glitch_is_not_counted():
@@ -78,11 +97,65 @@ def test_the_month_glitch_is_not_counted():
 
 
 def test_a_real_period_reset_is_accepted():
-    readings = [34_000, 34_020, 0, 15, 40]       # midnight: the day starts again
-    published, guard = _run("battery_charged_energy_day", "Wh", readings)
-    assert published == readings
-    assert not guard.rejected
-    assert lts_sum(published) == 20 + 40
+    """Midnight: the day starts again and stays low.  It is published once it
+    has held RESET_HOLD_IN_WINDOW_S; HA's sum is the same as if at once."""
+    readings = [34_000, 34_020] + [0, 0, 5, 10, 15, 20, 25, 30, 35]
+    published, _ = _run("battery_charged_energy_day", "Wh", readings,
+                        start=_local(2026, 11, 6, 23, 59, 40))
+    assert published[2] == 34_020                # not at once
+    assert published[-1] == 35                   # after a minute: the reset
+    assert lts_sum(published) == 20 + 35
+    assert lts_sum(published) == lts_sum(readings)
+
+
+def test_a_period_counter_answering_0_in_some_polls_is_not_reset():
+    """Issue #214 (IVAM6048P1G1): the day/month/year load counters answered
+    0 in some polls and the true value (2.6 / 8.0 / 81.2 kWh) in others.  A 0
+    was accepted as the day's reset and the true value then counted again —
+    the #220 inflation through another door.  Away from the reset time, and
+    near it too, a 0 the old level follows is never published."""
+    true = [2.6 + 0.01 * i for i in range(40)]
+    readings = [0.0 if i % 5 in (2, 3) else v for i, v in enumerate(true)]
+    for start in (NOON, NIGHT):
+        published, guard = _run("load_day_cost_energy", "kWh", readings, kw=6.0, start=start)
+        assert 0.0 not in published, (start, published)
+        assert lts_sum(published) == pytest.approx(true[-1] - true[0])
+        assert guard.last_rejected["load_day_cost_energy"]["rejected"] == 0.0
+
+
+def test_a_start_of_zeros_does_not_hide_the_true_value():
+    """The same IVAM after a restart: zeros first, then the true value mixed
+    with zeros.  Before, 0 became the baseline and 2.6 was rejected as a jump
+    for ever — the sensor read 0.0 while the register said 2.6."""
+    readings = [0.0, 2.6, 0.0, 2.6, 2.6, 2.6, 0.0, 2.61, 2.61]
+    published, _ = _run("load_day_cost_energy", "kWh", readings, kw=6.0, start=NOON)
+    assert published[-1] == 2.61
+    assert 0.0 not in published
+
+
+def test_a_fall_away_from_the_reset_time_needs_a_long_hold():
+    """A wrong inverter clock, or a counter cleared in the app: a fall that
+    holds RESET_CONFIRM_S with nothing back at the old level is accepted."""
+    polls = int(pl.RESET_CONFIRM_S // POLL) + 2
+    readings = [5.0, 5.0] + [0.0] * polls
+    published, _ = _run("load_day_cost_energy", "kWh", readings, kw=6.0, start=NOON)
+    assert published[10] == 5.0
+    assert published[-1] == 0.0
+
+
+@pytest.mark.parametrize("key, when, expected", [
+    ("load_day_cost_energy", (2026, 11, 6, 23, 0), True),
+    ("load_day_cost_energy", (2026, 11, 7, 2, 30), True),
+    ("load_day_cost_energy", (2026, 11, 6, 12, 0), False),
+    ("load_month_cost_energy", (2026, 11, 30, 23, 0), True),
+    ("load_month_cost_energy", (2026, 12, 1, 1, 0), True),
+    ("load_month_cost_energy", (2026, 11, 6, 23, 0), False),
+    ("load_year_cost_energy", (2026, 12, 31, 23, 30), True),
+    ("load_year_cost_energy", (2026, 6, 1, 0, 30), False),
+    ("load_total_cost_energy", (2026, 11, 6, 23, 0), False),
+])
+def test_reset_windows(key, when, expected):
+    assert pl.in_reset_window(key, _local(*when)) is expected
 
 
 def test_a_lifetime_total_never_reads_zero_or_falls():
@@ -108,8 +181,9 @@ def test_a_lifetime_total_that_never_counted_may_read_zero():
 
 def test_a_zero_before_the_first_real_total_is_still_dropped():
     """The #220 garbage 0 at startup is not taken as the baseline."""
-    published, _ = _run("pv_generated_energy_total", "Wh", [0, 19_366_742, 19_366_750])
-    assert published == [None, 19_366_742, 19_366_750]
+    readings = [0, 19_366_742, 19_366_750, 19_366_760, 19_366_770]
+    published, _ = _run("pv_generated_energy_total", "Wh", readings)
+    assert published == [None, None, None, 19_366_760, 19_366_770]
 
 
 def test_a_total_that_has_counted_may_not_fall_back_to_zero():
