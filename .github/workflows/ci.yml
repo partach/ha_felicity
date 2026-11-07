@@ -1,18 +1,45 @@
 name: CI
 
+# Files no job can be affected by: documentation and pictures.  Today no test
+# reads a Markdown file (they are only named in docstrings) and ruff lints .py
+# files only, so these change nothing a job checks.  A file a test starts
+# reading must come off this list, or a change to it merges untested.
+# manifest.json is NOT here: test_milp_solver_install reads it.
 on:
   push:
     branches: [ main ]
+    paths-ignore: &ignored_paths
+      - '**/*.md'
+      - 'docs/**'
+      - 'wiki/**'
+      - 'pictures/**'
+      - '**/*.pdf'
+      - 'LICENSE.txt'
   pull_request:
     branches: [ main ]
+    paths-ignore: *ignored_paths
   schedule:
     - cron: '0 0 * * 0'  # Weekly
   workflow_dispatch:
 
 permissions: {}
+
+# A newer push to the same pull request (or to main) cancels the run it
+# supersedes: only the newest commit's result is ever read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate-code:
     runs-on: ubuntu-latest
+    # The suite takes under a minute in parallel; a hung job must not burn
+    # the month's minutes.
+    timeout-minutes: 15
+    # The merge commit GitHub writes on main has the tree the pull request's
+    # own run already tested against main, so re-testing it spends the same
+    # minutes twice.  A direct push to main still runs.
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Merge pull request') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,17 +48,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-test.txt
 
+      # One install.  PIN the linter: it was unpinned, so `ruff check .` ran
+      # whatever was newest — and ruff 0.16 expanded its DEFAULT rule set from
+      # 59 rules to 413, turning a green build into 211 errors overnight with
+      # no code change.  A linter upgrade should be a deliberate commit (bump
+      # this pin, fix or ignore the new rules), never a surprise.  The
+      # enforced rules live in ruff.toml.
       - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # PIN the linter.  This was unpinned, so `ruff check .` ran whatever
-          # was newest — and ruff 0.16 expanded its DEFAULT rule set from 59
-          # rules to 413, turning a green build into 211 errors overnight with
-          # no code change.  A linter upgrade should be a deliberate commit
-          # (bump this pin, fix or ignore the new rules), never a surprise.
-          # The enforced rules live in ruff.toml.
-          pip install ruff==0.16.7
+        run: pip install ruff==0.16.7 -r requirements-test.txt
 
       - name: Lint Python (Ruff)
         run: ruff check .
@@ -39,11 +66,9 @@ jobs:
       # CI previously ran NO tests at all, so a broken test harness was
       # invisible: tests/test_coordinator.py had stopped collecting entirely
       # (a hand-typed `const` stub drifted from production) and nothing noticed.
-      - name: Install test dependencies
-        run: pip install -r requirements-test.txt
-
+      # `-n auto` across the runner's cores: same count, ~2.5 min to ~40 s.
       - name: Run unit tests
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q -n auto
 
       # The simulator is the project's behavioural gate (see CLAUDE.md): it runs
       # the real scheduler over the scenario library for BOTH engines and exits
@@ -52,11 +77,8 @@ jobs:
       - name: Run EMS scenario simulator (both engines)
         run: python tools/ems_simulator.py --no-plot
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
+      # The runner image ships Node, so no setup-node step: there is no
+      # package.json today and this step only reports that.
       - name: Lint JavaScript (ESLint)
         run: |
           if [ -f package.json ]; then

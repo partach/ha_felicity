@@ -6,4 +6,5 @@
 # tests fast and installable anywhere — see the conftest docstring.
 pytest>=8.0
 pytest-asyncio>=0.24        # the select/coordinator tests are async
+pytest-xdist>=3.5           # CI runs the suite with -n auto (~2.5 min -> ~40 s)
 pulp>=2.7.0,<4.0            # MILP engine; its tests skip if absent, CI should run them

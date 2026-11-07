@@ -208,7 +208,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **1008**: 1006 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **1008**: 1006 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -3030,7 +3030,7 @@ and flex-load actuation are exercised for real.
 
 **CI note:** `.github/workflows/ci.yml` runs only on pushes to `main`, PRs into
 `main`, weekly and manually — pushes to a feature branch run nothing until a PR
-is opened.
+is opened.  It is rationed since Nov 2026 (see "Lint & CI").
 
 ### 8i. A self-sufficiency plan buying for a need that wasn't there; a charger lost across a restart — FIXED (Oct 2026)
 
@@ -4301,6 +4301,26 @@ were added Sept 2026 — CI previously ran lint only, which is why a dead test f
 went unnoticed.  The ruff pin is deliberate: it was unpinned, and ruff 0.16
 expanded its default rule set from 59 rules to 413, turning a green build into
 211 errors with no code change.
+
+**CI is rationed (Nov 2026, maintainer: the same fix as ha_revpi_pro, where
+the free Actions minutes ran out).**  Both workflows (`ci.yml`,
+`validate-hacs.yml`):
+- skip the push run of a **merge commit on main** (`Merge pull request …`) —
+  its pull request's run already tested that tree; a direct push still runs;
+- **cancel the older run** when a newer push to the same PR / branch arrives
+  (`concurrency`, `cancel-in-progress`);
+- have a **timeout** on every job (15 min CI, 10 min Validate);
+- **`paths-ignore`** documentation: `**/*.md`, `docs/**`, `wiki/**`,
+  `pictures/**`, PDFs (CI also `LICENSE.txt`; Validate also `tests/**` and
+  `tools/**`).  No test reads a Markdown file today and ruff lints only .py.
+  ⚠️ A file a test starts reading must come off CI's list, or a change to it
+  merges untested.  `manifest.json` is deliberately NOT ignored
+  (`test_milp_solver_install` reads it; hassfest checks it).
+CI also caches pip, installs once, runs pytest with **`-n auto`**
+(pytest-xdist, in `requirements-test.txt`: same 1006 + 2, ~2.5 min → ~40 s on
+four cores), and has no setup-node step (the runner ships Node; there is no
+package.json).  A docs-only PR gets no CI run — if branch protection ever
+requires these checks, such a PR waits for them.
 
 ⚠️ **Run the pinned ruff, not whatever is on `PATH`.**  These containers ship a
 `ruff` at `/root/.local/bin/ruff` that shadows the pin — it has been an *older*
