@@ -1,184 +1,181 @@
 # Flexible Load Control — Setup & Operation Guide
 
-The Felicity integration can manage up to **3 controllable loads** — for example an EV charger, a boiler, and a pool pump.
-Loads are steered automatically during the cheapest and most solar-rich hours, exactly like the battery schedule.
-This document explains every entity you need to provide, how to configure each load, and when and how the integration will switch them.
+The integration can switch up to **3 loads** for you — an EV charger, a boiler,
+a pool pump — in the hours where electricity is cheap, negative, or covered by
+your own solar.  This guide covers what to assign, every setting, and when the
+integration switches a load on or off.
+
+> Flexible loads are scheduled by the EMS, so they only run while the EMS is on
+> (Grid Mode not `off`).  Monitor-only models (IVAM6048P1G1, IVGM100600) have no
+> EMS and therefore no flexible loads.
 
 ---
 
 ## Quick overview
 
-| | Load 1 (EV Charger) | Load 2 | Load 3 |
+| | Load 1 (EV charger) | Load 2 | Load 3 |
 |---|---|---|---|
-| On/off control | switch / input_boolean / light | same | same |
-| Current stepping | optional (number / select) | — | — |
-| Typical use | EV charger | Boiler / water heater | Pool pump / other |
+| On/off control | `switch` / `input_boolean` / `light` | same | same |
+| Current control | optional (`number` / `select` / `input_number` / `input_select`) | — | — |
+| EV Charge Strategy, EV Boost | yes | — | — |
+| Typical use | EV charger | boiler / water heater | pool pump / other |
 
-Load 1 has extra EV-charger support: variable current control, phase/voltage settings, and the EV Boost override button.
-Loads 2 and 3 are binary (on/off only).
+Load 1 becomes an **EV charger** as soon as it has a current entity: it then
+gets the EV Charge Strategy, current stepping (with Current Steps) and the EV
+Boost buttons.  Loads 2 and 3 are on/off only.
 
 ---
 
-## Step 1 — Assign the entities (Integration Options)
+## Step 1 — Assign the entities (integration options)
 
-Entity assignments are done in the integration's **options flow** — the same place where you set up Nordpool and the solar-forecast entity.
+> **Settings → Devices & services → Felicity → ⚙ Configure**
 
-> **Settings → Devices & Services → Felicity Inverter → gear icon (⚙) → Configure**
+At the bottom of the options form:
 
-You will see the following entity selectors at the bottom of the options form:
-
-| Option | Domain filter | Purpose |
+| Option | Accepts | Purpose |
 |---|---|---|
-| **EV Charger / Load 1 — Switch Entity** | `switch`, `input_boolean`, `light` | The entity that turns the load on or off. |
-| **EV Charger / Load 1 — Current Entity** | `number`, `select`, `input_number`, `input_select` | *(Optional)* The entity that controls the EV charger's charging current (in Amps). Only needed if your charger supports variable current. |
-| **Flexible Load 2 — Switch Entity** | `switch`, `input_boolean`, `light` | The entity that turns load 2 on or off. |
-| **Flexible Load 3 — Switch Entity** | `switch`, `input_boolean`, `light` | The entity that turns load 3 on or off. |
+| **EV Charger / Load 1 — Switch Entity** | `switch`, `input_boolean`, `light` | Turns load 1 on and off. |
+| **EV Charger / Load 1 — Current Entity** | `number`, `select`, `input_number`, `input_select` | *(Optional)* Sets the charger's current in amps. Makes load 1 an EV charger. |
+| **Flexible Load 2 — Switch Entity** | `switch`, `input_boolean`, `light` | Turns load 2 on and off. |
+| **Flexible Load 3 — Switch Entity** | `switch`, `input_boolean`, `light` | Turns load 3 on and off. |
 
-**Important:** Until you assign a switch entity to a load, all other settings for that load (power, priority, name, enabled toggle) remain greyed out / unavailable. Similarly, the EV-specific settings (phases, voltage, default current, current steps) only appear once the current entity is assigned.
+A load's other settings stay unavailable until its switch entity is assigned;
+the EV settings (phases, voltage, startup current, current steps) until the
+current entity is.  Saving the options form without touching a picker keeps
+what was assigned; only clearing a picker removes it.
 
-### Which entities to use?
+Examples (names differ per installation — check the device page):
 
-Most smart plugs, relays, and EV charger integrations in Home Assistant expose a `switch.*` entity.
-For example:
-
-- **Easee charger**: `switch.easee_charger` (on/off), `number.easee_charger_dynamic_charger_limit` or `select.easee_charger_current` (current)
-- **Shelly relay**: `switch.shelly_plug_s`
+- **Easee**: `switch.easee_charger`, `number.easee_charger_dynamic_charger_limit`
 - **Wallbox**: `switch.wallbox_portal_charging`, `number.wallbox_portal_maximum_charging_current`
 - **OpenEVSE**: `switch.openevse`, `number.openevse_max_current`
-- **Smart Life plug (boiler)**: `switch.smart_life_boiler`
-
-The exact entity names depend on your installation. Check your device page in Home Assistant.
+- **Shelly / smart plug (boiler)**: `switch.shelly_plug_s`
 
 ---
 
-## Step 2 — Configure load settings (Device Page)
+## Step 2 — Configure the loads (device page)
 
-After assigning a switch entity, these configuration entities become available on the device page:
+### Every load (1, 2, 3)
 
-### All loads (1, 2, 3)
+| Entity | Range | Default | What it does |
+|---|---|---|---|
+| **… Enabled** | off / on | off | The EMS only switches the load while this is `on`. While it is `on`, the EMS owns the switch: a load you start by hand is switched off again in a slot it is not scheduled for. |
+| **… Name** | text | — | Shown on the EMS card ("Boiler", "Pool pump"). |
+| **… Rated Power** | 0.5 – 25 kW | 3.7 (load 1) / 2.0 | The load's draw. Decides whether the sun covers it, and how much current it adds when it comes back after being shed. For a stepped EV charger the draw is computed from current × voltage × phases instead. |
+| **… Shed Priority (1=last 3=first)** | 1 – 3 | 1 / 2 / 3 | Order in which loads are switched off when a phase is overloaded: **3 first, 1 last**. |
 
-| Entity | Type | Range | Default | Description |
-|---|---|---|---|---|
-| **Enabled** | Select | off / on | off | Master switch for EMS-controlled scheduling. When `off`, the integration will not turn the load on or off. |
-| **Name** | Text | — | *(empty)* | Friendly name shown in the EMS card (e.g., "Boiler", "Pool Pump"). |
-| **Power** | Number | 0.5 – 25 kW | 3.7 (load 1) / 2.0 (load 2-3) | Rated power of the load. Used in safe-power calculations. |
-| **Shed Priority** | Number | 1 – 3 | 1 / 2 / 3 | Order in which loads are shed during overcurrent. **Higher number = shed first.** Load 1 (EV) defaults to 1 so it is shed last. |
+### EV charger (load 1, needs the current entity)
 
-### EV charger extras (Load 1 only — requires current entity)
-
-| Entity | Type | Range | Default | Description |
-|---|---|---|---|---|
-| **Current Steps** | Text | — | *(empty)* | Comma-separated list of available charging currents your charger supports, in Amps. Example: `6,10,13,16,20,25`. The integration uses this list to step the current up or down. |
-| **Phases** | Number | 1 – 3 | 1 | Number of phases the charger uses. Together with voltage, this determines the power at each current step: `power = amps × voltage × phases / 1000`. |
-| **Voltage** | Number | 110 – 400 V | 230 | Supply voltage at the charger. |
-| **Default Current** | Number | 6 – 32 A | 16 | The current the integration sets when it turns the charger on during a scheduled slot. |
+| Entity | Range | Default | What it does |
+|---|---|---|---|
+| **EV Charger / Load 1 Current Steps** | text | — | The currents your charger supports, comma-separated: `6,10,13,16,20,25` (units are fine: `6 A, 10 A`). Enables current stepping. Without it the charger runs on/off at its own setting. |
+| **EV Charger Number of Phases** | 1 – 3 | 1 | Power = amps × voltage × phases (16 A × 230 V × 1 = 3.7 kW; × 3 = 11 kW). |
+| **EV Charger Grid Voltage** | 110 – 400 V | 230 | Used in the same formula. |
+| **EV Charger Startup Current** | 6 – 32 A | 16 | Current set when the charger is switched on. Rounded down to the nearest step (11 A with `6,10,13,16` → 10 A). |
+| **EV Charger Grid Phase** | unknown / L1 / L2 / L3 | unknown | The phase a 1-phase charger is on. After safe power switched it off, it may come back when *its own* phase has room. `unknown` waits for room on the busiest phase (safe, but on a small connection it can keep the charger off). |
+| **EV Charge Strategy** | smart / solar_only / cheap_only / always_on | smart | When the charger may run — see below. |
 
 ---
 
-## When does the integration turn loads on?
+## When does a load run?
 
-Every 10 seconds the integration evaluates the current time slot. A load that is **enabled** and has a **switch entity** assigned will be turned **on** when the current slot matches **any** of these conditions:
+The plan is made every time the EMS re-plans (each slot, and whenever prices,
+forecast or SOC change); the switches are set every poll (10 s).  A load that is
+**enabled** runs in a slot that is any of:
 
-| Condition | Example |
+| Condition | Meaning |
 |---|---|
-| **Price is below the threshold** | Electricity costs €0.05/kWh and your threshold is at level 5 (= avg price €0.12/kWh). |
-| **Price is negative** | The grid pays you to consume (common midday in solar-heavy markets). |
-| **Solar surplus** | Your PV forecast for this hour exceeds your consumption for this hour — free energy. |
-| **Battery charge slot** | The EMS already identified this slot as cheap enough to charge the battery — equally good for your loads. |
+| **Battery charge slot** | The EMS is buying grid energy for the battery here — the cheapest moments it found. |
+| **Cheap, and the grid feeds the house** | The price is at or below the dearest slot the battery charges in, *and* the grid feeds the house there (battery charging, or planned at its minimum). In any other slot the battery would feed the load in self-use, so the cheap price would never be paid. If the battery buys nothing today, no slot counts as cheap. |
+| **Negative price** | You are paid to consume. |
+| **Solar surplus that covers the load** | Forecast PV (scaled by how well today's sun matches the forecast) minus the house's hourly consumption profile is at least the load's power — for a stepped charger, its lowest step. A charger running on sun alone gets the highest step the surplus covers. |
 
-When the slot ends (or none of the above conditions are met), the integration turns the load **off**.
+Outside those slots the load is switched **off**.
 
-### Scheduling is an overlay
+Loads are an **overlay**: they don't change the battery plan, and the battery
+comes first.  They are not included in the battery's SOC line either.
 
-Load scheduling is calculated **after** the battery schedule. Loads do not affect the battery plan — they are additive consumption. The battery will charge in the same slots regardless of whether loads are on.
+### EV Charge Strategy (load 1)
 
-This means: if electricity is cheap, both the battery charges **and** your loads run. Maximum benefit from the same cheap window.
+| Strategy | The charger runs in |
+|---|---|
+| **smart** (default) | every condition above |
+| **solar_only** | solar-surplus slots only |
+| **cheap_only** | cheap (as defined above) and negative-price slots |
+| **always_on** | every slot — safe power still steps the current down when a phase is overloaded |
 
----
-
-## How does current stepping work? (EV charger)
-
-When the integration turns on the EV charger, it sets the current to **Default Current** via the assigned current entity.
-
-If your current entity is a `number.*`, the integration calls `number.set_value`.
-If it is a `select.*`, the integration calls `select.select_option`.
-
-During safe-power events (see below), the integration steps the current down using the **Current Steps** list: it finds the next lower step that reduces power enough.
-
-Example with current steps `6,10,13,16,20,25` and default current 16A:
-- Normal operation: charger runs at 16A.
-- Grid current is 85% of max → charger is stepped down to 13A.
-- Grid current still high → charger is stepped down to 10A.
-- Grid current normalises → charger is stepped back up to 16A.
+Loads 2 and 3 always use *smart*.
 
 ---
 
-## Safe Power Protection — Load Shedding Priority
+## Grid current protection (safe power)
 
-When the grid current on any phase exceeds the configured **Max Amperage Per Phase**, the integration reduces load in this order:
+With **Safe Power Management** on (or `auto` with the EMS on), the integration
+watches the current on each phase against **Max Amperage Per Phase**:
 
-| Priority | Action | Detail |
-|---|---|---|
-| **1st** | EV charger current step-down | Reduce one current step at a time (e.g., 16A → 13A → 10A). Only one step per 10-second cycle to avoid oscillation. |
-| **2nd** | Binary load shedding | Turn off active loads in shed-priority order — **highest priority number first**. Load with priority 3 is shed before priority 2, which is shed before priority 1. One load per cycle. |
-| **3rd** | Battery power reduction | As a last resort, the battery charge/discharge power is reduced by 1–2 kW. |
+| Order | Action |
+|---|---|
+| **1st — battery** | When a phase is over the limit while the battery charges or discharges, the battery's power is cut **in one step** to the level that brings the busiest phase back to 90 % of the limit (never below 1 kW). |
+| **2nd — EV current** | If the battery is at its 1 kW minimum (or idle) and a phase is still above 95 %, the EV charger is stepped down one current step per poll. |
+| **3rd — switch loads off** | Still above 95 %: loads are switched off one per poll, Shed Priority 3 first, 1 last. |
 
-Recovery works in reverse: when current drops below 70% of max, loads are restored one per cycle in reverse priority order, and battery power is increased back toward the user's Power Level setting.
+A switched-off load stays off for at least **5 minutes**, and then comes back
+only when its own current fits (current on its phase + its own amps ≤ 95 % of
+the limit); otherwise it checks again every minute.  A load that fits comes
+back before the battery's power is raised.  The battery's power goes back to
+your **Power Level** in one step as soon as that fits again.  While the battery
+is idle, its power setting is not touched.
 
 ---
 
-## EV Boost Override
-
-For situations where you need to charge your car urgently — regardless of price or schedule:
+## EV Boost (load 1)
 
 | Button | What it does |
 |---|---|
-| **EV Boost +1h** | Adds 1 hour to the boost timer. Presses **stack**: pressing 3 times gives 3 hours. |
-| **EV Boost Cancel** | Immediately cancels any active boost. |
+| **EV Boost +1h** | Forces the charger on at its highest current step for an hour. Presses add up (3 presses = 3 hours). |
+| **EV Boost Cancel** | Ends the boost at once. |
 
-These buttons are only available when the **current entity** is assigned (Load 1).
-
-### What happens during a boost?
-
-1. The EV charger is **forced on at maximum current** (the highest value in your current steps list).
-2. The normal schedule is bypassed for the charger — it stays on regardless of price.
-3. Safe Power Management **can still step down the current** if the grid is overloaded, but it will **never fully turn off the charger** during a boost.
-4. Other loads (2 and 3) continue to follow their normal schedule.
-5. The boost expires automatically when the timer runs out.
-
-The EMS card shows a **cyan banner** with a countdown: _"EV Boost active — 1h 45m remaining"_.
+The buttons exist only when load 1 has a current entity.  During a boost safe
+power may still step the current down, but never switches the charger off.
+Loads 2 and 3 keep their schedule.  The boost ends on its own; its end time
+survives a Home Assistant restart.  The card shows a cyan countdown banner and a
+**Boost Xh Ym** chip.
 
 ---
 
 ## What the EMS card shows
 
-When at least one load is configured:
+- A **cyan strip** under the price bars where a load is scheduled, and a
+  "loads" legend entry.
+- **"N/M loads active"** in the stats row.
+- The **Flexible Loads panel**: one row per load with its on/off state, live
+  power and a fill bar (for the EV charger the real draw, with
+  `A · φ · V`), a **BOOST** chip during a boost, and a shed-priority badge
+  ("Sheds 1st / 2nd / last"); the header shows the total live power.
 
-- **Cyan strip** at the bottom of the price bars for slots where loads are scheduled.
-- **"loads"** entry in the chart legend.
-- **"N/M loads active"** in the stats row (e.g., "2/3 loads active" means 2 out of 3 configured loads are currently on).
-- **EV Boost banner** (when active) with countdown timer above the chart.
+For automations: `flex_load_schedule`, `flex_load_states` and
+`flex_load_configs` are attributes of the `schedule_status` sensor.
 
-Load schedule data (`flex_load_schedule`, `flex_load_states`, `flex_load_configs`) is available in the `schedule_status` sensor attributes for use in automations.
+After a Home Assistant restart each load's on/off state is read from its switch,
+so a charger left running is still known to be on.
 
 ---
 
 ## Example setups
 
-### EV charger only
+**EV charger only** — assign `switch.wallbox_portal_charging` and
+`number.wallbox_portal_maximum_charging_current`; set Enabled `on`, Name
+`EV`, Phases `1`, Voltage `230`, Startup Current `32`, Current Steps
+`6,10,16,20,25,32`, and the Grid Phase it is wired to.
 
-1. Options flow: assign `switch.wallbox_charging` and `number.wallbox_max_current`.
-2. Device page: set Enabled → `on`, Name → `EV Charger`, Power → `7.4`, Phases → `1`, Voltage → `230`, Default Current → `32`, Current Steps → `6,10,16,20,25,32`.
-3. The charger will run during cheap/negative/solar-surplus hours and step current during overcurrent.
+**EV + boiler** — assign both switches and the EV current entity; boiler Shed
+Priority `2`, EV `1`: on an overloaded phase the battery is cut first, then the
+EV current stepped down, then the boiler switched off before the EV.
 
-### EV charger + boiler
+**EV + boiler + pool pump** — priorities EV 1, boiler 2, pool pump 3: the pool
+pump goes first, the EV last.
 
-1. Options flow: assign switch entities for both loads. Assign the current entity for load 1.
-2. Device page: configure both loads as above.
-3. Set the boiler's Shed Priority to `2` and the EV charger to `1`. During overcurrent, the boiler sheds first, protecting the EV charge session.
+---
 
-### Three loads (EV + boiler + pool pump)
-
-1. Options flow: assign switch entities for all three.
-2. Device page: enable all three, set priorities: EV=1, boiler=2, pool pump=3.
-3. During overcurrent, pool pump sheds first, then boiler, then EV current steps down — battery power reduction is the last resort.
+*Behaviour reference for developers: `docs/EMS_LOGIC.md` §10 and CLAUDE.md
+("Flexible Load Control", Known Issues 8h / 8i / 8j / 10).*

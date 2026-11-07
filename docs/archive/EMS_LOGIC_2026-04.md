@@ -1,3 +1,8 @@
+> **Archived — out of date (April 2026).** This was an analysis of the `both`-mode selling problem, since fixed. It is kept for its
+> history only and no longer describes the integration. Current documents:
+> the behaviour specification `docs/EMS_LOGIC.md`, the setup guide `README.md`,
+> flexible loads `FLEXIBLE_LOADS.md`, and the wiki.
+
 # Felicity EMS Decision Logic — Full Analysis
 
 This document traces exactly how the EMS decides what to do in each mode, what inputs drive those decisions, and where the logic may be unsound — particularly in "both" mode.
