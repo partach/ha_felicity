@@ -3545,6 +3545,8 @@ class HA_FelicityCoordinator(DataUpdateCoordinator):
             "reply_count_mismatches": getattr(self, "_reply_count_mismatches", 0),
             "implausible_readings": dict(getattr(
                 getattr(self, "_plausibility", None), "rejected", {}) or {}),
+            "implausible_last": dict(getattr(
+                getattr(self, "_plausibility", None), "last_rejected", {}) or {}),
         }
         update_interval = getattr(self, "update_interval", None)
         interval = update_interval.total_seconds() if update_interval else 10

@@ -84,6 +84,10 @@ maintainer makes a new decision, add it here in the same commit.
 - **An IVGM / IVAM address must come from its own protocol document.**
 - **T-REX-10 rule value 3 is labelled "ECO mode (AC Couple)"** (29 Oct 2026,
   discussion #230); T-REX-5/6K keep "ECO mode" until their app is checked.
+- **A 0 on an energy counter is believed only once it holds** (6 Nov 2026,
+  issue #214): as a starting point after 3 polls, as a day/month/year reset
+  after `RESET_HOLD_IN_WINDOW_S` (60 s) near its reset time or
+  `RESET_CONFIRM_S` (15 min) otherwise — all models (8s).
 - **IVGM100600 is its own model, MONITORING ONLY, provisional, at the user's
   own risk** (31 Oct 2026, issue #206).  It reads like a T-REX-10 but is not
   register-identical, and its battery is high-voltage while every EMS voltage
@@ -200,7 +204,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **996**: 994 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **1008**: 1006 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -3162,7 +3166,8 @@ kept so the statistics continue:
      on that port was rejected 4,943 times, the sensor stuck at unknown);
      a period counter
      (`day`/`month`/`year` in its key) may fall only to what it could have
-     counted since a reset — that IS its reset;
+     counted since a reset — that IS its reset — and only once the fall has
+     held (8s: 60 s near its reset time, 15 min otherwise);
    - a rejected reading publishes the last good value; a new level that holds,
      consistently, for `CONFIRM_POLLS` (3) polls is accepted (a counter cleared
      on the inverter is not frozen for ever);
@@ -3531,6 +3536,48 @@ Pinned by the replay `test_a_house_on_the_grid_side_is_covered_by_the_discharge_
 `test_a_heavy_load_while_selling_is_not_toggled_every_poll` (hold kept, guard
 on) and `TestAntiConflictLearnsWhereTheHouseIs` (one misleading reading is
 forgotten; mutation: evidence 1 fails 2).
+
+### 8s. Energy counters answering 0 in some polls stuck at 0 or inflated the statistics — FIXED (6 Nov 2026, issue #214)
+
+IVAM6048P1G1 on 1.3.15 (Elfin EW41B, 9600 8N1, 30/30 groups, 2.6 s polls):
+the diagnostics dump read the load counters as day 2.6 / month 8.0 / year
+81.2 kWh (raw 26 / 80 / 812; year = lifetime on a new unit), while
+`last_poll` showed 0.0 for all three and `implausible_readings` counted
+6-7 rejections each (lifetime total 7, PV totals 31 ≈ the polls since
+start).  So these registers answer **0 in some polls** — each a separate
+small read (0x11A9, 0x11E5, 0x11E6-0x11E9) zeroing on its own polls; why is
+not known.  The #220 guard turned that into two failures: (a) a 0 first
+reading became a period counter's baseline, and the true value was then a
+2.6 kWh "jump" rejected for ever (three consistent polls never came, zeros
+in between cleared the pending); (b) once the true value was the baseline, a 0
+was accepted at once as the day's reset and the true value then counted again
+— a Home Assistant reset per glitch, the #220 inflation through another door.
+Replaying the counts through the 1.3.15 guard: no pattern with all four
+counters zeroing together reproduces them; independent per-register zeros do.
+
+Fix (`plausibility.py`, all models):
+- **A starting 0 is believed after `CONFIRM_POLLS` (3) polls** — extends the
+  #237 lifetime rule to day/month/year counters; when zeros came first, a
+  non-zero start must also agree with itself for 3 polls (`_start`), so the
+  T-REX-10 rollover glitch (one poll of the previous total between zeros) is
+  never a baseline.
+- **A period counter's fall must hold** (`_reset_confirmed`):
+  `RESET_HOLD_IN_WINDOW_S` (60 s) when it starts near the counter's own reset
+  time (`in_reset_window`: 22:00-03:00 local for day; that, on the 1st, for
+  month; on 1 Jan for year — generous because the inverter's clock decides),
+  `RESET_CONFIRM_S` (15 min) otherwise; a reading back at the old level ends
+  it.  A real reset is published a minute late; HA's sum is the same.
+- Lifetime totals: unchanged (never to 0; a new non-zero level after 3).
+- **`poll_stats.implausible_last`** = `{key: {rejected, kept}}`: the next
+  download shows what the inverter sent.
+Local time is the process's (as the coordinator's slots), tz-aware.
+
+Not settled: what the inverter sends when (only the counts are known); if a
+counter answers 0 most of the time the guard keeps its last good value but
+cannot conjure the true one.  Pinned by `test_plausibility.py` (#214 pattern
+at noon and in the reset window, a start of zeros, the 15-min hold, the reset
+windows; the three new pattern tests fail on the old guard) and the updated
+#220 tests (rollover glitch, real reset, zero-before-total).
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -4111,7 +4158,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**996 tests**: 994 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**1008 tests**: 1006 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
