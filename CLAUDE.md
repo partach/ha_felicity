@@ -123,8 +123,12 @@ There are TWO authoritative docs and they must BOTH be read and kept in sync:
 A past session updated only CLAUDE.md and let `docs/EMS_LOGIC.md` go stale —
 that is the "floating basis" failure.  **Before concluding any work, update
 BOTH** (CLAUDE.md for the what/why/status, EMS_LOGIC.md for the behavioural
-contract).  `EMS.md` and the root `EMS_LOGIC.md` are older analysis docs — do
-not treat them as current.
+contract).  The old `EMS.md` (Mar 2026) and the old root `EMS_LOGIC.md`
+(Apr 2026) are in `docs/archive/` with an "out of date" banner — history, not
+current.  User guides: `README.md` (setup, models) and `FLEXIBLE_LOADS.md`
+(root; the wiki links to it — merged from the two flexible-load guides,
+Nov 2026).  `README.md`, `CHANGELOG.md`, `CLAUDE.md` stay in the root:
+GitHub/HACS show the README, and Claude Code reads CLAUDE.md from there.
 
 ### Validate behaviour with the simulator — don't assert from memory
 
@@ -298,6 +302,11 @@ tools/
 pytest.ini                   # testpaths + asyncio mode
 requirements-test.txt        # pytest, pytest-asyncio, pulp (no Home Assistant)
 ruff.toml                    # explicit lint rule set (see "Lint & CI" below)
+
+FLEXIBLE_LOADS.md            # user guide for flexible loads / EV (the wiki links here)
+docs/EMS_LOGIC.md            # the behaviour specification (authoritative, see above)
+docs/IVGM_SUPPORT_GAPS.md, docs/IVAM_SUPPORT_GAPS.md  # open questions per model family
+docs/archive/                # superseded documents, kept for history only
 ```
 
 ---
