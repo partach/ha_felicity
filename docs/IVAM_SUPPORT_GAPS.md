@@ -60,7 +60,7 @@ physics checks: `P / (V × I)` for the battery, PV1, PV2, grid and load.
 | 5 | Alarm and fault code values — "see the model's instruction manual". | Shown as raw numbers. |
 | 6 | 30 small reads per poll at 9600 baud (the document's registers are scattered). | Measured 2.6 s, 30/30 groups, no retries (Elfin EW41B, #214). |
 | 7 | The load energy counters (0x11A9 total, 0x11E5–0x11E9 day/month/year) answer **0 in some polls** and their real value in others (#214: the dump read 2.6 / 8.0 / 81.2 kWh while the sensors showed 0.0). | The reading check now ignores such zeros (CLAUDE.md 8s); `poll_stats.implausible_last` shows the last rejected reading per counter. Why the inverter answers 0 is not known. |
-| 8 | The load **total** (0x11A9/0x11AA) answers **two different counters** in stretches: 97.3/97.4 kWh (= the year counter) in some, 28.8/28.9 kWh in others, both counting up (#214, 1.3.18 dumps 2026-11-09). Which is the inverter's real total is not known; the Felicity display/app may say. | The reading check keeps whichever level it has confirmed and never lets a lifetime total fall (CLAUDE.md 8s follow-up), so the statistics count each kWh once. |
+| 8 | The load **total** (0x11A9/0x11AA) answers **two different counters** in stretches: 97.3/97.4 kWh (= the year counter) in some, 28.8/28.9 kWh in others, both counting up (#214, 1.3.18 dumps 2026-11-09). **The ~97 kWh one is real**: the Felicity app shows Backup Load Energy 97.5 kWh for 2026. What the ~29 kWh counter is, is not known. | The reading check keeps whichever level it has confirmed and never lets a lifetime total fall (CLAUDE.md 8s follow-up), so the statistics count each kWh once. |
 
 ## Setting it up
 

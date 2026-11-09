@@ -3599,10 +3599,13 @@ as `0, 973` / `0, 974`, so 97.3/97.4 is what 0x11A9 answers in some stretches
 and 28.8/28.9 in others — and **both count up** (0.1 kWh in the same two
 minutes).  Not a reply from another read group: no 2-register group read in
 that poll holds 288/289, and the length check rules out the rest.  The year
-counter read 97.3/97.4 at the same moments.  Which of the two is the inverter's
-"real" total is not known (28.9 < the year counter, which a lifetime total
-cannot be unless it was reset); for the statistics it does not matter, since
-both rise identically — what matters is **never switching**.  The guard
+counter read 97.3/97.4 at the same moments.  **The ~97 kWh counter is the
+real one**: the Felicity app (Data → All → 2026) shows *Backup Load Energy
+97.5 kWh* (reporter, 9 Nov 2026; the same screen: battery charging 97.8,
+battery discharging 66.7, grid input 160.6 kWh).  What the 28.9 counter is,
+is not known.  For the statistics both rise identically, so what matters is
+**never switching** — and the fix below settles on the higher one, which is
+the right one here.  The guard
 switched: a lower level that held `CONFIRM_POLLS` polls was a "re-baseline",
 so every stretch of the other counter was a Home Assistant reset (+28.9) and
 the climb back (+68.5) — ~97 kWh into the statistics per round trip, the #220
