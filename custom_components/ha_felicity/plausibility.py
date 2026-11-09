@@ -31,7 +31,13 @@ energy cannot arrive faster than the hardware can move it.  So:
   publishing it would make Home Assistant count the whole period again;
 * a rejected reading keeps the last good value — unless the new level holds
   for ``CONFIRM_POLLS`` consecutive polls, consistent with itself, in which
-  case it is the truth (a re-baseline, e.g. a counter cleared on the inverter);
+  case it is the truth (a re-baseline, e.g. a bad first reading);
+* but a lifetime total whose level a later reading has CONFIRMED never falls,
+  however long the lower level holds (issue #214: an IVAM's 0x11A9 answers
+  97.4 kWh in some stretches and 28.9 kWh in others, both counting up, and
+  each switch down was a Home Assistant reset — ~97 kWh per round trip).  A
+  restart re-baselines it, which is the one way such a counter can come back
+  down;
 * a power reading beyond ``POWER_BOUND_FACTOR`` × the inverter's rating is
   dropped (garbage such as 1.25e8 W), keeping the last good value briefly.
 
@@ -110,6 +116,11 @@ class _Track:
     value: float
     ts: float
     pending: list[tuple[float, float]] = field(default_factory=list)
+    #: A later reading agreed with this level (a plausible step from it, equal
+    #: included).  A baseline or re-baseline nobody has agreed with yet may be
+    #: garbage, so it may still be replaced by a lower level that holds; once
+    #: confirmed, a lifetime total never falls again (#214).
+    confirmed: bool = False
 
 
 class PlausibilityGuard:
@@ -207,6 +218,7 @@ class PlausibilityGuard:
             return
         if self._plausible(track.value, track.ts, value, now, factor):
             track.value, track.ts, track.pending = value, now, []
+            track.confirmed = True
             return
         # Implausible against the last good value.  Accept it only once the
         # new level has held consistently: CONFIRM_POLLS polls for a jump up
@@ -216,8 +228,10 @@ class PlausibilityGuard:
             if not (last_value <= value <= last_value + self._allowed(now - last_ts, factor)):
                 track.pending = []
         falling = value < track.value
-        if falling and not period and value <= 0:
-            track.pending = []        # a lifetime total never falls back to 0
+        if falling and not period and (value <= 0 or track.confirmed):
+            # A lifetime total never falls back to 0, nor below a level a
+            # later reading has confirmed (#214).
+            track.pending = []
         else:
             track.pending.append((value, now))
         if falling and period:
@@ -226,6 +240,7 @@ class PlausibilityGuard:
             accept = len(track.pending) >= CONFIRM_POLLS
         if accept:
             track.value, track.ts, track.pending = value, now, []
+            track.confirmed = False
             return
         self._reject(data, key, track.value)
 

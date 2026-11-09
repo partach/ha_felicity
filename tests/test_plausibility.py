@@ -10,6 +10,7 @@ total — and why the assertions are about the SUM, not just the state.
 from __future__ import annotations
 
 import time
+from itertools import pairwise
 
 import pytest
 
@@ -210,6 +211,62 @@ def test_a_new_level_that_holds_is_accepted():
     published, _ = _run("pv_generated_energy_total", "Wh", readings)
     assert published[1:3] == [9_000_000, 9_000_000]
     assert published[3] == 520 and published[4] == 530
+
+
+def _two_level_total(phases, high=97.0, low=28.5):
+    """Issue #214, IVAM6048P1G1 on 1.3.18: 0x11A9 (load total) answers one of
+    two counters in stretches — 97.3/97.4 kWh in some polls, 28.8/28.9 kWh in
+    others — and BOTH count up together (97.3 -> 97.4 beside 28.8 -> 28.9 two
+    minutes apart; the year counter read 97.3/97.4 at the same moments).
+    ``phases`` is [("high"|"low", polls), ...]; each counter gains 0.1 kWh
+    every 6 polls."""
+    readings, n = [], 0
+    for which, polls in phases:
+        for _ in range(polls):
+            gained = round((n // 6) * 0.1, 1)
+            readings.append(round((high if which == "high" else low) + gained, 1))
+            n += 1
+    return readings
+
+
+_FLIP_FLOP = [("high", 20), ("low", 8), ("high", 15), ("low", 30), ("high", 10),
+              ("low", 4), ("high", 12)]
+
+
+def test_a_lifetime_total_answering_two_counters_never_falls():
+    """Each switch down used to be accepted after CONFIRM_POLLS polls, so Home
+    Assistant booked a reset (+28.9) and then the climb back (+68.5): ~97 kWh
+    per round trip.  Once a later reading has confirmed the level, a lifetime
+    total does not fall, however long the lower level holds (30 polls here)."""
+    readings = _two_level_total(_FLIP_FLOP)
+    published, guard = _run("load_total_cost_energy", "kWh", readings, kw=6.0)
+    assert all(b >= a for a, b in pairwise(published)), published
+    high_only = [r for r in readings if r > 50]
+    assert lts_sum(published) == pytest.approx(high_only[-1] - high_only[0], abs=1e-9)
+    assert guard.rejected["load_total_cost_energy"] == sum(
+        polls for which, polls in _FLIP_FLOP if which == "low")
+
+
+def test_a_restart_in_the_low_stretch_converges_up_and_stays():
+    """After a restart the first reading is the baseline, whichever counter
+    answered.  The higher one then holds and is accepted as a rise (the one
+    step a restart costs), and from then on the total never falls."""
+    readings = _two_level_total([("low", 6), ("high", 10), ("low", 12), ("high", 5)])
+    published, _ = _run("load_total_cost_energy", "kWh", readings, kw=6.0)
+    assert published[:6] == readings[:6]
+    climbed = published.index(max(published[:16]))
+    assert published[climbed] > 90
+    assert all(b >= a for a, b in pairwise(published[climbed:]))
+
+
+def test_a_re_baselined_level_is_not_confirmed_until_a_reading_agrees():
+    """A jump that held CONFIRM_POLLS polls is accepted, but nothing has agreed
+    with it since — so if the old counting resumes, the jump was the glitch
+    and the total may come back down to it."""
+    readings = [500, 501, 502, 9_000_000, 9_000_000, 9_000_000, 503, 504, 505, 506]
+    published, _ = _run("pv_generated_energy_total", "Wh", readings)
+    assert published[5] == 9_000_000                 # accepted on the third poll
+    assert published[-1] == 506                      # and given up again
 
 
 def test_real_accrual_is_never_rejected():

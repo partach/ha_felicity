@@ -208,7 +208,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **1008**: 1006 pass + 2 documented skips; ~2.5 min, most of it the replays) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **1011**: 1009 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -3030,7 +3030,7 @@ and flex-load actuation are exercised for real.
 
 **CI note:** `.github/workflows/ci.yml` runs only on pushes to `main`, PRs into
 `main`, weekly and manually — pushes to a feature branch run nothing until a PR
-is opened.
+is opened.  It is rationed since Nov 2026 (see "Lint & CI").
 
 ### 8i. A self-sufficiency plan buying for a need that wasn't there; a charger lost across a restart — FIXED (Oct 2026)
 
@@ -3178,8 +3178,10 @@ kept so the statistics continue:
      counted since a reset — that IS its reset — and only once the fall has
      held (8s: 60 s near its reset time, 15 min otherwise);
    - a rejected reading publishes the last good value; a new level that holds,
-     consistently, for `CONFIRM_POLLS` (3) polls is accepted (a counter cleared
-     on the inverter is not frozen for ever);
+     consistently, for `CONFIRM_POLLS` (3) polls is accepted (a bad first
+     reading is not frozen for ever) — **except a FALL of a lifetime total
+     whose level a later reading has confirmed, which is never accepted**
+     (8s follow-up, 9 Nov 2026);
    - power beyond `10 × rating` is dropped (last good value for ≤ 60 s, then
      unknown).
    Rejections are counted per key in `poll_stats.implausible_readings`
@@ -3587,6 +3589,41 @@ cannot conjure the true one.  Pinned by `test_plausibility.py` (#214 pattern
 at noon and in the reset window, a start of zeros, the 15-min hold, the reset
 windows; the three new pattern tests fail on the old guard) and the updated
 #220 tests (rollover glitch, real reset, zero-before-total).
+
+**Follow-up, 9 Nov 2026 — a lifetime total that answers TWO counters.**  The
+next two #214 dumps (1.3.18, 20:01 and 20:03, charging and discharging) had
+the day/month/year counters right and `load_total_cost_energy` publishing
+**97.3 at 20:01 and 28.9 at 20:03**, with `implausible_last` showing the
+other value rejected each time.  The register dump read the pair 0x11A9/0x11AA
+as `0, 973` / `0, 974`, so 97.3/97.4 is what 0x11A9 answers in some stretches
+and 28.8/28.9 in others — and **both count up** (0.1 kWh in the same two
+minutes).  Not a reply from another read group: no 2-register group read in
+that poll holds 288/289, and the length check rules out the rest.  The year
+counter read 97.3/97.4 at the same moments.  Which of the two is the inverter's
+"real" total is not known (28.9 < the year counter, which a lifetime total
+cannot be unless it was reset); for the statistics it does not matter, since
+both rise identically — what matters is **never switching**.  The guard
+switched: a lower level that held `CONFIRM_POLLS` polls was a "re-baseline",
+so every stretch of the other counter was a Home Assistant reset (+28.9) and
+the climb back (+68.5) — ~97 kWh into the statistics per round trip, the #220
+inflation through a third door.
+
+Fix (`plausibility.py`, all models): `_Track.confirmed` is set when a later
+reading agrees with the level (a plausible step, equal included) and cleared
+on every (re-)baseline.  **A lifetime total whose level is confirmed never
+falls**; an unconfirmed one (a bad first reading, or a jump nobody has agreed
+with since) can still be replaced by a lower level that holds — that is the
+#220 recovery, kept.  A restart re-baselines from the first reading, so a
+restart during the low stretch costs one climb (the higher level is accepted
+as a rise) and then it sticks.  Trade-off, stated: a lifetime counter really
+cleared on the inverter is frozen at its old value until a restart (the
+restart then books one reset, which is correct).  Period counters are
+unchanged (their falls are resets and keep the 8s hold).  Pinned by
+`test_a_lifetime_total_answering_two_counters_never_falls`,
+`test_a_restart_in_the_low_stretch_converges_up_and_stays` and
+`test_a_re_baselined_level_is_not_confirmed_until_a_reading_agrees`
+(test_plausibility; three mutations: the fix removed, `confirmed` never set,
+`confirmed` kept across a re-baseline — each fails at least one).
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -4167,7 +4204,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**1008 tests**: 1006 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**1011 tests**: 1009 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -4301,6 +4338,26 @@ were added Sept 2026 — CI previously ran lint only, which is why a dead test f
 went unnoticed.  The ruff pin is deliberate: it was unpinned, and ruff 0.16
 expanded its default rule set from 59 rules to 413, turning a green build into
 211 errors with no code change.
+
+**CI is rationed (Nov 2026, maintainer: the same fix as ha_revpi_pro, where
+the free Actions minutes ran out).**  Both workflows (`ci.yml`,
+`validate-hacs.yml`):
+- skip the push run of a **merge commit on main** (`Merge pull request …`) —
+  its pull request's run already tested that tree; a direct push still runs;
+- **cancel the older run** when a newer push to the same PR / branch arrives
+  (`concurrency`, `cancel-in-progress`);
+- have a **timeout** on every job (15 min CI, 10 min Validate);
+- **`paths-ignore`** documentation: `**/*.md`, `docs/**`, `wiki/**`,
+  `pictures/**`, PDFs (CI also `LICENSE.txt`; Validate also `tests/**` and
+  `tools/**`).  No test reads a Markdown file today and ruff lints only .py.
+  ⚠️ A file a test starts reading must come off CI's list, or a change to it
+  merges untested.  `manifest.json` is deliberately NOT ignored
+  (`test_milp_solver_install` reads it; hassfest checks it).
+CI also caches pip, installs once, runs pytest with **`-n auto`**
+(pytest-xdist, in `requirements-test.txt`: same 1009 + 2, ~2.5 min → ~40 s on
+four cores), and has no setup-node step (the runner ships Node; there is no
+package.json).  A docs-only PR gets no CI run — if branch protection ever
+requires these checks, such a PR waits for them.
 
 ⚠️ **Run the pinned ruff, not whatever is on `PATH`.**  These containers ship a
 `ruff` at `/root/.local/bin/ruff` that shadows the pin — it has been an *older*

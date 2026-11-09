@@ -1,10 +1,23 @@
 name: Validate
 
+# Hassfest and HACS read the integration's metadata (manifest.json,
+# translations, services.yaml, hacs.json) — never the tests, tools or docs.
+# Unlike CI's list, this one ignores tests/ and tools/, and manifest.json
+# still triggers it: that is what hassfest checks.
 on:
   push:
     branches: [ main ]
+    paths-ignore: &ignored_paths
+      - '**/*.md'
+      - 'docs/**'
+      - 'wiki/**'
+      - 'pictures/**'
+      - 'tests/**'
+      - 'tools/**'
+      - '**/*.pdf'
   pull_request:
     branches: [ main ]
+    paths-ignore: *ignored_paths
   schedule:
     - cron: "0 0 * * 0"  # Weekly
   workflow_dispatch:
@@ -12,10 +25,19 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request (or branch) cancels the run it
+# supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   hacs:
     name: HACS validation
+    # The merge commit on main has the tree its pull request validated.
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Merge pull request') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: hacs/action@main
@@ -24,7 +46,10 @@ jobs:
 
   hassfest:
     name: Hassfest validation
+    # The merge commit on main has the tree its pull request validated.
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'Merge pull request') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
