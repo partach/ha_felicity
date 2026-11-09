@@ -2,6 +2,13 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **A lifetime energy total that switches between two values no longer
+  inflates the statistics (issue #214).** On an IVAM the load total answers
+  97.4 kWh in some stretches and 28.9 kWh in others (both counting up); each
+  switch down was taken as a new level and Home Assistant counted ~97 kWh
+  extra per round trip. A lifetime total now never drops below a level the
+  inverter has confirmed. A counter that was really cleared on the inverter
+  follows after the next Home Assistant restart.
 - **Energy counters that answer 0 now and then no longer stick at 0 or inflate
   the statistics (issue #214).** On an IVAM the day/month/year load counters
   read 0 in some polls: the sensors showed 0.0 while the inverter said 2.6 kWh,
