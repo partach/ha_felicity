@@ -221,6 +221,43 @@ def test_rule_summary_names_value_three(model):
         assert calc(3, 0, 0, 0, 0, 0, 0, 0, 0)["enabled"] == _VALUE_THREE[model]
 
 
+def test_zero_export_mode_offers_every_documented_value():
+    """0x2176 decides whether a rule-1 discharge may feed the grid: "To CT"
+    holds the grid point at the zero-export power, "To load" lets the inverter
+    discharge the rule-1 power and export what the house does not use (checked
+    on a T-REX-10KLP3G01: rule 1 discharge 3000 W, "To load" -> the surplus went
+    to the grid).  Value 0 is not in the document."""
+    documented = _enumerated(0x2176)
+    assert set(documented) == {1, 2}, documented
+    info = _registers(const.INVERTER_MODEL_TREX_TEN)["zero_export_mode"]
+    assert info["address"] == 0x2176
+    assert info["type"] == "select"
+    assert info["options"][1] == "To load"
+    assert info["options"][2] == "To CT"
+    assert len(info["options"]) == 3
+
+
+def test_zero_export_power_is_signed_watts_within_the_documented_range():
+    """0x2177: "-500~500 (Negative: reduces output power)", in W."""
+    assert _REGS[0x2177]["unit"] == "W"
+    info = _registers(const.INVERTER_MODEL_TREX_TEN)["zero_export_power"]
+    assert info["address"] == 0x2177
+    assert info["type"] == "number"
+    assert info["index"] == 3                      # signed
+    assert (info["min"], info["max"]) == (-500, 500)
+    assert info["unit"] == "W"
+
+
+@pytest.mark.parametrize("key", ["zero_export_mode", "zero_export_power"])
+def test_zero_export_settings_are_in_every_register_set(key):
+    """The EMS reads the basic set; whoever drives rule 1 needs to see these too.
+    They sit next to the economic-rule block (0x2178), so they ride in the same
+    read request."""
+    for name, regs in const.REGISTER_SETS_TREX_TEN.items():
+        if name != "basic_plus":
+            assert key in regs, name
+
+
 def test_the_document_names_the_models_these_entries_cover():
     """IVGM5048 = 101, IVGM6048 = 401, IVGM10048 = 201 in the machine-code table,
     which is why the setup dropdown labels the T-REX-5/6/10 entries with them."""

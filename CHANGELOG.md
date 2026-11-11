@@ -8,6 +8,16 @@
   counted the climb back again. A drop of less than 10 % is now never taken as
   the counter's reset: the sensor keeps its value until the counter is past it
   again. Real midnight resets are unchanged.
+- **T-REX-10: zero export mode and power are now entities.** `Zero Export
+  Mode` (0x2176: To load / To CT) and `Zero Export Power` (0x2177, -500..500 W)
+  were only settable in the Felicity app. With "To CT" a rule-1 discharge only
+  covers the house; with "To load" it runs at the rule-1 power and feeds the
+  surplus to the grid (checked on a T-REX-10KLP3G01). Both are in the Basic and
+  Full register sets; they sit next to the economic-rule block, so polling
+  needs no extra request. The EMS does not write them.
+- **A negative value is written to a signed register as a 16-bit word.**
+  `async_write_register` sent e.g. -30 as a negative int, which Modbus refuses;
+  it now goes out as 0xFFE2.
 - **A lifetime energy total that switches between two values no longer
   inflates the statistics (issue #214).** On an IVAM the load total answers
   97.4 kWh in some stretches and 28.9 kWh in others (both counting up); each
