@@ -2,6 +2,12 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **"Not strictly increasing" warnings on day/month/year energy counters.** A
+  small drop (e.g. 439 → 425 Wh on a T-REX-10 day counter at night) was
+  published once it held, and Home Assistant then warned about the sensor and
+  counted the climb back again. A drop of less than 10 % is now never taken as
+  the counter's reset: the sensor keeps its value until the counter is past it
+  again. Real midnight resets are unchanged.
 - **A lifetime energy total that switches between two values no longer
   inflates the statistics (issue #214).** On an IVAM the load total answers
   97.4 kWh in some stretches and 28.9 kWh in others (both counting up); each

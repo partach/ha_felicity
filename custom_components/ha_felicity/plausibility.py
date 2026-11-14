@@ -25,6 +25,9 @@ energy cannot arrive faster than the hardware can move it.  So:
 * a 0 with nothing to compare it with yet is not taken as the starting point
   until it has held for ``CONFIRM_POLLS`` polls (issue #214: an IVAM answered 0
   in some polls and its real total in others);
+* a period counter's fall to more than ``HA_RESET_SHARE`` of its value is a
+  dip, not a reset, and is never published (Home Assistant would only warn
+  about it and count the climb back again);
 * a period counter's fall must hold too: ``RESET_HOLD_IN_WINDOW_S`` near its
   own reset time (``in_reset_window``), ``RESET_CONFIRM_S`` at any other time.  A
   reading back at the old level in between ends it — that was a glitch, and
@@ -66,6 +69,12 @@ CONFIRM_POLLS = 3
 #: at least.  A real reset holds; a glitch 0 is followed by the old level.
 RESET_HOLD_IN_WINDOW_S = 60.0
 RESET_CONFIRM_S = 900.0
+#: Home Assistant counts a total_increasing fall below this share of the
+#: previous value as a meter RESET; a smaller fall is a "not strictly
+#: increasing" dip it warns about.  So a period counter's fall that stays
+#: above it is never its reset, however long it holds (439 -> 425 Wh on a
+#: T-REX-10 day counter at 03:10, 11 Nov 2026).
+HA_RESET_SHARE = 0.9
 #: Power readings beyond this multiple of the rating are not measurements.
 POWER_BOUND_FACTOR = 10.0
 #: How long a dropped power reading may be bridged with the last good value.
@@ -231,6 +240,10 @@ class PlausibilityGuard:
         if falling and not period and (value <= 0 or track.confirmed):
             # A lifetime total never falls back to 0, nor below a level a
             # later reading has confirmed (#214).
+            track.pending = []
+        elif falling and period and value >= HA_RESET_SHARE * track.value:
+            # A dip, not a reset: Home Assistant itself would not read it as
+            # one.  The last good value stands until the counter is past it.
             track.pending = []
         else:
             track.pending.append((value, now))

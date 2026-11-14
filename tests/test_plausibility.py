@@ -269,6 +269,37 @@ def test_a_re_baselined_level_is_not_confirmed_until_a_reading_agrees():
     assert published[-1] == 506                      # and given up again
 
 
+def _ha_warnings(states):
+    """Falls Home Assistant warns about ("not strictly increasing") rather
+    than counting as a reset: from a to b with 0.9 a <= b < a."""
+    seen = [s for s in states if s is not None]
+    return [(a, b) for a, b in pairwise(seen) if 0.9 * a <= b < a]
+
+
+@pytest.mark.parametrize("start", [NOON, NIGHT])
+def test_a_small_dip_on_a_period_counter_is_never_published(start):
+    """T-REX-10, 11 Nov 2026 03:10: Home Assistant logged
+    ac_generated_energy_inquiry_day going 439 -> 425 (Wh).  A fall to 97 % of
+    the value is no reset in Home Assistant's own rule, so it only warned —
+    the guard had accepted it as one once it held.  The last good value
+    stands until the counter is past it again, at any time of day."""
+    readings = [439] * 3 + [425] * 120 + [430, 436, 439, 441, 445]
+    published, guard = _run("ac_generated_energy_day", "Wh", readings, start=start)
+    assert _ha_warnings(published) == []
+    assert min(published) == 439 and published[-1] == 445
+    assert lts_sum(published) == 445 - 439
+    assert guard.rejected["ac_generated_energy_day"] == 120 + 2   # the dip, then 430 and 436
+
+
+def test_a_real_reset_is_still_accepted_after_the_dip_rule():
+    """A day counter's midnight reset goes to (almost) nothing: well below
+    0.9 x, so the reset rule still applies."""
+    readings = [34_309] * 3 + [12] * 10 + [20, 30]
+    published, _ = _run("pv_generated_energy_day", "Wh", readings, start=NIGHT)
+    assert published[-1] == 30
+    assert lts_sum(published) == 30
+
+
 def test_real_accrual_is_never_rejected():
     """10 kW of PV for 10 s, and an hour without polls at full power."""
     out, guard = _run("pv_generated_energy_day", "Wh", [1000, 1028, 1056])
