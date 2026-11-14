@@ -208,7 +208,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **1011**: 1009 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **1014**: 1012 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -3176,7 +3176,9 @@ kept so the statistics continue:
      a period counter
      (`day`/`month`/`year` in its key) may fall only to what it could have
      counted since a reset — that IS its reset — and only once the fall has
-     held (8s: 60 s near its reset time, 15 min otherwise);
+     held (8s: 60 s near its reset time, 15 min otherwise); a fall to
+     ≥ `HA_RESET_SHARE` (0.9) of its value is a dip, never a reset (8s,
+     second follow-up);
    - a rejected reading publishes the last good value; a new level that holds,
      consistently, for `CONFIRM_POLLS` (3) polls is accepted (a bad first
      reading is not frozen for ever) — **except a FALL of a lifetime total
@@ -3599,10 +3601,13 @@ as `0, 973` / `0, 974`, so 97.3/97.4 is what 0x11A9 answers in some stretches
 and 28.8/28.9 in others — and **both count up** (0.1 kWh in the same two
 minutes).  Not a reply from another read group: no 2-register group read in
 that poll holds 288/289, and the length check rules out the rest.  The year
-counter read 97.3/97.4 at the same moments.  Which of the two is the inverter's
-"real" total is not known (28.9 < the year counter, which a lifetime total
-cannot be unless it was reset); for the statistics it does not matter, since
-both rise identically — what matters is **never switching**.  The guard
+counter read 97.3/97.4 at the same moments.  **The ~97 kWh counter is the
+real one**: the Felicity app (Data → All → 2026) shows *Backup Load Energy
+97.5 kWh* (reporter, 9 Nov 2026; the same screen: battery charging 97.8,
+battery discharging 66.7, grid input 160.6 kWh).  What the 28.9 counter is,
+is not known.  For the statistics both rise identically, so what matters is
+**never switching** — and the fix below settles on the higher one, which is
+the right one here.  The guard
 switched: a lower level that held `CONFIRM_POLLS` polls was a "re-baseline",
 so every stretch of the other counter was a Home Assistant reset (+28.9) and
 the climb back (+68.5) — ~97 kWh into the statistics per round trip, the #220
@@ -3624,6 +3629,24 @@ unchanged (their falls are resets and keep the 8s hold).  Pinned by
 `test_a_re_baselined_level_is_not_confirmed_until_a_reading_agrees`
 (test_plausibility; three mutations: the fix removed, `confirmed` never set,
 `confirmed` kept across a re-baseline — each fails at least one).
+
+**Second follow-up, 14 Nov 2026 — a small dip on a day counter.**  Home
+Assistant on the maintainer's T-REX-10 logged
+`ac_generated_energy_inquiry_day` (0x117C, Wh) going **439 → 425** at
+02:10 UTC on 11 Nov ("state class total_increasing, but its state is not
+strictly increasing").  A fall to ≥ 0.9 × the previous value is not a reset in
+Home Assistant's own rule — it only warns, and the climb back is counted again
+— but the guard took any period-counter fall that held as the counter's reset.
+Now such a fall is a **dip**: `HA_RESET_SHARE` (0.9), never published, the
+last good value stands until the counter is past it again, at any hour.  A
+real reset (to near nothing) is unaffected.  **Not established:** why the
+register fell.  It is the inverter's AC-output counter, so it may count net
+(down while the inverter charges the battery from the grid at night); if so it
+is not a `total_increasing` quantity at all, and the right fix is its state
+class — evidence first (its history around 03:00 that night next to the
+battery power).  Pinned by `test_a_small_dip_on_a_period_counter_is_never_published`
+(noon and the reset window; both fail without the rule) and
+`test_a_real_reset_is_still_accepted_after_the_dip_rule`.
 
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
@@ -4204,7 +4227,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**1011 tests**: 1009 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**1014 tests**: 1012 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -4354,7 +4377,7 @@ the free Actions minutes ran out).**  Both workflows (`ci.yml`,
   merges untested.  `manifest.json` is deliberately NOT ignored
   (`test_milp_solver_install` reads it; hassfest checks it).
 CI also caches pip, installs once, runs pytest with **`-n auto`**
-(pytest-xdist, in `requirements-test.txt`: same 1009 + 2, ~2.5 min → ~40 s on
+(pytest-xdist, in `requirements-test.txt`: same 1012 + 2, ~2.5 min → ~40 s on
 four cores), and has no setup-node step (the runner ships Node; there is no
 package.json).  A docs-only PR gets no CI run — if branch protection ever
 requires these checks, such a PR waits for them.

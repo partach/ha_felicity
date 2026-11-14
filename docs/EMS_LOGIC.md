@@ -305,7 +305,8 @@ Every model must belong to **exactly one** (`tests/test_model_coverage.py`).
 decoded values pass `plausibility.PlausibilityGuard` in the coordinator: an
 energy counter that jumps faster than 5 × the inverter rating could fill it, a
 lifetime total that falls or reads 0, a period counter that falls to anything
-but a reset, and power beyond 10 × the rating are replaced by the last good
+but a reset (a fall to 90 % or more of its value is a dip, never a reset), and
+power beyond 10 × the rating are replaced by the last good
 value (or left out), and a reply whose register count does not match its
 request is discarded.  So PV-today, consumption-today and grid power — inputs
 to PV confidence, the anti-conflict guard and safe power — can no longer carry a
