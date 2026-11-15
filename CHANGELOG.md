@@ -16,8 +16,8 @@
   Full register sets; they sit next to the economic-rule block, so polling
   needs no extra request. The EMS does not write them.
 - **A negative value is written to a signed register as a 16-bit word.**
-  `async_write_register` sent e.g. -30 as a negative int, which Modbus refuses;
-  it now goes out as 0xFFE2.
+  `async_write_register` passed e.g. -30 on as a negative int, which is not a
+  valid Modbus word (0..65535); it now goes out as 0xFFE2.
 - **A lifetime energy total that switches between two values no longer
   inflates the statistics (issue #214).** On an IVAM the load total answers
   97.4 kWh in some stretches and 28.9 kWh in others (both counting up); each
