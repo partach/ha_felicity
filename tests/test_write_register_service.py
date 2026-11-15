@@ -88,6 +88,20 @@ def test_a_value_is_written_as_a_whole_number_like_the_entities():
     assert coord.client.write_registers.await_args.kwargs["values"] == [560]
 
 
+def test_a_negative_value_is_written_as_a_16_bit_twos_complement_word():
+    """Modbus words are 0..65535; a signed register (index 3) such as the zero
+    export power (-500..500 W) must be encoded, not sent as a negative int."""
+    coord = _Coordinator(const.INVERTER_MODEL_TREX_TEN)
+    _call(_service(coord), key="zero_export_power", value=-30)
+    assert coord.client.write_registers.await_args.kwargs["values"] == [0xFFE2]
+
+
+def test_a_positive_signed_value_is_written_unchanged():
+    coord = _Coordinator(const.INVERTER_MODEL_TREX_TEN)
+    _call(_service(coord), key="zero_export_power", value=30)
+    assert coord.client.write_registers.await_args.kwargs["values"] == [30]
+
+
 def test_an_unknown_key_writes_nothing():
     coord = _Coordinator(const.INVERTER_MODEL_TREX_TEN)
     _call(_service(coord), key="no_such_register", value=1)

@@ -517,7 +517,9 @@ class TypeSpecificHandler:
             value = round(value) # just ensure we deal with whole number 
         
         if size == 1:
-            values = [value]
+            # A Modbus word is 0..65535: a negative value of a signed
+            # register goes on the wire as its 16-bit two's complement.
+            values = [value & 0xFFFF]
         elif size == 2:
             high = (value >> 16) & 0xFFFF
             low = value & 0xFFFF

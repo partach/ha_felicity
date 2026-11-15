@@ -242,6 +242,12 @@ _REGISTERS_TREX_TEN = {
     "time_set_minute_second": {"address": 8562, "name": "Time Setting Minute-Second", "precision": 0, "index": 99},
     "time_set_week": {"address": 8563, "name": "Time Setting Week", "precision": 0, "index": 99},
     
+    # Zero export (writeable).  "To CT" holds the grid point at the zero export
+    # power; "To load" lets a rule-1 discharge run at the rule-1 power and feed
+    # the grid with what the house does not use.  Value 0 is not documented.
+    "zero_export_mode": {"address": 8566, "name": "Zero Export Mode", "precision": 0, "index": 0, "type": "select", "options": ["Unknown (0)", "To load", "To CT"]},
+    "zero_export_power": {"address": 8567, "name": "Zero Export Power", "unit": "W", "device_class": "power", "precision": 0, "index": 3, "type": "number", "min": -500, "max": 500, "step": 10},
+
     # Economic Mode Rules (4 rules, each 9 registers)
     "econ_rule_1_enable": {"address": 8568, "name": "Economic Mode Rule 1 Enable", "precision": 0, "index": 0, "type": "select", "options": _RULE_ENABLE_OPTIONS},
     "econ_rule_1_start_time": {"address": 8569, "name": "Rule 1 Start Time", "precision": 0, "index": 0, "type": "time8bit"},
@@ -511,6 +517,8 @@ REGISTER_SETS_TREX_TEN = {
             "econ_rule_2",
             "econ_rule_3",
             "econ_rule_4",
+            "zero_export_mode",
+            "zero_export_power",
             "pv_generated_energy_day",
             "pv_generated_energy_month",
             "pv_generated_energy_year",
