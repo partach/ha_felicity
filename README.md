@@ -114,6 +114,14 @@ This can be done via configuration when the intallation is succesfull (device fo
   <em>Serial Example, choose the settings you need (2400 baud is sadly default for the TRex 5-10k series)</em>
 </p>
 
+### Changing the IP address or serial port later
+If a router hands the inverter's Modbus gateway a new IP address, or the USB adapter moves to another port, you do not need to delete the integration:
+**Settings → Devices & services → Felicity → ⋮ (on the entry) → Reconfigure.**
+The form starts from the current settings. For TCP you can change the host, port and slave id; for serial you can change the port, slave id and line settings.
+The new settings are tested first (the same test as at setup) and stored only when the inverter answers. The integration then reloads itself.
+Your options, EMS settings, entities and their history stay as they are. The connection type (serial or TCP) and the inverter model cannot be changed this way — a different model has a different register map.
+Tip: give the gateway a fixed IP (a DHCP reservation in the router) so it does not move again.
+
 ## Configuration
 After successfull install the integration can be configured at any time with a few settings. See picture on top for location of the gear icon
 - Update interval (the frequency of refresh of data). For the T-REX 5-10k models keep it on 10 sec minimum due to small baud rate.

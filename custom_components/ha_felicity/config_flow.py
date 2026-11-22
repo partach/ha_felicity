@@ -379,6 +379,134 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(step_id="tcp", data_schema=data_schema, errors=errors)
 
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Change how Home Assistant reaches the inverter, in place.
+
+        Settings → Devices & services → Felicity → ⋮ → Reconfigure.  A router
+        that hands the Modbus gateway a new address used to mean deleting the
+        integration and adding it again — losing its options, its EMS tuning
+        and its statistics' continuity.  Only the LINK changes here: host, port
+        and slave id for TCP; port, slave id and line settings for serial.  The
+        connection type, the inverter model and the name stay (a different
+        model is a different register map, i.e. different entities).
+
+        The new settings are tested the way setup tests them, and stored only
+        when the inverter answers; the entry then reloads on its own (the
+        options update listener reloads only for option changes, and this
+        changes ``data``).
+        """
+        entry = self._get_reconfigure_entry()
+        data = dict(entry.data)
+        serial_link = data.get(CONF_CONNECTION_TYPE) == CONNECTION_TYPE_SERIAL
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            candidate = {**data, **user_input}
+            # Entries from before the model field default to it at setup too.
+            candidate.setdefault(CONF_INVERTER_MODEL, DEFAULT_INVERTER_MODEL)
+            try:
+                if serial_link:
+                    await self._async_test_serial_connection(candidate)
+                else:
+                    await self._async_test_tcp_connection(candidate)
+            except ConnectionError:
+                errors["base"] = "cannot_connect"
+            except (ModbusException, ValueError):
+                errors["base"] = "read_error"
+            except Exception:
+                errors["base"] = "unknown"
+                _LOGGER.exception("Unexpected error while testing the new Felicity connection")
+            else:
+                _LOGGER.info(
+                    "Felicity '%s': connection changed to %s", entry.title,
+                    self._describe_link(candidate))
+                return self.async_update_reload_and_abort(entry, data_updates=user_input)
+
+        shown = {**data, **(user_input or {})}
+        if serial_link:
+            schema = await self._serial_link_schema(shown)
+        else:
+            schema = self._tcp_link_schema(shown)
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "name": entry.title, "current": self._describe_link(data)},
+        )
+
+    @staticmethod
+    def _describe_link(data: dict[str, Any]) -> str:
+        if data.get(CONF_CONNECTION_TYPE) == CONNECTION_TYPE_SERIAL:
+            return (f"{data.get(CONF_SERIAL_PORT)} @ {data.get(CONF_BAUDRATE, DEFAULT_BAUDRATE)}, "
+                    f"slave {data.get(CONF_SLAVE_ID, DEFAULT_SLAVE_ID)}")
+        return (f"{data.get(CONF_HOST)}:{data.get(CONF_PORT, DEFAULT_TCP_PORT)}, "
+                f"slave {data.get(CONF_SLAVE_ID, DEFAULT_SLAVE_ID)}")
+
+    @staticmethod
+    def _tcp_link_schema(current: dict[str, Any]) -> vol.Schema:
+        """The TCP link fields, filled in with what the entry uses now."""
+        return vol.Schema(
+            {
+                vol.Required(CONF_HOST, default=current.get(CONF_HOST, "")): str,
+                vol.Required(CONF_PORT, default=current.get(CONF_PORT, DEFAULT_TCP_PORT)): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=65535)
+                ),
+                vol.Required(CONF_SLAVE_ID, default=current.get(CONF_SLAVE_ID, DEFAULT_SLAVE_ID)): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=247)
+                ),
+            }
+        )
+
+    async def _serial_link_schema(self, current: dict[str, Any]) -> vol.Schema:
+        """The serial link fields, filled in with what the entry uses now.
+
+        The current port is offered even when the scan does not list it (a
+        by-id path, or an adapter unplugged right now), and a path can be
+        typed, so the form never forces a different port.
+        """
+        ports = await self.hass.async_add_executor_job(serial.tools.list_ports.comports)
+        port_options = [
+            selector.SelectOptionDict(
+                value=port.device,
+                label=(
+                    f"{port.device} - {port.description or 'Unknown device'}"
+                    + (f" ({port.manufacturer})" if port.manufacturer else "")
+                ),
+            )
+            for port in ports if port.device
+        ]
+        now = current.get(CONF_SERIAL_PORT)
+        if now and all(opt["value"] != now for opt in port_options):
+            port_options.append(selector.SelectOptionDict(value=now, label=f"{now} (current)"))
+        port_options.sort(key=lambda x: x["value"])
+        return vol.Schema(
+            {
+                vol.Required(CONF_SERIAL_PORT, default=now or vol.UNDEFINED): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=port_options,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                        custom_value=True,
+                    )
+                ),
+                vol.Required(CONF_SLAVE_ID, default=current.get(CONF_SLAVE_ID, DEFAULT_SLAVE_ID)): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=247)
+                ),
+                vol.Required(CONF_BAUDRATE, default=current.get(CONF_BAUDRATE, DEFAULT_BAUDRATE)): vol.In(
+                    [2400, 4800, 9600, 19200, 38400]
+                ),
+                vol.Required(CONF_PARITY, default=current.get(CONF_PARITY, DEFAULT_PARITY)): vol.In(
+                    ["N", "E", "O"]
+                ),
+                vol.Required(CONF_STOPBITS, default=current.get(CONF_STOPBITS, DEFAULT_STOPBITS)): vol.In(
+                    [1, 2]
+                ),
+                vol.Required(CONF_BYTESIZE, default=current.get(CONF_BYTESIZE, DEFAULT_BYTESIZE)): vol.In(
+                    [7, 8]
+                ),
+            }
+        )
+
     async def _async_test_serial_connection(self, data: dict[str, Any]) -> None:
         """Test serial connection to the Felicity meter."""
         client = None
