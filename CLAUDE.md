@@ -76,6 +76,19 @@ maintainer makes a new decision, add it here in the same commit.
 - **Polling reads the full map in big chunks** — 2400 baud makes the number of
   requests, not registers, the cost (8d).
 - **Never write `econ_rule_N_sell_enable` on an IVGM**; selling there is unproven.
+- **The EMS does not write T-REX-10 zero export mode (0x2176) or power
+  (0x2177)** (22 Nov 2026, PR #246, option 2).  A contributor measured that
+  with "To CT" a rule-1 discharge only covers the house (no export), with
+  "To load" it exports at the rule-1 power — so on "To CT" an EMS sell slot
+  does not sell.  The maintainer keeps today's behaviour ("do not want the
+  current behaviour that seems to work to suffer without rigorous testing"):
+  the README tells T-REX-10 users to set "To load" in the Felicity app for
+  selling.  PR #246 (entities for both registers + a signed-write change) was
+  closed so no write-path change waits in the queue; switching the mode from
+  the EMS — or even exposing it — is only considered after the hardware tests
+  listed on that PR (self-use and PV export under "To load", switching while
+  running, whether the setting is stored in non-volatile memory), reported in
+  an issue.
 
 **Register maps and scaling**
 - **T-REX-25 scaling is FROZEN** (field-proven, altered firmware).
@@ -208,7 +221,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **1014**: 1012 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **1021**: 1019 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -288,6 +301,7 @@ tests/
 ├── test_write_register_service.py    # the write_register service, through the real write path
 ├── test_plausibility.py     # #220 guard, judged by HA's own total_increasing sum rule
 ├── test_sensor_startup.py   # sensors show the first poll at once; energy counters restore
+├── test_reconfigure_connection.py # change IP / serial port in place; tested before it is stored
 ├── day_replay.py            # Day-replay HARNESS: real coordinator + fake clock/inverter/HA
 └── test_day_replay.py       # Replays: what actually reaches the inverter registers
 
@@ -3648,6 +3662,38 @@ battery power).  Pinned by `test_a_small_dip_on_a_period_counter_is_never_publis
 (noon and the reset window; both fail without the rule) and
 `test_a_real_reset_is_still_accepted_after_the_dip_rule`.
 
+### 8t. A new IP address meant deleting the integration — FIXED (22 Nov 2026)
+
+Some routers hand the Modbus gateway a new DHCP address, and the only way to
+follow it was to delete the entry and add it again — losing the options, the
+EMS tuning and the continuity of every entity's history.
+`config_flow.async_step_reconfigure` (HA's Reconfigure menu item; HA ≥ 2025.6,
+per hacs.json) changes the **link only**: host/port/slave id for TCP, or
+port/slave id/line settings for serial.  The connection type, the inverter model
+(a different model is a different register map) and the name stay.
+
+- The new link is tested with the same `_async_test_*_connection` the setup
+  uses and **stored only when the inverter answers**; a failure comes back on
+  the form holding what was typed (`cannot_connect` / `read_error` / `unknown`).
+- It writes `entry.data` through `async_update_reload_and_abort`, which
+  **reloads the entry itself** — necessary, because `update_listener` reloads
+  only on structural *option* changes and never sees a data change.  The
+  reload closes the old hub (`hub_key` is built from host/port or the serial
+  line) and opens the new one.
+- An entry stored without a model is tested with `DEFAULT_INVERTER_MODEL` (as
+  setup does), but that default is not written into the entry.
+- The serial port list always offers the current port, even when the scan does
+  not list it (a by-id path, an unplugged adapter), and accepts a typed path.
+
+Not done: switching serial ↔ TCP (a different set of fields; delete and re-add
+for now), and translations — the integration has no `strings.json` /
+`translations/`, so this step shows raw field keys like every other step.
+Pinned by `tests/test_reconfigure_connection.py` (the real `config_flow.py`
+against a stand-in for HA's flow API; mutation-checked: saving on a failed
+test, a form that forgets what was typed, a serial link tested as TCP, the
+default model written into the entry).  `voluptuous` was added to
+`requirements-test.txt` for it.
+
 ### 9. `working_mode` (4353) is a STATUS register, not a settable mode — FIXED
 TREX-5/10 register 4353 ("Working Mode": Power On / Standby / Bypass /
 Off-grid / Fault / Line / PV Charge) is the inverter's **running-status
@@ -4227,7 +4273,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**1014 tests**: 1012 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**1021 tests**: 1019 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -4377,7 +4423,7 @@ the free Actions minutes ran out).**  Both workflows (`ci.yml`,
   merges untested.  `manifest.json` is deliberately NOT ignored
   (`test_milp_solver_install` reads it; hassfest checks it).
 CI also caches pip, installs once, runs pytest with **`-n auto`**
-(pytest-xdist, in `requirements-test.txt`: same 1012 + 2, ~2.5 min → ~40 s on
+(pytest-xdist, in `requirements-test.txt`: same 1019 + 2, ~2.5 min → ~40 s on
 four cores), and has no setup-node step (the runner ships Node; there is no
 package.json).  A docs-only PR gets no CI run — if branch protection ever
 requires these checks, such a PR waits for them.

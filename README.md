@@ -114,6 +114,14 @@ This can be done via configuration when the intallation is succesfull (device fo
   <em>Serial Example, choose the settings you need (2400 baud is sadly default for the TRex 5-10k series)</em>
 </p>
 
+### Changing the IP address or serial port later
+If a router hands the inverter's Modbus gateway a new IP address, or the USB adapter moves to another port, you do not need to delete the integration:
+**Settings → Devices & services → Felicity → ⋮ (on the entry) → Reconfigure.**
+The form starts from the current settings. For TCP you can change the host, port and slave id; for serial you can change the port, slave id and line settings.
+The new settings are tested first (the same test as at setup) and stored only when the inverter answers. The integration then reloads itself.
+Your options, EMS settings, entities and their history stay as they are. The connection type (serial or TCP) and the inverter model cannot be changed this way — a different model has a different register map.
+Tip: give the gateway a fixed IP (a DHCP reservation in the router) so it does not move again.
+
 ## Configuration
 After successfull install the integration can be configured at any time with a few settings. See picture on top for location of the gear icon
 - Update interval (the frequency of refresh of data). For the T-REX 5-10k models keep it on 10 sec minimum due to small baud rate.
@@ -165,6 +173,8 @@ All EMS settings are available as configuration entities on the device. You can 
  * **to_grid** — Discharges the battery to the grid when the price is above the threshold.
  * **both** — Does both: charges at cheap hours, sells at expensive hours. Includes a profitability filter to ensure every sold kWh covers the round-trip losses.
  * **off** — EMS is disabled. The inverter operates normally without grid scheduling.
+
+**T-REX-10 and selling (to_grid / both):** the inverter only exports battery power when **Zero Export Mode is "To load"** (set in the Felicity app). With "To CT" the inverter holds the grid point near zero, so a sell slot only covers your house and nothing is exported (measured on a T-REX-10KLP3G01). The EMS does not change this setting for you. Check how "To load" affects your own installation first: for example, whether the battery still covers your house while the EMS is idle.
 
 ### Battery & Efficiency Settings
 

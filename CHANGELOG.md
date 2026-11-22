@@ -2,6 +2,13 @@
 
 ### [Unreleased] - Register dump in diagnostics
 
+- **Change the inverter's IP address (or serial port) without re-adding the
+  integration.** Settings → Devices & services → Felicity → ⋮ → Reconfigure.
+  The form starts from the current host/port/slave id (or serial port and line
+  settings). The new address is tested before it is saved, and the
+  integration then reloads. Options, EMS settings, entities and their history
+  are kept. Previously a router that gave the gateway a new IP meant deleting
+  the integration and setting it up again.
 - **"Not strictly increasing" warnings on day/month/year energy counters.** A
   small drop (e.g. 439 → 425 Wh on a T-REX-10 day counter at night) was
   published once it held, and Home Assistant then warned about the sensor and
