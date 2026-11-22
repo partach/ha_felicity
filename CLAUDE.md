@@ -76,6 +76,16 @@ maintainer makes a new decision, add it here in the same commit.
 - **Polling reads the full map in big chunks** — 2400 baud makes the number of
   requests, not registers, the cost (8d).
 - **Never write `econ_rule_N_sell_enable` on an IVGM**; selling there is unproven.
+- **The EMS does not write T-REX-10 zero export mode (0x2176) or power
+  (0x2177)** (22 Nov 2026, PR #246, option 2).  A contributor measured that
+  with "To CT" a rule-1 discharge only covers the house (no export), with
+  "To load" it exports at the rule-1 power — so on "To CT" an EMS sell slot
+  does not sell.  The maintainer keeps today's behaviour ("do not want the
+  current behaviour that seems to work to suffer without rigorous testing"):
+  users are told to set "To load" for selling.  Switching it from the EMS is
+  only considered after the hardware tests listed on PR #246 (self-use and PV
+  export under "To load", switching while running, whether the setting is
+  stored in non-volatile memory).
 
 **Register maps and scaling**
 - **T-REX-25 scaling is FROZEN** (field-proven, altered firmware).
