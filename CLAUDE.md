@@ -82,10 +82,13 @@ maintainer makes a new decision, add it here in the same commit.
   "To load" it exports at the rule-1 power — so on "To CT" an EMS sell slot
   does not sell.  The maintainer keeps today's behaviour ("do not want the
   current behaviour that seems to work to suffer without rigorous testing"):
-  users are told to set "To load" for selling.  Switching it from the EMS is
-  only considered after the hardware tests listed on PR #246 (self-use and PV
-  export under "To load", switching while running, whether the setting is
-  stored in non-volatile memory).
+  the README tells T-REX-10 users to set "To load" in the Felicity app for
+  selling.  PR #246 (entities for both registers + a signed-write change) was
+  closed so no write-path change waits in the queue; switching the mode from
+  the EMS — or even exposing it — is only considered after the hardware tests
+  listed on that PR (self-use and PV export under "To load", switching while
+  running, whether the setting is stored in non-volatile memory), reported in
+  an issue.
 
 **Register maps and scaling**
 - **T-REX-25 scaling is FROZEN** (field-proven, altered firmware).

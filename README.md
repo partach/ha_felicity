@@ -174,6 +174,8 @@ All EMS settings are available as configuration entities on the device. You can 
  * **both** — Does both: charges at cheap hours, sells at expensive hours. Includes a profitability filter to ensure every sold kWh covers the round-trip losses.
  * **off** — EMS is disabled. The inverter operates normally without grid scheduling.
 
+**T-REX-10 and selling (to_grid / both):** the inverter only exports battery power when **Zero Export Mode is "To load"** (set in the Felicity app). With "To CT" the inverter holds the grid point near zero, so a sell slot only covers your house and nothing is exported (measured on a T-REX-10KLP3G01). The EMS does not change this setting for you. Check how "To load" affects your own installation first: for example, whether the battery still covers your house while the EMS is idle.
+
 ### Battery & Efficiency Settings
 
 | Setting | Range | Default | Description |
