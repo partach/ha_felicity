@@ -1,8 +1,10 @@
 # IVGM family — what is NOT yet known
 
-Status of `IVGM-8KLP1G1`, `IVGM-15KLP3G1` and `IVGM-20KLP3G1`: **provisional**.
-The 15K and 20K are register-identical and share one map, differing only in
-`INVERTER_MAX_POWER_KW`. The maps in `custom_components/ha_felicity/ivgm.py` are
+Status of `IVGM-8KLP1G1`, `IVGM-10KLP3G1`, `IVGM-15KLP3G1` and `IVGM-20KLP3G1`:
+**provisional**. The 10K, 15K and 20K are register-identical and share one map,
+differing only in `INVERTER_MAX_POWER_KW` (the 10K: issue #249, its dump read on
+the 15K map — 475 addresses, none failed, Grid A V × I 370 W vs 360 W, peak
+shaving and max sell power 10000 W = its nameplate). The maps in `custom_components/ha_felicity/ivgm.py` are
 derived from one document —
 
 > *Inverter Communication Protocol — Series RS485*, Guangzhou Felicity Solar

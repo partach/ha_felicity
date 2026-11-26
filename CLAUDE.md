@@ -221,7 +221,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **1021**: 1019 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **1060**: 1058 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -750,8 +750,8 @@ back to the user's `discharge_min` setting.
 | Date registers | Written | Written | Not used | Not used |
 
 Rating-only variants are not separate rows because they are not separate maps:
-**T-REX-6K** is the 5K column with a 6 kW cap, and **IVGM-15K** is the 20K with a
-15 kW cap.  See "Rating-only variants" below.
+**T-REX-6K** is the 5K column with a 6 kW cap, and **IVGM-15K** / **IVGM-10K** are
+the 20K with a 15 / 10 kW cap.  See "Rating-only variants" below.
 
 ### ⚠️ Power-register scaling — measured, never inherited (Sept 2026)
 
@@ -839,7 +839,7 @@ the tidy-up that broke them was the thing the test was blessing.  It is now
 `test_ivgm_telemetry_and_setpoint_blocks_each_have_one_convention`: consistent
 WITHIN each block, deliberately different BETWEEN them.
 
-**Rating-only variants** (`T-REX-6K` ← 5K, `IVGM-15K` ← 20K): a model that is
+**Rating-only variants** (`T-REX-6K` ← 5K, `IVGM-15K` and `IVGM-10K` ← 20K): a model that is
 electrically a sibling with a different nameplate gets **no map of its own**.  It
 aliases the sibling's whole `MODEL_REGISTRY` entry by reference, and the only
 thing that differs is `INVERTER_MAX_POWER_KW`.  The alias is deliberate — two dict
@@ -849,6 +849,17 @@ equal-but-separate copies fail.  The rating matters on its own: it caps the EMS'
 grid-charge planning and the Power Level slider, so a 15K configured as a 20K gets
 plans assuming 5 kW it does not have.  **If a variant ever proves not to be
 register-identical, give it its own entry — do not edit the shared one.**
+
+**IVGM-10KLP3G1 (issue #249, 26 Nov 2026)** joined as the third rating of the
+20K map on the evidence of its own dump, not by analogy: read on the 15K profile
+(1.4.0, Elfin gateway, TCP) it answered 475 addresses with none failed, 74/74
+groups and no illegal address; Grid A raw 2313 / 65520 / 65500 = 231.3 V,
+-1.6 A, -0.36 kW (V × I 370 W, ratio 0.97 — the 0.01 kW telemetry scale); and
+`grid_peak_shaving_power` = `max_sell_power` = 10000 W, its nameplate, as the
+15K's 15000 was.  Battery and PV read 0 in that dump (none connected or no sun),
+so those scales rest on the family's earlier measurements.  The ECO power
+controls keep the shared map's 20000 W ceiling, like the 15K's.  Pinned by
+`test_the_ivgm_ten_dump_fits_the_three_phase_map`.
 
 ### ⚠️ The cards' contract with the register maps (Sept 2026)
 
@@ -4273,7 +4284,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**1021 tests**: 1019 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**1060 tests**: 1058 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -4332,7 +4343,7 @@ python -m pytest tests/test_ems.py::TestSolarProtection -v
 - IVGM secondary scales (temperatures are signed /10, not raw; `bms_total_voltage`
   is 0.01 V while its neighbouring limit registers are 0.1 V; no display name leaks
   the protocol document's annotation)
-- Rating-only variants (T-REX-6K shares the 5K map BY REFERENCE, IVGM-15K the 20K's;
+- Rating-only variants (T-REX-6K shares the 5K map BY REFERENCE, IVGM-15K and -10K the 20K's;
   they differ only in `INVERTER_MAX_POWER_KW`, and share every model group)
 - Setpoint power unit declared for every model (a model missing from
   `SETPOINT_POWER_UNIT_BY_MODEL` would silently under-command charge power)
@@ -4423,7 +4434,7 @@ the free Actions minutes ran out).**  Both workflows (`ci.yml`,
   merges untested.  `manifest.json` is deliberately NOT ignored
   (`test_milp_solver_install` reads it; hassfest checks it).
 CI also caches pip, installs once, runs pytest with **`-n auto`**
-(pytest-xdist, in `requirements-test.txt`: same 1019 + 2, ~2.5 min → ~40 s on
+(pytest-xdist, in `requirements-test.txt`: same 1058 + 2, ~2.5 min → ~40 s on
 four cores), and has no setup-node step (the runner ships Node; there is no
 package.json).  A docs-only PR gets no CI run — if branch protection ever
 requires these checks, such a PR waits for them.

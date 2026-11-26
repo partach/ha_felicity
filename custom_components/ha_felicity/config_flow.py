@@ -43,6 +43,7 @@ from .const import (
     INVERTER_MODEL_IVGM_FIFTEEN,
     INVERTER_MODEL_IVGM_FIFTY,
     INVERTER_MODEL_IVGM_HUNDRED,
+    INVERTER_MODEL_IVGM_TEN,
     INVERTER_MODEL_IVGM_TWENTY,
     INVERTER_MODEL_TREX_FIFTY,
     INVERTER_MODEL_TREX_FIVE,
@@ -197,6 +198,9 @@ class HA_FelicityConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             selector.SelectOptionDict(
                                 value=INVERTER_MODEL_IVGM_EIGHT,
                                 label=f"{INVERTER_MODEL_IVGM_EIGHT} (1-phase, provisional)"),
+                            selector.SelectOptionDict(
+                                value=INVERTER_MODEL_IVGM_TEN,
+                                label=f"{INVERTER_MODEL_IVGM_TEN} (3-phase, provisional)"),
                             selector.SelectOptionDict(
                                 value=INVERTER_MODEL_IVGM_FIFTEEN,
                                 label=f"{INVERTER_MODEL_IVGM_FIFTEEN} (3-phase, provisional)"),
