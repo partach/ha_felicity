@@ -551,6 +551,7 @@ def _with_eco_controls(registers, max_power_w):
 _REGISTERS_IVGM_THREE_PHASE = _with_eco_controls(_REGISTERS_IVGM_SCALED, max_power_w=20000)
 _REGISTERS_IVGM_TWENTY = _REGISTERS_IVGM_THREE_PHASE
 _REGISTERS_IVGM_FIFTEEN = _REGISTERS_IVGM_THREE_PHASE
+_REGISTERS_IVGM_TEN = _REGISTERS_IVGM_THREE_PHASE    # issue #249
 
 #: The 8K: the documented register set, on the family's corrected power scale.
 _REGISTERS_IVGM_EIGHT = _with_eco_controls({

@@ -352,7 +352,7 @@ this affects the EMS itself — the EMS card reads only EMS-computed entities an
 is model-agnostic — but a mismatch makes the energy-flow card silently show 0 W
 or, worse, a same-suffixed setpoint. Pinned by `tests/test_card_contract.py`.
 
-**Rating-only variants** (T-REX-6K, IVGM-15K) share their sibling's register map
+**Rating-only variants** (T-REX-6K, IVGM-10K, IVGM-15K) share their sibling's register map
 by reference and differ only in `INVERTER_MAX_POWER_KW`. That number is not
 cosmetic to the EMS: it caps the per-slot grid-charge energy
 (`min(safe_power_kw, inverter_max − pv_kw)`) and the Power Level slider, so

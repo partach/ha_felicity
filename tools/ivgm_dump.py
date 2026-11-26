@@ -35,6 +35,7 @@ _PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 
 _MAPS = {
     "IVGM-8KLP1G1": "_REGISTERS_IVGM_EIGHT",
+    "IVGM-10KLP3G1": "_REGISTERS_IVGM_TEN",
     "IVGM-15KLP3G1": "_REGISTERS_IVGM_FIFTEEN",
     "IVGM-20KLP3G1": "_REGISTERS_IVGM_TWENTY",
 }

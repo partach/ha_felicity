@@ -46,6 +46,7 @@ def test_guessed_settings_stay_read_only(model):
 
 
 @pytest.mark.parametrize("model,cap", [("IVGM-8KLP1G1", 8000),
+                                       ("IVGM-10KLP3G1", 20000),
                                        ("IVGM-15KLP3G1", 20000),
                                        ("IVGM-20KLP3G1", 20000)])
 def test_power_controls_are_watts_capped_at_the_nameplate(model, cap):
@@ -60,6 +61,7 @@ def test_controls_do_not_leak_into_the_shared_family_map():
     """_with_eco_controls copies entries; the scaled family map stays sensors."""
     assert "type" not in ivgm._REGISTERS_IVGM_SCALED["econ_rule_1_power"]
     assert ivgm._REGISTERS_IVGM_FIFTEEN is ivgm._REGISTERS_IVGM_TWENTY
+    assert ivgm._REGISTERS_IVGM_TEN is ivgm._REGISTERS_IVGM_TWENTY
 
 
 def test_voltage_controls_step_in_whole_volts():

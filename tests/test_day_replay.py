@@ -190,7 +190,7 @@ async def test_economic_mode_dropped_by_the_inverter_is_healed():
 @pytest.mark.parametrize("model", [
     const.INVERTER_MODEL_TREX_FIVE, const.INVERTER_MODEL_TREX_SIX, const.INVERTER_MODEL_TREX_TEN,
     const.INVERTER_MODEL_TREX_TWENTY_FIVE, const.INVERTER_MODEL_TREX_FIFTY,
-    const.INVERTER_MODEL_IVGM_EIGHT, const.INVERTER_MODEL_IVGM_FIFTEEN,
+    const.INVERTER_MODEL_IVGM_EIGHT, const.INVERTER_MODEL_IVGM_TEN, const.INVERTER_MODEL_IVGM_FIFTEEN,
     const.INVERTER_MODEL_IVGM_TWENTY,
 ])
 async def test_every_controllable_model_is_healed(model):

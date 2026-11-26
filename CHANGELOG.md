@@ -1,6 +1,18 @@
 ## Changelog
 
-### [Unreleased] - Register dump in diagnostics
+### [Unreleased]
+
+- **IVGM-10KLP3G1 can be selected (provisional, issue #249).** It is the
+  IVGM-15K/20K register map with a 10 kW rating. A diagnostics dump from one,
+  read on the 15K profile, answered every register and confirmed the power
+  scale (grid phase A: 231.3 V × 1.6 A = 370 W, reported 360 W) and the
+  10 kW nameplate (peak shaving and max sell power both 10000 W). Owners who
+  set it up as an IVGM-15KLP3G1 can keep using that: the readings are the
+  same, only the EMS's 15 kW charge limit is higher than this unit can do.
+  Re-adding it as IVGM-10KLP3G1 sets the right limit. Selling is still
+  unproven on the IVGM family.
+
+### [1.4.0] - 2026-11-22
 
 - **Change the inverter's IP address (or serial port) without re-adding the
   integration.** Settings → Devices & services → Felicity → ⋮ → Reconfigure.

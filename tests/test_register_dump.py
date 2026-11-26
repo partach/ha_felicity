@@ -307,7 +307,8 @@ def test_standalone_tool_writes_a_dump(tmp_path, monkeypatch):
     assert dump["addresses_failed"] == {}
 
 
-@pytest.mark.parametrize("model", ["IVGM-8KLP1G1", "IVGM-15KLP3G1", "IVGM-20KLP3G1"])
+@pytest.mark.parametrize("model", ["IVGM-8KLP1G1", "IVGM-10KLP3G1", "IVGM-15KLP3G1",
+                                   "IVGM-20KLP3G1"])
 def test_tool_knows_every_ivgm_model(model):
     path = os.path.join(os.path.dirname(__file__), "..", "tools", "ivgm_dump.py")
     spec = _ilu.spec_from_file_location("ivgm_dump_tool2", path)

@@ -289,6 +289,36 @@ def test_ivgm_setpoint_defaults_are_only_plausible_as_watts():
     )
 
 
+def test_the_ivgm_ten_dump_fits_the_three_phase_map():
+    """Issue #249: an IVGM-10KLP3G1 read on the 15K/20K map (1.4.0, Nov 2026).
+
+    475 addresses, none failed, every read group answered, no illegal address
+    -- so the map's addresses exist on this unit.  Raw words from that dump:
+
+    * grid A: 231.3 V (raw 2313), -1.6 A (raw 65520), -0.36 kW (raw 65500);
+      V x I = 370 W against 360 W reported -- the 0.01 kW telemetry scale holds;
+    * grid_peak_shaving_power = 10000 and max_sell_power = 10000: a setpoint
+      default equal to the 10 kW nameplate, as the 15K's 15000 was -- watts.
+    """
+    model = const.INVERTER_MODEL_IVGM_TEN
+    regs = _registers(model)
+    assert const.INVERTER_MAX_POWER_KW[model] == 10
+    assert const.INVERTER_PHASES[model] == 3
+
+    def signed(word):                  # index 8 / 9 are signed 16-bit
+        return word - 0x10000 if word >= 0x8000 else word
+
+    volts = _scale(2313, regs["grid_a_voltage"]["index"])
+    amps = _scale(signed(65520), regs["grid_a_current"]["index"])
+    watts = _watts(signed(65500), regs["grid_a_phase_power"])
+    assert (volts, amps, watts) == (pytest.approx(231.3), pytest.approx(-1.6),
+                                    pytest.approx(-360.0))
+    assert watts / (volts * amps) == pytest.approx(0.97, abs=0.02)
+
+    for key in ("grid_peak_shaving_power", "max_sell_power"):
+        assert _watts(10000, regs[key]) / 1000.0 == 10.0, key
+
+
 def test_ivgm_telemetry_is_kilowatt_but_setpoints_are_watt():
     """The two model lists must disagree about the IVGM — that is the point.
 
@@ -467,6 +497,7 @@ def test_watt_power_models_is_consistent_with_the_mapping():
 _RATING_ONLY_VARIANTS = [
     (const.INVERTER_MODEL_TREX_SIX, const.INVERTER_MODEL_TREX_FIVE),
     (const.INVERTER_MODEL_IVGM_FIFTEEN, const.INVERTER_MODEL_IVGM_TWENTY),
+    (const.INVERTER_MODEL_IVGM_TEN, const.INVERTER_MODEL_IVGM_TWENTY),
 ]
 
 

@@ -21,7 +21,7 @@ For this integration to work you need to have a wired modbus connection to your 
 | **T-REX-50KHP3G01** | ✅ Supported — monitoring + EMS | Power readings in 0.1 kW, measured on a T-REX-50 (issue #237). Its power *settings* look right (the rated power reads 50.0 kW). |
 | **IVGM-50K** | ✅ Monitoring + EMS on the T-REX-50 layout | Same registers as the T-REX-50, but its power readings count 0.01 kW. Pick this entry if your power readings show 10× too high as a T-REX-50. |
 | **IVGM-8KLP1G1** | 🧪 Provisional | Built from Felicity's protocol document; no 8K has sent a register dump yet. Selling is unproven. See `docs/IVGM_SUPPORT_GAPS.md`. |
-| **IVGM-15KLP3G1**, **IVGM-20KLP3G1** | 🧪 Provisional | Power scale, time format and weekdays confirmed by two user dumps. Selling is unproven. See `docs/IVGM_SUPPORT_GAPS.md`. |
+| **IVGM-10KLP3G1**, **IVGM-15KLP3G1**, **IVGM-20KLP3G1** | 🧪 Provisional | One register map, three ratings. Power scale, time format and weekdays confirmed by user dumps (the 10K in issue #249). Selling is unproven. See `docs/IVGM_SUPPORT_GAPS.md`. |
 | **IVAM6048P1G1** | 👁 Monitoring only | Its protocol has no setting registers, so the EMS cannot control it and nothing is ever written. See `docs/IVAM_SUPPORT_GAPS.md`. |
 | **IVGM100600** (10 kW, 3-phase, high-voltage battery) | 👁 Monitoring only, provisional — **at your own risk** | Reads like a T-REX-10K but is not register-identical (issue #206). Nothing is ever written: the EMS voltage settings are for 48 V batteries. |
 

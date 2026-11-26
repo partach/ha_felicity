@@ -131,11 +131,11 @@ Some TREX-25/50K installations use micro-inverters on the generator port. Then t
 
 ## IVGM Differences (provisional)
 
-The IVGM-8KLP1G1 / 15KLP3G1 / 20KLP3G1 use this layout with these differences:
+The IVGM-8KLP1G1 / 10KLP3G1 / 15KLP3G1 / 20KLP3G1 use this layout with these differences:
 
 - **Rule 1 power and peak shaving power are in watts** (raw), while telemetry power is 0.01 kW — both confirmed from customer register dumps.
 - `econ_rule_1_sell_enable` (8703) is **never written**: on the IVGM those addresses belong to the grid under-frequency protection block. **Selling is therefore unproven** on IVGM.
-- The IVGM-15K uses the 20K register map with a 15 kW rating. The 8K is single-phase (no phase C, no battery 2).
+- The IVGM-10K and IVGM-15K use the 20K register map with a 10 kW and a 15 kW rating. The 8K is single-phase (no phase C, no battery 2).
 - Only the ECO-rule settings are exposed as editable entities; Work Mode (`system_mode`) and the weekday mask are read-only because their values are not documented.
 
 Read [IVGM_SUPPORT_GAPS.md](https://github.com/partach/ha_felicity/blob/main/docs/IVGM_SUPPORT_GAPS.md) before enabling the EMS on an IVGM.
