@@ -221,7 +221,7 @@ this rule exists to prevent — don't.
 
 ### Before Concluding Any Work
 
-- Run `python -m pytest tests/` (must stay green; currently **1060**: 1058 pass + 2 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
+- Run `python -m pytest tests/` (must stay green; currently **1067**: 1064 pass + 3 documented skips; ~2.5 min serial, most of it the replays; `-n auto` ~40 s) — the whole
   directory, not just `test_ems.py`.  A broken harness once stopped
   `test_coordinator.py` collecting entirely while the rest still said "passed";
   `tests/test_harness_integrity.py` now guards against that, but only if you run it.
@@ -1169,16 +1169,35 @@ register-identical:
   −148 W / 212.5 V = −0.70 A;
 - **0x120D TotalVoltage is 0.1 V**: raw 2130 → 213.0 V beside a 212.5 V
   battery (the document's 0.01 V gives 21.3 V).
-- Unsettled: **0x119D/0x119E LoadPower_LineSide** read the words 4502/4503 —
-  the decimal numbers of the neighbouring addresses, not a power (gateway
-  storage mode?).  A second dump in "Simple Modbus TCP to RTU" mode was asked
-  for on the issue.  The plausibility guard drops the 295 MW it decodes to.
+- **0x119C–0x11A3 are not implemented** — settled by a second dump (1.4.0,
+  2026-11-27, gateway in "Simple Modbus TCP to RTU", 30/30 groups): they read
+  4501–4508, a count that tracks the address (address − 7), in BOTH gateway
+  modes, so it is the inverter and not the gateway's cache (the first guess).
+  So `parallel_system_state` (4501), `load_power_line_side` (4502/4503 →
+  295 MW) and `g_uw_exist_num_parallel` (4504) are dropped
+  (`ivgm_hv._ADDRESS_ECHO`).  The same pattern at 0x11D0–0x11D6 and
+  0x11F9–0x11FD (address − 2) and 0x21AF–0x21C5 (= the address) — none mapped.
+  ⚠️ **A plausible-looking small number can be an address echo**: 4501 as a
+  "parallel system state" passed every guard.  On a new model's dump, check
+  for runs whose value minus address is constant.
+- **No household load on this model**: 0x1160–0x1169 read 0 in both dumps and
+  the Felicity app shows "–" for household load, so the four
+  `load_consumption_energy_*` keys are dropped too (`_NO_LOAD`) — a 0 that
+  looks like a measurement is worse than no entity.  The card's line-side load
+  tile is exempt on this model (`_ABSENT_ON` in test_card_contract).
+- Not a map issue, same dump: `ac_generated_energy_month` read 57551 Wh (=
+  the app) while the guard kept 58365 Wh — the counter FELL 814 Wh during the
+  night, and the 8s dip rule holds the higher value until the counter passes
+  it, which is what keeps HA from counting the climb back twice.  Why the
+  inverter's month counter falls is not known (the T-REX-10 day counter did
+  the same on 11 Nov).
 
 So, per the rating-variant rule, it has **its own entry** (`ivgm_hv.py`,
 `INVERTER_MODEL_IVGM_HUNDRED = "IVGM100600"`), derived from the T-REX-10 map at
 import time (never a hand copy): telemetry (0x1xxx), version words (0xF8xx)
 and the BMS discharge depth (0x212A, read-only for the card) only; the
-0x1225–0x1238 keys dropped; the two corrections applied; every writable entity
+0x1225–0x1238 keys, the address echoes and the load counters dropped; the
+two corrections applied; every writable entity
 type stripped (`status` stays — read-only enum).  **The T-REX-10 map is not
 changed** (`test_the_t_rex_ten_map_is_not_changed_by_this_measurement`).
 
@@ -4284,7 +4303,7 @@ in the solver (loads as decision variables, not just overlays).
 
 ## Testing
 
-Tests are in `tests/` (**1060 tests**: 1058 pass, 2 skip — the card-contract exemptions for the monitor-only IVAM; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
+Tests are in `tests/` (**1067 tests**: 1064 pass, 3 skip — the card-contract exemptions for the two monitor-only models; 1,379 of the former total were `test_planner.py`, removed with the exact planner). `test_ems.py` (307) imports `ems.py` directly — bypassing HA dependencies — and tests the pure scheduling functions. `test_coordinator.py` and `test_select.py` load their HA-dependent modules against the stubs in `tests/conftest.py`. Install with `pip install -r requirements-test.txt`; **Home Assistant is deliberately NOT a test dependency**.
 
 ```bash
 # Run all tests
@@ -4434,7 +4453,7 @@ the free Actions minutes ran out).**  Both workflows (`ci.yml`,
   merges untested.  `manifest.json` is deliberately NOT ignored
   (`test_milp_solver_install` reads it; hassfest checks it).
 CI also caches pip, installs once, runs pytest with **`-n auto`**
-(pytest-xdist, in `requirements-test.txt`: same 1058 + 2, ~2.5 min → ~40 s on
+(pytest-xdist, in `requirements-test.txt`: same 1064 + 3, ~2.5 min → ~40 s on
 four cores), and has no setup-node step (the runner ships Node; there is no
 package.json).  A docs-only PR gets no CI run — if branch protection ever
 requires these checks, such a PR waits for them.

@@ -18,10 +18,18 @@ shared T-REX-10 map is left untouched:
 * 0x120D TotalVoltage is 0.1 V here: raw 2130 -> 213.0 V beside a 212.5 V
   battery.  Felicity's document says 0.01 V (21.3 V).
 
-Not settled (one dump): 0x119D/0x119E LoadPower_LineSide read the words 4502 /
-4503 — the decimal numbers of the neighbouring addresses, not a power.  Possibly
-the gateway's "Auto query storage" mode.  Kept as mapped; the plausibility guard
-drops a value beyond 10x the rating.
+A second dump (1.4.0, 2026-11-27 12:55, gateway in "Simple Modbus TCP to RTU",
+30/30 groups, no timeouts) settled two more:
+
+* 0x119C-0x11A3 read 4501-4508: a count that tracks the address (7 below it),
+  in both gateway modes, so it is the inverter, not the gateway's cache.  This
+  model does not implement them, and the three keys there are left out —
+  "Parallel system state" (4501), Loadpower_Lineside (4502/4503, 295 MW) and
+  G_Uwexistnum_Parallel (4504).  The same pattern runs at 0x11D0-0x11D6,
+  0x11F9-0x11FD and 0x21AF-0x21C5 (unmapped here; the dump reads them).
+* 0x1160-0x1169 (load consumption energy) read 0, and the Felicity app shows
+  no household load for this model at all ("-" for power and every total).
+  Left out rather than published as a 0 that looks like a measurement.
 
 MONITOR-ONLY (const.MONITOR_ONLY_MODELS), at the user's own risk: the battery is
 high-voltage (180-580 V), while every voltage the EMS writes (Rule 1 charge
@@ -54,6 +62,22 @@ _ABSENT = {
     "total_load_consumption_energy_day",
 }
 
+#: Answer with a number that tracks the address, in both gateway modes: not
+#: implemented on the IVGM100600 (second #206 dump, 2026-11-27).
+_ADDRESS_ECHO = {
+    "parallel_system_state",      # 0x119C raw 4501
+    "load_power_line_side",       # 0x119D/0x119E raw 4502, 4503
+    "g_uw_exist_num_parallel",    # 0x119F raw 4504
+}
+
+#: No household load on this model: 0 in every dump, "-" in the Felicity app.
+_NO_LOAD = {
+    "load_consumption_energy_total",
+    "load_consumption_energy_year",
+    "load_consumption_energy_month",
+    "load_consumption_energy_day",
+}
+
 #: Read-only settings kept as plain sensors (no "type", so no control entity).
 _READ_ONLY_SETTINGS = {"battery_discharge_depth_ongrid_bms"}
 
@@ -69,7 +93,7 @@ _CORRECTIONS = {
 
 
 def _keep(key: str, info: dict) -> bool:
-    if key in _ABSENT:
+    if key in _ABSENT or key in _ADDRESS_ECHO or key in _NO_LOAD:
         return False
     if key in _READ_ONLY_SETTINGS:
         return True
