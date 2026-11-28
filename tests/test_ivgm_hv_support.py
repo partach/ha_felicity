@@ -52,6 +52,42 @@ def test_the_registers_that_answered_illegal_address_are_not_read():
     assert set(range(0x1225, 0x1239)) <= rd.map_addresses(TREX10)
 
 
+#: Raw words from the second #206 dump (1.4.0, 2026-11-27 12:55, gateway in
+#: "Simple Modbus TCP to RTU").  Each run is a count that tracks the address.
+_ECHO_RUNS = {
+    0x119C: [4501, 4502, 4503, 4504, 4505, 4506, 4507, 4508],      # address - 7
+    0x11D0: [4558, 4559, 4560, 4561, 4562, 4563, 4564],            # address - 2
+    0x11F9: [4599, 4600, 4601, 4602, 4603],                        # address - 2
+}
+
+
+@pytest.mark.parametrize("start", sorted(_ECHO_RUNS))
+def test_the_address_echo_ranges_are_not_mapped(start):
+    """Not a gateway artefact: the same words in "Simple" mode as in "Auto
+    query storage" mode.  A count that follows the address is not a reading."""
+    words = _ECHO_RUNS[start]
+    offsets = {word - (start + i) for i, word in enumerate(words)}
+    assert len(offsets) == 1, offsets                      # the premise: it tracks the address
+    run = set(range(start, start + len(words)))
+    assert not rd.map_addresses(REGISTERS) & run, sorted(rd.map_addresses(REGISTERS) & run)
+
+
+def test_parallel_state_and_line_side_load_are_gone_but_stay_on_the_t_rex_ten():
+    for key in ("parallel_system_state", "load_power_line_side", "g_uw_exist_num_parallel"):
+        assert key not in REGISTERS
+        assert key in TREX10                               # a T-REX-10 answers them
+
+
+def test_no_household_load_counters_on_this_model():
+    """0 in every dump and "-" in the Felicity app: a 0 that looks like a
+    measurement is worse than no entity."""
+    addresses = rd.map_addresses(REGISTERS)
+    assert not addresses & set(range(0x1160, 0x116A))
+    assert set(range(0x1160, 0x116A)) <= rd.map_addresses(TREX10)
+    # The counters either side still read (PV generated, AC input energy).
+    assert {"pv_generated_energy_day", "ac_input_energy_day"} <= set(REGISTERS)
+
+
 def test_only_telemetry_versions_and_the_bms_depth_are_mapped():
     """Nothing in the settings block but 0x212A (read-only here): no rule, no
     voltage, no battery setting a 48 V map would get wrong on 212 V."""

@@ -98,6 +98,12 @@ _ABSENT_ON = {
         # No BMS depth-of-discharge register; the card falls back to 20 %.
         "battery_discharge_depth_on_grid_bms": "no BMS limit registers in the IVAM protocol",
     },
+    const.INVERTER_MODEL_IVGM_HUNDRED: {
+        # 0x119D/0x119E answer 4502/4503, a count that tracks the address, in
+        # both gateway modes (issue #206, 2026-11-27): not implemented, and the
+        # Felicity app shows no household load for this model either.
+        "loadpower_lineside": "0x119D is not implemented on the IVGM100600 (#206)",
+    },
 }
 
 

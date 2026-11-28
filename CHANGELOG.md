@@ -11,6 +11,14 @@
   same, only the EMS's 15 kW charge limit is higher than this unit can do.
   Re-adding it as IVGM-10KLP3G1 sets the right limit. Selling is still
   unproven on the IVGM family.
+- **IVGM100600: entities that never measured anything are gone (issue #206).**
+  A second diagnostics dump showed 0x119C–0x11A3 answer a count that follows
+  the register address (4501, 4502, …) whatever the gateway mode, so this
+  model does not implement them. "Parallel system state", "G_Uwexistnum
+  Parallel" and "Loadpower Lineside" are removed, and so are the four "Load
+  Consumption Energy Inquiry" counters: they always read 0 and the Felicity
+  app shows no household load for this model. The entities show as "no longer
+  provided" after updating and can be deleted. The T-REX-10 is not changed.
 
 ### [1.4.0] - 2026-11-22
 
